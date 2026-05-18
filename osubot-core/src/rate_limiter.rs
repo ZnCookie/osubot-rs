@@ -15,6 +15,12 @@ struct State {
     tokens: f64,
 }
 
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RateLimiter {
     pub fn new() -> Self {
         let state = Arc::new(Mutex::new(State { tokens: 60.0 }));
