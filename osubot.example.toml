@@ -1,0 +1,19 @@
+[osu]
+# osu! API v2 credentials (https://osu.ppy.sh/home/account/edit#oauth)
+api_key = "your-api-key-here"
+client_id = "your-client-id-here"
+
+[bot]
+# OneBot 11 WebSocket URL
+onebot_url = "ws://127.0.0.1:8080"
+
+[database]
+path = "osubot.db"
+
+[scheduler]
+interval_minutes = 1
+active_interval_hours = 2
+semi_active_interval_hours = 4
+normal_interval_hours = 8
+inactive_interval_hours = 48
+group_trigger_cooldown_hours = 1
