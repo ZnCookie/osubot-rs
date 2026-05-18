@@ -35,3 +35,52 @@ osu! API v2 凭据在 [osu! 设置](https://osu.ppy.sh/home/account/edit#oauth) 
 ```bash
 cargo run --release
 ```
+
+## 技术细节
+
+- **语言**: Rust (stable, edition 2021)
+- **异步运行时**: Tokio 单线程事件循环
+- **存储**: SQLite (rusqlite)，存储用户绑定、数据快照和游玩记录
+- **WebSocket**: tokio-tungstenite 连接 OneBot 11 正向 WebSocket
+- **API**: osu! API v2，OAuth client credentials 认证
+- **日志**: tracing + tracing-subscriber 结构化日志
+
+### 项目结构
+
+```
+osubot-rs/
+├── osubot/             # 主程序
+│   └── src/
+│       ├── main.rs     # WebSocket 连接、消息循环、命令分发
+│       ├── config.rs   # TOML 配置加载
+│       └── scheduler.rs # 后台定时更新调度器
+├── osubot-core/        # 核心库
+│   └── src/
+│       ├── commands.rs # 命令解析
+│       ├── api.rs      # osu! API v2 调用
+│       ├── response.rs # 响应格式化
+│       ├── storage.rs  # SQLite 存储
+│       └── types.rs    # 数据类型定义
+└── osubot.example.toml # 配置模板
+```
+
+### 调度器
+
+后台调度器根据用户活跃度动态调整更新频率：
+
+| 活跃度 | 更新间隔 |
+|--------|----------|
+| 活跃（有新记录） | 2 小时 |
+| 半活跃（有记录无新增） | 4 小时 |
+| 普通（有变化） | 8 小时 |
+| 不活跃 | 48 小时 |
+
+群内手动查询受 cooldown 限制，防止频繁请求。
+
+### 排名变化
+
+查询自己时会对比约 4 小时前的快照，显示 pp、排名、准确率、游玩次数等各项变化。
+
+## 许可
+
+本项目采用 GNU Affero General Public License v3.0 (AGPL-3.0) 许可。
