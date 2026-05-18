@@ -24,6 +24,7 @@ struct QQMessage {
     group_id: i64,
     user_id: i64,
     message: String,
+    mentioned_user_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,32 +60,63 @@ fn parse_onebot_message(json: &str) -> Option<QQMessage> {
     let group_id = msg.group_id?;
     let user_id = msg.user_id?;
 
-    let message_text = extract_message_text(&msg.message?);
+    let (message_text, mentioned_user_id) = extract_message_and_mention(&msg.message?);
 
     Some(QQMessage {
         group_id,
         user_id,
         message: message_text,
+        mentioned_user_id,
     })
 }
 
-/// Extract plain text from OneBot message array
-fn extract_message_text(message: &serde_json::Value) -> String {
-    if let Some(arr) = message.as_array() {
-        let mut text = String::new();
-        for segment in arr {
-            if let Some(text_seg) = segment.get("data").and_then(|d| d.get("text")) {
-                if let Some(t) = text_seg.as_str() {
+/// Extract plain text and first valid @mention QQ ID from OneBot message array.
+/// Returns None for mentioned_user_id when:
+/// - No "at" segments
+/// - More than one "at" segment
+/// - The "at" segment's qq value is not a valid i64 (e.g. "all" for @全体成员)
+fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i64>) {
+    let arr = match message.as_array() {
+        Some(a) => a,
+        None => {
+            let text = message.as_str().unwrap_or("").to_string();
+            return (text, None);
+        }
+    };
+
+    let mut text = String::new();
+    let mut at_qqs: Vec<i64> = Vec::new();
+
+    for segment in arr {
+        match segment.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(t) = segment.get("data").and_then(|d| d.get("text")).and_then(|v| v.as_str()) {
                     text.push_str(t);
                 }
             }
+            Some("at") => {
+                if let Some(qq_val) = segment.get("data").and_then(|d| d.get("qq")) {
+                    if let Some(qq) = qq_val.as_i64() {
+                        at_qqs.push(qq);
+                    } else if let Some(qq_str) = qq_val.as_str() {
+                        if let Ok(qq) = qq_str.parse::<i64>() {
+                            at_qqs.push(qq);
+                        }
+                        // qq="all" falls through — not a valid i64, ignored
+                    }
+                }
+            }
+            _ => {}
         }
-        text
-    } else if let Some(s) = message.as_str() {
-        s.to_string()
-    } else {
-        String::new()
     }
+
+    let mentioned_user_id = if at_qqs.len() == 1 {
+        Some(at_qqs[0])
+    } else {
+        None
+    };
+
+    (text, mentioned_user_id)
 }
 
 /// Handle command and send response
