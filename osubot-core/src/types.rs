@@ -56,6 +56,7 @@ pub struct UserStats {
 pub enum Command {
     QuerySelf { mode: GameMode },
     QueryUser { username: String, mode: GameMode },
+    QueryMentionedUser { qq: i64, mode: GameMode },
     Bind { username: String },
     Unbind,
     Help,
