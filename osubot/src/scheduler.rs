@@ -4,7 +4,7 @@ use tokio::time;
 
 use osubot_core::{
     api, types::{GameMode, UserActivity, UserChange},
-    Storage,
+    RateLimiter, Storage,
 };
 use osubot_core::api::ApiError;
 
@@ -15,15 +15,23 @@ pub struct Scheduler {
     storage: Arc<Storage>,
     api_key: String,
     client_id: String,
+    rate_limiter: Arc<RateLimiter>,
     config: SchedulerConfig,
 }
 
 impl Scheduler {
-    pub fn new(storage: Arc<Storage>, api_key: String, client_id: String, config: SchedulerConfig) -> Self {
+    pub fn new(
+        storage: Arc<Storage>,
+        api_key: String,
+        client_id: String,
+        rate_limiter: Arc<RateLimiter>,
+        config: SchedulerConfig,
+    ) -> Self {
         Self {
             storage,
             api_key,
             client_id,
+            rate_limiter,
             config,
         }
     }
@@ -51,8 +59,16 @@ impl Scheduler {
 
     /// Evaluate a single user's activity for a single mode (returns UpdateResult)
     async fn eval_activity(&self, username: &str, mode: GameMode) -> osubot_core::types::UpdateResult {
+        if !self.rate_limiter.try_acquire().await {
+            return osubot_core::types::UpdateResult {
+                activity: UserActivity::Inactive,
+                added_snapshot: false,
+                added_records: 0,
+            };
+        }
+
         // 1. Fetch current user stats
-        let current = match api::fetch_user_stats(&self.api_key, &self.client_id, username, mode).await {
+        let current = match api::fetch_user_stats(&self.rate_limiter, &self.api_key, &self.client_id, username, mode).await {
             Ok(stats) => stats,
             Err(ApiError::NotFound) => {
                 return osubot_core::types::UpdateResult {
@@ -97,7 +113,7 @@ impl Scheduler {
         }
 
         // 5. Get recent plays and write to database
-        let recent_plays = match api::get_user_recent(&self.api_key, &self.client_id, username, mode).await {
+        let recent_plays = match api::get_user_recent(&self.rate_limiter, &self.api_key, &self.client_id, username, mode).await {
             Ok(plays) => plays,
             Err(_) => Vec::new(),
         };
@@ -206,7 +222,7 @@ impl Scheduler {
     /// Get user's change for a mode 4h ago snapshot and calculate change
     pub async fn get_user_change(&self, username: &str, mode: GameMode) -> Option<UserChange> {
         // Get current stats first to pass to calculate_change
-        let current = match api::fetch_user_stats(&self.api_key, &self.client_id, username, mode).await {
+        let current = match api::fetch_user_stats(&self.rate_limiter, &self.api_key, &self.client_id, username, mode).await {
             Ok(stats) => stats,
             Err(_) => return None,
         };

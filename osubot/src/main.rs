@@ -9,6 +9,7 @@ use osubot_core::{
     response::{format_stats, format_stats_with_change},
     types::Command,
     api::{self, ApiError},
+    RateLimiter,
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -92,6 +93,7 @@ async fn handle_command(
     scheduler: Scheduler,
     api_key: Arc<String>,
     client_id: Arc<String>,
+    rate_limiter: Arc<RateLimiter>,
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
 ) {
@@ -107,7 +109,7 @@ async fn handle_command(
                 Ok(Some(username)) => {
                     // Trigger update for all modes (bypassing cooldown)
                     scheduler.trigger_update(&username);
-                    match api::fetch_user_stats(&api_key, &client_id, &username, mode).await {
+                    match api::fetch_user_stats(&rate_limiter, &api_key, &client_id, &username, mode).await {
                         Ok(stats) => {
                             // Get change from storage (compares with 4h ago snapshot)
                             let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
@@ -121,6 +123,7 @@ async fn handle_command(
                                 ApiError::NotFound => "未找到该用户".to_string(),
                                 ApiError::MissingApiKey => "API Key 未配置".to_string(),
                                 ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                                ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
                                 _ => "查询失败，请稍后重试".to_string(),
                             };
                             let _ = resp_tx.send(err_msg).await;
@@ -139,7 +142,7 @@ async fn handle_command(
         }
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
-            match api::fetch_user_stats(&api_key, &client_id, &username, mode).await {
+            match api::fetch_user_stats(&rate_limiter, &api_key, &client_id, &username, mode).await {
                 Ok(stats) => {
                     info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "QueryUser success");
                     let response = format_stats(&stats, mode);
@@ -151,6 +154,7 @@ async fn handle_command(
                         ApiError::NotFound => "未找到该用户".to_string(),
                         ApiError::MissingApiKey => "API Key 未配置".to_string(),
                         ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
                         _ => "查询失败，请稍后重试".to_string(),
                     };
                     let _ = resp_tx.send(err_msg).await;
@@ -167,7 +171,7 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     // Check if osu user exists
-                    match api::get_user_info(&api_key, &client_id, &username).await {
+                    match api::get_user_info(&rate_limiter, &api_key, &client_id, &username).await {
                         Ok(Some(_)) => {
                             // User exists, try to bind (checks if username already bound to another QQ)
                             match storage.bind(msg.user_id, &username) {
@@ -195,6 +199,7 @@ async fn handle_command(
                                 ApiError::NotFound => "未找到该用户".to_string(),
                                 ApiError::MissingApiKey => "API Key 未配置".to_string(),
                                 ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                                ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
                                 _ => "查询失败，请稍后重试".to_string(),
                             };
                             let _ = resp_tx.send(err_msg).await;
@@ -362,11 +367,14 @@ async fn main() {
     let api_key = Arc::new(config.osu.api_key);
     let client_id = Arc::new(config.osu.client_id);
 
+    let rate_limiter = Arc::new(RateLimiter::new());
+
     // Create and spawn scheduler
     let scheduler = Scheduler::new(
         storage.clone(),
         (*api_key).clone(),
         (*client_id).clone(),
+        rate_limiter.clone(),
         config.scheduler.clone(),
     );
 
@@ -407,8 +415,9 @@ async fn main() {
                     let api_key = api_key.clone();
                     let client_id = client_id.clone();
                     let scheduler = scheduler.clone();
+                    let rate_limiter = rate_limiter.clone();
                     tokio::spawn(async move {
-                        handle_command(storage, scheduler, api_key, client_id, qq_msg, resp_tx).await;
+                        handle_command(storage, scheduler, api_key, client_id, rate_limiter, qq_msg, resp_tx).await;
                     });
                 }
             }
