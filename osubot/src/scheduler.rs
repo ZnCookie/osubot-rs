@@ -84,10 +84,7 @@ impl Scheduler {
         };
 
         // 2. Get latest snapshot
-        let latest = match self.storage.get_latest_snapshot(username, mode) {
-            Ok(snap) => snap,
-            Err(_) => None,
-        };
+        let latest = self.storage.get_latest_snapshot(username, mode).unwrap_or_default();
 
         // 3. [Early判定 Inactive] PlayCount same且 PP == 0
         if let Some(ref snap) = latest {
@@ -101,13 +98,12 @@ impl Scheduler {
         }
 
         // 4. Save new snapshot if stats changed (save first, then calculate change)
-        let stats_changed = latest.as_ref().map_or(true, |l| l.rank != current.rank || l.pp != current.pp);
+        let stats_changed = latest.as_ref().is_none_or(|l| l.rank != current.rank || l.pp != current.pp);
         let mut added_snapshot = false;
-        if stats_changed {
-            if self.storage.save_stats(username, mode, &current).is_ok() {
+        if stats_changed
+            && self.storage.save_stats(username, mode, &current).is_ok() {
                 added_snapshot = true;
             }
-        }
 
         // 5. Get recent plays and write to database
         let recent_plays = match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
@@ -121,10 +117,7 @@ impl Scheduler {
             .map(|p| (Utc::now(), p.beatmap.lastplayed))
             .collect();
 
-        let added_records = match self.storage.save_play_records(username, mode, &records) {
-            Ok(count) => count,
-            Err(_) => 0,
-        };
+        let added_records = self.storage.save_play_records(username, mode, &records).unwrap_or_default();
 
         if added_records > 0 {
             // Has new records -> Active
@@ -147,16 +140,10 @@ impl Scheduler {
         }
 
         // 7. Calculate change (based on newly saved or old snapshot)
-        let change = match self.storage.calculate_change(username, mode, &current) {
-            Ok(c) => c,
-            Err(_) => None,
-        };
+        let change = self.storage.calculate_change(username, mode, &current).unwrap_or_default();
 
         // 8. Check last update time
-        let last_update = match self.storage.get_last_update(username, mode) {
-            Ok(t) => t,
-            Err(_) => None,
-        };
+        let last_update = self.storage.get_last_update(username, mode).unwrap_or_default();
         let hours_since_update = last_update.map(|t| (now - t).num_hours()).unwrap_or(i64::MAX);
 
         if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {

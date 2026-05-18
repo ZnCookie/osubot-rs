@@ -63,6 +63,7 @@ pub enum ApiError {
 
 /// osu! OAuth token response
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct OauthResponse {
     access_token: String,
     token_type: String,

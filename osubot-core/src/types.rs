@@ -7,7 +7,7 @@ pub enum GameMode {
 }
 
 impl GameMode {
-    pub fn from_str(s: &str) -> Option<GameMode> {
+    pub fn from_mode_str(s: &str) -> Option<GameMode> {
         match s.trim() {
             "0" | "" => Some(GameMode::Osu),
             "1" => Some(GameMode::Taiko),
@@ -75,13 +75,13 @@ pub struct UserChange {
 
 impl UserChange {
     pub fn has_changes(&self) -> bool {
-        self.rank_change.map_or(false, |c| c != 0)
-            || self.country_rank_change.map_or(false, |c| c != 0)
-            || self.pp_change.map_or(false, |c| c != 0.0)
-            || self.accuracy_change.map_or(false, |c| c != 0.0)
-            || self.playcount_change.map_or(false, |c| c != 0)
-            || self.hits_change.map_or(false, |c| c != 0)
-            || self.playtime_change.map_or(false, |c| c != 0)
+        self.rank_change.is_some_and(|c| c != 0)
+            || self.country_rank_change.is_some_and(|c| c != 0)
+            || self.pp_change.is_some_and(|c| c != 0.0)
+            || self.accuracy_change.is_some_and(|c| c != 0.0)
+            || self.playcount_change.is_some_and(|c| c != 0)
+            || self.hits_change.is_some_and(|c| c != 0)
+            || self.playtime_change.is_some_and(|c| c != 0)
     }
 }
 

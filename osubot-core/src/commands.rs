@@ -21,7 +21,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         if rest.is_empty() {
             return Some(Command::QuerySelf { mode: GameMode::Osu });
         }
-        let mode = GameMode::from_str(rest)?;
+        let mode = GameMode::from_mode_str(rest)?;
         return Some(Command::QuerySelf { mode });
     }
 
@@ -30,7 +30,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         let parts: Vec<&str> = rest.split(',').collect();
         let username = parts[0].trim().to_string();
         let mode = if parts.len() > 1 {
-            GameMode::from_str(parts[1].trim())?
+            GameMode::from_mode_str(parts[1].trim())?
         } else {
             GameMode::Osu
         };
@@ -45,7 +45,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             let mode = if rest.is_empty() {
                 GameMode::Osu
             } else {
-                GameMode::from_str(rest)?
+                GameMode::from_mode_str(rest)?
             };
             return Some(Command::QueryMentionedUser { qq, mode });
         }

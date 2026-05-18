@@ -446,7 +446,7 @@ async fn main() {
     );
 
     let scheduler_clone = scheduler.clone();
-    let scheduler_handle = tokio::spawn(async move {
+    let _scheduler_handle = tokio::spawn(async move {
         scheduler_clone.run().await;
     });
 

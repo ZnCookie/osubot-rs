@@ -18,7 +18,7 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     let country_rank_change = format_change(stats.country_rank_change);
 
     let rank_str = if rank_change.is_empty() {
-        format!("{rank}")
+        rank.to_string()
     } else {
         format!("{rank} ({rank_change})")
     };
@@ -62,7 +62,7 @@ fn format_number<T: itoa::Integer>(value: T) -> String {
 
     let mut result = String::new();
     for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(*c);
@@ -72,6 +72,7 @@ fn format_number<T: itoa::Integer>(value: T) -> String {
 }
 
 /// 格式化浮点数，加千位分隔符和小数位
+#[allow(dead_code)]
 fn format_float(value: f64, decimals: usize) -> String {
     let int_part = value as i64;
 
@@ -84,7 +85,7 @@ fn format_float(value: f64, decimals: usize) -> String {
 
     let mut int_result = String::new();
     for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             int_result.push(',');
         }
         int_result.push(*c);
@@ -445,7 +446,7 @@ pub fn format_stats_with_change(
             let change_str = format_change(c.rank_change);
             format!("{rank} ({change_str})")
         }
-        _ => format!("{rank}"),
+        _ => rank.to_string(),
     };
 
     // country_rank 显示为 {Country Name} #数字 格式，有变化时显示 (change)，无变化时不显示括号
