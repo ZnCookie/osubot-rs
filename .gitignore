@@ -6,3 +6,4 @@ osubot.toml
 *.key
 *.pem
 .claude/
+docs/
