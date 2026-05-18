@@ -1,3 +1,4 @@
+use crate::rate_limiter::RateLimiter;
 use crate::types::{GameMode, UserStats};
 use reqwest::Client;
 use thiserror::Error;
@@ -54,6 +55,8 @@ pub enum ApiError {
     MissingApiKey,
     #[error("OAuth token error")]
     OAuthError,
+    #[error("Rate limited - too many requests")]
+    RateLimited,
 }
 
 /// osu! OAuth token response
@@ -93,7 +96,12 @@ struct OsuStatistics {
 }
 
 /// Get OAuth access token using client credentials
-async fn get_oauth_token(client_id: &str, client_secret: &str) -> Result<String, ApiError> {
+async fn get_oauth_token(
+    rate_limiter: &RateLimiter,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<String, ApiError> {
+    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
     let client = Client::new();
 
     let params = [
@@ -119,17 +127,20 @@ async fn get_oauth_token(client_id: &str, client_secret: &str) -> Result<String,
 
 /// 从 osu! API v2 获取用户数据
 pub async fn fetch_user_stats(
+    rate_limiter: &RateLimiter,
     api_key: &str,
     client_id: &str,
     username: &str,
     mode: GameMode,
 ) -> Result<UserStats, ApiError> {
+    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+
     if api_key.is_empty() || client_id.is_empty() {
         return Err(ApiError::MissingApiKey);
     }
 
     // First, get OAuth access token
-    let access_token = get_oauth_token(client_id, api_key).await?;
+    let access_token = get_oauth_token(rate_limiter, client_id, api_key).await?;
 
     let client = Client::new();
     let mode_param = mode.api_value();
@@ -187,16 +198,19 @@ pub async fn fetch_user_stats(
 
 /// Get user's recent plays from osu! API v2
 pub async fn get_user_recent(
+    rate_limiter: &RateLimiter,
     api_key: &str,
     client_id: &str,
     username: &str,
     mode: GameMode,
 ) -> Result<Vec<RecentPlay>, ApiError> {
+    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+
     if api_key.is_empty() || client_id.is_empty() {
         return Err(ApiError::MissingApiKey);
     }
 
-    let access_token = get_oauth_token(client_id, api_key).await?;
+    let access_token = get_oauth_token(rate_limiter, client_id, api_key).await?;
     let client = Client::new();
 
     // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
@@ -232,15 +246,18 @@ pub async fn get_user_recent(
 
 /// Get basic user info from osu! API v2 (for activity detection)
 pub async fn get_user_info(
+    rate_limiter: &RateLimiter,
     api_key: &str,
     client_id: &str,
     username: &str,
 ) -> Result<Option<OsuUserInfo>, ApiError> {
+    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+
     if api_key.is_empty() || client_id.is_empty() {
         return Err(ApiError::MissingApiKey);
     }
 
-    let access_token = get_oauth_token(client_id, api_key).await?;
+    let access_token = get_oauth_token(rate_limiter, client_id, api_key).await?;
     let client = Client::new();
 
     // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
