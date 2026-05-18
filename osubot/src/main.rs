@@ -128,7 +128,7 @@ async fn handle_command(
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
 ) {
-    let cmd = match parse_command(&msg.message) {
+    let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
         Some(cmd) => cmd,
         None => return,
     };
@@ -189,6 +189,41 @@ async fn handle_command(
                         _ => "查询失败，请稍后重试".to_string(),
                     };
                     let _ = resp_tx.send(err_msg).await;
+                }
+            }
+        }
+        Command::QueryMentionedUser { qq, mode } => {
+            info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
+            match storage.get_binding(qq) {
+                Ok(Some(username)) => {
+                    scheduler.trigger_update(&username);
+                    match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
+                        Ok(stats) => {
+                            let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
+                            info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
+                            let response = format_stats_with_change(&stats, &change, mode);
+                            let _ = resp_tx.send(response).await;
+                        }
+                        Err(e) => {
+                            warn!(username = %username, mode = ?mode, error = ?e, "QueryMentionedUser failed");
+                            let err_msg = match e {
+                                ApiError::NotFound => "未找到该用户".to_string(),
+                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                                ApiError::RateLimited => "查询繁忙，请稍后重试".to_string(),
+                                _ => "查询失败，请稍后重试".to_string(),
+                            };
+                            let _ = resp_tx.send(err_msg).await;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    info!(qq = qq, "QueryMentionedUser but no binding");
+                    let _ = resp_tx.send("该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string()).await;
+                }
+                Err(_) => {
+                    error!(qq = qq, "QueryMentionedUser database error");
+                    let _ = resp_tx.send("数据库错误".to_string()).await;
                 }
             }
         }
