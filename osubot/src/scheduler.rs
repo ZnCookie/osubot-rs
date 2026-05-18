@@ -4,7 +4,7 @@ use tokio::time;
 
 use osubot_core::{
     api, types::{GameMode, UserActivity, UserChange},
-    RateLimiter, Storage,
+    OauthTokenCache, RateLimiter, Storage,
 };
 use osubot_core::api::ApiError;
 
@@ -13,8 +13,7 @@ use crate::config::SchedulerConfig;
 #[derive(Clone)]
 pub struct Scheduler {
     storage: Arc<Storage>,
-    api_key: String,
-    client_id: String,
+    oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
     config: SchedulerConfig,
 }
@@ -22,15 +21,13 @@ pub struct Scheduler {
 impl Scheduler {
     pub fn new(
         storage: Arc<Storage>,
-        api_key: String,
-        client_id: String,
+        oauth: Arc<OauthTokenCache>,
         rate_limiter: Arc<RateLimiter>,
         config: SchedulerConfig,
     ) -> Self {
         Self {
             storage,
-            api_key,
-            client_id,
+            oauth,
             rate_limiter,
             config,
         }
@@ -68,7 +65,7 @@ impl Scheduler {
         }
 
         // 1. Fetch current user stats
-        let current = match api::fetch_user_stats(&self.rate_limiter, &self.api_key, &self.client_id, username, mode).await {
+        let current = match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
             Ok(stats) => stats,
             Err(ApiError::NotFound) => {
                 return osubot_core::types::UpdateResult {
@@ -113,7 +110,7 @@ impl Scheduler {
         }
 
         // 5. Get recent plays and write to database
-        let recent_plays = match api::get_user_recent(&self.rate_limiter, &self.api_key, &self.client_id, username, mode).await {
+        let recent_plays = match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
             Ok(plays) => plays,
             Err(_) => Vec::new(),
         };
@@ -222,7 +219,7 @@ impl Scheduler {
     /// Get user's change for a mode 4h ago snapshot and calculate change
     pub async fn get_user_change(&self, username: &str, mode: GameMode) -> Option<UserChange> {
         // Get current stats first to pass to calculate_change
-        let current = match api::fetch_user_stats(&self.rate_limiter, &self.api_key, &self.client_id, username, mode).await {
+        let current = match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
             Ok(stats) => stats,
             Err(_) => return None,
         };

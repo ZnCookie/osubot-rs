@@ -9,7 +9,7 @@ use osubot_core::{
     response::{format_stats, format_stats_with_change},
     types::Command,
     api::{self, ApiError},
-    RateLimiter,
+    OauthTokenCache, RateLimiter,
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -91,8 +91,7 @@ fn extract_message_text(message: &serde_json::Value) -> String {
 async fn handle_command(
     storage: Arc<Storage>,
     scheduler: Scheduler,
-    api_key: Arc<String>,
-    client_id: Arc<String>,
+    oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
@@ -109,7 +108,7 @@ async fn handle_command(
                 Ok(Some(username)) => {
                     // Trigger update for all modes (bypassing cooldown)
                     scheduler.trigger_update(&username);
-                    match api::fetch_user_stats(&rate_limiter, &api_key, &client_id, &username, mode).await {
+                    match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
                         Ok(stats) => {
                             // Get change from storage (compares with 4h ago snapshot)
                             let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
@@ -142,7 +141,7 @@ async fn handle_command(
         }
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
-            match api::fetch_user_stats(&rate_limiter, &api_key, &client_id, &username, mode).await {
+            match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
                 Ok(stats) => {
                     info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "QueryUser success");
                     let response = format_stats(&stats, mode);
@@ -171,7 +170,7 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     // Check if osu user exists
-                    match api::get_user_info(&rate_limiter, &api_key, &client_id, &username).await {
+                    match api::get_user_info(&rate_limiter, &oauth, &username).await {
                         Ok(Some(_)) => {
                             // User exists, try to bind (checks if username already bound to another QQ)
                             match storage.bind(msg.user_id, &username) {
@@ -364,16 +363,17 @@ async fn main() {
     let storage = Arc::new(Storage::new(&config.database.path)
         .expect("Failed to open database"));
 
-    let api_key = Arc::new(config.osu.api_key);
-    let client_id = Arc::new(config.osu.client_id);
+    let oauth = Arc::new(OauthTokenCache::new(
+        config.osu.client_id.clone(),
+        config.osu.api_key.clone(),
+    ));
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
     // Create and spawn scheduler
     let scheduler = Scheduler::new(
         storage.clone(),
-        (*api_key).clone(),
-        (*client_id).clone(),
+        oauth.clone(),
         rate_limiter.clone(),
         config.scheduler.clone(),
     );
@@ -383,7 +383,7 @@ async fn main() {
         scheduler_clone.run().await;
     });
 
-    if api_key.is_empty() || api_key.as_str() == "your-api-key-here" {
+    if config.osu.api_key.is_empty() || config.osu.api_key == "your-api-key-here" {
         warn!("API Key not configured. Please set osu.api_key in osubot.toml");
     }
 
@@ -412,12 +412,11 @@ async fn main() {
                     });
 
                     let storage = storage.clone();
-                    let api_key = api_key.clone();
-                    let client_id = client_id.clone();
+                    let oauth = oauth.clone();
                     let scheduler = scheduler.clone();
                     let rate_limiter = rate_limiter.clone();
                     tokio::spawn(async move {
-                        handle_command(storage, scheduler, api_key, client_id, rate_limiter, qq_msg, resp_tx).await;
+                        handle_command(storage, scheduler, oauth, rate_limiter, qq_msg, resp_tx).await;
                     });
                 }
             }
