@@ -5,3 +5,4 @@ osubot.toml
 .env
 *.key
 *.pem
+.claude/
