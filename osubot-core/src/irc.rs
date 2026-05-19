@@ -82,8 +82,11 @@ impl IrcClient {
             .await?;
         writer
             .write_all(
-                format!("USER {} 0 * :{}\r\n", self.config.nickname, self.config.nickname)
-                    .as_bytes(),
+                format!(
+                    "USER {} 0 * :{}\r\n",
+                    self.config.nickname, self.config.nickname
+                )
+                .as_bytes(),
             )
             .await?;
         writer.flush().await?;

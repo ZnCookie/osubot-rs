@@ -256,7 +256,12 @@ async fn handle_command(
                         // IRC auth mode: check rate limit (one pending bind at a time)
                         match storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
-                                let _ = resp_tx.send("你已有进行中的绑定请求，请等待当前验证码过期后再试".to_string()).await;
+                                let _ = resp_tx
+                                    .send(
+                                        "你已有进行中的绑定请求，请等待当前验证码过期后再试"
+                                            .to_string(),
+                                    )
+                                    .await;
                                 return;
                             }
                             Err(_) => {
@@ -270,9 +275,12 @@ async fn handle_command(
                         match storage.add_pending_bind(msg.user_id, msg.group_id, &username) {
                             Ok(code) => {
                                 info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
-                                let _ = resp_tx.send(
-                                    format!("您的验证码是 {}，请在2分钟内通过 osu! IRC 私聊发送给我", code)
-                                ).await;
+                                let _ = resp_tx
+                                    .send(format!(
+                                        "您的验证码是 {}，请在2分钟内通过 osu! IRC 私聊发送给我",
+                                        code
+                                    ))
+                                    .await;
                             }
                             Err(_) => {
                                 error!(user_id = msg.user_id, "Failed to create pending bind");
@@ -282,23 +290,21 @@ async fn handle_command(
                     } else {
                         // Direct bind (original logic)
                         match api::get_user_info(&rate_limiter, &oauth, &username).await {
-                            Ok(Some(_)) => {
-                                match storage.bind(msg.user_id, &username) {
-                                    Ok(Ok(())) => {
-                                        info!(user_id = msg.user_id, username = %username, "Bind success");
-                                        let _ = resp_tx.send(format!("成功绑定为{}", username)).await;
-                                    }
-                                    Ok(Err(bound_qq)) => {
-                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
-                                        let _ =
-                                            resp_tx.send("该 osu! 用户已绑定其他QQ".to_string()).await;
-                                    }
-                                    Err(_) => {
-                                        error!(user_id = msg.user_id, username = %username, "Bind failed");
-                                        let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
-                                    }
+                            Ok(Some(_)) => match storage.bind(msg.user_id, &username) {
+                                Ok(Ok(())) => {
+                                    info!(user_id = msg.user_id, username = %username, "Bind success");
+                                    let _ = resp_tx.send(format!("成功绑定为{}", username)).await;
                                 }
-                            }
+                                Ok(Err(bound_qq)) => {
+                                    info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
+                                    let _ =
+                                        resp_tx.send("该 osu! 用户已绑定其他QQ".to_string()).await;
+                                }
+                                Err(_) => {
+                                    error!(user_id = msg.user_id, username = %username, "Bind failed");
+                                    let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                }
+                            },
                             Ok(None) => {
                                 info!(username = %username, "Bind but user not found");
                                 let _ = resp_tx.send("未找到该 osu! 用户".to_string()).await;
@@ -597,8 +603,16 @@ async fn main() {
                     let scheduler = scheduler.clone();
                     let rate_limiter = rate_limiter.clone();
                     tokio::spawn(async move {
-                        handle_command(storage, scheduler, oauth, rate_limiter, qq_msg, resp_tx, irc_enabled)
-                            .await;
+                        handle_command(
+                            storage,
+                            scheduler,
+                            oauth,
+                            rate_limiter,
+                            qq_msg,
+                            resp_tx,
+                            irc_enabled,
+                        )
+                        .await;
                     });
                 }
             }
