@@ -28,16 +28,28 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct SchedulerConfig {
+    #[serde(default = "default_interval_minutes")]
     pub interval_minutes: u64,
+    #[serde(default = "default_active_interval_hours")]
     pub active_interval_hours: i64,
+    #[serde(default = "default_semi_active_interval_hours")]
     pub semi_active_interval_hours: i64,
+    #[serde(default = "default_normal_interval_hours")]
     pub normal_interval_hours: i64,
+    #[serde(default = "default_inactive_interval_hours")]
     pub inactive_interval_hours: i64,
+    #[serde(default = "default_group_trigger_cooldown_hours")]
     pub group_trigger_cooldown_hours: i64,
     #[serde(default = "default_retention_days")]
     pub retention_days: i64,
 }
 
+fn default_interval_minutes() -> u64 { 1 }
+fn default_active_interval_hours() -> i64 { 2 }
+fn default_semi_active_interval_hours() -> i64 { 4 }
+fn default_normal_interval_hours() -> i64 { 8 }
+fn default_inactive_interval_hours() -> i64 { 48 }
+fn default_group_trigger_cooldown_hours() -> i64 { 1 }
 fn default_retention_days() -> i64 { 180 }
 
 impl Default for SchedulerConfig {

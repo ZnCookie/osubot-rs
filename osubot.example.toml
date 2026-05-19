@@ -17,3 +17,4 @@ semi_active_interval_hours = 4
 normal_interval_hours = 8
 inactive_interval_hours = 48
 group_trigger_cooldown_hours = 1
+retention_days = 180
