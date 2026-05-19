@@ -253,7 +253,20 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     if irc_enabled {
-                        // IRC auth mode: generate code and wait for verification
+                        // IRC auth mode: check rate limit (one pending bind at a time)
+                        match storage.has_pending_bind(msg.user_id) {
+                            Ok(true) => {
+                                let _ = resp_tx.send("你已有进行中的绑定请求，请等待当前验证码过期后再试".to_string()).await;
+                                return;
+                            }
+                            Err(_) => {
+                                error!(user_id = msg.user_id, "Failed to check pending bind");
+                                let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                return;
+                            }
+                            _ => {}
+                        }
+                        // Generate code and wait for verification
                         match storage.add_pending_bind(msg.user_id, msg.group_id, &username) {
                             Ok(code) => {
                                 info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");

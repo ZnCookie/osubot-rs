@@ -672,4 +672,15 @@ impl Storage {
         )? as u64;
         Ok(deleted)
     }
+
+    /// Check if a QQ user already has an active (non-expired) pending bind
+    pub fn has_pending_bind(&self, qq_user_id: i64) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now_ts = Utc::now().timestamp();
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM pending_binds WHERE qq_user_id = ?1 AND expires_at >= ?2",
+        )?;
+        let count: i64 = stmt.query_row(params![qq_user_id, now_ts], |row| row.get(0))?;
+        Ok(count > 0)
+    }
 }
