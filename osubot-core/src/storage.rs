@@ -85,6 +85,19 @@ impl Storage {
             [],
         )?;
 
+        // Pending binds for IRC auth (for two-step bind verification)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_binds (
+                code TEXT PRIMARY KEY,
+                qq_user_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                target_username TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         // Indexes
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(username, mode)",
@@ -575,5 +588,88 @@ impl Storage {
         )? as u64;
 
         Ok((deleted_stats, deleted_plays))
+    }
+}
+
+// ==================== Pending Bind Operations ====================
+
+pub struct PendingBind {
+    pub code: String,
+    pub qq_user_id: i64,
+    pub group_id: i64,
+    pub target_username: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: i64,
+}
+
+impl Storage {
+    /// Add a pending bind and return the generated code
+    pub fn add_pending_bind(
+        &self,
+        qq_user_id: i64,
+        group_id: i64,
+        target_username: &str,
+    ) -> SqlResult<String> {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let code: String = (0..6).map(|_| rng.gen_range(0..10).to_string()).collect();
+
+        let now = Utc::now();
+        let expires_at = now.timestamp() + 120; // 2 minutes
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO pending_binds (code, qq_user_id, group_id, target_username, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![code, qq_user_id, group_id, target_username, now.to_rfc3339(), expires_at],
+        )?;
+        Ok(code)
+    }
+
+    /// Get pending bind by code if not expired
+    pub fn get_pending_bind(&self, code: &str) -> SqlResult<Option<PendingBind>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT code, qq_user_id, group_id, target_username, created_at, expires_at FROM pending_binds WHERE code = ?1"
+        )?;
+        let mut rows = stmt.query(params![code])?;
+        if let Some(row) = rows.next()? {
+            let expires_at: i64 = row.get(5)?;
+            // Check if expired
+            if Utc::now().timestamp() > expires_at {
+                return Ok(None);
+            }
+            let created_at_str: String = row.get(4)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(Some(PendingBind {
+                code: row.get(0)?,
+                qq_user_id: row.get(1)?,
+                group_id: row.get(2)?,
+                target_username: row.get(3)?,
+                created_at,
+                expires_at,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Remove pending bind by code
+    pub fn remove_pending_bind(&self, code: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM pending_binds WHERE code = ?1", params![code])?;
+        Ok(())
+    }
+
+    /// Prune expired pending binds
+    pub fn prune_expired_pending_binds(&self) -> SqlResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let now_ts = Utc::now().timestamp();
+        let deleted = conn.execute(
+            "DELETE FROM pending_binds WHERE expires_at < ?1",
+            params![now_ts],
+        )? as u64;
+        Ok(deleted)
     }
 }
