@@ -34,8 +34,11 @@ pub struct SchedulerConfig {
     pub normal_interval_hours: i64,
     pub inactive_interval_hours: i64,
     pub group_trigger_cooldown_hours: i64,
+    #[serde(default = "default_retention_days")]
     pub retention_days: i64,
 }
+
+fn default_retention_days() -> i64 { 180 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
