@@ -168,17 +168,16 @@ pub async fn fetch_user_stats(
     username: &str,
     mode: GameMode,
 ) -> Result<UserStats, ApiError> {
-    rate_limiter
-        .acquire()
-        .await
-        .map_err(|_| ApiError::RateLimited)?;
-
     let mut retry_count = 0;
     let max_retries = 5;
     let base_delay = Duration::from_secs(1);
 
     loop {
         let access_token = oauth.get_token(rate_limiter).await?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
 
         let client = Client::new();
         let mode_param = mode.api_value();
@@ -203,9 +202,9 @@ pub async fn fetch_user_stats(
         if resp.status() == 401 {
             oauth.invalidate();
             if retry_count < max_retries {
-                retry_count += 1;
                 let delay =
                     Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
+                retry_count += 1;
                 tokio::time::sleep(delay).await;
                 continue;
             }
