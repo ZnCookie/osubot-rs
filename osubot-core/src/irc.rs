@@ -47,9 +47,29 @@ impl IrcClient {
         }
 
         let addr = format!("{}:{}", self.config.server, self.config.port);
-        info!(server = %addr, nickname = %self.config.nickname, "Connecting to IRC");
+        let retry_delay = tokio::time::Duration::from_secs(5);
 
-        let stream = TcpStream::connect(&addr).await?;
+        loop {
+            info!(server = %addr, nickname = %self.config.nickname, "Connecting to IRC");
+
+            match self.connect_and_listen(&addr).await {
+                Ok(()) => {
+                    warn!("IRC listener exited cleanly, reconnecting...");
+                }
+                Err(e) => {
+                    warn!(error = %e, "IRC connection error, reconnecting...");
+                }
+            }
+
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+
+    async fn connect_and_listen(
+        &self,
+        addr: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let stream = TcpStream::connect(addr).await?;
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
@@ -75,7 +95,7 @@ impl IrcClient {
             line.clear();
             if reader.read_line(&mut line).await? == 0 {
                 warn!("IRC connection closed");
-                break;
+                return Ok(());
             }
 
             let line = line.trim();
@@ -103,8 +123,6 @@ impl IrcClient {
                 }
             }
         }
-
-        Ok(())
     }
 
     fn parse_privmsg(line: &str) -> Option<IrcPrivateMessage> {
