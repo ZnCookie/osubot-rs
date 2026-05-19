@@ -7,7 +7,9 @@ pub struct Config {
     pub osu: OsuConfig,
     pub bot: BotConfig,
     pub database: DatabaseConfig,
+    #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
     pub irc: IrcConfig,
 }
 
