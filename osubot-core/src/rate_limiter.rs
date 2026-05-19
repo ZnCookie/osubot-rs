@@ -1,6 +1,9 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{self, Duration, timeout};
+use tokio::time::{self, timeout, Duration};
 
 #[derive(Debug)]
 pub struct RateLimitError;
@@ -45,11 +48,7 @@ impl RateLimiter {
             }
         });
 
-        Self {
-            state,
-            notify,
-            _refill,
-        }
+        Self { state, notify, _refill }
     }
 
     pub async fn acquire(&self) -> Result<(), RateLimitError> {

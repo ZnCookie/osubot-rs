@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameMode {
     Osu = 0,
@@ -88,11 +91,11 @@ impl UserChange {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserActivity {
-    Active,       // 新增游玩记录（最后4h有新记录）
-    SemiActive,   // 有recent但无新增（最后4h有记录但无新增）
-    Normal,       // 有快照无变化（最后8h内更新过但无变化）
-    Inactive,     // 无变化（最后48h内无更新）
-    NoRecent,     // 没变化（最后4-8h有快照但无变化）
+    Active,     // 新增游玩记录（最后4h有新记录）
+    SemiActive, // 有recent但无新增（最后4h有记录但无新增）
+    Normal,     // 有快照无变化（最后8h内更新过但无变化）
+    Inactive,   // 无变化（最后48h内无更新）
+    NoRecent,   // 没变化（最后4-8h有快照但无变化）
     UserNotExists,
 }
 

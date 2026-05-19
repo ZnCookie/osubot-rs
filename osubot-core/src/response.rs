@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use crate::types::{GameMode, UserChange, UserStats};
 
 /// 格式化用户数据为响应字符串
@@ -17,11 +20,8 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     let rank_change = format_change(stats.rank_change);
     let country_rank_change = format_change(stats.country_rank_change);
 
-    let rank_str = if rank_change.is_empty() {
-        rank.to_string()
-    } else {
-        format!("{rank} ({rank_change})")
-    };
+    let rank_str =
+        if rank_change.is_empty() { rank.to_string() } else { format!("{rank} ({rank_change})") };
     let country = country_name(&stats.country_code);
     let country_rank_str = if country_rank_change.is_empty() {
         format!("{country} #{country_rank}")
@@ -461,24 +461,19 @@ pub fn format_stats_with_change(
     };
 
     // pp 和 accuracy 变化格式化
-    let pp_change_str = format_float_change(
-        change.as_ref().and_then(|c| c.pp_change.filter(|&v| v != 0.0)),
-        "",
-    );
+    let pp_change_str =
+        format_float_change(change.as_ref().and_then(|c| c.pp_change.filter(|&v| v != 0.0)), "");
     let acc_change_str = format_float_change(
         change.as_ref().and_then(|c| c.accuracy_change.filter(|&v| v != 0.0)),
         "%",
     );
 
-    let playcount_change_str = format_small_change(
-        change.as_ref().and_then(|c| c.playcount_change.filter(|&v| v != 0))
-    );
-    let hits_change_str = format_small_change(
-        change.as_ref().and_then(|c| c.hits_change.filter(|&v| v != 0))
-    );
-    let playtime_change_str = format_small_change(
-        change.as_ref().and_then(|c| c.playtime_change.filter(|&v| v != 0))
-    );
+    let playcount_change_str =
+        format_small_change(change.as_ref().and_then(|c| c.playcount_change.filter(|&v| v != 0)));
+    let hits_change_str =
+        format_small_change(change.as_ref().and_then(|c| c.hits_change.filter(|&v| v != 0)));
+    let playtime_change_str =
+        format_small_change(change.as_ref().and_then(|c| c.playtime_change.filter(|&v| v != 0)));
 
     // Add space before change string if non-empty
     let pp_change_str = space_prefix(pp_change_str);

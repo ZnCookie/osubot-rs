@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -44,13 +47,27 @@ pub struct SchedulerConfig {
     pub retention_days: i64,
 }
 
-fn default_interval_minutes() -> u64 { 1 }
-fn default_active_interval_hours() -> i64 { 2 }
-fn default_semi_active_interval_hours() -> i64 { 4 }
-fn default_normal_interval_hours() -> i64 { 8 }
-fn default_inactive_interval_hours() -> i64 { 48 }
-fn default_group_trigger_cooldown_hours() -> i64 { 1 }
-fn default_retention_days() -> i64 { 180 }
+fn default_interval_minutes() -> u64 {
+    1
+}
+fn default_active_interval_hours() -> i64 {
+    2
+}
+fn default_semi_active_interval_hours() -> i64 {
+    4
+}
+fn default_normal_interval_hours() -> i64 {
+    8
+}
+fn default_inactive_interval_hours() -> i64 {
+    48
+}
+fn default_group_trigger_cooldown_hours() -> i64 {
+    1
+}
+fn default_retention_days() -> i64 {
+    180
+}
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
@@ -86,8 +103,7 @@ impl Default for Config {
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
             },
             database: DatabaseConfig {
-                path: std::env::var("DATABASE_PATH")
-                    .unwrap_or_else(|_| "osubot.db".to_string()),
+                path: std::env::var("DATABASE_PATH").unwrap_or_else(|_| "osubot.db".to_string()),
             },
             scheduler: SchedulerConfig::default(),
         }

@@ -1,6 +1,9 @@
-use crate::types::{GameMode, UserStats};
-use crate::storage::Storage;
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use crate::api::{self, ApiError};
+use crate::storage::Storage;
+use crate::types::{GameMode, UserStats};
 use crate::OauthTokenCache;
 use crate::RateLimiter;
 use chrono::Utc;
@@ -64,8 +67,8 @@ fn get_baseline_snapshot(
     let now = Utc::now();
     let target = now - chrono::Duration::hours(24);
 
-    let closest = all.into_iter()
-        .min_by_key(|(dt, _)| (*dt - target).num_seconds().unsigned_abs() as i64);
+    let closest =
+        all.into_iter().min_by_key(|(dt, _)| (*dt - target).num_seconds().unsigned_abs() as i64);
 
     Ok(closest.map(|(_, stats)| stats))
 }
@@ -122,26 +125,25 @@ pub async fn get_highlight(
         return Err(HighlightError::NoData);
     }
 
-    let most_pp_increase = user_highlights.iter()
+    let most_pp_increase = user_highlights
+        .iter()
         .filter(|h| h.pp_increase > 0.0)
         .max_by(|a, b| a.pp_increase.partial_cmp(&b.pp_increase).unwrap())
         .cloned();
 
-    let most_hits_increase = user_highlights.iter()
+    let most_hits_increase = user_highlights
+        .iter()
         .filter(|h| h.hits_increase > 0)
         .max_by_key(|h| h.hits_increase)
         .cloned();
 
-    let most_playtime_increase = user_highlights.iter()
+    let most_playtime_increase = user_highlights
+        .iter()
         .filter(|h| h.playtime_increase > 0)
         .max_by_key(|h| h.playtime_increase)
         .cloned();
 
-    Ok(HighlightResult {
-        most_pp_increase,
-        most_hits_increase,
-        most_playtime_increase,
-    })
+    Ok(HighlightResult { most_pp_increase, most_hits_increase, most_playtime_increase })
 }
 
 /// Format highlight result as response string
@@ -160,10 +162,7 @@ pub fn format_highlight(result: &HighlightResult) -> String {
 
     s.push_str("最肝：\n");
     if let Some(h) = &result.most_hits_increase {
-        s.push_str(&format!(
-            "{} 打了 {} 下。\n",
-            h.username, h.hits_increase
-        ));
+        s.push_str(&format!("{} 打了 {} 下。\n", h.username, h.hits_increase));
     } else {
         s.push_str("你群没有人肝。\n");
     }
@@ -171,10 +170,7 @@ pub fn format_highlight(result: &HighlightResult) -> String {
     s.push_str("最长游戏时间：\n");
     if let Some(h) = &result.most_playtime_increase {
         let hours = h.playtime_increase as f64 / 3600.0;
-        s.push_str(&format!(
-            "{} 玩儿了 {:.2} 小时。\n",
-            h.username, hours
-        ));
+        s.push_str(&format!("{} 玩儿了 {:.2} 小时。\n", h.username, hours));
     } else {
         s.push_str("你群没有人玩。\n");
     }

@@ -1,23 +1,26 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 mod config;
 mod scheduler;
 
 use config::Config;
-use scheduler::Scheduler;
+use futures_util::{SinkExt, StreamExt};
 use osubot_core::{
-    parse_command,
-    storage::Storage,
-    response::format_stats_with_change,
-    types::Command,
     api::{self, ApiError},
+    highlight::{format_highlight, get_highlight, HighlightError},
+    parse_command,
+    response::format_stats_with_change,
+    storage::Storage,
+    types::Command,
     OauthTokenCache, RateLimiter,
-    highlight::{get_highlight, format_highlight, HighlightError},
 };
+use scheduler::Scheduler;
+use serde::Deserialize;
+use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
-use std::sync::Arc;
-use serde::Deserialize;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Clone)]
@@ -55,12 +58,7 @@ fn parse_onebot_message(json: &str) -> Option<QQMessage> {
 
     let (message_text, mentioned_user_id) = extract_message_and_mention(&msg.message?);
 
-    Some(QQMessage {
-        group_id,
-        user_id,
-        message: message_text,
-        mentioned_user_id,
-    })
+    Some(QQMessage { group_id, user_id, message: message_text, mentioned_user_id })
 }
 
 /// Extract plain text and first valid @mention QQ ID from OneBot message array.
@@ -83,7 +81,9 @@ fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i
     for segment in arr {
         match segment.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
-                if let Some(t) = segment.get("data").and_then(|d| d.get("text")).and_then(|v| v.as_str()) {
+                if let Some(t) =
+                    segment.get("data").and_then(|d| d.get("text")).and_then(|v| v.as_str())
+                {
                     text.push_str(t);
                 }
             }
@@ -103,11 +103,7 @@ fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i
         }
     }
 
-    let mentioned_user_id = if at_qqs.len() == 1 {
-        Some(at_qqs[0])
-    } else {
-        None
-    };
+    let mentioned_user_id = if at_qqs.len() == 1 { Some(at_qqs[0]) } else { None };
 
     (text, mentioned_user_id)
 }
@@ -136,7 +132,8 @@ async fn handle_command(
                     match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
                         Ok(stats) => {
                             // Get change from storage (compares with 24h ago snapshot)
-                            let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
+                            let change =
+                                storage.calculate_change(&username, mode, &stats).ok().flatten();
                             info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
                             let response = format_stats_with_change(&stats, &change, mode);
                             let _ = resp_tx.send(response).await;
@@ -156,7 +153,8 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     info!(user_id = msg.user_id, "QuerySelf but no binding");
-                    let _ = resp_tx.send("请先绑定 osu! 用户名，使用 绑定 <用户名>".to_string()).await;
+                    let _ =
+                        resp_tx.send("请先绑定 osu! 用户名，使用 绑定 <用户名>".to_string()).await;
                 }
                 Err(_) => {
                     error!(user_id = msg.user_id, "QuerySelf database error");
@@ -193,7 +191,8 @@ async fn handle_command(
                     scheduler.trigger_update(&username);
                     match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
                         Ok(stats) => {
-                            let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
+                            let change =
+                                storage.calculate_change(&username, mode, &stats).ok().flatten();
                             info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
                             let response = format_stats_with_change(&stats, &change, mode);
                             let _ = resp_tx.send(response).await;
@@ -213,7 +212,11 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     info!(qq = qq, "QueryMentionedUser but no binding");
-                    let _ = resp_tx.send("该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string()).await;
+                    let _ = resp_tx
+                        .send(
+                            "该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string(),
+                        )
+                        .await;
                 }
                 Err(_) => {
                     error!(qq = qq, "QueryMentionedUser database error");
@@ -227,7 +230,8 @@ async fn handle_command(
             match storage.get_binding(msg.user_id) {
                 Ok(Some(existing)) => {
                     info!(user_id = msg.user_id, existing = %existing, "Bind but already bound");
-                    let _ = resp_tx.send(format!("你已经绑定为{},如需修改请先解绑", existing)).await;
+                    let _ =
+                        resp_tx.send(format!("你已经绑定为{},如需修改请先解绑", existing)).await;
                 }
                 Ok(None) => {
                     // Check if osu user exists
@@ -241,7 +245,8 @@ async fn handle_command(
                                 }
                                 Ok(Err(bound_qq)) => {
                                     info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
-                                    let _ = resp_tx.send("该 osu! 用户已绑定其他QQ".to_string()).await;
+                                    let _ =
+                                        resp_tx.send("该 osu! 用户已绑定其他QQ".to_string()).await;
                                 }
                                 Err(_) => {
                                     error!(user_id = msg.user_id, username = %username, "Bind failed");
@@ -296,7 +301,9 @@ async fn handle_command(
                         Ok(Some(username)) => {
                             storage.set_pending_unbind(msg.user_id).ok();
                             info!(user_id = msg.user_id, username = %username, "Unbind confirmation requested");
-                            let _ = resp_tx.send(format!("确定要解除绑定 {} 吗？回复\"解绑\"确认", username)).await;
+                            let _ = resp_tx
+                                .send(format!("确定要解除绑定 {} 吗？回复\"解绑\"确认", username))
+                                .await;
                         }
                         Ok(None) => {
                             info!(user_id = msg.user_id, "Unbind but no binding");
@@ -361,7 +368,6 @@ async fn handle_command(
     }
 }
 
-
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 type WriteSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -393,24 +399,19 @@ async fn main() {
         .with_file(true)
         .with_line_number(true)
         .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     info!("Starting osubot...");
 
-    let config = Config::from_path("osubot.toml")
-        .expect("Failed to load config");
+    let config = Config::from_path("osubot.toml").expect("Failed to load config");
 
     info!("osubot starting...");
     info!("OneBot URL: {}", config.bot.onebot_url);
 
-    let storage = Arc::new(Storage::new(&config.database.path)
-        .expect("Failed to open database"));
+    let storage = Arc::new(Storage::new(&config.database.path).expect("Failed to open database"));
 
-    let oauth = Arc::new(OauthTokenCache::new(
-        config.osu.client_id.clone(),
-        config.osu.api_key.clone(),
-    ));
+    let oauth =
+        Arc::new(OauthTokenCache::new(config.osu.client_id.clone(), config.osu.api_key.clone()));
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
@@ -431,9 +432,8 @@ async fn main() {
         warn!("API Key not configured. Please set osu.api_key in osubot.toml");
     }
 
-    let (ws_stream, _) = connect_async(&config.bot.onebot_url)
-        .await
-        .expect("Failed to connect to OneBot 11");
+    let (ws_stream, _) =
+        connect_async(&config.bot.onebot_url).await.expect("Failed to connect to OneBot 11");
 
     info!("Connected to OneBot 11");
     info!("WebSocket connection established");
@@ -460,7 +460,8 @@ async fn main() {
                     let scheduler = scheduler.clone();
                     let rate_limiter = rate_limiter.clone();
                     tokio::spawn(async move {
-                        handle_command(storage, scheduler, oauth, rate_limiter, qq_msg, resp_tx).await;
+                        handle_command(storage, scheduler, oauth, rate_limiter, qq_msg, resp_tx)
+                            .await;
                     });
                 }
             }

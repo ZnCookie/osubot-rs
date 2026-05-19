@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use crate::rate_limiter::RateLimiter;
 use crate::types::{GameMode, UserStats};
 use reqwest::Client;
@@ -135,11 +138,7 @@ impl OauthTokenCache {
             ("scope", "public"),
         ];
 
-        let resp = client
-            .post("https://osu.ppy.sh/oauth/token")
-            .form(&params)
-            .send()
-            .await?;
+        let resp = client.post("https://osu.ppy.sh/oauth/token").form(&params).send().await?;
 
         if resp.status() != 200 {
             return Err(ApiError::OAuthError);
@@ -172,17 +171,10 @@ pub async fn fetch_user_stats(
         username.to_string()
     };
 
-    let url = format!(
-        "https://osu.ppy.sh/api/v2/users/{}/{}",
-        url_username,
-        mode_param
-    );
+    let url = format!("https://osu.ppy.sh/api/v2/users/{}/{}", url_username, mode_param);
 
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .send()
-        .await?;
+    let resp =
+        client.get(&url).header("Authorization", format!("Bearer {}", access_token)).send().await?;
 
     if resp.status() == 404 {
         return Err(ApiError::NotFound);
@@ -241,11 +233,8 @@ pub async fn get_user_recent(
         mode.api_value()
     );
 
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .send()
-        .await?;
+    let resp =
+        client.get(&url).header("Authorization", format!("Bearer {}", access_token)).send().await?;
 
     if resp.status() == 404 {
         return Err(ApiError::NotFound);
@@ -279,11 +268,8 @@ pub async fn get_user_info(
 
     let url = format!("https://osu.ppy.sh/api/v2/users/{}", url_username);
 
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .send()
-        .await?;
+    let resp =
+        client.get(&url).header("Authorization", format!("Bearer {}", access_token)).send().await?;
 
     if resp.status() == 404 {
         return Ok(None);

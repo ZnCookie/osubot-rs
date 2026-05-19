@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
@@ -107,9 +110,8 @@ impl Storage {
     /// Get QQ by osu username (case-insensitive)
     pub fn get_qq_by_osu_username(&self, username: &str) -> SqlResult<Option<i64>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT qq FROM user_bindings WHERE LOWER(osu_username) = LOWER(?1)"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT qq FROM user_bindings WHERE LOWER(osu_username) = LOWER(?1)")?;
         let mut rows = stmt.query(params![username])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -177,7 +179,11 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_latest_snapshot(&self, username: &str, mode: GameMode) -> SqlResult<Option<UserStats>> {
+    pub fn get_latest_snapshot(
+        &self,
+        username: &str,
+        mode: GameMode,
+    ) -> SqlResult<Option<UserStats>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT username, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
@@ -271,22 +277,28 @@ impl Storage {
 
         let all = self.get_snapshots_within_hours(username, mode, max_lookback)?;
 
-        let candidates: Vec<_> = all.into_iter()
-            .filter(|(dt, _)| *dt >= earliest)
-            .collect();
+        let candidates: Vec<_> = all.into_iter().filter(|(dt, _)| *dt >= earliest).collect();
 
         if candidates.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some(candidates.into_iter().min_by_key(|(dt, _)| {
-            (*dt - target_time).num_seconds().unsigned_abs() as i64
-        }).unwrap()))
+        Ok(Some(
+            candidates
+                .into_iter()
+                .min_by_key(|(dt, _)| (*dt - target_time).num_seconds().unsigned_abs() as i64)
+                .unwrap(),
+        ))
     }
 
     // ==================== Play Records Operations ====================
 
-    pub fn save_play_records(&self, username: &str, mode: GameMode, records: &[(DateTime<Utc>, i64)]) -> SqlResult<i32> {
+    pub fn save_play_records(
+        &self,
+        username: &str,
+        mode: GameMode,
+        records: &[(DateTime<Utc>, i64)],
+    ) -> SqlResult<i32> {
         let conn = self.conn.lock().unwrap();
         let mut inserted = 0i32;
 
@@ -302,7 +314,12 @@ impl Storage {
         Ok(inserted)
     }
 
-    pub fn get_play_count_since(&self, username: &str, mode: GameMode, hours: i64) -> SqlResult<i64> {
+    pub fn get_play_count_since(
+        &self,
+        username: &str,
+        mode: GameMode,
+        hours: i64,
+    ) -> SqlResult<i64> {
         let conn = self.conn.lock().unwrap();
         let cutoff = Utc::now() - chrono::Duration::hours(hours);
         let cutoff_ts = cutoff.timestamp();
@@ -310,13 +327,19 @@ impl Storage {
         let mut stmt = conn.prepare(
             "SELECT COUNT(*) FROM user_play_records WHERE username = ?1 AND mode = ?2 AND played_at >= ?3",
         )?;
-        let count: i64 = stmt.query_row(params![username, mode as i32, cutoff_ts], |row| row.get(0))?;
+        let count: i64 =
+            stmt.query_row(params![username, mode as i32, cutoff_ts], |row| row.get(0))?;
         Ok(count)
     }
 
     // ==================== Change Calculation ====================
 
-    pub fn calculate_change(&self, username: &str, mode: GameMode, current: &UserStats) -> SqlResult<Option<UserChange>> {
+    pub fn calculate_change(
+        &self,
+        username: &str,
+        mode: GameMode,
+        current: &UserStats,
+    ) -> SqlResult<Option<UserChange>> {
         let snapshot = self.get_closest_snapshot_to_hours_ago(username, mode, 24, 36)?;
 
         match snapshot {
@@ -363,7 +386,11 @@ impl Storage {
 
     // ==================== User Activity (Last Update Time) ====================
 
-    pub fn get_last_update(&self, username: &str, mode: GameMode) -> SqlResult<Option<DateTime<Utc>>> {
+    pub fn get_last_update(
+        &self,
+        username: &str,
+        mode: GameMode,
+    ) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT last_update FROM user_last_update WHERE username = ?1 AND mode = ?2",
@@ -378,7 +405,12 @@ impl Storage {
         Ok(None)
     }
 
-    pub fn set_last_update(&self, username: &str, mode: GameMode, time: DateTime<Utc>) -> SqlResult<()> {
+    pub fn set_last_update(
+        &self,
+        username: &str,
+        mode: GameMode,
+        time: DateTime<Utc>,
+    ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO user_last_update (username, mode, last_update) VALUES (?1, ?2, ?3)",
@@ -389,7 +421,11 @@ impl Storage {
 
     // ==================== Next Update (for scheduler dynamic intervals) ====================
 
-    pub fn get_next_update(&self, username: &str, mode: GameMode) -> SqlResult<Option<DateTime<Utc>>> {
+    pub fn get_next_update(
+        &self,
+        username: &str,
+        mode: GameMode,
+    ) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT next_update FROM user_next_update WHERE username = ?1 AND mode = ?2",
@@ -402,7 +438,12 @@ impl Storage {
         Ok(None)
     }
 
-    pub fn set_next_update(&self, username: &str, mode: GameMode, time: DateTime<Utc>) -> SqlResult<()> {
+    pub fn set_next_update(
+        &self,
+        username: &str,
+        mode: GameMode,
+        time: DateTime<Utc>,
+    ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO user_next_update (username, mode, next_update) VALUES (?1, ?2, ?3)",
@@ -434,9 +475,7 @@ impl Storage {
     pub fn get_all_user_bindings(&self) -> SqlResult<Vec<(i64, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT qq, osu_username FROM user_bindings")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -450,9 +489,8 @@ impl Storage {
         let conn = self.conn.lock().unwrap();
         let now_ts = Utc::now().timestamp();
 
-        let mut stmt = conn.prepare(
-            "SELECT username, mode FROM user_next_update WHERE next_update <= ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT username, mode FROM user_next_update WHERE next_update <= ?1")?;
         let rows = stmt.query_map(params![now_ts], |row| {
             let username: String = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
@@ -488,9 +526,7 @@ impl Storage {
     /// Get pending unbind timestamp if exists (returns None if expired or not exists)
     pub fn get_pending_unbind(&self, qq: i64) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT created_at FROM pending_unbind WHERE qq = ?1",
-        )?;
+        let mut stmt = conn.prepare("SELECT created_at FROM pending_unbind WHERE qq = ?1")?;
         let mut rows = stmt.query(params![qq])?;
         if let Some(row) = rows.next()? {
             let created_at: String = row.get(0)?;

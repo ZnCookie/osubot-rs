@@ -3,6 +3,10 @@ name = "osubot"
 version = "0.1.0"
 edition = "2021"
 
+# [lints.clippy]
+# deny = ["all"]
+# allow = ["clippy::derive_partial_eq_without_eq"]
+
 [dependencies]
 osubot-core = { path = "../osubot-core" }
 tokio = { version = "1", features = ["full"] }
