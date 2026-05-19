@@ -14,6 +14,8 @@ use crate::types::{Command, GameMode};
 /// - `解绑` - 解绑账号
 pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Command> {
     let msg = msg.trim();
+    // Normalize fullwidth characters to ASCII equivalents
+    let msg = msg.replace('～', "~").replace('，', ",");
 
     // 查询自己: ~ 或 ~<模式>
     if msg.starts_with('~') {
