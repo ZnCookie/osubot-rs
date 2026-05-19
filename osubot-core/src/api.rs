@@ -112,12 +112,19 @@ impl OauthTokenCache {
             client_id,
             client_secret,
             cache: Mutex::new(None),
-            refresh_interval: Duration::from_secs(4 * 3600),
+            refresh_interval: Duration::from_secs(20 * 3600),
+        }
+    }
+
+    /// Mark the cached token as invalid, forcing refresh on next get_token call
+    pub fn invalidate(&self) {
+        if let Ok(mut guard) = self.cache.try_lock() {
+            *guard = None;
         }
     }
 
     /// Get a valid OAuth token, refreshing if needed
-    pub async fn get_token(&self, rate_limiter: &RateLimiter) -> Result<String, ApiError> {
+    pub async fn get_token(&self) -> Result<String, ApiError> {
         let mut guard = self.cache.lock().await;
         if let Some((ref token, fetched_at)) = *guard {
             if fetched_at.elapsed() < self.refresh_interval {
@@ -125,10 +132,6 @@ impl OauthTokenCache {
             }
         }
 
-        rate_limiter
-            .acquire()
-            .await
-            .map_err(|_| ApiError::RateLimited)?;
         let client = Client::new();
 
         let params = [
@@ -154,71 +157,91 @@ impl OauthTokenCache {
     }
 }
 
-/// 从 osu! API v2 获取用户数据
+/// From osu! API v2 fetch user data
 pub async fn fetch_user_stats(
     rate_limiter: &RateLimiter,
     oauth: &OauthTokenCache,
     username: &str,
     mode: GameMode,
 ) -> Result<UserStats, ApiError> {
-    rate_limiter
-        .acquire()
-        .await
-        .map_err(|_| ApiError::RateLimited)?;
+    let mut retry_count = 0;
+    let max_retries = 5;
+    let base_delay = Duration::from_secs(1);
 
-    let access_token = oauth.get_token(rate_limiter).await?;
+    loop {
+        let access_token = oauth.get_token().await?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
 
-    let client = Client::new();
-    let mode_param = mode.api_value();
+        let client = Client::new();
+        let mode_param = mode.api_value();
 
-    // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
-    let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
-        format!("@{}", username)
-    } else {
-        username.to_string()
-    };
+        let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
+            format!("@{}", username)
+        } else {
+            username.to_string()
+        };
 
-    let url = format!(
-        "https://osu.ppy.sh/api/v2/users/{}/{}",
-        url_username, mode_param
-    );
+        let url = format!(
+            "https://osu.ppy.sh/api/v2/users/{}/{}",
+            url_username, mode_param
+        );
 
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .send()
-        .await?;
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await?;
 
-    if resp.status() == 404 {
-        return Err(ApiError::NotFound);
-    }
+        if resp.status() == 401 {
+            oauth.invalidate();
+            if retry_count < max_retries {
+                let delay =
+                    Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
+                retry_count += 1;
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return Err(ApiError::OAuthError);
+        }
 
-    let data: OsuApiV2User = resp.json().await?;
-
-    let stats = match data.statistics {
-        Some(s) => s,
-        None => {
+        if resp.status() == 404 {
             return Err(ApiError::NotFound);
         }
-    };
 
-    let rank_change = None;
-    let country_rank_change = None;
+        if !resp.status().is_success() {
+            return Err(ApiError::InvalidResponse);
+        }
 
-    Ok(UserStats {
-        username: data.username,
-        pp: stats.pp.unwrap_or(0.0),
-        rank: stats.rank.unwrap_or(0),
-        country_rank: stats.country_rank.unwrap_or(0),
-        country_code: data.country_code.unwrap_or_else(|| "XX".to_string()),
-        ranked_score: stats.ranked_score.unwrap_or(0),
-        accuracy: stats.accuracy.unwrap_or(0.0),
-        playcount: stats.playcount.unwrap_or(0),
-        hits: stats.hits.unwrap_or(0),
-        playtime: stats.playtime.unwrap_or(0),
-        rank_change,
-        country_rank_change,
-    })
+        let data: OsuApiV2User = resp.json().await?;
+
+        let stats = match data.statistics {
+            Some(s) => s,
+            None => {
+                return Err(ApiError::NotFound);
+            }
+        };
+
+        let rank_change = None;
+        let country_rank_change = None;
+
+        return Ok(UserStats {
+            username: data.username,
+            pp: stats.pp.unwrap_or(0.0),
+            rank: stats.rank.unwrap_or(0),
+            country_rank: stats.country_rank.unwrap_or(0),
+            country_code: data.country_code.unwrap_or_else(|| "XX".to_string()),
+            ranked_score: stats.ranked_score.unwrap_or(0),
+            accuracy: stats.accuracy.unwrap_or(0.0),
+            playcount: stats.playcount.unwrap_or(0),
+            hits: stats.hits.unwrap_or(0),
+            playtime: stats.playtime.unwrap_or(0),
+            rank_change,
+            country_rank_change,
+        });
+    }
 }
 
 /// Get user's recent plays from osu! API v2
@@ -228,12 +251,11 @@ pub async fn get_user_recent(
     username: &str,
     mode: GameMode,
 ) -> Result<Vec<RecentPlay>, ApiError> {
+    let access_token = oauth.get_token().await?;
     rate_limiter
         .acquire()
         .await
         .map_err(|_| ApiError::RateLimited)?;
-
-    let access_token = oauth.get_token(rate_limiter).await?;
     let client = Client::new();
 
     // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
@@ -273,12 +295,11 @@ pub async fn get_user_info(
     oauth: &OauthTokenCache,
     username: &str,
 ) -> Result<Option<OsuUserInfo>, ApiError> {
+    let access_token = oauth.get_token().await?;
     rate_limiter
         .acquire()
         .await
         .map_err(|_| ApiError::RateLimited)?;
-
-    let access_token = oauth.get_token(rate_limiter).await?;
     let client = Client::new();
 
     // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
