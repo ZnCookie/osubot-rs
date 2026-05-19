@@ -430,6 +430,20 @@ impl Storage {
         Ok(results)
     }
 
+    /// Get all user bindings (qq -> username mappings)
+    pub fn get_all_user_bindings(&self) -> SqlResult<Vec<(i64, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT qq, osu_username FROM user_bindings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     // ==================== Due Users Query ====================
 
     pub fn get_due_users(&self) -> SqlResult<Vec<(String, GameMode)>> {

@@ -67,5 +67,21 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         return Some(Command::Unbind);
     }
 
+    // 今日高光: 今日高光 [, 模式]
+    if let Some(rest) = msg.strip_prefix("今日高光") {
+        let rest = rest.trim();
+        let mode = if rest.is_empty() || rest.starts_with(',') {
+            let mode_str = rest.trim_start_matches(',').trim();
+            if mode_str.is_empty() {
+                GameMode::Osu
+            } else {
+                GameMode::from_mode_str(mode_str).unwrap_or(GameMode::Osu)
+            }
+        } else {
+            GameMode::from_mode_str(rest).unwrap_or(GameMode::Osu)
+        };
+        return Some(Command::Highlight { mode });
+    }
+
     None
 }

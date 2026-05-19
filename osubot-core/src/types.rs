@@ -60,6 +60,7 @@ pub enum Command {
     Bind { username: String },
     Unbind,
     Help,
+    Highlight { mode: GameMode },
 }
 
 #[derive(Debug, Clone)]
