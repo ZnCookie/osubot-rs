@@ -124,7 +124,7 @@ impl OauthTokenCache {
     }
 
     /// Get a valid OAuth token, refreshing if needed
-    pub async fn get_token(&self, rate_limiter: &RateLimiter) -> Result<String, ApiError> {
+    pub async fn get_token(&self) -> Result<String, ApiError> {
         let mut guard = self.cache.lock().await;
         if let Some((ref token, fetched_at)) = *guard {
             if fetched_at.elapsed() < self.refresh_interval {
@@ -132,10 +132,6 @@ impl OauthTokenCache {
             }
         }
 
-        rate_limiter
-            .acquire()
-            .await
-            .map_err(|_| ApiError::RateLimited)?;
         let client = Client::new();
 
         let params = [
@@ -173,7 +169,7 @@ pub async fn fetch_user_stats(
     let base_delay = Duration::from_secs(1);
 
     loop {
-        let access_token = oauth.get_token(rate_limiter).await?;
+        let access_token = oauth.get_token().await?;
         rate_limiter
             .acquire()
             .await
@@ -255,12 +251,11 @@ pub async fn get_user_recent(
     username: &str,
     mode: GameMode,
 ) -> Result<Vec<RecentPlay>, ApiError> {
+    let access_token = oauth.get_token().await?;
     rate_limiter
         .acquire()
         .await
         .map_err(|_| ApiError::RateLimited)?;
-
-    let access_token = oauth.get_token(rate_limiter).await?;
     let client = Client::new();
 
     // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
@@ -300,12 +295,11 @@ pub async fn get_user_info(
     oauth: &OauthTokenCache,
     username: &str,
 ) -> Result<Option<OsuUserInfo>, ApiError> {
+    let access_token = oauth.get_token().await?;
     rate_limiter
         .acquire()
         .await
         .map_err(|_| ApiError::RateLimited)?;
-
-    let access_token = oauth.get_token(rate_limiter).await?;
     let client = Client::new();
 
     // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
