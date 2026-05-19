@@ -6,7 +6,7 @@ use scheduler::Scheduler;
 use osubot_core::{
     parse_command,
     storage::Storage,
-    response::{format_stats, format_stats_with_change},
+    response::format_stats_with_change,
     types::Command,
     api::{self, ApiError},
     OauthTokenCache, RateLimiter,
@@ -135,7 +135,7 @@ async fn handle_command(
                     scheduler.trigger_update(&username);
                     match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
                         Ok(stats) => {
-                            // Get change from storage (compares with 4h ago snapshot)
+                            // Get change from storage (compares with 24h ago snapshot)
                             let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
                             info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
                             let response = format_stats_with_change(&stats, &change, mode);
@@ -168,8 +168,9 @@ async fn handle_command(
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
             match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
                 Ok(stats) => {
-                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "QueryUser success");
-                    let response = format_stats(&stats, mode);
+                    let change = storage.calculate_change(&username, mode, &stats).ok().flatten();
+                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
+                    let response = format_stats_with_change(&stats, &change, mode);
                     let _ = resp_tx.send(response).await;
                 }
                 Err(e) => {

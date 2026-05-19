@@ -317,7 +317,7 @@ impl Storage {
     // ==================== Change Calculation ====================
 
     pub fn calculate_change(&self, username: &str, mode: GameMode, current: &UserStats) -> SqlResult<Option<UserChange>> {
-        let snapshot = self.get_closest_snapshot_to_hours_ago(username, mode, 4, 36)?;
+        let snapshot = self.get_closest_snapshot_to_hours_ago(username, mode, 24, 36)?;
 
         match snapshot {
             None => Ok(None),
