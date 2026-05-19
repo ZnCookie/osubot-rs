@@ -124,6 +124,7 @@ async fn handle_command(
     rate_limiter: Arc<RateLimiter>,
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
+    irc_enabled: bool,
 ) {
     let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
         Some(cmd) => cmd,
@@ -251,11 +252,45 @@ async fn handle_command(
                         .await;
                 }
                 Ok(None) => {
-                    // Check if osu user exists
-                    match api::get_user_info(&rate_limiter, &oauth, &username).await {
-                        Ok(Some(_)) => {
-                            // User exists, try to bind (checks if username already bound to another QQ)
-                            match storage.bind(msg.user_id, &username) {
+                    if irc_enabled {
+                        // IRC auth mode: check rate limit (one pending bind at a time)
+                        match storage.has_pending_bind(msg.user_id) {
+                            Ok(true) => {
+                                let _ = resp_tx
+                                    .send(
+                                        "你已有进行中的绑定请求，请等待当前验证码过期后再试"
+                                            .to_string(),
+                                    )
+                                    .await;
+                                return;
+                            }
+                            Err(_) => {
+                                error!(user_id = msg.user_id, "Failed to check pending bind");
+                                let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                return;
+                            }
+                            _ => {}
+                        }
+                        // Generate code and wait for verification
+                        match storage.add_pending_bind(msg.user_id, msg.group_id, &username) {
+                            Ok(code) => {
+                                info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
+                                let _ = resp_tx
+                                    .send(format!(
+                                        "您的验证码是 {}，请在2分钟内通过 osu! IRC 私聊发送给我",
+                                        code
+                                    ))
+                                    .await;
+                            }
+                            Err(_) => {
+                                error!(user_id = msg.user_id, "Failed to create pending bind");
+                                let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                            }
+                        }
+                    } else {
+                        // Direct bind (original logic)
+                        match api::get_user_info(&rate_limiter, &oauth, &username).await {
+                            Ok(Some(_)) => match storage.bind(msg.user_id, &username) {
                                 Ok(Ok(())) => {
                                     info!(user_id = msg.user_id, username = %username, "Bind success");
                                     let _ = resp_tx.send(format!("成功绑定为{}", username)).await;
@@ -269,22 +304,22 @@ async fn handle_command(
                                     error!(user_id = msg.user_id, username = %username, "Bind failed");
                                     let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
                                 }
+                            },
+                            Ok(None) => {
+                                info!(username = %username, "Bind but user not found");
+                                let _ = resp_tx.send("未找到该 osu! 用户".to_string()).await;
                             }
-                        }
-                        Ok(None) => {
-                            info!(username = %username, "Bind but user not found");
-                            let _ = resp_tx.send("未找到该 osu! 用户".to_string()).await;
-                        }
-                        Err(e) => {
-                            warn!(username = %username, error = ?e, "Bind - user info check failed");
-                            let err_msg = match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
-                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
-                                _ => "查询失败，请稍后重试".to_string(),
-                            };
-                            let _ = resp_tx.send(err_msg).await;
+                            Err(e) => {
+                                warn!(username = %username, error = ?e, "Bind - user info check failed");
+                                let err_msg = match e {
+                                    ApiError::NotFound => "未找到该用户".to_string(),
+                                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                                    ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                                    _ => "查询失败，请稍后重试".to_string(),
+                                };
+                                let _ = resp_tx.send(err_msg).await;
+                            }
                         }
                     }
                 }
@@ -413,6 +448,51 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
     let _ = sink.send(WsMsg::Text(json.to_string().into())).await;
 }
 
+async fn handle_irc_message(
+    storage: Arc<Storage>,
+    irc_msg: osubot_core::irc::IrcPrivateMessage,
+    write: Arc<Mutex<WriteSink>>,
+) {
+    let code = irc_msg.message.trim();
+
+    let pending = match storage.get_pending_bind(code) {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(_) => {
+            error!("Database error looking up pending bind");
+            return;
+        }
+    };
+
+    // Check if the sender matches the target username
+    if irc_msg.sender.to_lowercase() != pending.target_username.to_lowercase() {
+        storage.remove_pending_bind(code).ok();
+        let msg = "绑定失败（绑定的不是本人）";
+        send_group_msg(&write, pending.group_id, msg).await;
+        return;
+    }
+
+    // Perform the bind
+    match storage.bind(pending.qq_user_id, &pending.target_username) {
+        Ok(Ok(())) => {
+            storage.remove_pending_bind(code).ok();
+            info!(qq = pending.qq_user_id, username = %pending.target_username, "Bind verified and completed");
+            let msg = format!("成功绑定为{}", pending.target_username);
+            send_group_msg(&write, pending.group_id, &msg).await;
+        }
+        Ok(Err(_)) => {
+            storage.remove_pending_bind(code).ok();
+            let msg = "绑定失败（该 osu! 用户已绑定其他 QQ）";
+            send_group_msg(&write, pending.group_id, msg).await;
+        }
+        Err(_) => {
+            storage.remove_pending_bind(code).ok();
+            let msg = "绑定失败，请稍后重试";
+            send_group_msg(&write, pending.group_id, msg).await;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize logging
@@ -457,6 +537,26 @@ async fn main() {
         scheduler_clone.run().await;
     });
 
+    // Set up IRC client
+    let irc_enabled = config.irc.enabled;
+    let (irc_tx, mut irc_rx) = mpsc::channel::<osubot_core::irc::IrcPrivateMessage>(100);
+
+    if irc_enabled {
+        let irc_config = osubot_core::IrcConfig::new(
+            config.irc.enabled,
+            &config.irc.server,
+            config.irc.port,
+            &config.irc.nickname,
+            &config.irc.password,
+        );
+        let irc_client = osubot_core::irc::IrcClient::new(irc_config, irc_tx);
+        tokio::spawn(async move {
+            if let Err(e) = irc_client.run().await {
+                error!(error = %e, "IRC client error");
+            }
+        });
+    }
+
     if config.osu.api_key.is_empty() || config.osu.api_key == "your-api-key-here" {
         warn!("API Key not configured. Please set osu.api_key in osubot.toml");
     }
@@ -470,6 +570,19 @@ async fn main() {
 
     let (write, mut read) = ws_stream.split();
     let write = Arc::new(Mutex::new(write));
+
+    // Spawn IRC message handler
+    let write_for_irc = write.clone();
+    let storage_for_irc = storage.clone();
+    tokio::spawn(async move {
+        while let Some(irc_msg) = irc_rx.recv().await {
+            let storage = storage_for_irc.clone();
+            let write = write_for_irc.clone();
+            tokio::spawn(async move {
+                handle_irc_message(storage, irc_msg, write).await;
+            });
+        }
+    });
 
     while let Some(msg) = read.next().await {
         match msg {
@@ -490,8 +603,16 @@ async fn main() {
                     let scheduler = scheduler.clone();
                     let rate_limiter = rate_limiter.clone();
                     tokio::spawn(async move {
-                        handle_command(storage, scheduler, oauth, rate_limiter, qq_msg, resp_tx)
-                            .await;
+                        handle_command(
+                            storage,
+                            scheduler,
+                            oauth,
+                            rate_limiter,
+                            qq_msg,
+                            resp_tx,
+                            irc_enabled,
+                        )
+                        .await;
                     });
                 }
             }

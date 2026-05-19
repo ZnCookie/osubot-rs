@@ -7,7 +7,10 @@ pub struct Config {
     pub osu: OsuConfig,
     pub bot: BotConfig,
     pub database: DatabaseConfig,
+    #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub irc: IrcConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -80,6 +83,40 @@ impl Default for SchedulerConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct IrcConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_irc_server")]
+    pub server: String,
+    #[serde(default = "default_irc_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub password: String,
+}
+
+fn default_irc_server() -> String {
+    "irc.ppy.sh".to_string()
+}
+
+fn default_irc_port() -> u16 {
+    6667
+}
+
+impl Default for IrcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: default_irc_server(),
+            port: default_irc_port(),
+            nickname: String::new(),
+            password: String::new(),
+        }
+    }
+}
+
 impl Config {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
@@ -103,6 +140,7 @@ impl Default for Config {
                 path: std::env::var("DATABASE_PATH").unwrap_or_else(|_| "osubot.db".to_string()),
             },
             scheduler: SchedulerConfig::default(),
+            irc: IrcConfig::default(),
         }
     }
 }
