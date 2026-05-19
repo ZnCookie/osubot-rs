@@ -114,8 +114,8 @@ fn trim_trailing_zeros(s: String) -> String {
 /// 格式化排名变化
 fn format_change(change: Option<i64>) -> String {
     match change {
-        Some(c) if c > 0 => format!("↑{}", c),
-        Some(c) if c < 0 => format!("↓{}", c.abs()),
+        Some(c) if c > 0 => format!("↓{}", c),
+        Some(c) if c < 0 => format!("↑{}", c.abs()),
         _ => String::new(),
     }
 }
