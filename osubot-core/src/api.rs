@@ -125,7 +125,10 @@ impl OauthTokenCache {
             }
         }
 
-        rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
         let client = Client::new();
 
         let params = [
@@ -158,7 +161,10 @@ pub async fn fetch_user_stats(
     username: &str,
     mode: GameMode,
 ) -> Result<UserStats, ApiError> {
-    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::RateLimited)?;
 
     let access_token = oauth.get_token(rate_limiter).await?;
 
@@ -174,8 +180,7 @@ pub async fn fetch_user_stats(
 
     let url = format!(
         "https://osu.ppy.sh/api/v2/users/{}/{}",
-        url_username,
-        mode_param
+        url_username, mode_param
     );
 
     let resp = client
@@ -223,7 +228,10 @@ pub async fn get_user_recent(
     username: &str,
     mode: GameMode,
 ) -> Result<Vec<RecentPlay>, ApiError> {
-    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::RateLimited)?;
 
     let access_token = oauth.get_token(rate_limiter).await?;
     let client = Client::new();
@@ -265,7 +273,10 @@ pub async fn get_user_info(
     oauth: &OauthTokenCache,
     username: &str,
 ) -> Result<Option<OsuUserInfo>, ApiError> {
-    rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::RateLimited)?;
 
     let access_token = oauth.get_token(rate_limiter).await?;
     let client = Client::new();

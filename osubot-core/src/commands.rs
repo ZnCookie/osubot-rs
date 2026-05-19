@@ -19,9 +19,15 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
 
     // 查询自己: ~ 或 ~<模式>
     if msg.starts_with('~') {
-        let rest = msg.trim_start_matches('~').trim_start_matches(',').trim_start_matches(' ').trim_start_matches(',');
+        let rest = msg
+            .trim_start_matches('~')
+            .trim_start_matches(',')
+            .trim_start_matches(' ')
+            .trim_start_matches(',');
         if rest.is_empty() {
-            return Some(Command::QuerySelf { mode: GameMode::Osu });
+            return Some(Command::QuerySelf {
+                mode: GameMode::Osu,
+            });
         }
         let mode = GameMode::from_mode_str(rest)?;
         return Some(Command::QuerySelf { mode });
@@ -61,7 +67,9 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         if username.is_empty() {
             return None;
         }
-        return Some(Command::Bind { username: username.to_string() });
+        return Some(Command::Bind {
+            username: username.to_string(),
+        });
     }
 
     // 解绑
