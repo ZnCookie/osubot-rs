@@ -19,3 +19,10 @@ path = "osubot.db"
 # inactive_interval_hours = 48
 # group_trigger_cooldown_hours = 1
 # retention_days = 180
+
+[irc]
+enabled = false              # 启用 IRC 鉴权绑定（默认关闭）
+server = "irc.ppy.sh"
+port = 6667
+nickname = "your-irc-nickname"
+password = "your-irc-password"
