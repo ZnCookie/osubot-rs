@@ -10,11 +10,12 @@ onebot_url = "ws://127.0.0.1:8080"
 [database]
 path = "osubot.db"
 
-[scheduler]
-interval_minutes = 1
-active_interval_hours = 2
-semi_active_interval_hours = 4
-normal_interval_hours = 8
-inactive_interval_hours = 48
-group_trigger_cooldown_hours = 1
-retention_days = 180
+# [scheduler]
+# All fields have defaults — optional, only override if needed.
+# interval_minutes = 1
+# active_interval_hours = 2
+# semi_active_interval_hours = 4
+# normal_interval_hours = 8
+# inactive_interval_hours = 48
+# group_trigger_cooldown_hours = 1
+# retention_days = 180
