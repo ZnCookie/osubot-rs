@@ -10,6 +10,7 @@ use osubot_core::{
     types::Command,
     api::{self, ApiError},
     OauthTokenCache, RateLimiter,
+    highlight::{get_highlight, format_highlight, HighlightError},
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -321,6 +322,40 @@ async fn handle_command(
                         绑定 <osu用户名>\n\
                         解绑";
             let _ = resp_tx.send(help.to_string()).await;
+        }
+        Command::Highlight { mode } => {
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "Highlight command");
+
+            // Get all bindings (group member filtering requires proper OneBot API)
+            let all_bindings = match storage.get_all_user_bindings() {
+                Ok(bindings) => bindings,
+                Err(_) => {
+                    error!("Highlight failed to get bindings");
+                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                    return;
+                }
+            };
+
+            if all_bindings.is_empty() {
+                let _ = resp_tx.send("你群根本没有人绑定 osu! 账号".to_string()).await;
+                return;
+            }
+
+            // Fetch highlight data
+            match get_highlight(&storage, &rate_limiter, &oauth, &all_bindings, mode).await {
+                Ok(result) => {
+                    let response = format_highlight(&result);
+                    let _ = resp_tx.send(response).await;
+                }
+                Err(e) => {
+                    warn!(error = ?e, "Highlight fetch failed");
+                    let err_msg = match e {
+                        HighlightError::NoData => "你群根本没有人屙屎。".to_string(),
+                        _ => "查询失败，请稍后重试".to_string(),
+                    };
+                    let _ = resp_tx.send(err_msg).await;
+                }
+            }
         }
     }
 }
