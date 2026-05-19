@@ -1,6 +1,8 @@
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
+use tracing::{info, error};
 
 use osubot_core::{
     api, types::{GameMode, UserActivity},
@@ -16,6 +18,7 @@ pub struct Scheduler {
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
     config: SchedulerConfig,
+    last_cleanup: Arc<TokioMutex<Option<DateTime<Utc>>>>,
 }
 
 impl Scheduler {
@@ -30,7 +33,31 @@ impl Scheduler {
             oauth,
             rate_limiter,
             config,
+            last_cleanup: Arc::new(TokioMutex::new(None)),
         }
+    }
+
+    /// Try to run cleanup if 24h have passed since last run.
+    async fn try_cleanup(&self) {
+        let mut last = self.last_cleanup.lock().await;
+        let now = Utc::now();
+
+        if let Some(last_run) = *last {
+            if (now - last_run).num_hours() < 24 {
+                return;
+            }
+        }
+
+        match self.storage.prune_old_records(self.config.retention_days) {
+            Ok((stats, plays)) => {
+                info!(deleted_stats = stats, deleted_plays = plays, "pruned old records");
+            }
+            Err(e) => {
+                error!(error = ?e, "failed to prune old records");
+            }
+        }
+
+        *last = Some(now);
     }
 
     /// Background task entry point - only processes due users/modes
@@ -52,6 +79,8 @@ impl Scheduler {
             let result = self.eval_activity(&username, mode).await;
             self.update_next_time(&username, mode, result.activity);
         }
+
+        self.try_cleanup().await;
     }
 
     /// Evaluate a single user's activity for a single mode (returns UpdateResult)

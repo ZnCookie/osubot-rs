@@ -34,6 +34,7 @@ pub struct SchedulerConfig {
     pub normal_interval_hours: i64,
     pub inactive_interval_hours: i64,
     pub group_trigger_cooldown_hours: i64,
+    pub retention_days: i64,
 }
 
 impl Default for SchedulerConfig {
@@ -45,6 +46,7 @@ impl Default for SchedulerConfig {
             normal_interval_hours: 8,
             inactive_interval_hours: 48,
             group_trigger_cooldown_hours: 1,
+            retention_days: 180,
         }
     }
 }
