@@ -1,5 +1,5 @@
 #![deny(clippy::all)]
-#![allow(clippy::derive_partial_eq_without_eq)]
+#![allow(clippy::derive_partial_eq_without_eq, reason = "第三方库 derive 需要")]
 
 use crate::rate_limiter::RateLimiter;
 use crate::types::{GameMode, UserStats};
@@ -110,16 +110,21 @@ pub struct OauthTokenCache {
 }
 
 impl OauthTokenCache {
+    #[must_use]
     pub fn new(client_id: String, client_secret: String) -> Self {
         Self {
             client_id,
             client_secret,
             cache: Mutex::new(None),
-            refresh_interval: Duration::from_secs(4 * 3600),
+            refresh_interval: Duration::from_hours(4),
         }
     }
 
     /// Get a valid OAuth token, refreshing if needed
+    ///
+    /// # Errors
+    /// Returns `ApiError::RateLimited` if rate limit is exceeded.
+    /// Returns `ApiError::OAuthError` if the OAuth request fails.
     pub async fn get_token(&self, rate_limiter: &RateLimiter) -> Result<String, ApiError> {
         let mut guard = self.cache.lock().await;
         if let Some((ref token, fetched_at)) = *guard {
@@ -151,6 +156,11 @@ impl OauthTokenCache {
 }
 
 /// 从 osu! API v2 获取用户数据
+///
+/// # Errors
+/// Returns `ApiError::RateLimited` if rate limit is exceeded.
+/// Returns `ApiError::NotFound` if user does not exist.
+/// Returns `ApiError::OAuthError` if authentication fails.
 pub async fn fetch_user_stats(
     rate_limiter: &RateLimiter,
     oauth: &OauthTokenCache,

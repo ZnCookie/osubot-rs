@@ -1,5 +1,5 @@
 #![deny(clippy::all)]
-#![allow(clippy::derive_partial_eq_without_eq)]
+#![allow(clippy::derive_partial_eq_without_eq, reason = "第三方库 derive 需要")]
 
 mod config;
 mod scheduler;
