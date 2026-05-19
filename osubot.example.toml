@@ -20,9 +20,11 @@ path = "osubot.db"
 # group_trigger_cooldown_hours = 1
 # retention_days = 180
 
-[irc]
-enabled = false              # 启用 IRC 鉴权绑定（默认关闭）
-server = "irc.ppy.sh"
-port = 6667
-nickname = "your-irc-nickname"
-password = "your-irc-password"
+# [irc]
+# IRC 鉴权绑定（需在 https://osu.ppy.sh/p/irc 获取密码）
+# 可选，关闭时绑定无需验证。
+# enabled = true
+# server = "irc.ppy.sh"
+# port = 6667
+# nickname = "你的osu用户名"
+# password = "IRC密码"
