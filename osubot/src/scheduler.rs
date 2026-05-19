@@ -2,13 +2,14 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
-use tracing::{info, error};
+use tracing::{error, info};
 
+use osubot_core::api::ApiError;
 use osubot_core::{
-    api, types::{GameMode, UserActivity},
+    api,
+    types::{GameMode, UserActivity},
     OauthTokenCache, RateLimiter, Storage,
 };
-use osubot_core::api::ApiError;
 
 use crate::config::SchedulerConfig;
 
@@ -50,7 +51,11 @@ impl Scheduler {
 
         match self.storage.prune_old_records(self.config.retention_days) {
             Ok((stats, plays)) => {
-                info!(deleted_stats = stats, deleted_plays = plays, "pruned old records");
+                info!(
+                    deleted_stats = stats,
+                    deleted_plays = plays,
+                    "pruned old records"
+                );
             }
             Err(e) => {
                 error!(error = ?e, "failed to prune old records");
@@ -84,7 +89,11 @@ impl Scheduler {
     }
 
     /// Evaluate a single user's activity for a single mode (returns UpdateResult)
-    async fn eval_activity(&self, username: &str, mode: GameMode) -> osubot_core::types::UpdateResult {
+    async fn eval_activity(
+        &self,
+        username: &str,
+        mode: GameMode,
+    ) -> osubot_core::types::UpdateResult {
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Inactive,
@@ -94,26 +103,30 @@ impl Scheduler {
         }
 
         // 1. Fetch current user stats
-        let current = match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
-            Ok(stats) => stats,
-            Err(ApiError::NotFound) => {
-                return osubot_core::types::UpdateResult {
-                    activity: UserActivity::UserNotExists,
-                    added_snapshot: false,
-                    added_records: 0,
-                };
-            }
-            Err(_) => {
-                return osubot_core::types::UpdateResult {
-                    activity: UserActivity::Inactive,
-                    added_snapshot: false,
-                    added_records: 0,
-                };
-            }
-        };
+        let current =
+            match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
+                Ok(stats) => stats,
+                Err(ApiError::NotFound) => {
+                    return osubot_core::types::UpdateResult {
+                        activity: UserActivity::UserNotExists,
+                        added_snapshot: false,
+                        added_records: 0,
+                    };
+                }
+                Err(_) => {
+                    return osubot_core::types::UpdateResult {
+                        activity: UserActivity::Inactive,
+                        added_snapshot: false,
+                        added_records: 0,
+                    };
+                }
+            };
 
         // 2. Get latest snapshot
-        let latest = self.storage.get_latest_snapshot(username, mode).unwrap_or_default();
+        let latest = self
+            .storage
+            .get_latest_snapshot(username, mode)
+            .unwrap_or_default();
 
         // 3. [Early判定 Inactive] PlayCount same且 PP == 0
         if let Some(ref snap) = latest {
@@ -127,18 +140,20 @@ impl Scheduler {
         }
 
         // 4. Save new snapshot if stats changed (save first, then calculate change)
-        let stats_changed = latest.as_ref().is_none_or(|l| l.rank != current.rank || l.pp != current.pp);
+        let stats_changed = latest
+            .as_ref()
+            .is_none_or(|l| l.rank != current.rank || l.pp != current.pp);
         let mut added_snapshot = false;
-        if stats_changed
-            && self.storage.save_stats(username, mode, &current).is_ok() {
-                added_snapshot = true;
-            }
+        if stats_changed && self.storage.save_stats(username, mode, &current).is_ok() {
+            added_snapshot = true;
+        }
 
         // 5. Get recent plays and write to database
-        let recent_plays = match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
-            Ok(plays) => plays,
-            Err(_) => Vec::new(),
-        };
+        let recent_plays =
+            match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
+                Ok(plays) => plays,
+                Err(_) => Vec::new(),
+            };
 
         // Convert API response to storage format (DateTime, timestamp)
         let records: Vec<(DateTime<Utc>, i64)> = recent_plays
@@ -146,7 +161,10 @@ impl Scheduler {
             .map(|p| (Utc::now(), p.beatmap.lastplayed))
             .collect();
 
-        let added_records = self.storage.save_play_records(username, mode, &records).unwrap_or_default();
+        let added_records = self
+            .storage
+            .save_play_records(username, mode, &records)
+            .unwrap_or_default();
 
         if added_records > 0 {
             // Has new records -> Active
@@ -159,7 +177,9 @@ impl Scheduler {
 
         // 6. Check if there are plays within last 4h (no new additions)
         let now = Utc::now();
-        let has_recent = recent_plays.iter().any(|p| (now.timestamp() - p.beatmap.lastplayed) < 4 * 3600);
+        let has_recent = recent_plays
+            .iter()
+            .any(|p| (now.timestamp() - p.beatmap.lastplayed) < 4 * 3600);
         if has_recent {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::SemiActive,
@@ -169,11 +189,19 @@ impl Scheduler {
         }
 
         // 7. Calculate change (based on newly saved or old snapshot)
-        let change = self.storage.calculate_change(username, mode, &current).unwrap_or_default();
+        let change = self
+            .storage
+            .calculate_change(username, mode, &current)
+            .unwrap_or_default();
 
         // 8. Check last update time
-        let last_update = self.storage.get_last_update(username, mode).unwrap_or_default();
-        let hours_since_update = last_update.map(|t| (now - t).num_hours()).unwrap_or(i64::MAX);
+        let last_update = self
+            .storage
+            .get_last_update(username, mode)
+            .unwrap_or_default();
+        let hours_since_update = last_update
+            .map(|t| (now - t).num_hours())
+            .unwrap_or(i64::MAX);
 
         if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {
             // Has changes
@@ -234,7 +262,12 @@ impl Scheduler {
 
     /// Trigger update for user (all 4 modes)
     pub fn trigger_update(&self, username: &str) {
-        for mode in [GameMode::Osu, GameMode::Taiko, GameMode::Catch, GameMode::Mania] {
+        for mode in [
+            GameMode::Osu,
+            GameMode::Taiko,
+            GameMode::Catch,
+            GameMode::Mania,
+        ] {
             // Check cooldown
             if !self.is_in_cooldown(username, mode) {
                 // Set next_update to now (immediate)

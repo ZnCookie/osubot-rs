@@ -98,7 +98,12 @@ fn format_float(value: f64, decimals: usize) -> String {
     let mut dec_buf = itoa::Buffer::new();
     let dec_formatted = dec_buf.format(dec_part);
 
-    format!("{}.{:0>width$}", int_result, dec_formatted, width = decimals)
+    format!(
+        "{}.{:0>width$}",
+        int_result,
+        dec_formatted,
+        width = decimals
+    )
 }
 
 /// 去除数字字符串末尾的无效零（如 33570.10 → 33570.1）
@@ -462,22 +467,32 @@ pub fn format_stats_with_change(
 
     // pp 和 accuracy 变化格式化
     let pp_change_str = format_float_change(
-        change.as_ref().and_then(|c| c.pp_change.filter(|&v| v != 0.0)),
+        change
+            .as_ref()
+            .and_then(|c| c.pp_change.filter(|&v| v != 0.0)),
         "",
     );
     let acc_change_str = format_float_change(
-        change.as_ref().and_then(|c| c.accuracy_change.filter(|&v| v != 0.0)),
+        change
+            .as_ref()
+            .and_then(|c| c.accuracy_change.filter(|&v| v != 0.0)),
         "%",
     );
 
     let playcount_change_str = format_small_change(
-        change.as_ref().and_then(|c| c.playcount_change.filter(|&v| v != 0))
+        change
+            .as_ref()
+            .and_then(|c| c.playcount_change.filter(|&v| v != 0)),
     );
     let hits_change_str = format_small_change(
-        change.as_ref().and_then(|c| c.hits_change.filter(|&v| v != 0))
+        change
+            .as_ref()
+            .and_then(|c| c.hits_change.filter(|&v| v != 0)),
     );
     let playtime_change_str = format_small_change(
-        change.as_ref().and_then(|c| c.playtime_change.filter(|&v| v != 0))
+        change
+            .as_ref()
+            .and_then(|c| c.playtime_change.filter(|&v| v != 0)),
     );
 
     // Add space before change string if non-empty
