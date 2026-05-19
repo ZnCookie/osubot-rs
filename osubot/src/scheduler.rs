@@ -62,6 +62,14 @@ impl Scheduler {
             }
         }
 
+        // Also prune expired pending binds
+        match self.storage.prune_expired_pending_binds() {
+            Ok(deleted) if deleted > 0 => {
+                info!(deleted, "pruned expired pending binds");
+            }
+            _ => {}
+        }
+
         *last = Some(now);
     }
 
