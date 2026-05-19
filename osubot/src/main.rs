@@ -16,8 +16,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use serde::Deserialize;
-use tracing::{info, error, warn, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{info, error, warn};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Clone)]
 struct QQMessage {
@@ -409,8 +409,11 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
 #[tokio::main]
 async fn main() {
     // Initialize logging
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("osubot=debug,osubot_core=debug,info"));
+
+    let subscriber = fmt::Subscriber::builder()
+        .with_env_filter(env_filter)
         .with_target(true)
         .with_thread_ids(true)
         .with_file(true)
