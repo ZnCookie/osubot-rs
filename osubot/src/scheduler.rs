@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::time;
 
 use osubot_core::{
-    api, types::{GameMode, UserActivity, UserChange},
+    api, types::{GameMode, UserActivity},
     OauthTokenCache, RateLimiter, Storage,
 };
 use osubot_core::api::ApiError;
@@ -201,17 +201,6 @@ impl Scheduler {
         let interval = self.get_update_interval(activity);
         let next = Utc::now() + interval;
         let _ = self.storage.set_next_update(username, mode, next);
-    }
-
-    /// Get user's change for a mode 4h ago snapshot and calculate change
-    pub async fn get_user_change(&self, username: &str, mode: GameMode) -> Option<UserChange> {
-        // Get current stats first to pass to calculate_change
-        let current = match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
-            Ok(stats) => stats,
-            Err(_) => return None,
-        };
-
-        self.storage.calculate_change(username, mode, &current).ok().flatten()
     }
 
     /// Trigger update for user (all 4 modes)

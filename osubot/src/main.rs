@@ -37,16 +37,8 @@ struct OneBotMessage {
     group_id: Option<i64>,
     #[serde(rename = "user_id")]
     user_id: Option<i64>,
-    #[serde(rename = "sender")]
-    sender: Option<OneBotSender>,
     #[serde(rename = "message")]
     message: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OneBotSender {
-    #[serde(rename = "user_id")]
-    user_id: Option<i64>,
 }
 
 /// Parse OneBot 11 JSON message, extract group message
@@ -333,60 +325,6 @@ async fn handle_command(
     }
 }
 
-// ============================================================================
-// spawn_blocking 示例 - CPU 密集型任务（图片生成）
-// ============================================================================
-// 所有耗时同步操作（图片生成、图像处理、文件压缩）必须通过
-// tokio::task::spawn_blocking 执行，不要直接在异步任务里跑同步重代码。
-// spawn_blocking 将任务交给独立阻塞线程池（默认 512 线程），
-// 即使主运行时是单线程，多个用户请求也可以并行执行。
-//
-// 跨线程访问共享状态必须使用 Arc（Arc<Mutex<…>> 或 Arc<Atomic…>），
-// 不能在 spawn_blocking 闭包中使用 Rc/RefCell。
-
-#[derive(Debug)]
-#[allow(dead_code)]
-enum ImageTask {
-    GenerateAvatar { username: String },
-    GenerateCard { username: String },
-}
-
-#[allow(dead_code)]
-fn generate_image_sync(_task: &ImageTask) -> Result<Vec<u8>, String> {
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    Ok(Vec::from([0u8; 1024]))
-}
-
-#[allow(dead_code)]
-async fn handle_generate_image(
-    task: ImageTask,
-    write: Arc<Mutex<WriteSink>>,
-    group_id: i64,
-    semaphore: Arc<tokio::sync::Semaphore>,
-) {
-    // 快速回复"正在处理"
-    send_group_msg(&write, group_id, "正在生成图片，请稍候...").await;
-
-    let _permit = semaphore.acquire().await.unwrap();
-
-    let result = tokio::task::spawn_blocking(move || {
-        generate_image_sync(&task)
-    }).await;
-
-    match result {
-        Ok(Ok(image_data)) => {
-            let msg = format!("图片生成完成: {} bytes", image_data.len());
-            send_group_msg(&write, group_id, &msg).await;
-        }
-        Ok(Err(e)) => {
-            let msg = format!("图片生成失败: {}", e);
-            send_group_msg(&write, group_id, &msg).await;
-        }
-        Err(_) => {
-            send_group_msg(&write, group_id, "图片生成失败: task panicked").await;
-        }
-    }
-}
 
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 type WriteSink = futures_util::stream::SplitSink<
