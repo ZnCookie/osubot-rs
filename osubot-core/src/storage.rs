@@ -145,12 +145,11 @@ impl Storage {
 
     // ==================== Binding Query ====================
 
-    /// Get QQ by osu username (case-insensitive)
-    pub fn get_qq_by_osu_username(&self, username: &str) -> SqlResult<Option<i64>> {
+    /// Get QQ by user_id
+    pub fn get_qq_by_user_id(&self, user_id: i64) -> SqlResult<Option<i64>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT qq FROM user_bindings WHERE LOWER(osu_username) = LOWER(?1)")?;
-        let mut rows = stmt.query(params![username])?;
+        let mut stmt = conn.prepare("SELECT qq FROM user_bindings WHERE user_id = ?1")?;
+        let mut rows = stmt.query(params![user_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
         } else {
@@ -158,20 +157,36 @@ impl Storage {
         }
     }
 
-    /// Bind QQ to osu username. Returns Err if username already bound to another QQ.
-    pub fn bind(&self, qq: i64, username: &str) -> SqlResult<Result<(), i64>> {
-        // Check if username is already bound to another QQ
-        if let Some(existing_qq) = self.get_qq_by_osu_username(username)? {
+    /// Get QQ by osu username (case-insensitive) - returns (user_id, qq)
+    pub fn get_binding_by_username(&self, username: &str) -> SqlResult<Option<(i64, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, qq FROM user_bindings WHERE LOWER(current_username) = LOWER(?1)",
+        )?;
+        let mut rows = stmt.query(params![username])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
+    pub fn bind(&self, qq: i64, user_id: i64, current_username: &str) -> SqlResult<Result<(), i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT qq FROM user_bindings WHERE user_id = ?1")?;
+        let mut rows = stmt.query(params![user_id])?;
+        if let Some(row) = rows.next()? {
+            let existing_qq: i64 = row.get(0)?;
             if existing_qq != qq {
-                // Username already bound to a different QQ
                 return Ok(Err(existing_qq));
             }
         }
-
-        let conn = self.conn.lock().unwrap();
+        drop(rows);
+        drop(stmt);
         conn.execute(
-            "INSERT OR REPLACE INTO user_bindings (qq, osu_username) VALUES (?1, ?2)",
-            params![qq, username],
+            "INSERT OR REPLACE INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
+            params![qq, user_id, current_username],
         )?;
         Ok(Ok(()))
     }
@@ -179,10 +194,10 @@ impl Storage {
     pub fn unbind(&self, qq: i64) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        // Get the osu username before deleting
-        let username: Option<String> = conn
+        // Get the user_id before deleting
+        let user_id: Option<i64> = conn
             .query_row(
-                "SELECT osu_username FROM user_bindings WHERE qq = ?1",
+                "SELECT user_id FROM user_bindings WHERE qq = ?1",
                 params![qq],
                 |row| row.get(0),
             )
@@ -190,17 +205,17 @@ impl Storage {
 
         conn.execute("DELETE FROM user_bindings WHERE qq = ?1", params![qq])?;
 
-        // Clean up user_next_update if no other QQ binds to this username
-        if let Some(ref u) = username {
+        // Clean up user_next_update if no other bindings for this user_id
+        if let Some(uid) = user_id {
             let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM user_bindings WHERE osu_username = ?1",
-                params![u],
+                "SELECT COUNT(*) FROM user_bindings WHERE user_id = ?1",
+                params![uid],
                 |row| row.get(0),
             )?;
             if count == 0 {
                 conn.execute(
-                    "DELETE FROM user_next_update WHERE username = ?1",
-                    params![u],
+                    "DELETE FROM user_next_update WHERE user_id = ?1",
+                    params![uid],
                 )?;
             }
         }
@@ -234,8 +249,10 @@ impl Storage {
     pub fn get_users_without_ids(&self) -> SqlResult<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT b.osu_username FROM user_bindings b
-             WHERE LOWER(b.osu_username) NOT IN (SELECT LOWER(username) FROM osu_user_ids)",
+            "SELECT b.current_username FROM user_bindings b
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM osu_user_ids o WHERE LOWER(o.username) = LOWER(b.current_username)
+             )",
         )?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         let mut result = Vec::new();
@@ -245,9 +262,20 @@ impl Storage {
         Ok(result)
     }
 
-    pub fn get_binding(&self, qq: i64) -> SqlResult<Option<String>> {
+    pub fn get_binding(&self, qq: i64) -> SqlResult<Option<(i64, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT osu_username FROM user_bindings WHERE qq = ?1")?;
+        let mut stmt = conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
+        let mut rows = stmt.query(params![qq])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_binding_username(&self, qq: i64) -> SqlResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT current_username FROM user_bindings WHERE qq = ?1")?;
         let mut rows = stmt.query(params![qq])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -256,15 +284,35 @@ impl Storage {
         }
     }
 
-    // ==================== Snapshot Operations ====================
+    pub fn get_user_id_by_qq(&self, qq: i64) -> SqlResult<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT user_id FROM user_bindings WHERE qq = ?1")?;
+        let mut rows = stmt.query(params![qq])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
 
-    pub fn save_stats(&self, username: &str, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
+    pub fn update_binding_username(&self, qq: i64, new_username: &str) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO user_stats_history (username, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+            "UPDATE user_bindings SET current_username = ?1 WHERE qq = ?2",
+            params![new_username, qq],
+        )?;
+        Ok(())
+    }
+
+    // ==================== Snapshot Operations ====================
+
+    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                username,
+                user_id,
                 mode as i32,
                 Utc::now().to_rfc3339(),
                 stats.pp,
@@ -282,30 +330,30 @@ impl Storage {
 
     pub fn get_latest_snapshot(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
     ) -> SqlResult<Option<UserStats>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT username, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
+            "SELECT pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
              FROM user_stats_history
-             WHERE username = ?1 AND mode = ?2
+             WHERE user_id = ?1 AND mode = ?2
              ORDER BY recorded_at DESC
              LIMIT 1",
         )?;
-        let mut rows = stmt.query(params![username, mode as i32])?;
+        let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             Ok(Some(UserStats {
-                username: row.get(0)?,
-                pp: row.get(1)?,
-                rank: row.get(2)?,
-                country_rank: row.get(3)?,
+                username: String::new(), // Caller must set this
+                pp: row.get(0)?,
+                rank: row.get(1)?,
+                country_rank: row.get(2)?,
                 country_code: "XX".to_string(), // Historical data doesn't store country_code
-                ranked_score: row.get(4)?,
-                accuracy: row.get(5)?,
-                playcount: row.get(6)?,
-                hits: row.get(7)?,
-                playtime: row.get(8)?,
+                ranked_score: row.get(3)?,
+                accuracy: row.get(4)?,
+                playcount: row.get(5)?,
+                hits: row.get(6)?,
+                playtime: row.get(7)?,
                 rank_change: None,
                 country_rank_change: None,
             }))
@@ -316,7 +364,7 @@ impl Storage {
 
     pub fn get_snapshots_within_hours(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
         hours: i64,
     ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
@@ -325,28 +373,27 @@ impl Storage {
         let cutoff_str = cutoff.to_rfc3339();
 
         let mut stmt = conn.prepare(
-            "SELECT username, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
+            "SELECT recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
              FROM user_stats_history
-             WHERE username = ?1 AND mode = ?2 AND recorded_at >= ?3
+             WHERE user_id = ?1 AND mode = ?2 AND recorded_at >= ?3
              ORDER BY recorded_at ASC",
         )?;
 
-        let rows = stmt.query_map(params![username, mode as i32, cutoff_str], |row| {
-            let recorded_str: String = row.get(1)?;
-            let username: String = row.get(0)?;
+        let rows = stmt.query_map(params![user_id, mode as i32, cutoff_str], |row| {
+            let recorded_str: String = row.get(0)?;
             Ok((
                 recorded_str,
                 UserStats {
-                    username,
-                    pp: row.get(2)?,
-                    rank: row.get(3)?,
-                    country_rank: row.get(4)?,
+                    username: String::new(), // Caller must set this
+                    pp: row.get(1)?,
+                    rank: row.get(2)?,
+                    country_rank: row.get(3)?,
                     country_code: "XX".to_string(), // Historical data doesn't store country_code
-                    ranked_score: row.get(5)?,
-                    accuracy: row.get(6)?,
-                    playcount: row.get(7)?,
-                    hits: row.get(8)?,
-                    playtime: row.get(9)?,
+                    ranked_score: row.get(4)?,
+                    accuracy: row.get(5)?,
+                    playcount: row.get(6)?,
+                    hits: row.get(7)?,
+                    playtime: row.get(8)?,
                     rank_change: None,
                     country_rank_change: None,
                 },
@@ -367,7 +414,7 @@ impl Storage {
 
     pub fn get_closest_snapshot_to_hours_ago(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
@@ -376,7 +423,7 @@ impl Storage {
         let target_time = now - chrono::Duration::hours(target_hours_ago);
         let earliest = now - chrono::Duration::hours(max_lookback);
 
-        let all = self.get_snapshots_within_hours(username, mode, max_lookback)?;
+        let all = self.get_snapshots_within_hours(user_id, mode, max_lookback)?;
 
         let candidates: Vec<_> = all.into_iter().filter(|(dt, _)| *dt >= earliest).collect();
 
@@ -396,7 +443,7 @@ impl Storage {
 
     pub fn save_play_records(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
         timestamps: &[i64],
     ) -> SqlResult<i32> {
@@ -405,8 +452,8 @@ impl Storage {
 
         for &timestamp in timestamps {
             let result = conn.execute(
-                "INSERT OR IGNORE INTO user_play_records (username, mode, played_at) VALUES (?1, ?2, ?3)",
-                params![username, mode as i32, timestamp],
+                "INSERT OR IGNORE INTO user_play_records (user_id, mode, played_at) VALUES (?1, ?2, ?3)",
+                params![user_id, mode as i32, timestamp],
             );
             if let Ok(count) = result {
                 inserted += count as i32;
@@ -416,12 +463,12 @@ impl Storage {
     }
 
     /// Check if user has any play records since the given UTC timestamp
-    pub fn has_play_since(&self, username: &str, mode: GameMode, since_ts: i64) -> SqlResult<bool> {
+    pub fn has_play_since(&self, user_id: i64, mode: GameMode, since_ts: i64) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT 1 FROM user_play_records WHERE username = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
+            "SELECT 1 FROM user_play_records WHERE user_id = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
         )?;
-        let exists = stmt.query_row(params![username, mode as i32, since_ts], |_| Ok(()));
+        let exists = stmt.query_row(params![user_id, mode as i32, since_ts], |_| Ok(()));
         Ok(exists.is_ok())
     }
 
@@ -429,11 +476,11 @@ impl Storage {
 
     pub fn calculate_change(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
         current: &UserStats,
     ) -> SqlResult<Option<UserChange>> {
-        let snapshot = self.get_closest_snapshot_to_hours_ago(username, mode, 24, 36)?;
+        let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)?;
 
         match snapshot {
             None => Ok(None),
@@ -481,14 +528,14 @@ impl Storage {
 
     pub fn get_last_update(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
     ) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT last_update FROM user_last_update WHERE username = ?1 AND mode = ?2",
+            "SELECT last_update FROM user_last_update WHERE user_id = ?1 AND mode = ?2",
         )?;
-        let mut rows = stmt.query(params![username, mode as i32])?;
+        let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             let last_update_str: String = row.get(0)?;
             if let Ok(dt) = DateTime::parse_from_rfc3339(&last_update_str) {
@@ -500,14 +547,14 @@ impl Storage {
 
     pub fn set_last_update(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
         time: DateTime<Utc>,
     ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO user_last_update (username, mode, last_update) VALUES (?1, ?2, ?3)",
-            params![username, mode as i32, time.to_rfc3339()],
+            "INSERT OR REPLACE INTO user_last_update (user_id, mode, last_update) VALUES (?1, ?2, ?3)",
+            params![user_id, mode as i32, time.to_rfc3339()],
         )?;
         Ok(())
     }
@@ -516,14 +563,14 @@ impl Storage {
 
     pub fn get_next_update(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
     ) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT next_update FROM user_next_update WHERE username = ?1 AND mode = ?2",
+            "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2",
         )?;
-        let mut rows = stmt.query(params![username, mode as i32])?;
+        let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             let ts: i64 = row.get(0)?;
             return Ok(Some(
@@ -535,47 +582,46 @@ impl Storage {
 
     pub fn set_next_update(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
         time: DateTime<Utc>,
     ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO user_next_update (username, mode, next_update) VALUES (?1, ?2, ?3)",
-            params![username, mode as i32, time.timestamp()],
+            "INSERT OR REPLACE INTO user_next_update (user_id, mode, next_update) VALUES (?1, ?2, ?3)",
+            params![user_id, mode as i32, time.timestamp()],
         )?;
         Ok(())
     }
 
     // ==================== All Mode Bindings Query ====================
 
-    pub fn get_all_bindings(&self, qq: i64) -> SqlResult<Vec<(GameMode, String)>> {
+    pub fn get_all_bindings(&self, qq: i64) -> SqlResult<Vec<(GameMode, i64, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT osu_username FROM user_bindings WHERE qq = ?1")?;
+        let mut stmt = conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
         let mut rows = stmt.query(params![qq])?;
         let mut results = Vec::new();
 
-        // We can't directly join, so we return all bindings for this QQ
-        // Since user_bindings only stores one username per QQ, we return that for all modes
         if let Some(row) = rows.next()? {
-            let username: String = row.get(0)?;
+            let user_id: i64 = row.get(0)?;
+            let current_username: String = row.get(1)?;
             for mode in [
                 GameMode::Osu,
                 GameMode::Taiko,
                 GameMode::Catch,
                 GameMode::Mania,
             ] {
-                results.push((mode, username.clone()));
+                results.push((mode, user_id, current_username.clone()));
             }
         }
         Ok(results)
     }
 
-    /// Get all user bindings (qq -> username mappings)
-    pub fn get_all_user_bindings(&self) -> SqlResult<Vec<(i64, String)>> {
+    /// Get all user bindings (qq -> user_id, current_username mappings)
+    pub fn get_all_user_bindings(&self) -> SqlResult<Vec<(i64, i64, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT qq, osu_username FROM user_bindings")?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut stmt = conn.prepare("SELECT qq, user_id, current_username FROM user_bindings")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -585,16 +631,14 @@ impl Storage {
 
     // ==================== Due Users Query ====================
 
-    pub fn get_due_users(&self) -> SqlResult<Vec<(String, GameMode)>> {
+    pub fn get_due_users(&self) -> SqlResult<Vec<(i64, GameMode)>> {
         let conn = self.conn.lock().unwrap();
         let now_ts = Utc::now().timestamp();
 
-        // Part 1: users with next_update <= now (scheduled due users)
-        // Part 2: bound users not yet in user_next_update (catch stray bindings)
         let mut stmt = conn.prepare(
-            "SELECT username, mode FROM user_next_update WHERE next_update <= ?1
+            "SELECT user_id, mode FROM user_next_update WHERE next_update <= ?1
             UNION
-            SELECT b.osu_username AS username, m.mode
+            SELECT b.user_id AS user_id, m.mode
             FROM user_bindings b
             CROSS JOIN (
             SELECT 0 AS mode
@@ -604,11 +648,11 @@ impl Storage {
             ) AS m
             WHERE NOT EXISTS (
                 SELECT 1 FROM user_next_update n
-                WHERE n.username = b.osu_username AND n.mode = m.mode
+                WHERE n.user_id = b.user_id AND n.mode = m.mode
             )",
         )?;
         let rows = stmt.query_map(params![now_ts], |row| {
-            let username: String = row.get(0)?;
+            let user_id: i64 = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
             let mode = match mode_int {
                 0 => GameMode::Osu,
@@ -617,7 +661,7 @@ impl Storage {
                 3 => GameMode::Mania,
                 _ => GameMode::Osu,
             };
-            Ok((username, mode))
+            Ok((user_id, mode))
         })?;
 
         let mut results = Vec::new();
@@ -686,7 +730,7 @@ impl Storage {
 
         // Clean up user_next_update rows for users no longer bound
         let deleted_next = conn.execute(
-            "DELETE FROM user_next_update WHERE username NOT IN (SELECT DISTINCT osu_username FROM user_bindings)",
+            "DELETE FROM user_next_update WHERE user_id NOT IN (SELECT DISTINCT user_id FROM user_bindings)",
             [],
         )? as u64;
 

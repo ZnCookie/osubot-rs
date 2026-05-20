@@ -52,10 +52,10 @@ impl From<rusqlite::Error> for HighlightError {
 /// Get the snapshot closest to 24 hours ago (within 36 hour window) for a user
 fn get_baseline_snapshot(
     storage: &Storage,
-    username: &str,
+    user_id: i64,
     mode: GameMode,
 ) -> Result<Option<UserStats>, rusqlite::Error> {
-    let all = storage.get_snapshots_within_hours(username, mode, 36)?;
+    let all = storage.get_snapshots_within_hours(user_id, mode, 36)?;
 
     if all.is_empty() {
         return Ok(None);
@@ -86,7 +86,12 @@ pub async fn get_highlight(
     let mut user_highlights: Vec<UserHighlight> = Vec::new();
 
     for (_qq, username) in user_data {
-        let baseline = match get_baseline_snapshot(storage, username, mode) {
+        // Get user_id for storage queries
+        let user_id = match storage.get_user_id_by_qq(*_qq)? {
+            Some(uid) => uid,
+            None => continue,
+        };
+        let baseline = match get_baseline_snapshot(storage, user_id, mode) {
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(_) => {
