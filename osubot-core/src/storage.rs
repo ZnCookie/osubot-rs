@@ -10,11 +10,16 @@ pub fn today_0am_utc() -> i64 {
     let local_now = chrono::Local::now();
     let today_local = local_now.date_naive();
     let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
-    Local
+    // .single() returns None when midnight doesn't exist (DST spring-forward)
+    // or is ambiguous (DST fall-back); fall back to 1:00 AM in that case.
+    let dt = Local
         .from_local_datetime(&today_0am_local)
-        .unwrap()
-        .with_timezone(&Utc)
-        .timestamp()
+        .single()
+        .unwrap_or_else(|| {
+            let fallback = today_0am_local + chrono::Duration::hours(1);
+            Local.from_local_datetime(&fallback).earliest().unwrap()
+        });
+    dt.with_timezone(&Utc).timestamp()
 }
 
 pub struct Storage {

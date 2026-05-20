@@ -90,7 +90,7 @@ impl UserChange {
 pub enum UserActivity {
     SemiActive, // 4h内有游玩记录
     Normal,     // 当日有游玩记录
-    NoRecent,   // 4~8h无游玩记录
+    NoRecent,   // 当日无游玩记录，8h内有活动
     Inactive,   // 48h以上无游玩记录
     UserNotExists,
 }

@@ -39,6 +39,10 @@ pub struct SchedulerConfig {
     pub normal_interval_hours: i64,
     #[serde(default = "default_inactive_interval_hours")]
     pub inactive_interval_hours: i64,
+    #[serde(default = "default_no_recent_interval_hours")]
+    pub no_recent_interval_hours: i64,
+    #[serde(default = "default_user_not_exists_interval_hours")]
+    pub user_not_exists_interval_hours: i64,
     #[serde(default = "default_group_trigger_cooldown_hours")]
     pub group_trigger_cooldown_hours: i64,
     #[serde(default = "default_retention_days")]
@@ -57,6 +61,12 @@ fn default_normal_interval_hours() -> i64 {
 fn default_inactive_interval_hours() -> i64 {
     48
 }
+fn default_no_recent_interval_hours() -> i64 {
+    6
+}
+fn default_user_not_exists_interval_hours() -> i64 {
+    24
+}
 fn default_group_trigger_cooldown_hours() -> i64 {
     1
 }
@@ -71,6 +81,8 @@ impl Default for SchedulerConfig {
             semi_active_interval_hours: 4,
             normal_interval_hours: 8,
             inactive_interval_hours: 48,
+            no_recent_interval_hours: 6,
+            user_not_exists_interval_hours: 24,
             group_trigger_cooldown_hours: 1,
             retention_days: 180,
         }

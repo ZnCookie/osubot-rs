@@ -16,6 +16,8 @@ path = "osubot.db"
 # semi_active_interval_hours = 4      # 4h内有游玩记录
 # normal_interval_hours = 8           # 当日有游玩记录
 # inactive_interval_hours = 48       # 48h以上无游玩记录
+# no_recent_interval_hours = 6       # 无最近游玩记录
+# user_not_exists_interval_hours = 24 # 用户不存在
 # group_trigger_cooldown_hours = 1
 # retention_days = 180
 

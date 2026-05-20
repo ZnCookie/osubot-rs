@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
@@ -7,6 +7,7 @@ use tracing::{error, info, warn};
 use osubot_core::api::ApiError;
 use osubot_core::{
     api,
+    storage::today_0am_utc,
     types::{GameMode, UserActivity},
     OauthTokenCache, RateLimiter, Storage,
 };
@@ -36,18 +37,6 @@ impl Scheduler {
             config,
             last_cleanup: Arc::new(TokioMutex::new(None)),
         }
-    }
-
-    /// Returns UTC timestamp of today's 0:00 AM in local timezone
-    fn today_0am_utc(&self) -> i64 {
-        let local_now = Local::now();
-        let today_local = local_now.date_naive();
-        let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
-        Local
-            .from_local_datetime(&today_0am_local)
-            .unwrap()
-            .with_timezone(&Utc)
-            .timestamp()
     }
 
     /// Try to run cleanup if 24h have passed since last run.
@@ -149,8 +138,17 @@ impl Scheduler {
                 }
             };
 
-        // Always save snapshot (always runs, not conditional on changes)
-        let added_snapshot = self.storage.save_stats(username, mode, &current).is_ok();
+        // Save snapshot only when stats changed (rank or playcount differ)
+        let added_snapshot = match self.storage.get_latest_snapshot(username, mode) {
+            Ok(Some(prev)) => {
+                if prev.rank != current.rank || prev.playcount != current.playcount {
+                    self.storage.save_stats(username, mode, &current).is_ok()
+                } else {
+                    false
+                }
+            }
+            _ => self.storage.save_stats(username, mode, &current).is_ok(),
+        };
 
         // Always fetch and save recent plays
         let recent_plays = match self.resolve_user_id(username).await {
@@ -180,9 +178,9 @@ impl Scheduler {
             })
             .collect();
 
-        self.storage
-            .save_play_records(username, mode, &records)
-            .ok();
+        if let Err(e) = self.storage.save_play_records(username, mode, &records) {
+            error!("Failed to save play records for {username}/{mode:?}: {e}");
+        }
 
         // Activity determination based on play records (no more API calls needed)
         let has_recent = self
@@ -192,7 +190,7 @@ impl Scheduler {
 
         let has_today = self
             .storage
-            .has_play_since(username, mode, self.today_0am_utc())
+            .has_play_since(username, mode, today_0am_utc())
             .unwrap_or(false);
 
         let activity = if has_recent {
@@ -222,9 +220,12 @@ impl Scheduler {
             }
         };
 
-        // Update last_update timestamp
-        if let Err(e) = self.storage.set_last_update(username, mode, now) {
-            warn!("Failed to set last update for {username}/{mode:?}: {e}");
+        // Update last_update only when we detected actual activity,
+        // so the fallback branches can measure time-since-last-activity correctly.
+        if matches!(activity, UserActivity::SemiActive | UserActivity::Normal) {
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
         }
 
         osubot_core::types::UpdateResult {
@@ -239,8 +240,10 @@ impl Scheduler {
             UserActivity::SemiActive => Duration::hours(self.config.semi_active_interval_hours),
             UserActivity::Normal => Duration::hours(self.config.normal_interval_hours),
             UserActivity::Inactive => Duration::hours(self.config.inactive_interval_hours),
-            UserActivity::NoRecent => Duration::hours(6),
-            UserActivity::UserNotExists => Duration::hours(24),
+            UserActivity::NoRecent => Duration::hours(self.config.no_recent_interval_hours),
+            UserActivity::UserNotExists => {
+                Duration::hours(self.config.user_not_exists_interval_hours)
+            }
         }
     }
 
