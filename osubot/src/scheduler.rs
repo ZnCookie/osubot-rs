@@ -286,9 +286,6 @@ impl Scheduler {
             };
         }
         if hours_since_update < 48 {
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
-            }
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Normal,
                 added_snapshot: false,
