@@ -1,9 +1,21 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
 use std::sync::Mutex;
 
 use crate::types::{GameMode, UserChange, UserStats};
+
+/// Returns UTC timestamp of today's 0:00 AM in local timezone
+pub fn today_0am_utc() -> i64 {
+    let local_now = chrono::Local::now();
+    let today_local = local_now.date_naive();
+    let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
+    Local
+        .from_local_datetime(&today_0am_local)
+        .unwrap()
+        .with_timezone(&Utc)
+        .timestamp()
+}
 
 pub struct Storage {
     conn: Mutex<Connection>,
@@ -414,6 +426,16 @@ impl Storage {
         let count: i64 =
             stmt.query_row(params![username, mode as i32, cutoff_ts], |row| row.get(0))?;
         Ok(count)
+    }
+
+    /// Check if user has any play records since the given UTC timestamp
+    pub fn has_play_since(&self, username: &str, mode: GameMode, since_ts: i64) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM user_play_records WHERE username = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
+        )?;
+        let exists = stmt.query_row(params![username, mode as i32, since_ts], |_| Ok(()));
+        Ok(exists.is_ok())
     }
 
     // ==================== Change Calculation ====================

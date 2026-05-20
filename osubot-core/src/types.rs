@@ -100,5 +100,4 @@ pub enum UserActivity {
 pub struct UpdateResult {
     pub activity: UserActivity,
     pub added_snapshot: bool,
-    pub added_records: i32,
 }

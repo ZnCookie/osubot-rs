@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
@@ -36,6 +36,18 @@ impl Scheduler {
             config,
             last_cleanup: Arc::new(TokioMutex::new(None)),
         }
+    }
+
+    /// Returns UTC timestamp of today's 0:00 AM in local timezone
+    fn today_0am_utc(&self) -> i64 {
+        let local_now = Local::now();
+        let today_local = local_now.date_naive();
+        let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
+        Local
+            .from_local_datetime(&today_0am_local)
+            .unwrap()
+            .with_timezone(&Utc)
+            .timestamp()
     }
 
     /// Try to run cleanup if 24h have passed since last run.
@@ -103,7 +115,7 @@ impl Scheduler {
         self.try_cleanup().await;
     }
 
-    /// Evaluate a single user's activity for a single mode (returns UpdateResult)
+    /// Evaluate a single user's activity for a single mode
     async fn eval_activity(
         &self,
         username: &str,
@@ -111,15 +123,15 @@ impl Scheduler {
     ) -> osubot_core::types::UpdateResult {
         let now = Utc::now();
 
+        // Check rate limit before API calls
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Inactive,
                 added_snapshot: false,
-                added_records: 0,
             };
         }
 
-        // 1. Fetch current user stats
+        // Always fetch current stats and recent plays (API calls)
         let current =
             match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
                 Ok(stats) => stats,
@@ -127,58 +139,24 @@ impl Scheduler {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::UserNotExists,
                         added_snapshot: false,
-                        added_records: 0,
                     };
                 }
                 Err(_) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::Inactive,
                         added_snapshot: false,
-                        added_records: 0,
                     };
                 }
             };
 
-        // 2. Get latest snapshot
-        let latest = self
-            .storage
-            .get_latest_snapshot(username, mode)
-            .unwrap_or_default();
+        // Always save snapshot (always runs, not conditional on changes)
+        let added_snapshot = self.storage.save_stats(username, mode, &current).is_ok();
 
-        // 3. [Early判定 Inactive] PlayCount same且 PP == 0
-        if let Some(ref snap) = latest {
-            if current.playcount == snap.playcount && current.pp == 0.0 {
-                return osubot_core::types::UpdateResult {
-                    activity: UserActivity::Inactive,
-                    added_snapshot: false,
-                    added_records: 0,
-                };
-            }
-        }
-
-        // 4. Save new snapshot if stats changed (save first, then calculate change)
-        let stats_changed = latest
-            .as_ref()
-            .is_none_or(|l| l.rank != current.rank || l.pp != current.pp);
-        let mut added_snapshot = false;
-        if stats_changed && self.storage.save_stats(username, mode, &current).is_ok() {
-            added_snapshot = true;
-        }
-
-        // 5. Get recent plays and write to database
+        // Always fetch and save recent plays
         let recent_plays = match self.resolve_user_id(username).await {
             Some(user_id) => {
                 match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
-                    Ok(plays) => {
-                        info!(
-                            "Fetched {} recent plays for {} (id={}) mode {:?}",
-                            plays.len(),
-                            username,
-                            user_id,
-                            mode
-                        );
-                        plays
-                    }
+                    Ok(plays) => plays,
                     Err(e) => {
                         error!("Failed to fetch recent plays for {username}: {e:?}");
                         Vec::new()
@@ -202,100 +180,56 @@ impl Scheduler {
             })
             .collect();
 
-        info!(
-            "Parsed {} valid timestamps for {} mode {:?}",
-            records.len(),
-            username,
-            mode
-        );
-
-        let added_records = self
-            .storage
+        self.storage
             .save_play_records(username, mode, &records)
-            .unwrap_or_default();
+            .ok();
 
-        if added_records > 0 {
-            // Has new records -> Active
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
-            }
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::Active,
-                added_snapshot,
-                added_records,
-            };
-        }
-
-        // 6. Check if there are plays within last 4h (no new additions)
-        let has_recent = recent_plays.iter().any(|p| {
-            DateTime::parse_from_rfc3339(&p.created_at)
-                .map(|t| (now - t.with_timezone(&Utc)).num_hours() < 4)
-                .unwrap_or(false)
-        });
-        if has_recent {
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
-            }
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::SemiActive,
-                added_snapshot,
-                added_records: 0,
-            };
-        }
-
-        // 7. Calculate change (based on newly saved or old snapshot)
-        let change = self
+        // Activity determination based on play records (no more API calls needed)
+        let has_recent = self
             .storage
-            .calculate_change(username, mode, &current)
-            .unwrap_or_default();
+            .has_play_since(username, mode, (now - Duration::hours(4)).timestamp())
+            .unwrap_or(false);
 
-        // 8. Check last update time
-        let last_update = self
+        let has_today = self
             .storage
-            .get_last_update(username, mode)
-            .unwrap_or_default();
-        let hours_since_update = last_update
-            .map(|t| (now - t).num_hours())
-            .unwrap_or(i64::MAX);
+            .has_play_since(username, mode, self.today_0am_utc())
+            .unwrap_or(false);
 
-        if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {
-            // Has changes
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+        let activity = if has_recent {
+            UserActivity::SemiActive
+        } else if has_today {
+            UserActivity::Normal
+        } else {
+            // No play records today - use rank and last_update time
+            if current.rank == 0 {
+                UserActivity::UserNotExists
+            } else {
+                let last_update = self
+                    .storage
+                    .get_last_update(username, mode)
+                    .unwrap_or_default();
+                let hours_since = last_update
+                    .map(|t| (now - t).num_hours())
+                    .unwrap_or(i64::MAX);
+
+                if hours_since < 8 {
+                    UserActivity::NoRecent
+                } else if hours_since < 48 {
+                    UserActivity::Normal
+                } else {
+                    UserActivity::Inactive
+                }
             }
-            if hours_since_update < 4 {
-                return osubot_core::types::UpdateResult {
-                    activity: UserActivity::NoRecent,
-                    added_snapshot: true,
-                    added_records: 0,
-                };
-            }
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::Normal,
-                added_snapshot: true,
-                added_records: 0,
-            };
+        };
+
+        // Update last_update timestamp
+        if let Err(e) = self.storage.set_last_update(username, mode, now) {
+            warn!("Failed to set last update for {username}/{mode:?}: {e}");
         }
 
-        // No changes
-        if hours_since_update < 8 {
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::NoRecent,
-                added_snapshot: false,
-                added_records: 0,
-            };
-        }
-        if hours_since_update < 48 {
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::Normal,
-                added_snapshot: false,
-                added_records: 0,
-            };
-        }
         osubot_core::types::UpdateResult {
-            activity: UserActivity::Inactive,
-            added_snapshot: false,
-            added_records: 0,
+            activity,
+            added_snapshot,
         }
     }
 
@@ -346,7 +280,7 @@ impl Scheduler {
         false
     }
 
-    /// Get cached user_id, or fetch + cache on the fly
+    /// Get cached user_id, or fetch and cache on the fly
     async fn resolve_user_id(&self, username: &str) -> Option<i64> {
         match self.storage.get_user_id(username) {
             Ok(Some(id)) if id != 0 => return Some(id),
