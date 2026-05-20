@@ -168,13 +168,11 @@ impl OauthTokenCache {
     }
 }
 
-/// Fetch user stats by username (for where <username> command)
-/// Pure digit username gets @ prefix so API treats it as username lookup
-pub async fn fetch_user_stats_by_username(
+/// Internal helper for fetching user stats from osu! API
+async fn fetch_user_stats_internal(
     rate_limiter: &RateLimiter,
     oauth: &OauthTokenCache,
-    username: &str,
-    mode: GameMode,
+    url: &str,
 ) -> Result<UserStats, ApiError> {
     let mut retry_count = 0;
     let max_retries = 5;
@@ -182,27 +180,12 @@ pub async fn fetch_user_stats_by_username(
 
     loop {
         let access_token = oauth.get_token().await?;
-        rate_limiter
-            .acquire()
-            .await
-            .map_err(|_| ApiError::RateLimited)?;
+        rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
 
         let client = Client::new();
-        let mode_param = mode.api_value();
-
-        let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
-            format!("@{}", username)
-        } else {
-            username.to_string()
-        };
-
-        let url = format!(
-            "https://osu.ppy.sh/api/v2/users/{}/{}",
-            url_username, mode_param
-        );
 
         let resp = client
-            .get(&url)
+            .get(url)
             .header("Authorization", format!("Bearer {}", access_token))
             .send()
             .await?;
@@ -210,8 +193,7 @@ pub async fn fetch_user_stats_by_username(
         if resp.status() == 401 {
             oauth.invalidate();
             if retry_count < max_retries {
-                let delay =
-                    Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
+                let delay = Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
                 retry_count += 1;
                 tokio::time::sleep(delay).await;
                 continue;
@@ -231,13 +213,8 @@ pub async fn fetch_user_stats_by_username(
 
         let stats = match data.statistics {
             Some(s) => s,
-            None => {
-                return Err(ApiError::NotFound);
-            }
+            None => return Err(ApiError::NotFound),
         };
-
-        let rank_change = None;
-        let country_rank_change = None;
 
         return Ok(UserStats {
             username: data.username,
@@ -250,10 +227,28 @@ pub async fn fetch_user_stats_by_username(
             playcount: stats.playcount.unwrap_or(0),
             hits: stats.hits.unwrap_or(0),
             playtime: stats.playtime.unwrap_or(0),
-            rank_change,
-            country_rank_change,
+            rank_change: None,
+            country_rank_change: None,
         });
     }
+}
+
+/// Fetch user stats by username (for where <username> command)
+/// Pure digit username gets @ prefix so API treats it as username lookup
+pub async fn fetch_user_stats_by_username(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    username: &str,
+    mode: GameMode,
+) -> Result<UserStats, ApiError> {
+    let mode_param = mode.api_value();
+    let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
+        format!("@{}", username)
+    } else {
+        username.to_string()
+    };
+    let url = format!("https://osu.ppy.sh/api/v2/users/{}/{}", url_username, mode_param);
+    fetch_user_stats_internal(rate_limiter, oauth, &url).await
 }
 
 /// Fetch user stats by numeric user_id (for internal/scheduler use)
@@ -264,78 +259,9 @@ pub async fn fetch_user_stats_by_user_id(
     user_id: i64,
     mode: GameMode,
 ) -> Result<UserStats, ApiError> {
-    let mut retry_count = 0;
-    let max_retries = 5;
-    let base_delay = Duration::from_secs(1);
-
-    loop {
-        let access_token = oauth.get_token().await?;
-        rate_limiter
-            .acquire()
-            .await
-            .map_err(|_| ApiError::RateLimited)?;
-
-        let client = Client::new();
-        let mode_param = mode.api_value();
-
-        let url = format!(
-            "https://osu.ppy.sh/api/v2/users/{}/{}",
-            user_id, mode_param
-        );
-
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", access_token))
-            .send()
-            .await?;
-
-        if resp.status() == 401 {
-            oauth.invalidate();
-            if retry_count < max_retries {
-                let delay =
-                    Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
-                retry_count += 1;
-                tokio::time::sleep(delay).await;
-                continue;
-            }
-            return Err(ApiError::OAuthError);
-        }
-
-        if resp.status() == 404 {
-            return Err(ApiError::NotFound);
-        }
-
-        if !resp.status().is_success() {
-            return Err(ApiError::InvalidResponse);
-        }
-
-        let data: OsuApiV2User = resp.json().await?;
-
-        let stats = match data.statistics {
-            Some(s) => s,
-            None => {
-                return Err(ApiError::NotFound);
-            }
-        };
-
-        let rank_change = None;
-        let country_rank_change = None;
-
-        return Ok(UserStats {
-            username: data.username,
-            pp: stats.pp.unwrap_or(0.0),
-            rank: stats.rank.unwrap_or(0),
-            country_rank: stats.country_rank.unwrap_or(0),
-            country_code: data.country_code.unwrap_or_else(|| "XX".to_string()),
-            ranked_score: stats.ranked_score.unwrap_or(0),
-            accuracy: stats.accuracy.unwrap_or(0.0),
-            playcount: stats.playcount.unwrap_or(0),
-            hits: stats.hits.unwrap_or(0),
-            playtime: stats.playtime.unwrap_or(0),
-            rank_change,
-            country_rank_change,
-        });
-    }
+    let mode_param = mode.api_value();
+    let url = format!("https://osu.ppy.sh/api/v2/users/{}/{}", user_id, mode_param);
+    fetch_user_stats_internal(rate_limiter, oauth, &url).await
 }
 
 /// Get user's recent plays from osu! API v2 (requires numeric user ID)
