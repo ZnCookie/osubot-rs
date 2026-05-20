@@ -50,10 +50,11 @@ impl Scheduler {
         }
 
         match self.storage.prune_old_records(self.config.retention_days) {
-            Ok((stats, plays)) => {
+            Ok((stats, plays, next)) => {
                 info!(
                     deleted_stats = stats,
                     deleted_plays = plays,
+                    deleted_next = next,
                     "pruned old records"
                 );
             }

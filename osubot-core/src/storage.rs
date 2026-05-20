@@ -152,7 +152,33 @@ impl Storage {
 
     pub fn unbind(&self, qq: i64) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
+
+        // Get the osu username before deleting
+        let username: Option<String> = conn
+            .query_row(
+                "SELECT osu_username FROM user_bindings WHERE qq = ?1",
+                params![qq],
+                |row| row.get(0),
+            )
+            .ok();
+
         conn.execute("DELETE FROM user_bindings WHERE qq = ?1", params![qq])?;
+
+        // Clean up user_next_update if no other QQ binds to this username
+        if let Some(ref u) = username {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM user_bindings WHERE osu_username = ?1",
+                params![u],
+                |row| row.get(0),
+            )?;
+            if count == 0 {
+                conn.execute(
+                    "DELETE FROM user_next_update WHERE username = ?1",
+                    params![u],
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -512,7 +538,7 @@ impl Storage {
         // Part 2: bound users not yet in user_next_update (catch stray bindings)
         let mut stmt = conn.prepare(
             "SELECT username, mode FROM user_next_update WHERE next_update <= ?1
-            UNION ALL
+            UNION
             SELECT b.osu_username AS username, m.mode
             FROM user_bindings b
             CROSS JOIN (VALUES (0), (1), (2), (3)) AS m(mode)
@@ -580,7 +606,7 @@ impl Storage {
 
     /// Prune records older than retention_days from stats history and play records.
     /// Returns (deleted_stats, deleted_play_records).
-    pub fn prune_old_records(&self, retention_days: i64) -> SqlResult<(u64, u64)> {
+    pub fn prune_old_records(&self, retention_days: i64) -> SqlResult<(u64, u64, u64)> {
         let conn = self.conn.lock().unwrap();
 
         let cutoff_stats = Utc::now() - chrono::Duration::days(retention_days);
@@ -598,7 +624,13 @@ impl Storage {
             params![cutoff_plays_ts],
         )? as u64;
 
-        Ok((deleted_stats, deleted_plays))
+        // Clean up user_next_update rows for users no longer bound
+        let deleted_next = conn.execute(
+            "DELETE FROM user_next_update WHERE username NOT IN (SELECT DISTINCT osu_username FROM user_bindings)",
+            [],
+        )? as u64;
+
+        Ok((deleted_stats, deleted_plays, deleted_next))
     }
 }
 
