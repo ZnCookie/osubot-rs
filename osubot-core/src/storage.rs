@@ -203,9 +203,8 @@ impl Storage {
     /// Get cached osu! user ID (case-insensitive username lookup)
     pub fn get_user_id(&self, username: &str) -> SqlResult<Option<i64>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)")?;
         let mut rows = stmt.query(params![username])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))

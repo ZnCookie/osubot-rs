@@ -330,21 +330,24 @@ async fn handle_command(
                                     warn!("Failed to cache user_id for {username}: {e}");
                                 }
                                 match storage.bind(msg.user_id, &username) {
-                                Ok(Ok(())) => {
-                                    info!(user_id = msg.user_id, username = %username, "Bind success");
-                                    let _ = resp_tx.send(format!("成功绑定为{}", username)).await;
-                                }
-                                Ok(Err(bound_qq)) => {
-                                    info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
-                                    let _ =
-                                        resp_tx.send("该 osu! 用户已绑定其他QQ".to_string()).await;
-                                }
-                                Err(_) => {
-                                    error!(user_id = msg.user_id, username = %username, "Bind failed");
-                                    let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                    Ok(Ok(())) => {
+                                        info!(user_id = msg.user_id, username = %username, "Bind success");
+                                        let _ =
+                                            resp_tx.send(format!("成功绑定为{}", username)).await;
+                                    }
+                                    Ok(Err(bound_qq)) => {
+                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
+                                        let _ = resp_tx
+                                            .send("该 osu! 用户已绑定其他QQ".to_string())
+                                            .await;
+                                    }
+                                    Err(_) => {
+                                        error!(user_id = msg.user_id, username = %username, "Bind failed");
+                                        let _ =
+                                            resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                    }
                                 }
                             }
-                            },
                             Ok(None) => {
                                 info!(username = %username, "Bind but user not found");
                                 let _ = resp_tx.send("未找到该 osu! 用户".to_string()).await;
@@ -597,14 +600,20 @@ async fn handle_irc_message(
             match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
                 Ok(Some(info)) => {
                     if let Err(e) = storage.set_user_id(&pending.target_username, info.id) {
-                        warn!("Failed to cache user_id for {}: {e}", pending.target_username);
+                        warn!(
+                            "Failed to cache user_id for {}: {e}",
+                            pending.target_username
+                        );
                     }
                 }
                 Ok(None) => {
                     warn!("User {} not found after IRC bind", pending.target_username);
                 }
                 Err(e) => {
-                    warn!("Failed to fetch user info for {} after IRC bind: {e}", pending.target_username);
+                    warn!(
+                        "Failed to fetch user info for {} after IRC bind: {e}",
+                        pending.target_username
+                    );
                 }
             }
             let msg = format!("成功绑定为{}", pending.target_username);
