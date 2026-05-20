@@ -96,9 +96,9 @@ impl Scheduler {
         };
         info!("due users count: {}", due.len());
 
-        for (username, mode) in due {
-            let result = self.eval_activity(&username, mode).await;
-            self.update_next_time(&username, mode, result.activity);
+        for (user_id, mode) in due {
+            let result = self.eval_activity(user_id, mode).await;
+            self.update_next_time(user_id, mode, result.activity);
         }
 
         self.try_cleanup().await;
@@ -107,7 +107,7 @@ impl Scheduler {
     /// Evaluate a single user's activity for a single mode
     async fn eval_activity(
         &self,
-        username: &str,
+        user_id: i64,
         mode: GameMode,
     ) -> osubot_core::types::UpdateResult {
         let now = Utc::now();
@@ -122,7 +122,7 @@ impl Scheduler {
 
         // Always fetch current stats and recent plays (API calls)
         let current =
-            match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
+            match api::fetch_user_stats_by_user_id(&self.rate_limiter, &self.oauth, user_id, mode).await {
                 Ok(stats) => stats,
                 Err(ApiError::NotFound) => {
                     return osubot_core::types::UpdateResult {
@@ -139,34 +139,26 @@ impl Scheduler {
             };
 
         // Save snapshot only when stats changed (rank or playcount differ)
-        let added_snapshot = match self.storage.get_latest_snapshot(username, mode) {
+        let added_snapshot = match self.storage.get_latest_snapshot(user_id, mode) {
             Ok(Some(prev)) => {
                 if prev.rank != current.rank || prev.playcount != current.playcount {
-                    self.storage.save_stats(username, mode, &current).is_ok()
+                    self.storage.save_stats(user_id, mode, &current).is_ok()
                 } else {
                     false
                 }
             }
-            Ok(None) => self.storage.save_stats(username, mode, &current).is_ok(),
+            Ok(None) => self.storage.save_stats(user_id, mode, &current).is_ok(),
             Err(e) => {
-                warn!("get_latest_snapshot error for {username}/{mode:?}: {e}");
-                self.storage.save_stats(username, mode, &current).is_ok()
+                warn!("get_latest_snapshot error for {user_id}/{mode:?}: {e}");
+                self.storage.save_stats(user_id, mode, &current).is_ok()
             }
         };
 
-        // Always fetch and save recent plays
-        let recent_plays = match self.resolve_user_id(username).await {
-            Some(user_id) => {
-                match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
-                    Ok(plays) => plays,
-                    Err(e) => {
-                        error!("Failed to fetch recent plays for {username}: {e:?}");
-                        Vec::new()
-                    }
-                }
-            }
-            None => {
-                warn!("Skipping recent plays for {username}: no user_id available");
+        // Always fetch and save recent plays (get_user_recent already takes user_id)
+        let recent_plays = match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
+            Ok(plays) => plays,
+            Err(e) => {
+                error!("Failed to fetch recent plays for user {user_id}: {e:?}");
                 Vec::new()
             }
         };
@@ -182,19 +174,19 @@ impl Scheduler {
             })
             .collect();
 
-        if let Err(e) = self.storage.save_play_records(username, mode, &records) {
-            error!("Failed to save play records for {username}/{mode:?}: {e}");
+        if let Err(e) = self.storage.save_play_records(user_id, mode, &records) {
+            error!("Failed to save play records for {user_id}/{mode:?}: {e}");
         }
 
         // Activity determination based on play records (no more API calls needed)
         let has_recent = self
             .storage
-            .has_play_since(username, mode, (now - Duration::hours(4)).timestamp())
+            .has_play_since(user_id, mode, (now - Duration::hours(4)).timestamp())
             .unwrap_or(false);
 
         let has_today = self
             .storage
-            .has_play_since(username, mode, today_0am_utc())
+            .has_play_since(user_id, mode, today_0am_utc())
             .unwrap_or(false);
 
         let activity = if has_recent {
@@ -206,7 +198,7 @@ impl Scheduler {
             // ApiError::NotFound already handles genuinely non-existent users above.
             let last_update = self
                 .storage
-                .get_last_update(username, mode)
+                .get_last_update(user_id, mode)
                 .unwrap_or_default();
             let hours_since = last_update
                 .map(|t| (now - t).num_hours())
@@ -224,8 +216,8 @@ impl Scheduler {
         // Update last_update only for actual play activity (not stale fallback Normal),
         // so the fallback branches can measure time-since-last-activity correctly.
         if activity == UserActivity::SemiActive || (activity == UserActivity::Normal && has_today) {
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            if let Err(e) = self.storage.set_last_update(user_id, mode, now) {
+                warn!("Failed to set last update for {user_id}/{mode:?}: {e}");
             }
         }
 
@@ -249,14 +241,14 @@ impl Scheduler {
     }
 
     /// Update user's next update time (called after eval)
-    fn update_next_time(&self, username: &str, mode: GameMode, activity: UserActivity) {
+    fn update_next_time(&self, user_id: i64, mode: GameMode, activity: UserActivity) {
         let interval = self.get_update_interval(activity);
         let next = Utc::now() + interval;
-        let _ = self.storage.set_next_update(username, mode, next);
+        let _ = self.storage.set_next_update(user_id, mode, next);
     }
 
     /// Trigger update for user (all 4 modes)
-    pub fn trigger_update(&self, username: &str) {
+    pub fn trigger_update(&self, user_id: i64) {
         for mode in [
             GameMode::Osu,
             GameMode::Taiko,
@@ -264,16 +256,16 @@ impl Scheduler {
             GameMode::Mania,
         ] {
             // Check cooldown
-            if !self.is_in_cooldown(username, mode) {
+            if !self.is_in_cooldown(user_id, mode) {
                 // Set next_update to now (immediate)
-                let _ = self.storage.set_next_update(username, mode, Utc::now());
+                let _ = self.storage.set_next_update(user_id, mode, Utc::now());
             }
         }
     }
 
     /// Check if user/mode is in cooldown
-    pub fn is_in_cooldown(&self, username: &str, mode: GameMode) -> bool {
-        if let Ok(Some(last_update)) = self.storage.get_last_update(username, mode) {
+    pub fn is_in_cooldown(&self, user_id: i64, mode: GameMode) -> bool {
+        if let Ok(Some(last_update)) = self.storage.get_last_update(user_id, mode) {
             let cooldown = Duration::hours(self.config.group_trigger_cooldown_hours);
             let now = Utc::now();
             if now - last_update < cooldown {
@@ -281,32 +273,5 @@ impl Scheduler {
             }
         }
         false
-    }
-
-    /// Get cached user_id, or fetch and cache on the fly
-    async fn resolve_user_id(&self, username: &str) -> Option<i64> {
-        match self.storage.get_user_id(username) {
-            Ok(Some(id)) if id != 0 => return Some(id),
-            Err(e) => warn!("Failed to look up user_id for {username}: {e}"),
-            _ => {}
-        }
-
-        // On-the-fly fallback: fetch from API and cache
-        match api::get_user_info(&self.rate_limiter, &self.oauth, username).await {
-            Ok(Some(info)) => {
-                if let Err(e) = self.storage.set_user_id(username, info.id) {
-                    warn!("Failed to cache user_id for {username}: {e}");
-                }
-                Some(info.id)
-            }
-            Ok(None) => {
-                warn!("User {username} not found on osu! (resolve_user_id)");
-                None
-            }
-            Err(e) => {
-                warn!("Failed to fetch user info for {username}: {e}");
-                None
-            }
-        }
     }
 }
