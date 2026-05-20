@@ -14,8 +14,15 @@ use osubot_core::{
 };
 use scheduler::Scheduler;
 use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -26,6 +33,31 @@ struct QQMessage {
     user_id: i64,
     message: String,
     mentioned_user_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OneBotResponse {
+    status: Option<String>,
+    data: Option<serde_json::Value>,
+    echo: Option<String>,
+}
+
+struct OneBotApi {
+    pending: Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>,
+}
+
+impl OneBotApi {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+static NEXT_ECHO: AtomicU64 = AtomicU64::new(0);
+
+fn next_echo() -> String {
+    NEXT_ECHO.fetch_add(1, Ordering::Relaxed).to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +157,8 @@ async fn handle_command(
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
     irc_nickname: Option<String>,
+    write: Arc<Mutex<WriteSink>>,
+    onebot_api: Arc<OneBotApi>,
 ) {
     let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
         Some(cmd) => cmd,
@@ -394,7 +428,18 @@ async fn handle_command(
         Command::Highlight { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "Highlight command");
 
-            // Get all bindings (group member filtering requires proper OneBot API)
+            let group_members = match get_group_member_list(&write, &onebot_api, msg.group_id).await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(error = %e, "Failed to get group member list");
+                    let _ = resp_tx
+                        .send("无法获取群成员列表，请稍后重试".to_string())
+                        .await;
+                    return;
+                }
+            };
+
             let all_bindings = match storage.get_all_user_bindings() {
                 Ok(bindings) => bindings,
                 Err(_) => {
@@ -404,15 +449,19 @@ async fn handle_command(
                 }
             };
 
-            if all_bindings.is_empty() {
+            let group_bindings: Vec<(i64, String)> = all_bindings
+                .into_iter()
+                .filter(|(qq, _)| group_members.contains(qq))
+                .collect();
+
+            if group_bindings.is_empty() {
                 let _ = resp_tx
                     .send("你群根本没有人绑定 osu! 账号".to_string())
                     .await;
                 return;
             }
 
-            // Fetch highlight data
-            match get_highlight(&storage, &rate_limiter, &oauth, &all_bindings, mode).await {
+            match get_highlight(&storage, &rate_limiter, &oauth, &group_bindings, mode).await {
                 Ok(result) => {
                     let response = format_highlight(&result);
                     let _ = resp_tx.send(response).await;
@@ -446,6 +495,64 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
     });
     let mut sink = write.lock().await;
     let _ = sink.send(WsMsg::Text(json.to_string().into())).await;
+}
+
+async fn call_onebot_api(
+    write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
+    action: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let echo = next_echo();
+    let (tx, rx) = oneshot::channel();
+
+    api.pending.lock().await.insert(echo.clone(), tx);
+
+    let json = serde_json::json!({
+        "action": action,
+        "params": params,
+        "echo": echo,
+    });
+
+    {
+        let mut sink = write.lock().await;
+        sink.send(WsMsg::Text(json.to_string().into()))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(5), rx).await;
+    api.pending.lock().await.remove(&echo);
+
+    match result {
+        Ok(Ok(data)) => Ok(data),
+        Ok(Err(_)) => Err("请求已取消".to_string()),
+        Err(_) => Err("请求超时".to_string()),
+    }
+}
+
+async fn get_group_member_list(
+    write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
+    group_id: i64,
+) -> Result<HashSet<i64>, String> {
+    let value = call_onebot_api(
+        write,
+        api,
+        "get_group_member_list",
+        serde_json::json!({"group_id": group_id}),
+    )
+    .await?;
+
+    let data = value.as_array().ok_or("无效的响应数据")?;
+
+    let mut members = HashSet::new();
+    for member in data {
+        if let Some(user_id) = member.get("user_id").and_then(|v| v.as_i64()) {
+            members.insert(user_id);
+        }
+    }
+    Ok(members)
 }
 
 async fn handle_irc_message(
@@ -582,6 +689,7 @@ async fn main() {
 
     let (write, mut read) = ws_stream.split();
     let write = Arc::new(Mutex::new(write));
+    let onebot_api = Arc::new(OneBotApi::new());
 
     // Spawn IRC message handler
     let write_for_irc = write.clone();
@@ -599,6 +707,19 @@ async fn main() {
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
+                // Route API responses to pending callers
+                if let Ok(resp) = serde_json::from_str::<OneBotResponse>(&text) {
+                    if resp.status.is_some() {
+                        if let Some(echo) = resp.echo {
+                            let mut pending = onebot_api.pending.lock().await;
+                            if let Some(tx) = pending.remove(&echo) {
+                                let _ = tx.send(resp.data.unwrap_or(serde_json::Value::Null));
+                            }
+                            continue;
+                        }
+                    }
+                }
+
                 if let Some(qq_msg) = parse_onebot_message(&text) {
                     let (resp_tx, mut resp_rx) = mpsc::channel::<String>(1);
 
@@ -615,6 +736,8 @@ async fn main() {
                     let scheduler = scheduler.clone();
                     let rate_limiter = rate_limiter.clone();
                     let irc_nickname = irc_nickname.clone();
+                    let write = write.clone();
+                    let onebot_api = onebot_api.clone();
                     tokio::spawn(async move {
                         handle_command(
                             storage,
@@ -624,6 +747,8 @@ async fn main() {
                             qq_msg,
                             resp_tx,
                             irc_nickname,
+                            write,
+                            onebot_api,
                         )
                         .await;
                     });
