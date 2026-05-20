@@ -489,6 +489,7 @@ async fn handle_command(
 }
 
 use tokio_tungstenite::tungstenite::Message as WsMsg;
+use tracing_subscriber::fmt::time::LocalTime;
 type WriteSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     WsMsg,
@@ -644,6 +645,7 @@ async fn main() {
         .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true)
+        .with_timer(LocalTime::rfc_3339())
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 

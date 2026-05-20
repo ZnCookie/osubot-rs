@@ -7,6 +7,7 @@ use tracing::{error, info, warn};
 use osubot_core::api::ApiError;
 use osubot_core::{
     api,
+    storage::today_0am_utc,
     types::{GameMode, UserActivity},
     OauthTokenCache, RateLimiter, Storage,
 };
@@ -103,7 +104,7 @@ impl Scheduler {
         self.try_cleanup().await;
     }
 
-    /// Evaluate a single user's activity for a single mode (returns UpdateResult)
+    /// Evaluate a single user's activity for a single mode
     async fn eval_activity(
         &self,
         username: &str,
@@ -111,15 +112,15 @@ impl Scheduler {
     ) -> osubot_core::types::UpdateResult {
         let now = Utc::now();
 
+        // Check rate limit before API calls
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
-                activity: UserActivity::Inactive,
+                activity: UserActivity::NoRecent,
                 added_snapshot: false,
-                added_records: 0,
             };
         }
 
-        // 1. Fetch current user stats
+        // Always fetch current stats and recent plays (API calls)
         let current =
             match api::fetch_user_stats(&self.rate_limiter, &self.oauth, username, mode).await {
                 Ok(stats) => stats,
@@ -127,58 +128,37 @@ impl Scheduler {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::UserNotExists,
                         added_snapshot: false,
-                        added_records: 0,
                     };
                 }
                 Err(_) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::Inactive,
                         added_snapshot: false,
-                        added_records: 0,
                     };
                 }
             };
 
-        // 2. Get latest snapshot
-        let latest = self
-            .storage
-            .get_latest_snapshot(username, mode)
-            .unwrap_or_default();
-
-        // 3. [Early判定 Inactive] PlayCount same且 PP == 0
-        if let Some(ref snap) = latest {
-            if current.playcount == snap.playcount && current.pp == 0.0 {
-                return osubot_core::types::UpdateResult {
-                    activity: UserActivity::Inactive,
-                    added_snapshot: false,
-                    added_records: 0,
-                };
+        // Save snapshot only when stats changed (rank or playcount differ)
+        let added_snapshot = match self.storage.get_latest_snapshot(username, mode) {
+            Ok(Some(prev)) => {
+                if prev.rank != current.rank || prev.playcount != current.playcount {
+                    self.storage.save_stats(username, mode, &current).is_ok()
+                } else {
+                    false
+                }
             }
-        }
+            Ok(None) => self.storage.save_stats(username, mode, &current).is_ok(),
+            Err(e) => {
+                warn!("get_latest_snapshot error for {username}/{mode:?}: {e}");
+                self.storage.save_stats(username, mode, &current).is_ok()
+            }
+        };
 
-        // 4. Save new snapshot if stats changed (save first, then calculate change)
-        let stats_changed = latest
-            .as_ref()
-            .is_none_or(|l| l.rank != current.rank || l.pp != current.pp);
-        let mut added_snapshot = false;
-        if stats_changed && self.storage.save_stats(username, mode, &current).is_ok() {
-            added_snapshot = true;
-        }
-
-        // 5. Get recent plays and write to database
+        // Always fetch and save recent plays
         let recent_plays = match self.resolve_user_id(username).await {
             Some(user_id) => {
                 match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
-                    Ok(plays) => {
-                        info!(
-                            "Fetched {} recent plays for {} (id={}) mode {:?}",
-                            plays.len(),
-                            username,
-                            user_id,
-                            mode
-                        );
-                        plays
-                    }
+                    Ok(plays) => plays,
                     Err(e) => {
                         error!("Failed to fetch recent plays for {username}: {e:?}");
                         Vec::new()
@@ -202,112 +182,69 @@ impl Scheduler {
             })
             .collect();
 
-        info!(
-            "Parsed {} valid timestamps for {} mode {:?}",
-            records.len(),
-            username,
-            mode
-        );
+        if let Err(e) = self.storage.save_play_records(username, mode, &records) {
+            error!("Failed to save play records for {username}/{mode:?}: {e}");
+        }
 
-        let added_records = self
+        // Activity determination based on play records (no more API calls needed)
+        let has_recent = self
             .storage
-            .save_play_records(username, mode, &records)
-            .unwrap_or_default();
+            .has_play_since(username, mode, (now - Duration::hours(4)).timestamp())
+            .unwrap_or(false);
 
-        if added_records > 0 {
-            // Has new records -> Active
+        let has_today = self
+            .storage
+            .has_play_since(username, mode, today_0am_utc())
+            .unwrap_or(false);
+
+        let activity = if has_recent {
+            UserActivity::SemiActive
+        } else if has_today {
+            UserActivity::Normal
+        } else {
+            // No play records today - use last_update time for fallback.
+            // ApiError::NotFound already handles genuinely non-existent users above.
+            let last_update = self
+                .storage
+                .get_last_update(username, mode)
+                .unwrap_or_default();
+            let hours_since = last_update
+                .map(|t| (now - t).num_hours())
+                .unwrap_or(i64::MAX);
+
+            if hours_since < 8 {
+                UserActivity::NoRecent
+            } else if hours_since < 48 {
+                UserActivity::Normal
+            } else {
+                UserActivity::Inactive
+            }
+        };
+
+        // Update last_update only for actual play activity (not stale fallback Normal),
+        // so the fallback branches can measure time-since-last-activity correctly.
+        if activity == UserActivity::SemiActive || (activity == UserActivity::Normal && has_today) {
             if let Err(e) = self.storage.set_last_update(username, mode, now) {
                 warn!("Failed to set last update for {username}/{mode:?}: {e}");
             }
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::Active,
-                added_snapshot,
-                added_records,
-            };
         }
 
-        // 6. Check if there are plays within last 4h (no new additions)
-        let has_recent = recent_plays.iter().any(|p| {
-            DateTime::parse_from_rfc3339(&p.created_at)
-                .map(|t| (now - t.with_timezone(&Utc)).num_hours() < 4)
-                .unwrap_or(false)
-        });
-        if has_recent {
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
-            }
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::SemiActive,
-                added_snapshot,
-                added_records: 0,
-            };
-        }
-
-        // 7. Calculate change (based on newly saved or old snapshot)
-        let change = self
-            .storage
-            .calculate_change(username, mode, &current)
-            .unwrap_or_default();
-
-        // 8. Check last update time
-        let last_update = self
-            .storage
-            .get_last_update(username, mode)
-            .unwrap_or_default();
-        let hours_since_update = last_update
-            .map(|t| (now - t).num_hours())
-            .unwrap_or(i64::MAX);
-
-        if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {
-            // Has changes
-            if let Err(e) = self.storage.set_last_update(username, mode, now) {
-                warn!("Failed to set last update for {username}/{mode:?}: {e}");
-            }
-            if hours_since_update < 4 {
-                return osubot_core::types::UpdateResult {
-                    activity: UserActivity::NoRecent,
-                    added_snapshot: true,
-                    added_records: 0,
-                };
-            }
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::Normal,
-                added_snapshot: true,
-                added_records: 0,
-            };
-        }
-
-        // No changes
-        if hours_since_update < 8 {
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::NoRecent,
-                added_snapshot: false,
-                added_records: 0,
-            };
-        }
-        if hours_since_update < 48 {
-            return osubot_core::types::UpdateResult {
-                activity: UserActivity::Normal,
-                added_snapshot: false,
-                added_records: 0,
-            };
-        }
         osubot_core::types::UpdateResult {
-            activity: UserActivity::Inactive,
-            added_snapshot: false,
-            added_records: 0,
+            activity,
+            added_snapshot,
         }
     }
 
     /// Return next update interval based on activity
     fn get_update_interval(&self, activity: UserActivity) -> Duration {
         match activity {
-            UserActivity::Active => Duration::hours(self.config.active_interval_hours),
             UserActivity::SemiActive => Duration::hours(self.config.semi_active_interval_hours),
             UserActivity::Normal => Duration::hours(self.config.normal_interval_hours),
             UserActivity::Inactive => Duration::hours(self.config.inactive_interval_hours),
-            UserActivity::NoRecent => Duration::hours(6),
-            UserActivity::UserNotExists => Duration::hours(24),
+            UserActivity::NoRecent => Duration::hours(self.config.no_recent_interval_hours),
+            UserActivity::UserNotExists => {
+                Duration::hours(self.config.user_not_exists_interval_hours)
+            }
         }
     }
 
@@ -346,7 +283,7 @@ impl Scheduler {
         false
     }
 
-    /// Get cached user_id, or fetch + cache on the fly
+    /// Get cached user_id, or fetch and cache on the fly
     async fn resolve_user_id(&self, username: &str) -> Option<i64> {
         match self.storage.get_user_id(username) {
             Ok(Some(id)) if id != 0 => return Some(id),

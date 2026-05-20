@@ -1,9 +1,26 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
 use std::sync::Mutex;
 
 use crate::types::{GameMode, UserChange, UserStats};
+
+/// Returns UTC timestamp of today's 0:00 AM in local timezone
+pub fn today_0am_utc() -> i64 {
+    let local_now = chrono::Local::now();
+    let today_local = local_now.date_naive();
+    let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
+    // .single() returns None when midnight doesn't exist (DST spring-forward)
+    // or is ambiguous (DST fall-back); fall back to 1:00 AM in that case.
+    let dt = Local
+        .from_local_datetime(&today_0am_local)
+        .single()
+        .unwrap_or_else(|| {
+            let fallback = today_0am_local + chrono::Duration::hours(1);
+            Local.from_local_datetime(&fallback).earliest().unwrap()
+        });
+    dt.with_timezone(&Utc).timestamp()
+}
 
 pub struct Storage {
     conn: Mutex<Connection>,
@@ -398,22 +415,14 @@ impl Storage {
         Ok(inserted)
     }
 
-    pub fn get_play_count_since(
-        &self,
-        username: &str,
-        mode: GameMode,
-        hours: i64,
-    ) -> SqlResult<i64> {
+    /// Check if user has any play records since the given UTC timestamp
+    pub fn has_play_since(&self, username: &str, mode: GameMode, since_ts: i64) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();
-        let cutoff = Utc::now() - chrono::Duration::hours(hours);
-        let cutoff_ts = cutoff.timestamp();
-
         let mut stmt = conn.prepare(
-            "SELECT COUNT(*) FROM user_play_records WHERE username = ?1 AND mode = ?2 AND played_at >= ?3",
+            "SELECT 1 FROM user_play_records WHERE username = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
         )?;
-        let count: i64 =
-            stmt.query_row(params![username, mode as i32, cutoff_ts], |row| row.get(0))?;
-        Ok(count)
+        let exists = stmt.query_row(params![username, mode as i32, since_ts], |_| Ok(()));
+        Ok(exists.is_ok())
     }
 
     // ==================== Change Calculation ====================
