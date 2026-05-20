@@ -147,7 +147,11 @@ impl Scheduler {
                     false
                 }
             }
-            _ => self.storage.save_stats(username, mode, &current).is_ok(),
+            Ok(None) => self.storage.save_stats(username, mode, &current).is_ok(),
+            Err(e) => {
+                warn!("get_latest_snapshot error for {username}/{mode:?}: {e}");
+                self.storage.save_stats(username, mode, &current).is_ok()
+            }
         };
 
         // Always fetch and save recent plays
@@ -198,31 +202,28 @@ impl Scheduler {
         } else if has_today {
             UserActivity::Normal
         } else {
-            // No play records today - use rank and last_update time
-            if current.rank == 0 {
-                UserActivity::UserNotExists
-            } else {
-                let last_update = self
-                    .storage
-                    .get_last_update(username, mode)
-                    .unwrap_or_default();
-                let hours_since = last_update
-                    .map(|t| (now - t).num_hours())
-                    .unwrap_or(i64::MAX);
+            // No play records today - use last_update time for fallback.
+            // ApiError::NotFound already handles genuinely non-existent users above.
+            let last_update = self
+                .storage
+                .get_last_update(username, mode)
+                .unwrap_or_default();
+            let hours_since = last_update
+                .map(|t| (now - t).num_hours())
+                .unwrap_or(i64::MAX);
 
-                if hours_since < 8 {
-                    UserActivity::NoRecent
-                } else if hours_since < 48 {
-                    UserActivity::Normal
-                } else {
-                    UserActivity::Inactive
-                }
+            if hours_since < 8 {
+                UserActivity::NoRecent
+            } else if hours_since < 48 {
+                UserActivity::Normal
+            } else {
+                UserActivity::Inactive
             }
         };
 
-        // Update last_update only when we detected actual activity,
+        // Update last_update only for actual play activity (not stale fallback Normal),
         // so the fallback branches can measure time-since-last-activity correctly.
-        if matches!(activity, UserActivity::SemiActive | UserActivity::Normal) {
+        if activity == UserActivity::SemiActive || (activity == UserActivity::Normal && has_today) {
             if let Err(e) = self.storage.set_last_update(username, mode, now) {
                 warn!("Failed to set last update for {username}/{mode:?}: {e}");
             }
