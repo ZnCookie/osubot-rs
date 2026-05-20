@@ -68,7 +68,7 @@ cargo run --release
 - **存储**: SQLite (rusqlite)，存储用户绑定、数据快照和游玩记录
 - **WebSocket**: tokio-tungstenite 连接 OneBot 11 正向 WebSocket
 - **API**: osu! API v2，OAuth client credentials 认证
-- **日志**: tracing + tracing-subscriber 结构化日志
+- **日志**: tracing + tracing-subscriber 结构化日志（本地时区）
 
 ### 项目结构
 
