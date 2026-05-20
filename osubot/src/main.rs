@@ -428,17 +428,17 @@ async fn handle_command(
         Command::Highlight { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "Highlight command");
 
-            let group_members =
-                match get_group_member_list(&write, &onebot_api, msg.group_id).await {
-                    Ok(m) => m,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to get group member list");
-                        let _ = resp_tx
-                            .send("无法获取群成员列表，请稍后重试".to_string())
-                            .await;
-                        return;
-                    }
-                };
+            let group_members = match get_group_member_list(&write, &onebot_api, msg.group_id).await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(error = %e, "Failed to get group member list");
+                    let _ = resp_tx
+                        .send("无法获取群成员列表，请稍后重试".to_string())
+                        .await;
+                    return;
+                }
+            };
 
             let all_bindings = match storage.get_all_user_bindings() {
                 Ok(bindings) => bindings,
@@ -544,9 +544,7 @@ async fn get_group_member_list(
     )
     .await?;
 
-    let data = value
-        .as_array()
-        .ok_or("无效的响应数据")?;
+    let data = value.as_array().ok_or("无效的响应数据")?;
 
     let mut members = HashSet::new();
     for member in data {
@@ -711,12 +709,14 @@ async fn main() {
             Ok(Message::Text(text)) => {
                 // Route API responses to pending callers
                 if let Ok(resp) = serde_json::from_str::<OneBotResponse>(&text) {
-                    if let Some(echo) = resp.echo {
-                        let mut pending = onebot_api.pending.lock().await;
-                        if let Some(tx) = pending.remove(&echo) {
-                            let _ = tx.send(resp.data.unwrap_or(serde_json::Value::Null));
+                    if resp.status.is_some() {
+                        if let Some(echo) = resp.echo {
+                            let mut pending = onebot_api.pending.lock().await;
+                            if let Some(tx) = pending.remove(&echo) {
+                                let _ = tx.send(resp.data.unwrap_or(serde_json::Value::Null));
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
 
