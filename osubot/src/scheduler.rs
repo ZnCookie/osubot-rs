@@ -166,22 +166,30 @@ impl Scheduler {
         }
 
         // 5. Get recent plays and write to database
-        let recent_plays =
-            match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
-                Ok(plays) => {
-                    info!(
-                        "Fetched {} recent plays for {} mode {:?}",
-                        plays.len(),
-                        username,
-                        mode
-                    );
-                    plays
+        let recent_plays = match self.resolve_user_id(username).await {
+            Some(user_id) => {
+                match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
+                    Ok(plays) => {
+                        info!(
+                            "Fetched {} recent plays for {} (id={}) mode {:?}",
+                            plays.len(),
+                            username,
+                            user_id,
+                            mode
+                        );
+                        plays
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch recent plays for {username}: {e:?}");
+                        Vec::new()
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to fetch recent plays: {:?}", e);
-                    Vec::new()
-                }
-            };
+            }
+            None => {
+                warn!("Skipping recent plays for {username}: no user_id available");
+                Vec::new()
+            }
+        };
 
         // Convert API response to storage format (Unix timestamps)
         let records: Vec<i64> = recent_plays
@@ -339,5 +347,32 @@ impl Scheduler {
             }
         }
         false
+    }
+
+    /// Get cached user_id, or fetch + cache on the fly
+    async fn resolve_user_id(&self, username: &str) -> Option<i64> {
+        match self.storage.get_user_id(username) {
+            Ok(Some(id)) if id != 0 => return Some(id),
+            Err(e) => warn!("Failed to look up user_id for {username}: {e}"),
+            _ => {}
+        }
+
+        // On-the-fly fallback: fetch from API and cache
+        match api::get_user_info(&self.rate_limiter, &self.oauth, username).await {
+            Ok(Some(info)) => {
+                if let Err(e) = self.storage.set_user_id(username, info.id) {
+                    warn!("Failed to cache user_id for {username}: {e}");
+                }
+                Some(info.id)
+            }
+            Ok(None) => {
+                warn!("User {username} not found on osu! (resolve_user_id)");
+                None
+            }
+            Err(e) => {
+                warn!("Failed to fetch user info for {username}: {e}");
+                None
+            }
+        }
     }
 }
