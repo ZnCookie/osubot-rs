@@ -236,7 +236,6 @@ impl Scheduler {
     /// Return next update interval based on activity
     fn get_update_interval(&self, activity: UserActivity) -> Duration {
         match activity {
-            UserActivity::Active => Duration::hours(self.config.active_interval_hours),
             UserActivity::SemiActive => Duration::hours(self.config.semi_active_interval_hours),
             UserActivity::Normal => Duration::hours(self.config.normal_interval_hours),
             UserActivity::Inactive => Duration::hours(self.config.inactive_interval_hours),

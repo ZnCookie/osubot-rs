@@ -88,11 +88,10 @@ impl UserChange {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserActivity {
-    Active,     // 新增游玩记录（最后4h有新记录）
-    SemiActive, // 有recent但无新增（最后4h有记录但无新增）
-    Normal,     // 有快照无变化（最后8h内更新过但无变化）
-    Inactive,   // 无变化（最后48h内无更新）
-    NoRecent,   // 没变化（最后4-8h有快照但无变化）
+    SemiActive, // 4h内有游玩记录
+    Normal,     // 当日有游玩记录
+    NoRecent,   // 4~8h无游玩记录
+    Inactive,   // 48h以上无游玩记录
     UserNotExists,
 }
 

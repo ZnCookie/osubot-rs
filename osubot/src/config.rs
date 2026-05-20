@@ -33,8 +33,6 @@ pub struct DatabaseConfig {
 pub struct SchedulerConfig {
     #[serde(default = "default_interval_minutes")]
     pub interval_minutes: u64,
-    #[serde(default = "default_active_interval_hours")]
-    pub active_interval_hours: i64,
     #[serde(default = "default_semi_active_interval_hours")]
     pub semi_active_interval_hours: i64,
     #[serde(default = "default_normal_interval_hours")]
@@ -49,9 +47,6 @@ pub struct SchedulerConfig {
 
 fn default_interval_minutes() -> u64 {
     1
-}
-fn default_active_interval_hours() -> i64 {
-    2
 }
 fn default_semi_active_interval_hours() -> i64 {
     4
@@ -73,7 +68,6 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             interval_minutes: 1,
-            active_interval_hours: 2,
             semi_active_interval_hours: 4,
             normal_interval_hours: 8,
             inactive_interval_hours: 48,
