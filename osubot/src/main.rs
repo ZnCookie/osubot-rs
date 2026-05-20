@@ -157,6 +157,8 @@ async fn handle_command(
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
     irc_nickname: Option<String>,
+    write: Arc<Mutex<WriteSink>>,
+    onebot_api: Arc<OneBotApi>,
 ) {
     let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
         Some(cmd) => cmd,
@@ -426,7 +428,18 @@ async fn handle_command(
         Command::Highlight { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "Highlight command");
 
-            // Get all bindings (group member filtering requires proper OneBot API)
+            let group_members =
+                match get_group_member_list(&write, &onebot_api, msg.group_id).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to get group member list");
+                        let _ = resp_tx
+                            .send("无法获取群成员列表，请稍后重试".to_string())
+                            .await;
+                        return;
+                    }
+                };
+
             let all_bindings = match storage.get_all_user_bindings() {
                 Ok(bindings) => bindings,
                 Err(_) => {
@@ -436,15 +449,19 @@ async fn handle_command(
                 }
             };
 
-            if all_bindings.is_empty() {
+            let group_bindings: Vec<(i64, String)> = all_bindings
+                .into_iter()
+                .filter(|(qq, _)| group_members.contains(qq))
+                .collect();
+
+            if group_bindings.is_empty() {
                 let _ = resp_tx
                     .send("你群根本没有人绑定 osu! 账号".to_string())
                     .await;
                 return;
             }
 
-            // Fetch highlight data
-            match get_highlight(&storage, &rate_limiter, &oauth, &all_bindings, mode).await {
+            match get_highlight(&storage, &rate_limiter, &oauth, &group_bindings, mode).await {
                 Ok(result) => {
                     let response = format_highlight(&result);
                     let _ = resp_tx.send(response).await;
