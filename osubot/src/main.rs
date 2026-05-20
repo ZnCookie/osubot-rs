@@ -632,6 +632,32 @@ async fn main() {
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
+    // Backfill osu! user IDs for existing bindings that don't have cached IDs
+    match storage.get_users_without_ids() {
+        Ok(users) if !users.is_empty() => {
+            info!("Backfilling user IDs for {} users...", users.len());
+            for username in &users {
+                match api::get_user_info(&rate_limiter, &oauth, username).await {
+                    Ok(Some(info)) => {
+                        if let Err(e) = storage.set_user_id(username, info.id) {
+                            warn!("Failed to cache user_id for {username}: {e}");
+                        } else {
+                            info!("Cached user_id for {username}: {}", info.id);
+                        }
+                    }
+                    Ok(None) => {
+                        warn!("User {username} not found during backfill");
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch user info for {username} during backfill: {e}");
+                    }
+                }
+            }
+        }
+        Ok(_) => info!("All bound users already have cached user IDs"),
+        Err(e) => error!("Failed to query users without IDs: {e}"),
+    }
+
     // Create and spawn scheduler
     let scheduler = Scheduler::new(
         storage.clone(),
