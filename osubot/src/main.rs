@@ -449,11 +449,11 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
 }
 
 fn normalize_osu_username_for_irc(username: &str) -> String {
-    let normalized = username.replace(' ', "_");
     if username.contains(' ') {
+        let normalized = username.replace(' ', "_");
         format!("_{normalized}_")
     } else {
-        normalized
+        username.to_string()
     }
 }
 
