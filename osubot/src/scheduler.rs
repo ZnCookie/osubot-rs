@@ -248,6 +248,7 @@ impl Scheduler {
             };
         }
         if hours_since_update < 48 {
+            let _ = self.storage.set_last_update(username, mode, now);
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Normal,
                 added_snapshot: false,
