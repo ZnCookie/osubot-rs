@@ -465,7 +465,8 @@ async fn handle_irc_message(
     };
 
     // Check if the sender matches the target username
-    if irc_msg.sender.to_lowercase() != pending.target_username.to_lowercase() {
+    // osu! replaces spaces with underscores in IRC nicks, so normalize both sides
+    if irc_msg.sender.replace(' ', "_").to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
         storage.remove_pending_bind(code).ok();
         let msg = "绑定失败（绑定的不是本人）";
         send_group_msg(&write, pending.group_id, msg).await;
