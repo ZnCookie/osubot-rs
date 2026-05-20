@@ -243,11 +243,11 @@ pub async fn fetch_user_stats(
     }
 }
 
-/// Get user's recent plays from osu! API v2
+/// Get user's recent plays from osu! API v2 (requires numeric user ID)
 pub async fn get_user_recent(
     rate_limiter: &RateLimiter,
     oauth: &OauthTokenCache,
-    username: &str,
+    user_id: i64,
     mode: GameMode,
 ) -> Result<Vec<RecentPlay>, ApiError> {
     let access_token = oauth.get_token().await?;
@@ -257,16 +257,9 @@ pub async fn get_user_recent(
         .map_err(|_| ApiError::RateLimited)?;
     let client = Client::new();
 
-    // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
-    let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
-        format!("@{}", username)
-    } else {
-        username.to_string()
-    };
-
     let url = format!(
         "https://osu.ppy.sh/api/v2/users/{}/recent?mode={}",
-        url_username,
+        user_id,
         mode.api_value()
     );
 
