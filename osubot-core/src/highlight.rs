@@ -100,7 +100,7 @@ pub async fn get_highlight(
         };
 
         let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let result = api::fetch_user_stats(rate_limiter, oauth, username, mode).await;
+        let result = api::fetch_user_stats_by_user_id(rate_limiter, oauth, user_id, mode).await;
         drop(permit);
 
         match result {

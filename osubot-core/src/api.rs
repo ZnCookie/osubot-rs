@@ -168,8 +168,9 @@ impl OauthTokenCache {
     }
 }
 
-/// From osu! API v2 fetch user data
-pub async fn fetch_user_stats(
+/// Fetch user stats by username (for where <username> command)
+/// Pure digit username gets @ prefix so API treats it as username lookup
+pub async fn fetch_user_stats_by_username(
     rate_limiter: &RateLimiter,
     oauth: &OauthTokenCache,
     username: &str,
@@ -198,6 +199,88 @@ pub async fn fetch_user_stats(
         let url = format!(
             "https://osu.ppy.sh/api/v2/users/{}/{}",
             url_username, mode_param
+        );
+
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await?;
+
+        if resp.status() == 401 {
+            oauth.invalidate();
+            if retry_count < max_retries {
+                let delay =
+                    Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
+                retry_count += 1;
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return Err(ApiError::OAuthError);
+        }
+
+        if resp.status() == 404 {
+            return Err(ApiError::NotFound);
+        }
+
+        if !resp.status().is_success() {
+            return Err(ApiError::InvalidResponse);
+        }
+
+        let data: OsuApiV2User = resp.json().await?;
+
+        let stats = match data.statistics {
+            Some(s) => s,
+            None => {
+                return Err(ApiError::NotFound);
+            }
+        };
+
+        let rank_change = None;
+        let country_rank_change = None;
+
+        return Ok(UserStats {
+            username: data.username,
+            pp: stats.pp.unwrap_or(0.0),
+            rank: stats.rank.unwrap_or(0),
+            country_rank: stats.country_rank.unwrap_or(0),
+            country_code: data.country_code.unwrap_or_else(|| "XX".to_string()),
+            ranked_score: stats.ranked_score.unwrap_or(0),
+            accuracy: stats.accuracy.unwrap_or(0.0),
+            playcount: stats.playcount.unwrap_or(0),
+            hits: stats.hits.unwrap_or(0),
+            playtime: stats.playtime.unwrap_or(0),
+            rank_change,
+            country_rank_change,
+        });
+    }
+}
+
+/// Fetch user stats by numeric user_id (for internal/scheduler use)
+/// user_id goes directly to API without @ prefix (API treats as user_id lookup)
+pub async fn fetch_user_stats_by_user_id(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    user_id: i64,
+    mode: GameMode,
+) -> Result<UserStats, ApiError> {
+    let mut retry_count = 0;
+    let max_retries = 5;
+    let base_delay = Duration::from_secs(1);
+
+    loop {
+        let access_token = oauth.get_token().await?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
+
+        let client = Client::new();
+        let mode_param = mode.api_value();
+
+        let url = format!(
+            "https://osu.ppy.sh/api/v2/users/{}/{}",
+            user_id, mode_param
         );
 
         let resp = client
