@@ -13,10 +13,9 @@ path = "osubot.db"
 # [scheduler]
 # All fields have defaults — optional, only override if needed.
 # interval_minutes = 1
-# active_interval_hours = 2
-# semi_active_interval_hours = 4
-# normal_interval_hours = 8
-# inactive_interval_hours = 48
+# semi_active_interval_hours = 4      # 4h内有游玩记录
+# normal_interval_hours = 8           # 当日有游玩记录
+# inactive_interval_hours = 48       # 48h以上无游玩记录
 # group_trigger_cooldown_hours = 1
 # retention_days = 180
 
