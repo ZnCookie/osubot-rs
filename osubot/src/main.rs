@@ -324,21 +324,30 @@ async fn handle_command(
                     } else {
                         // Direct bind (original logic)
                         match api::get_user_info(&rate_limiter, &oauth, &username).await {
-                            Ok(Some(_)) => match storage.bind(msg.user_id, &username) {
-                                Ok(Ok(())) => {
-                                    info!(user_id = msg.user_id, username = %username, "Bind success");
-                                    let _ = resp_tx.send(format!("成功绑定为{}", username)).await;
+                            Ok(Some(user_info)) => {
+                                // Cache the numeric user ID
+                                if let Err(e) = storage.set_user_id(&username, user_info.id) {
+                                    warn!("Failed to cache user_id for {username}: {e}");
                                 }
-                                Ok(Err(bound_qq)) => {
-                                    info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
-                                    let _ =
-                                        resp_tx.send("该 osu! 用户已绑定其他QQ".to_string()).await;
+                                match storage.bind(msg.user_id, &username) {
+                                    Ok(Ok(())) => {
+                                        info!(user_id = msg.user_id, username = %username, "Bind success");
+                                        let _ =
+                                            resp_tx.send(format!("成功绑定为{}", username)).await;
+                                    }
+                                    Ok(Err(bound_qq)) => {
+                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
+                                        let _ = resp_tx
+                                            .send("该 osu! 用户已绑定其他QQ".to_string())
+                                            .await;
+                                    }
+                                    Err(_) => {
+                                        error!(user_id = msg.user_id, username = %username, "Bind failed");
+                                        let _ =
+                                            resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                    }
                                 }
-                                Err(_) => {
-                                    error!(user_id = msg.user_id, username = %username, "Bind failed");
-                                    let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
-                                }
-                            },
+                            }
                             Ok(None) => {
                                 info!(username = %username, "Bind but user not found");
                                 let _ = resp_tx.send("未找到该 osu! 用户".to_string()).await;
@@ -559,6 +568,8 @@ async fn handle_irc_message(
     storage: Arc<Storage>,
     irc_msg: osubot_core::irc::IrcPrivateMessage,
     write: Arc<Mutex<WriteSink>>,
+    rate_limiter: Arc<RateLimiter>,
+    oauth: Arc<OauthTokenCache>,
 ) {
     let code = irc_msg.message.trim();
 
@@ -585,6 +596,26 @@ async fn handle_irc_message(
         Ok(Ok(())) => {
             storage.remove_pending_bind(code).ok();
             info!(qq = pending.qq_user_id, username = %pending.target_username, "Bind verified and completed");
+            // Cache the numeric user ID
+            match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
+                Ok(Some(info)) => {
+                    if let Err(e) = storage.set_user_id(&pending.target_username, info.id) {
+                        warn!(
+                            "Failed to cache user_id for {}: {e}",
+                            pending.target_username
+                        );
+                    }
+                }
+                Ok(None) => {
+                    warn!("User {} not found after IRC bind", pending.target_username);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch user info for {} after IRC bind: {e}",
+                        pending.target_username
+                    );
+                }
+            }
             let msg = format!("成功绑定为{}", pending.target_username);
             send_group_msg(&write, pending.group_id, &msg).await;
         }
@@ -631,6 +662,32 @@ async fn main() {
     ));
 
     let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Backfill osu! user IDs for existing bindings that don't have cached IDs
+    match storage.get_users_without_ids() {
+        Ok(users) if !users.is_empty() => {
+            info!("Backfilling user IDs for {} users...", users.len());
+            for username in &users {
+                match api::get_user_info(&rate_limiter, &oauth, username).await {
+                    Ok(Some(info)) => {
+                        if let Err(e) = storage.set_user_id(username, info.id) {
+                            warn!("Failed to cache user_id for {username}: {e}");
+                        } else {
+                            info!("Cached user_id for {username}: {}", info.id);
+                        }
+                    }
+                    Ok(None) => {
+                        warn!("User {username} not found during backfill");
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch user info for {username} during backfill: {e}");
+                    }
+                }
+            }
+        }
+        Ok(_) => info!("All bound users already have cached user IDs"),
+        Err(e) => error!("Failed to query users without IDs: {e}"),
+    }
 
     // Create and spawn scheduler
     let scheduler = Scheduler::new(
@@ -694,12 +751,16 @@ async fn main() {
     // Spawn IRC message handler
     let write_for_irc = write.clone();
     let storage_for_irc = storage.clone();
+    let rate_limiter_for_irc = rate_limiter.clone();
+    let oauth_for_irc = oauth.clone();
     tokio::spawn(async move {
         while let Some(irc_msg) = irc_rx.recv().await {
             let storage = storage_for_irc.clone();
             let write = write_for_irc.clone();
+            let rate_limiter = rate_limiter_for_irc.clone();
+            let oauth = oauth_for_irc.clone();
             tokio::spawn(async move {
-                handle_irc_message(storage, irc_msg, write).await;
+                handle_irc_message(storage, irc_msg, write, rate_limiter, oauth).await;
             });
         }
     });

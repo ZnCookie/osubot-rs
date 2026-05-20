@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use osubot_core::api::ApiError;
 use osubot_core::{
@@ -76,7 +76,9 @@ impl Scheduler {
 
     /// Background task entry point - only processes due users/modes
     pub async fn run(&self) {
+        info!("Scheduler task started");
         loop {
+            info!("Scheduler tick");
             time::sleep(time::Duration::from_secs(60 * self.config.interval_minutes)).await;
             self.process_due_users().await;
         }
@@ -86,8 +88,12 @@ impl Scheduler {
     async fn process_due_users(&self) {
         let due = match self.storage.get_due_users() {
             Ok(d) => d,
-            Err(_) => return,
+            Err(e) => {
+                error!("get_due_users failed: {:?}", e);
+                return;
+            }
         };
+        info!("due users count: {}", due.len());
 
         for (username, mode) in due {
             let result = self.eval_activity(&username, mode).await;
@@ -103,6 +109,8 @@ impl Scheduler {
         username: &str,
         mode: GameMode,
     ) -> osubot_core::types::UpdateResult {
+        let now = Utc::now();
+
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Inactive,
@@ -158,17 +166,48 @@ impl Scheduler {
         }
 
         // 5. Get recent plays and write to database
-        let recent_plays =
-            match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
-                Ok(plays) => plays,
-                Err(_) => Vec::new(),
-            };
+        let recent_plays = match self.resolve_user_id(username).await {
+            Some(user_id) => {
+                match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
+                    Ok(plays) => {
+                        info!(
+                            "Fetched {} recent plays for {} (id={}) mode {:?}",
+                            plays.len(),
+                            username,
+                            user_id,
+                            mode
+                        );
+                        plays
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch recent plays for {username}: {e:?}");
+                        Vec::new()
+                    }
+                }
+            }
+            None => {
+                warn!("Skipping recent plays for {username}: no user_id available");
+                Vec::new()
+            }
+        };
 
-        // Convert API response to storage format (DateTime, timestamp)
-        let records: Vec<(DateTime<Utc>, i64)> = recent_plays
+        // Convert API response to storage format (Unix timestamps)
+        let records: Vec<i64> = recent_plays
             .iter()
-            .map(|p| (Utc::now(), p.beatmap.lastplayed))
+            .filter_map(|p| {
+                let ts = DateTime::parse_from_rfc3339(&p.created_at)
+                    .ok()?
+                    .timestamp();
+                Some(ts)
+            })
             .collect();
+
+        info!(
+            "Parsed {} valid timestamps for {} mode {:?}",
+            records.len(),
+            username,
+            mode
+        );
 
         let added_records = self
             .storage
@@ -177,6 +216,9 @@ impl Scheduler {
 
         if added_records > 0 {
             // Has new records -> Active
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Active,
                 added_snapshot,
@@ -185,11 +227,15 @@ impl Scheduler {
         }
 
         // 6. Check if there are plays within last 4h (no new additions)
-        let now = Utc::now();
-        let has_recent = recent_plays
-            .iter()
-            .any(|p| (now.timestamp() - p.beatmap.lastplayed) < 4 * 3600);
+        let has_recent = recent_plays.iter().any(|p| {
+            DateTime::parse_from_rfc3339(&p.created_at)
+                .map(|t| (now - t.with_timezone(&Utc)).num_hours() < 4)
+                .unwrap_or(false)
+        });
         if has_recent {
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::SemiActive,
                 added_snapshot,
@@ -214,6 +260,9 @@ impl Scheduler {
 
         if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {
             // Has changes
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             if hours_since_update < 4 {
                 return osubot_core::types::UpdateResult {
                     activity: UserActivity::NoRecent,
@@ -295,5 +344,32 @@ impl Scheduler {
             }
         }
         false
+    }
+
+    /// Get cached user_id, or fetch + cache on the fly
+    async fn resolve_user_id(&self, username: &str) -> Option<i64> {
+        match self.storage.get_user_id(username) {
+            Ok(Some(id)) if id != 0 => return Some(id),
+            Err(e) => warn!("Failed to look up user_id for {username}: {e}"),
+            _ => {}
+        }
+
+        // On-the-fly fallback: fetch from API and cache
+        match api::get_user_info(&self.rate_limiter, &self.oauth, username).await {
+            Ok(Some(info)) => {
+                if let Err(e) = self.storage.set_user_id(username, info.id) {
+                    warn!("Failed to cache user_id for {username}: {e}");
+                }
+                Some(info.id)
+            }
+            Ok(None) => {
+                warn!("User {username} not found on osu! (resolve_user_id)");
+                None
+            }
+            Err(e) => {
+                warn!("Failed to fetch user info for {username}: {e}");
+                None
+            }
+        }
     }
 }

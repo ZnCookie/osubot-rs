@@ -98,6 +98,15 @@ impl Storage {
             [],
         )?;
 
+        // osu! user ID cache (username -> numeric user ID)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS osu_user_ids (
+                username TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         // Indexes
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(username, mode)",
@@ -180,6 +189,43 @@ impl Storage {
         }
 
         Ok(())
+    }
+
+    pub fn set_user_id(&self, username: &str, user_id: i64) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO osu_user_ids (username, user_id) VALUES (LOWER(?1), ?2)",
+            params![username, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get cached osu! user ID (case-insensitive username lookup)
+    pub fn get_user_id(&self, username: &str) -> SqlResult<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)")?;
+        let mut rows = stmt.query(params![username])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Bound usernames that don't have a cached user_id yet
+    pub fn get_users_without_ids(&self) -> SqlResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT b.osu_username FROM user_bindings b
+             WHERE LOWER(b.osu_username) NOT IN (SELECT LOWER(username) FROM osu_user_ids)",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
     }
 
     pub fn get_binding(&self, qq: i64) -> SqlResult<Option<String>> {
@@ -335,12 +381,12 @@ impl Storage {
         &self,
         username: &str,
         mode: GameMode,
-        records: &[(DateTime<Utc>, i64)],
+        timestamps: &[i64],
     ) -> SqlResult<i32> {
         let conn = self.conn.lock().unwrap();
         let mut inserted = 0i32;
 
-        for (_, timestamp) in records {
+        for &timestamp in timestamps {
             let result = conn.execute(
                 "INSERT OR IGNORE INTO user_play_records (username, mode, played_at) VALUES (?1, ?2, ?3)",
                 params![username, mode as i32, timestamp],
@@ -541,7 +587,12 @@ impl Storage {
             UNION
             SELECT b.osu_username AS username, m.mode
             FROM user_bindings b
-            CROSS JOIN (VALUES (0), (1), (2), (3)) AS m(mode)
+            CROSS JOIN (
+            SELECT 0 AS mode
+            UNION ALL SELECT 1
+            UNION ALL SELECT 2
+            UNION ALL SELECT 3
+            ) AS m
             WHERE NOT EXISTS (
                 SELECT 1 FROM user_next_update n
                 WHERE n.username = b.osu_username AND n.mode = m.mode
