@@ -415,24 +415,6 @@ impl Storage {
         Ok(inserted)
     }
 
-    pub fn get_play_count_since(
-        &self,
-        username: &str,
-        mode: GameMode,
-        hours: i64,
-    ) -> SqlResult<i64> {
-        let conn = self.conn.lock().unwrap();
-        let cutoff = Utc::now() - chrono::Duration::hours(hours);
-        let cutoff_ts = cutoff.timestamp();
-
-        let mut stmt = conn.prepare(
-            "SELECT COUNT(*) FROM user_play_records WHERE username = ?1 AND mode = ?2 AND played_at >= ?3",
-        )?;
-        let count: i64 =
-            stmt.query_row(params![username, mode as i32, cutoff_ts], |row| row.get(0))?;
-        Ok(count)
-    }
-
     /// Check if user has any play records since the given UTC timestamp
     pub fn has_play_since(&self, username: &str, mode: GameMode, since_ts: i64) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();

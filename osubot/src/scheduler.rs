@@ -115,7 +115,7 @@ impl Scheduler {
         // Check rate limit before API calls
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
-                activity: UserActivity::Inactive,
+                activity: UserActivity::NoRecent,
                 added_snapshot: false,
             };
         }
