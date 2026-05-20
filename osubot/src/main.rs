@@ -124,7 +124,7 @@ async fn handle_command(
     rate_limiter: Arc<RateLimiter>,
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
-    irc_enabled: bool,
+    irc_nickname: Option<String>,
 ) {
     let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
         Some(cmd) => cmd,
@@ -252,7 +252,7 @@ async fn handle_command(
                         .await;
                 }
                 Ok(None) => {
-                    if irc_enabled {
+                    if let Some(nickname) = irc_nickname {
                         // IRC auth mode: check rate limit (one pending bind at a time)
                         match storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
@@ -277,8 +277,8 @@ async fn handle_command(
                                 info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
                                 let _ = resp_tx
                                     .send(format!(
-                                        "您的验证码是 {}，请在2分钟内通过 osu! IRC 私聊发送给我",
-                                        code
+                                        "您的验证码是 {}，请在两分钟内通过osu!发送私信给 {} 来完成验证",
+                                        code, nickname
                                     ))
                                     .await;
                             }
@@ -538,8 +538,19 @@ async fn main() {
         scheduler_clone.run().await;
     });
 
-    // Set up IRC client
     let irc_enabled = config.irc.enabled;
+
+    if irc_enabled && (config.irc.nickname.is_empty() || config.irc.password.is_empty()) {
+        panic!("IRC is enabled but nickname or password is not set in osubot.toml");
+    }
+
+    let irc_nickname = if irc_enabled {
+        Some(config.irc.nickname.clone())
+    } else {
+        None
+    };
+
+    // Set up IRC client
     let (irc_tx, mut irc_rx) = mpsc::channel::<osubot_core::irc::IrcPrivateMessage>(100);
 
     if irc_enabled {
@@ -603,6 +614,7 @@ async fn main() {
                     let oauth = oauth.clone();
                     let scheduler = scheduler.clone();
                     let rate_limiter = rate_limiter.clone();
+                    let irc_nickname = irc_nickname.clone();
                     tokio::spawn(async move {
                         handle_command(
                             storage,
@@ -611,7 +623,7 @@ async fn main() {
                             rate_limiter,
                             qq_msg,
                             resp_tx,
-                            irc_enabled,
+                            irc_nickname,
                         )
                         .await;
                     });
