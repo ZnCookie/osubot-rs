@@ -76,7 +76,9 @@ impl Scheduler {
 
     /// Background task entry point - only processes due users/modes
     pub async fn run(&self) {
+        info!("Scheduler task started");
         loop {
+            info!("Scheduler tick");
             time::sleep(time::Duration::from_secs(60 * self.config.interval_minutes)).await;
             self.process_due_users().await;
         }
@@ -86,8 +88,12 @@ impl Scheduler {
     async fn process_due_users(&self) {
         let due = match self.storage.get_due_users() {
             Ok(d) => d,
-            Err(_) => return,
+            Err(e) => {
+                error!("get_due_users failed: {:?}", e);
+                return;
+            }
         };
+        info!("due users count: {}", due.len());
 
         for (username, mode) in due {
             let result = self.eval_activity(&username, mode).await;
@@ -162,8 +168,19 @@ impl Scheduler {
         // 5. Get recent plays and write to database
         let recent_plays =
             match api::get_user_recent(&self.rate_limiter, &self.oauth, username, mode).await {
-                Ok(plays) => plays,
-                Err(_) => Vec::new(),
+                Ok(plays) => {
+                    info!(
+                        "Fetched {} recent plays for {} mode {:?}",
+                        plays.len(),
+                        username,
+                        mode
+                    );
+                    plays
+                }
+                Err(e) => {
+                    error!("Failed to fetch recent plays: {:?}", e);
+                    Vec::new()
+                }
             };
 
         // Convert API response to storage format (Unix timestamps)
@@ -176,6 +193,13 @@ impl Scheduler {
                 Some(ts)
             })
             .collect();
+
+        info!(
+            "Parsed {} valid timestamps for {} mode {:?}",
+            records.len(),
+            username,
+            mode
+        );
 
         let added_records = self
             .storage

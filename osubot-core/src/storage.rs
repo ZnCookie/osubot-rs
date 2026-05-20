@@ -541,7 +541,12 @@ impl Storage {
             UNION
             SELECT b.osu_username AS username, m.mode
             FROM user_bindings b
-            CROSS JOIN (VALUES (0), (1), (2), (3)) AS m(mode)
+            CROSS JOIN (
+            SELECT 0 AS mode
+            UNION ALL SELECT 1
+            UNION ALL SELECT 2
+            UNION ALL SELECT 3
+            ) AS m
             WHERE NOT EXISTS (
                 SELECT 1 FROM user_next_update n
                 WHERE n.username = b.osu_username AND n.mode = m.mode
