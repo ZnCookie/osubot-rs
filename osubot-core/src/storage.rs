@@ -194,7 +194,7 @@ impl Storage {
     pub fn set_user_id(&self, username: &str, user_id: i64) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO osu_user_ids (username, user_id) VALUES (?1, ?2)",
+            "INSERT OR REPLACE INTO osu_user_ids (username, user_id) VALUES (LOWER(?1), ?2)",
             params![username, user_id],
         )?;
         Ok(())
