@@ -169,22 +169,26 @@ async fn handle_command(
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
             match storage.get_binding(msg.user_id) {
-                Ok(Some(username)) => {
+                Ok(Some((user_id, current_username))) => {
                     // Trigger update for all modes (bypassing cooldown)
-                    scheduler.trigger_update(&username);
-                    match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
+                    scheduler.trigger_update(user_id);
+                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await {
                         Ok(stats) => {
+                            // Username change detection
+                            if stats.username != current_username {
+                                storage.update_binding_username(msg.user_id, &stats.username).ok();
+                            }
                             // Get change from storage (compares with 24h ago snapshot)
                             let change = storage
-                                .calculate_change(&username, mode, &stats)
+                                .calculate_change(user_id, mode, &stats)
                                 .ok()
                                 .flatten();
-                            info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
+                            info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
                             let response = format_stats_with_change(&stats, &change, mode);
                             let _ = resp_tx.send(response).await;
                         }
                         Err(e) => {
-                            warn!(username = %username, mode = ?mode, error = ?e, "QuerySelf failed");
+                            warn!(user_id = user_id, mode = ?mode, error = ?e, "QuerySelf failed");
                             let err_msg = match e {
                                 ApiError::NotFound => "未找到该用户".to_string(),
                                 ApiError::MissingApiKey => "API Key 未配置".to_string(),
@@ -210,46 +214,72 @@ async fn handle_command(
         }
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
-            match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
-                Ok(stats) => {
-                    let change = storage
-                        .calculate_change(&username, mode, &stats)
-                        .ok()
-                        .flatten();
-                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
-                    let response = format_stats_with_change(&stats, &change, mode);
-                    let _ = resp_tx.send(response).await;
+            // Get user_id for change tracking
+            if let Ok(Some(user_id)) = storage.get_user_id(&username) {
+                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
+                    Ok(stats) => {
+                        let change = storage
+                            .calculate_change(user_id, mode, &stats)
+                            .ok()
+                            .flatten();
+                        info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
+                        let response = format_stats_with_change(&stats, &change, mode);
+                        let _ = resp_tx.send(response).await;
+                    }
+                    Err(e) => {
+                        warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
+                        let err_msg = match e {
+                            ApiError::NotFound => "未找到该用户".to_string(),
+                            ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                            ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                            ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                            _ => "查询失败，请稍后重试".to_string(),
+                        };
+                        let _ = resp_tx.send(err_msg).await;
+                    }
                 }
-                Err(e) => {
-                    warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
-                    let err_msg = match e {
-                        ApiError::NotFound => "未找到该用户".to_string(),
-                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
-                        _ => "查询失败，请稍后重试".to_string(),
-                    };
-                    let _ = resp_tx.send(err_msg).await;
+            } else {
+                // No cached user_id, can't track changes - still allow query
+                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
+                    Ok(stats) => {
+                        info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "QueryUser success (no change)");
+                        let response = format_stats_with_change(&stats, &None, mode);
+                        let _ = resp_tx.send(response).await;
+                    }
+                    Err(e) => {
+                        warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
+                        let err_msg = match e {
+                            ApiError::NotFound => "未找到该用户".to_string(),
+                            ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                            ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                            ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                            _ => "查询失败，请稍后重试".to_string(),
+                        };
+                        let _ = resp_tx.send(err_msg).await;
+                    }
                 }
             }
         }
         Command::QueryMentionedUser { qq, mode } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
             match storage.get_binding(qq) {
-                Ok(Some(username)) => {
-                    scheduler.trigger_update(&username);
-                    match api::fetch_user_stats(&rate_limiter, &oauth, &username, mode).await {
+                Ok(Some((user_id, current_username))) => {
+                    scheduler.trigger_update(user_id);
+                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await {
                         Ok(stats) => {
+                            if stats.username != current_username {
+                                storage.update_binding_username(qq, &stats.username).ok();
+                            }
                             let change = storage
-                                .calculate_change(&username, mode, &stats)
+                                .calculate_change(user_id, mode, &stats)
                                 .ok()
                                 .flatten();
-                            info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
+                            info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
                             let response = format_stats_with_change(&stats, &change, mode);
                             let _ = resp_tx.send(response).await;
                         }
                         Err(e) => {
-                            warn!(username = %username, mode = ?mode, error = ?e, "QueryMentionedUser failed");
+                            warn!(user_id = user_id, mode = ?mode, error = ?e, "QueryMentionedUser failed");
                             let err_msg = match e {
                                 ApiError::NotFound => "未找到该用户".to_string(),
                                 ApiError::MissingApiKey => "API Key 未配置".to_string(),
@@ -279,10 +309,10 @@ async fn handle_command(
             info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "Bind command");
             // First check if this QQ already bound
             match storage.get_binding(msg.user_id) {
-                Ok(Some(existing)) => {
-                    info!(user_id = msg.user_id, existing = %existing, "Bind but already bound");
+                Ok(Some((_, existing_username))) => {
+                    info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
                     let _ = resp_tx
-                        .send(format!("你已经绑定为{},如需修改请先解绑", existing))
+                        .send(format!("你已经绑定为{},如需修改请先解绑", existing_username))
                         .await;
                 }
                 Ok(None) => {
@@ -329,11 +359,11 @@ async fn handle_command(
                                 if let Err(e) = storage.set_user_id(&username, user_info.id) {
                                     warn!("Failed to cache user_id for {username}: {e}");
                                 }
-                                match storage.bind(msg.user_id, &username) {
+                                match storage.bind(msg.user_id, user_info.id, &user_info.username) {
                                     Ok(Ok(())) => {
-                                        info!(user_id = msg.user_id, username = %username, "Bind success");
+                                        info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
                                         let _ =
-                                            resp_tx.send(format!("成功绑定为{}", username)).await;
+                                            resp_tx.send(format!("成功绑定为{}", user_info.username)).await;
                                     }
                                     Ok(Err(bound_qq)) => {
                                         info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
@@ -397,11 +427,11 @@ async fn handle_command(
                 Ok(None) => {
                     // Ask for confirmation and set pending
                     match storage.get_binding(msg.user_id) {
-                        Ok(Some(username)) => {
+                        Ok(Some((_, current_username))) => {
                             storage.set_pending_unbind(msg.user_id).ok();
-                            info!(user_id = msg.user_id, username = %username, "Unbind confirmation requested");
+                            info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
                             let _ = resp_tx
-                                .send(format!("确定要解除绑定 {} 吗？回复\"解绑\"确认", username))
+                                .send(format!("确定要解除绑定 {} 吗？回复\"解绑\"确认", current_username))
                                 .await;
                         }
                         Ok(None) => {
@@ -460,7 +490,8 @@ async fn handle_command(
 
             let group_bindings: Vec<(i64, String)> = all_bindings
                 .into_iter()
-                .filter(|(qq, _)| group_members.contains(qq))
+                .filter(|(qq, _, _)| group_members.contains(qq))
+                .map(|(qq, _, username)| (qq, username))
                 .collect();
 
             if group_bindings.is_empty() {
@@ -592,41 +623,48 @@ async fn handle_irc_message(
         return;
     }
 
-    // Perform the bind
-    match storage.bind(pending.qq_user_id, &pending.target_username) {
-        Ok(Ok(())) => {
-            storage.remove_pending_bind(code).ok();
-            info!(qq = pending.qq_user_id, username = %pending.target_username, "Bind verified and completed");
+    // Get user info first to obtain user_id
+    match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
+        Ok(Some(info)) => {
             // Cache the numeric user ID
-            match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
-                Ok(Some(info)) => {
-                    if let Err(e) = storage.set_user_id(&pending.target_username, info.id) {
-                        warn!(
-                            "Failed to cache user_id for {}: {e}",
-                            pending.target_username
-                        );
-                    }
+            if let Err(e) = storage.set_user_id(&pending.target_username, info.id) {
+                warn!(
+                    "Failed to cache user_id for {}: {e}",
+                    pending.target_username
+                );
+            }
+            // Perform the bind
+            match storage.bind(pending.qq_user_id, info.id, &info.username) {
+                Ok(Ok(())) => {
+                    storage.remove_pending_bind(code).ok();
+                    info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
+                    let msg = format!("成功绑定为{}", info.username);
+                    send_group_msg(&write, pending.group_id, &msg).await;
                 }
-                Ok(None) => {
-                    warn!("User {} not found after IRC bind", pending.target_username);
+                Ok(Err(_)) => {
+                    storage.remove_pending_bind(code).ok();
+                    let msg = "绑定失败（该 osu! 用户已绑定其他 QQ）";
+                    send_group_msg(&write, pending.group_id, msg).await;
                 }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch user info for {} after IRC bind: {e}",
-                        pending.target_username
-                    );
+                Err(_) => {
+                    storage.remove_pending_bind(code).ok();
+                    let msg = "绑定失败，请稍后重试";
+                    send_group_msg(&write, pending.group_id, msg).await;
                 }
             }
-            let msg = format!("成功绑定为{}", pending.target_username);
-            send_group_msg(&write, pending.group_id, &msg).await;
         }
-        Ok(Err(_)) => {
+        Ok(None) => {
             storage.remove_pending_bind(code).ok();
-            let msg = "绑定失败（该 osu! 用户已绑定其他 QQ）";
+            warn!("User {} not found during IRC bind", pending.target_username);
+            let msg = "绑定失败（用户不存在）";
             send_group_msg(&write, pending.group_id, msg).await;
         }
-        Err(_) => {
+        Err(e) => {
             storage.remove_pending_bind(code).ok();
+            warn!(
+                "Failed to fetch user info for {} during IRC bind: {e}",
+                pending.target_username
+            );
             let msg = "绑定失败，请稍后重试";
             send_group_msg(&write, pending.group_id, msg).await;
         }
