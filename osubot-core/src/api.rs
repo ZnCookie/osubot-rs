@@ -24,14 +24,26 @@ pub struct PlayCount {
     pub miss_count: i64,
 }
 
+/// osu! API v2 play statistics
+#[derive(Debug, serde::Deserialize)]
+pub struct PlayStatistics {
+    #[serde(rename = "count_100")]
+    pub count_100: i64,
+    #[serde(rename = "count_300")]
+    pub count_300: i64,
+    #[serde(rename = "count_50")]
+    pub count_50: i64,
+    #[serde(rename = "count_miss")]
+    pub count_miss: i64,
+}
+
 /// osu! API v2 recent play entry
 #[derive(Debug, serde::Deserialize)]
 pub struct RecentPlay {
     pub beatmap: BeatmapInfo,
-    pub count: PlayCount,
-    #[serde(rename = "maxcombo")]
-    pub maxcombo: i64,
-    #[serde(rename = "perfect")]
+    pub statistics: PlayStatistics,
+    #[serde(rename = "max_combo")]
+    pub max_combo: i64,
     pub perfect: bool,
     pub created_at: String,
 }
@@ -258,7 +270,7 @@ pub async fn get_user_recent(
     let client = Client::new();
 
     let url = format!(
-        "https://osu.ppy.sh/api/v2/users/{}/recent?mode={}",
+        "https://osu.ppy.sh/api/v2/users/{}/scores/recent?mode={}",
         user_id,
         mode.api_value()
     );
