@@ -9,7 +9,6 @@ use tokio::sync::Mutex;
 #[derive(Debug, serde::Deserialize)]
 pub struct BeatmapInfo {
     pub id: i64,
-    pub lastplayed: i64, // Unix timestamp (seconds)
 }
 
 /// osu! API v2 play count breakdown

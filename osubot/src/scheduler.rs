@@ -103,6 +103,8 @@ impl Scheduler {
         username: &str,
         mode: GameMode,
     ) -> osubot_core::types::UpdateResult {
+        let now = Utc::now();
+
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Inactive,
@@ -167,7 +169,12 @@ impl Scheduler {
         // Convert API response to storage format (DateTime, timestamp)
         let records: Vec<(DateTime<Utc>, i64)> = recent_plays
             .iter()
-            .map(|p| (Utc::now(), p.beatmap.lastplayed))
+            .filter_map(|p| {
+                let ts = DateTime::parse_from_rfc3339(&p.created_at)
+                    .ok()?
+                    .timestamp();
+                Some((now, ts))
+            })
             .collect();
 
         let added_records = self
@@ -177,6 +184,7 @@ impl Scheduler {
 
         if added_records > 0 {
             // Has new records -> Active
+            let _ = self.storage.set_last_update(username, mode, now);
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Active,
                 added_snapshot,
@@ -185,11 +193,13 @@ impl Scheduler {
         }
 
         // 6. Check if there are plays within last 4h (no new additions)
-        let now = Utc::now();
-        let has_recent = recent_plays
-            .iter()
-            .any(|p| (now.timestamp() - p.beatmap.lastplayed) < 4 * 3600);
+        let has_recent = recent_plays.iter().any(|p| {
+            DateTime::parse_from_rfc3339(&p.created_at)
+                .map(|t| (now - t.with_timezone(&Utc)).num_hours() < 4)
+                .unwrap_or(false)
+        });
         if has_recent {
+            let _ = self.storage.set_last_update(username, mode, now);
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::SemiActive,
                 added_snapshot,
@@ -214,6 +224,7 @@ impl Scheduler {
 
         if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {
             // Has changes
+            let _ = self.storage.set_last_update(username, mode, now);
             if hours_since_update < 4 {
                 return osubot_core::types::UpdateResult {
                     activity: UserActivity::NoRecent,
