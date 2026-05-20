@@ -448,15 +448,6 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
     let _ = sink.send(WsMsg::Text(json.to_string().into())).await;
 }
 
-fn normalize_osu_username_for_irc(username: &str) -> String {
-    if username.contains(' ') {
-        let normalized = username.replace(' ', "_");
-        format!("_{normalized}_")
-    } else {
-        username.to_string()
-    }
-}
-
 async fn handle_irc_message(
     storage: Arc<Storage>,
     irc_msg: osubot_core::irc::IrcPrivateMessage,
@@ -474,9 +465,8 @@ async fn handle_irc_message(
     };
 
     // Check if the sender matches the target username
-    if irc_msg.sender.to_lowercase()
-        != normalize_osu_username_for_irc(&pending.target_username).to_lowercase()
-    {
+    // osu! replaces spaces with underscores in IRC nicks
+    if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
         storage.remove_pending_bind(code).ok();
         let msg = "绑定失败（绑定的不是本人）";
         send_group_msg(&write, pending.group_id, msg).await;
@@ -501,21 +491,6 @@ async fn handle_irc_message(
             let msg = "绑定失败，请稍后重试";
             send_group_msg(&write, pending.group_id, msg).await;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_osu_username_for_irc;
-
-    #[test]
-    fn normalize_username_without_spaces() {
-        assert_eq!(normalize_osu_username_for_irc("Snow_Neko"), "Snow_Neko");
-    }
-
-    #[test]
-    fn normalize_username_with_spaces() {
-        assert_eq!(normalize_osu_username_for_irc("Snow Neko"), "_Snow_Neko_");
     }
 }
 
