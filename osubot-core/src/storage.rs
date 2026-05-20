@@ -30,21 +30,22 @@ impl Storage {
     pub fn new<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
 
-        // Existing user_bindings table
+        // Schema: user_bindings (qq → user_id, current_username)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_bindings (
                 qq INTEGER PRIMARY KEY,
-                osu_username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                current_username TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
 
-        // User stats history table
+        // user_stats_history (user_id, mode, recorded_at → stats)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_stats_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 pp REAL,
@@ -54,46 +55,47 @@ impl Storage {
                 accuracy REAL,
                 playcount INTEGER,
                 hits INTEGER,
-                playtime INTEGER
+                playtime INTEGER,
+                UNIQUE(user_id, mode, recorded_at)
             )",
             [],
         )?;
 
-        // User play records table (for activity detection)
+        // user_play_records (user_id, mode, played_at)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_play_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 played_at INTEGER NOT NULL,
-                UNIQUE(username, mode, played_at)
+                UNIQUE(user_id, mode, played_at)
             )",
             [],
         )?;
 
-        // User next update table (for scheduler dynamic intervals)
+        // user_next_update (user_id, mode → next_update)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_next_update (
-                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 next_update INTEGER NOT NULL,
-                PRIMARY KEY(username, mode)
+                PRIMARY KEY(user_id, mode)
             )",
             [],
         )?;
 
-        // User last update table (stores exact time passed to set_last_update)
+        // user_last_update (user_id, mode → last_update)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_last_update (
-                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 last_update TEXT NOT NULL,
-                PRIMARY KEY(username, mode)
+                PRIMARY KEY(user_id, mode)
             )",
             [],
         )?;
 
-        // Pending unbind confirmations (for two-step unbind)
+        // Unchanged tables...
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pending_unbind (
                 qq INTEGER PRIMARY KEY,
@@ -102,7 +104,6 @@ impl Storage {
             [],
         )?;
 
-        // Pending binds for IRC auth (for two-step bind verification)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pending_binds (
                 code TEXT PRIMARY KEY,
@@ -115,7 +116,6 @@ impl Storage {
             [],
         )?;
 
-        // osu! user ID cache (username -> numeric user ID)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS osu_user_ids (
                 username TEXT PRIMARY KEY,
@@ -124,9 +124,9 @@ impl Storage {
             [],
         )?;
 
-        // Indexes
+        // New indexes on user_id (drop old username indexes)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(username, mode)",
+            "CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode)",
             [],
         )?;
         conn.execute(
@@ -134,7 +134,7 @@ impl Storage {
             [],
         )?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(username, mode)",
+            "CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(user_id, mode)",
             [],
         )?;
 
