@@ -508,8 +508,19 @@ impl Storage {
         let conn = self.conn.lock().unwrap();
         let now_ts = Utc::now().timestamp();
 
-        let mut stmt =
-            conn.prepare("SELECT username, mode FROM user_next_update WHERE next_update <= ?1")?;
+        // Part 1: users with next_update <= now (scheduled due users)
+        // Part 2: bound users not yet in user_next_update (catch stray bindings)
+        let mut stmt = conn.prepare(
+            "SELECT username, mode FROM user_next_update WHERE next_update <= ?1
+            UNION ALL
+            SELECT b.osu_username AS username, m.mode
+            FROM user_bindings b
+            CROSS JOIN (VALUES (0), (1), (2), (3)) AS m(mode)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_next_update n
+                WHERE n.username = b.osu_username AND n.mode = m.mode
+            )",
+        )?;
         let rows = stmt.query_map(params![now_ts], |row| {
             let username: String = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
