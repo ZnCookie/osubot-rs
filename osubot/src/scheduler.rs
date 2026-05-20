@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use osubot_core::api::ApiError;
 use osubot_core::{
@@ -166,14 +166,14 @@ impl Scheduler {
                 Err(_) => Vec::new(),
             };
 
-        // Convert API response to storage format (DateTime, timestamp)
-        let records: Vec<(DateTime<Utc>, i64)> = recent_plays
+        // Convert API response to storage format (Unix timestamps)
+        let records: Vec<i64> = recent_plays
             .iter()
             .filter_map(|p| {
                 let ts = DateTime::parse_from_rfc3339(&p.created_at)
                     .ok()?
                     .timestamp();
-                Some((now, ts))
+                Some(ts)
             })
             .collect();
 
@@ -184,7 +184,9 @@ impl Scheduler {
 
         if added_records > 0 {
             // Has new records -> Active
-            let _ = self.storage.set_last_update(username, mode, now);
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Active,
                 added_snapshot,
@@ -199,7 +201,9 @@ impl Scheduler {
                 .unwrap_or(false)
         });
         if has_recent {
-            let _ = self.storage.set_last_update(username, mode, now);
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::SemiActive,
                 added_snapshot,
@@ -224,7 +228,9 @@ impl Scheduler {
 
         if change.as_ref().map(|c| c.has_changes()).unwrap_or(false) {
             // Has changes
-            let _ = self.storage.set_last_update(username, mode, now);
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             if hours_since_update < 4 {
                 return osubot_core::types::UpdateResult {
                     activity: UserActivity::NoRecent,
@@ -248,7 +254,9 @@ impl Scheduler {
             };
         }
         if hours_since_update < 48 {
-            let _ = self.storage.set_last_update(username, mode, now);
+            if let Err(e) = self.storage.set_last_update(username, mode, now) {
+                warn!("Failed to set last update for {username}/{mode:?}: {e}");
+            }
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::Normal,
                 added_snapshot: false,

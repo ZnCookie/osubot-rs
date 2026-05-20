@@ -335,12 +335,12 @@ impl Storage {
         &self,
         username: &str,
         mode: GameMode,
-        records: &[(DateTime<Utc>, i64)],
+        timestamps: &[i64],
     ) -> SqlResult<i32> {
         let conn = self.conn.lock().unwrap();
         let mut inserted = 0i32;
 
-        for (_, timestamp) in records {
+        for &timestamp in timestamps {
             let result = conn.execute(
                 "INSERT OR IGNORE INTO user_play_records (username, mode, played_at) VALUES (?1, ?2, ?3)",
                 params![username, mode as i32, timestamp],
