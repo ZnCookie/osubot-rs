@@ -172,11 +172,15 @@ async fn handle_command(
                 Ok(Some((user_id, current_username))) => {
                     // Trigger update for all modes (bypassing cooldown)
                     scheduler.trigger_update(user_id);
-                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await {
+                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode)
+                        .await
+                    {
                         Ok(stats) => {
                             // Username change detection
                             if stats.username != current_username {
-                                storage.update_binding_username(msg.user_id, &stats.username).ok();
+                                storage
+                                    .update_binding_username(msg.user_id, &stats.username)
+                                    .ok();
                             }
                             // Get change from storage (compares with 24h ago snapshot)
                             let change = storage
@@ -216,7 +220,9 @@ async fn handle_command(
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
             // Get user_id for change tracking
             if let Ok(Some(user_id)) = storage.get_user_id(&username) {
-                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
+                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode)
+                    .await
+                {
                     Ok(stats) => {
                         let change = storage
                             .calculate_change(user_id, mode, &stats)
@@ -240,7 +246,9 @@ async fn handle_command(
                 }
             } else {
                 // No cached user_id, can't track changes - still allow query
-                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
+                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode)
+                    .await
+                {
                     Ok(stats) => {
                         info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "QueryUser success (no change)");
                         let response = format_stats_with_change(&stats, &None, mode);
@@ -265,7 +273,9 @@ async fn handle_command(
             match storage.get_binding(qq) {
                 Ok(Some((user_id, current_username))) => {
                     scheduler.trigger_update(user_id);
-                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await {
+                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode)
+                        .await
+                    {
                         Ok(stats) => {
                             if stats.username != current_username {
                                 storage.update_binding_username(qq, &stats.username).ok();
@@ -312,7 +322,10 @@ async fn handle_command(
                 Ok(Some((_, existing_username))) => {
                     info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
                     let _ = resp_tx
-                        .send(format!("你已经绑定为{},如需修改请先解绑", existing_username))
+                        .send(format!(
+                            "你已经绑定为{},如需修改请先解绑",
+                            existing_username
+                        ))
                         .await;
                 }
                 Ok(None) => {
@@ -362,8 +375,9 @@ async fn handle_command(
                                 match storage.bind(msg.user_id, user_info.id, &user_info.username) {
                                     Ok(Ok(())) => {
                                         info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
-                                        let _ =
-                                            resp_tx.send(format!("成功绑定为{}", user_info.username)).await;
+                                        let _ = resp_tx
+                                            .send(format!("成功绑定为{}", user_info.username))
+                                            .await;
                                     }
                                     Ok(Err(bound_qq)) => {
                                         info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
@@ -431,7 +445,10 @@ async fn handle_command(
                             storage.set_pending_unbind(msg.user_id).ok();
                             info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
                             let _ = resp_tx
-                                .send(format!("确定要解除绑定 {} 吗？回复\"解绑\"确认", current_username))
+                                .send(format!(
+                                    "确定要解除绑定 {} 吗？回复\"解绑\"确认",
+                                    current_username
+                                ))
                                 .await;
                         }
                         Ok(None) => {

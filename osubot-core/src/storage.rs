@@ -157,22 +157,13 @@ impl Storage {
         }
     }
 
-    /// Get QQ by osu username (case-insensitive) - returns (user_id, qq)
-    pub fn get_binding_by_username(&self, username: &str) -> SqlResult<Option<(i64, i64)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT user_id, qq FROM user_bindings WHERE LOWER(current_username) = LOWER(?1)",
-        )?;
-        let mut rows = stmt.query(params![username])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some((row.get(0)?, row.get(1)?)))
-        } else {
-            Ok(None)
-        }
-    }
-
     /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
-    pub fn bind(&self, qq: i64, user_id: i64, current_username: &str) -> SqlResult<Result<(), i64>> {
+    pub fn bind(
+        &self,
+        qq: i64,
+        user_id: i64,
+        current_username: &str,
+    ) -> SqlResult<Result<(), i64>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT qq FROM user_bindings WHERE user_id = ?1")?;
         let mut rows = stmt.query(params![user_id])?;
@@ -264,21 +255,11 @@ impl Storage {
 
     pub fn get_binding(&self, qq: i64) -> SqlResult<Option<(i64, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
         let mut rows = stmt.query(params![qq])?;
         if let Some(row) = rows.next()? {
             Ok(Some((row.get(0)?, row.get(1)?)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn get_binding_username(&self, qq: i64) -> SqlResult<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT current_username FROM user_bindings WHERE qq = ?1")?;
-        let mut rows = stmt.query(params![qq])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
         } else {
             Ok(None)
         }
@@ -532,9 +513,8 @@ impl Storage {
         mode: GameMode,
     ) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT last_update FROM user_last_update WHERE user_id = ?1 AND mode = ?2",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT last_update FROM user_last_update WHERE user_id = ?1 AND mode = ?2")?;
         let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             let last_update_str: String = row.get(0)?;
@@ -567,9 +547,8 @@ impl Storage {
         mode: GameMode,
     ) -> SqlResult<Option<DateTime<Utc>>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2")?;
         let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             let ts: i64 = row.get(0)?;
@@ -598,7 +577,8 @@ impl Storage {
 
     pub fn get_all_bindings(&self, qq: i64) -> SqlResult<Vec<(GameMode, i64, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
         let mut rows = stmt.query(params![qq])?;
         let mut results = Vec::new();
 

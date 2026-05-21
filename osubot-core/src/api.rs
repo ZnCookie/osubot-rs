@@ -180,7 +180,10 @@ async fn fetch_user_stats_internal(
 
     loop {
         let access_token = oauth.get_token().await?;
-        rate_limiter.acquire().await.map_err(|_| ApiError::RateLimited)?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
 
         let client = Client::new();
 
@@ -193,7 +196,8 @@ async fn fetch_user_stats_internal(
         if resp.status() == 401 {
             oauth.invalidate();
             if retry_count < max_retries {
-                let delay = Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
+                let delay =
+                    Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
                 retry_count += 1;
                 tokio::time::sleep(delay).await;
                 continue;
@@ -247,7 +251,10 @@ pub async fn fetch_user_stats_by_username(
     } else {
         username.to_string()
     };
-    let url = format!("https://osu.ppy.sh/api/v2/users/{}/{}", url_username, mode_param);
+    let url = format!(
+        "https://osu.ppy.sh/api/v2/users/{}/{}",
+        url_username, mode_param
+    );
     fetch_user_stats_internal(rate_limiter, oauth, &url).await
 }
 
