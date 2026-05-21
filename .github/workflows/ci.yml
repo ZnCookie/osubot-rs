@@ -73,11 +73,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             artifact_name: osubot-linux
             binary_name: osubot
-            needs_cross: false
           - target: x86_64-pc-windows-gnu
             artifact_name: osubot-windows
             binary_name: osubot.exe
-            needs_cross: true
 
     steps:
       - uses: actions/checkout@v6
@@ -86,17 +84,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
-        if: matrix.needs_cross
+        if: matrix.target == 'x86_64-pc-windows-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
 
       - name: Setup nightly for cross
-        if: matrix.needs_cross
+        if: matrix.target == 'x86_64-pc-windows-gnu'
         run: rustup toolchain install nightly
 
       - name: Install cross
-        if: matrix.needs_cross
+        if: matrix.target == 'x86_64-pc-windows-gnu'
         uses: taiki-e/install-action@v2
         with:
           tool: cross
@@ -126,15 +124,15 @@ jobs:
             cargo-target-${{ matrix.target }}-
 
       - name: Build Linux
-        if: ! matrix.needs_cross
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo build --release
 
       - name: Build Windows
-        if: matrix.needs_cross
+        if: matrix.target == 'x86_64-pc-windows-gnu'
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Upload artifact (Linux)
-        if: ! matrix.needs_cross
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
@@ -142,7 +140,7 @@ jobs:
           retention-days: 30
 
       - name: Upload artifact (Windows)
-        if: matrix.needs_cross
+        if: matrix.target == 'x86_64-pc-windows-gnu'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
