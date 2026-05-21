@@ -50,9 +50,6 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-      - name: Build
-        run: cargo build --release
-
       - name: Test
         run: cargo test
 
@@ -61,3 +58,41 @@ jobs:
 
       - name: Udeps
         run: cargo +nightly udeps
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: osubot-linux
+            binary_name: osubot
+          - target: x86_64-pc-windows-msvc
+            artifact_name: osubot.exe
+            binary_name: osubot.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross
+        run: cargo install cross
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/target
+          key: cargo-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ matrix.target }}-
+
+      - name: Build ${{ matrix.target }}
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+          retention-days: 30
