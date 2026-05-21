@@ -124,7 +124,25 @@ impl Scheduler {
             match api::fetch_user_stats_by_user_id(&self.rate_limiter, &self.oauth, user_id, mode)
                 .await
             {
-                Ok(stats) => stats,
+                Ok(stats) => {
+                    // Username change detection — update bindings if user renamed
+                    if let Ok(updated) = self
+                        .storage
+                        .update_binding_username_by_user_id(user_id, &stats.username)
+                    {
+                        if updated > 0 {
+                            info!(
+                                user_id = user_id,
+                                new_username = %stats.username,
+                                updated_bindings = updated,
+                                "username change detected by scheduler"
+                            );
+                        }
+                    }
+                    // Refresh username→user_id cache
+                    self.storage.set_user_id(&stats.username, user_id).ok();
+                    stats
+                }
                 Err(ApiError::NotFound) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::UserNotExists,
