@@ -5,12 +5,15 @@ on:
     branches: [master]
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -21,12 +24,14 @@ jobs:
         run: rustup toolchain install nightly
 
       - name: Install cargo-audit and cargo-udeps
-        run: |
-          cargo install cargo-audit
-          cargo +nightly install cargo-udeps
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            cargo-audit
+            cargo-udeps
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/registry
           key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
@@ -34,20 +39,14 @@ jobs:
             cargo-registry-${{ runner.os }}-
 
       - name: Cache cargo index
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/git
           key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-index-${{ runner.os }}-
 
-      - name: Cache cargo target
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/target
-          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-target-${{ runner.os }}-
+      # Note: not caching target/ here to avoid stable/nightly compiler output pollution
 
       - name: Format check
         run: cargo fmt --check
@@ -66,7 +65,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -74,51 +73,71 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             artifact_name: osubot-linux
             binary_name: osubot
+            needs_cross: false
           - target: x86_64-pc-windows-gnu
-            artifact_name: osubot.exe
+            artifact_name: osubot-windows
             binary_name: osubot.exe
+            needs_cross: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Install dependencies for cross
-        if: matrix.target == 'x86_64-pc-windows-gnu'
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
 
       - name: Install cross
-        if: matrix.target == 'x86_64-pc-windows-gnu'
+        if: matrix.needs_cross
         run: cargo install cross
 
-      - name: Cache cargo target
-        uses: actions/cache@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v5
         with:
-          path: ~/.cargo/target
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-index-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v5
+        with:
+          path: target
           key: cargo-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-target-${{ matrix.target }}-
 
       - name: Build Linux
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: ! matrix.needs_cross
         run: cargo build --release
 
       - name: Build Windows
-        if: matrix.target == 'x86_64-pc-windows-gnu'
+        if: matrix.needs_cross
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Upload artifact
-        if: matrix.target == 'x86_64-pc-windows-gnu'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
-          retention-days: 30
-
       - name: Upload artifact (Linux)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/upload-artifact@v4
+        if: ! matrix.needs_cross
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: target/release/${{ matrix.binary_name }}
+          retention-days: 30
+
+      - name: Upload artifact (Windows)
+        if: matrix.needs_cross
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
           retention-days: 30
