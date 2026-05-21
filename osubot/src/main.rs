@@ -181,11 +181,11 @@ async fn handle_command(
                                 storage
                                     .update_binding_username(msg.user_id, &stats.username)
                                     .ok();
-                                storage.set_user_id(&stats.username, user_id).ok();
                             }
+                            storage.set_user_id(&stats.username, user_id).ok();
                             // Get change from storage (compares with 24h ago snapshot)
                             let change = storage
-                                .calculate_change(user_id, mode, &stats, Some(&stats.username))
+                                .calculate_change(user_id, mode, &stats)
                                 .ok()
                                 .flatten();
                             info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
@@ -219,32 +219,25 @@ async fn handle_command(
         }
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
-            // Get user_id for change tracking
-            let user_id = match storage.get_user_id(&username) {
-                Ok(Some(id)) => Some(id),
-                Ok(None) => None,
-                Err(e) => {
-                    warn!("Failed to look up user_id for {username}: {e}");
-                    None
-                }
-            };
             match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
                 Ok(stats) => {
-                    // Sync cache if username changed (e.g., user renamed from "Alice" to "Alice_")
-                    if let (Some(user_id), false) = (user_id, stats.username == username) {
-                        storage.set_user_id(&stats.username, user_id).ok();
+                    // Cache user_id for future lookups (even for unbound users)
+                    storage.set_user_id(&stats.username, stats.user_id).ok();
+                    // If the user renamed, also map the queried name → user_id
+                    if stats.username != username {
+                        storage.set_user_id(&username, stats.user_id).ok();
                     }
-                    let change = user_id.and_then(|id| {
-                        storage
-                            .calculate_change(id, mode, &stats, Some(&stats.username))
-                            .ok()
-                            .flatten()
-                    });
+                    // Schedule periodic updates for this user
+                    scheduler.trigger_update(stats.user_id);
+                    let change = storage
+                        .calculate_change(stats.user_id, mode, &stats)
+                        .ok()
+                        .flatten();
                     let has_change = change.is_some();
                     info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
                     let response = format_stats_with_change(&stats, &change, mode);
                     let _ = resp_tx.send(response).await;
-                    if !has_change && user_id.is_some() {
+                    if !has_change {
                         info!(username = %username, "QueryUser - no change data available");
                     }
                 }
@@ -272,10 +265,10 @@ async fn handle_command(
                         Ok(stats) => {
                             if stats.username != current_username {
                                 storage.update_binding_username(qq, &stats.username).ok();
-                                storage.set_user_id(&stats.username, user_id).ok();
                             }
+                            storage.set_user_id(&stats.username, user_id).ok();
                             let change = storage
-                                .calculate_change(user_id, mode, &stats, Some(&stats.username))
+                                .calculate_change(user_id, mode, &stats)
                                 .ok()
                                 .flatten();
                             info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");

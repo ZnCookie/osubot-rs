@@ -38,6 +38,7 @@ impl GameMode {
 
 #[derive(Debug, Clone)]
 pub struct UserStats {
+    pub user_id: i64,
     pub username: String,
     pub pp: f64,
     pub rank: i64,
@@ -98,5 +99,4 @@ pub enum UserActivity {
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub activity: UserActivity,
-    pub added_snapshot: bool,
 }

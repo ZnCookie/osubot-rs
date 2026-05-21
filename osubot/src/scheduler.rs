@@ -116,7 +116,6 @@ impl Scheduler {
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::NoRecent,
-                added_snapshot: false,
             };
         }
 
@@ -129,39 +128,36 @@ impl Scheduler {
                 Err(ApiError::NotFound) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::UserNotExists,
-                        added_snapshot: false,
                     };
                 }
                 Err(_) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::Inactive,
-                        added_snapshot: false,
                     };
                 }
             };
 
         // Save snapshot only when stats changed (rank or playcount differ)
-        let added_snapshot = match self.storage.get_latest_snapshot(user_id, mode, None) {
+        match self.storage.get_latest_snapshot(user_id, mode) {
             Ok(Some(prev)) => {
                 if prev.rank != current.rank || prev.playcount != current.playcount {
-                    self.storage
-                        .save_stats(user_id, mode, &current)
-                        .unwrap_or(false)
-                } else {
-                    false
+                    if let Err(e) = self.storage.save_stats(user_id, mode, &current) {
+                        warn!("save_stats error for {user_id}/{mode:?}: {e}");
+                    }
                 }
             }
-            Ok(None) => self
-                .storage
-                .save_stats(user_id, mode, &current)
-                .unwrap_or(false),
+            Ok(None) => {
+                if let Err(e) = self.storage.save_stats(user_id, mode, &current) {
+                    warn!("save_stats error for {user_id}/{mode:?}: {e}");
+                }
+            }
             Err(e) => {
                 warn!("get_latest_snapshot error for {user_id}/{mode:?}: {e}");
-                self.storage
-                    .save_stats(user_id, mode, &current)
-                    .unwrap_or(false)
+                if let Err(e) = self.storage.save_stats(user_id, mode, &current) {
+                    warn!("save_stats error for {user_id}/{mode:?}: {e}");
+                }
             }
-        };
+        }
 
         // Always fetch and save recent plays (get_user_recent already takes user_id)
         let recent_plays =
@@ -231,10 +227,7 @@ impl Scheduler {
             }
         }
 
-        osubot_core::types::UpdateResult {
-            activity,
-            added_snapshot,
-        }
+        osubot_core::types::UpdateResult { activity }
     }
 
     /// Return next update interval based on activity

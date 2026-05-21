@@ -84,6 +84,7 @@ struct OauthResponse {
 /// osu! API v2 user response — top-level fields
 #[derive(Debug, serde::Deserialize)]
 struct OsuApiV2User {
+    id: i64,
     username: String,
     country_code: Option<String>, // e.g., "CN", "US", "JP"
     statistics: Option<OsuStatistics>,
@@ -221,6 +222,7 @@ async fn fetch_user_stats_internal(
         };
 
         return Ok(UserStats {
+            user_id: data.id,
             username: data.username,
             pp: stats.pp.unwrap_or(0.0),
             rank: stats.rank.unwrap_or(0),

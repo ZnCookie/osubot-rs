@@ -26,9 +26,73 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
+/// Check if the database has the old (username-based) schema
+fn has_old_schema(conn: &Connection) -> SqlResult<bool> {
+    // Check if user_bindings exists and has osu_username column (old schema marker)
+    let mut stmt = conn.prepare("PRAGMA table_info(user_bindings)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let col_name: String = row.get(1)?;
+        if col_name == "osu_username" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Migrate from old username-based schema to user_id-based schema.
+fn migrate_old_schema(conn: &Connection) -> SqlResult<()> {
+    tracing::info!("Detected old database schema, migrating...");
+
+    // Migrate user_bindings: map osu_username → user_id via osu_user_ids cache
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS user_bindings_new (
+            qq INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            current_username TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO user_bindings_new (qq, user_id, current_username, created_at)
+        SELECT b.qq, COALESCE(o.user_id, 0), b.osu_username, b.created_at
+        FROM user_bindings b
+        LEFT JOIN osu_user_ids o ON LOWER(o.username) = LOWER(b.osu_username);
+        DROP TABLE user_bindings;
+        ALTER TABLE user_bindings_new RENAME TO user_bindings;",
+    )?;
+
+    let unmigrated: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM user_bindings WHERE user_id = 0",
+        [],
+        |row| row.get(0),
+    )?;
+    if unmigrated > 0 {
+        tracing::warn!(
+            "{} binding(s) could not be migrated (username→user_id lookup failed). These users need to re-bind.",
+            unmigrated
+        );
+    }
+
+    // Drop derived data tables and old indexes — will be recreated below
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS user_stats_history;
+         DROP TABLE IF EXISTS user_play_records;
+         DROP TABLE IF EXISTS user_next_update;
+         DROP TABLE IF EXISTS user_last_update;
+         DROP INDEX IF EXISTS idx_history_user;
+         DROP INDEX IF EXISTS idx_play_records_user;",
+    )?;
+
+    tracing::info!("Schema migration complete.");
+    Ok(())
+}
+
 impl Storage {
     pub fn new<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
+
+        if has_old_schema(&conn)? {
+            migrate_old_schema(&conn)?;
+        }
 
         // Schema: user_bindings (qq → user_id, current_username)
         conn.execute(
@@ -264,7 +328,7 @@ impl Storage {
 
     // ==================== Snapshot Operations ====================
 
-    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<bool> {
+    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
@@ -282,14 +346,14 @@ impl Storage {
                 stats.hits,
                 stats.playtime,
             ],
-        ).map(|rows| rows > 0)
+        )?;
+        Ok(())
     }
 
     pub fn get_latest_snapshot(
         &self,
         user_id: i64,
         mode: GameMode,
-        username: Option<&str>,
     ) -> SqlResult<Option<UserStats>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -302,13 +366,12 @@ impl Storage {
         let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             Ok(Some(UserStats {
-                // Historical snapshots don't store username, only user_id
-                // Use None for username when constructing from history to indicate unknown
-                username: username.unwrap_or("<unknown>").to_string(),
+                user_id: 0,
+                username: String::new(),
                 pp: row.get(0)?,
                 rank: row.get(1)?,
                 country_rank: row.get(2)?,
-                country_code: "XX".to_string(), // Historical data doesn't store country_code
+                country_code: "XX".to_string(),
                 ranked_score: row.get(3)?,
                 accuracy: row.get(4)?,
                 playcount: row.get(5)?,
@@ -327,7 +390,6 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         hours: i64,
-        username: Option<&str>,
     ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
         let conn = self.conn.lock().unwrap();
         let cutoff = Utc::now() - chrono::Duration::hours(hours);
@@ -345,13 +407,12 @@ impl Storage {
             Ok((
                 recorded_str,
                 UserStats {
-                    // Historical snapshots don't store username, only user_id
-                    // Use None for username when constructing from history to indicate unknown
-                    username: username.unwrap_or("<unknown>").to_string(),
+                    user_id: 0,
+                    username: String::new(),
                     pp: row.get(1)?,
                     rank: row.get(2)?,
                     country_rank: row.get(3)?,
-                    country_code: "XX".to_string(), // Historical data doesn't store country_code
+                    country_code: "XX".to_string(),
                     ranked_score: row.get(4)?,
                     accuracy: row.get(5)?,
                     playcount: row.get(6)?,
@@ -381,13 +442,12 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
-        username: Option<&str>,
     ) -> SqlResult<Option<(DateTime<Utc>, UserStats)>> {
         let now = Utc::now();
         let target_time = now - chrono::Duration::hours(target_hours_ago);
         let earliest = now - chrono::Duration::hours(max_lookback);
 
-        let all = self.get_snapshots_within_hours(user_id, mode, max_lookback, username)?;
+        let all = self.get_snapshots_within_hours(user_id, mode, max_lookback)?;
 
         let candidates: Vec<_> = all.into_iter().filter(|(dt, _)| *dt >= earliest).collect();
 
@@ -443,9 +503,8 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         current: &UserStats,
-        username: Option<&str>,
     ) -> SqlResult<Option<UserChange>> {
-        let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36, username)?;
+        let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)?;
 
         match snapshot {
             None => Ok(None),

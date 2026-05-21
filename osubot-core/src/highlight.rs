@@ -54,9 +54,8 @@ fn get_baseline_snapshot(
     storage: &Storage,
     user_id: i64,
     mode: GameMode,
-    username: &str,
 ) -> Result<Option<UserStats>, rusqlite::Error> {
-    let all = storage.get_snapshots_within_hours(user_id, mode, 36, Some(username))?;
+    let all = storage.get_snapshots_within_hours(user_id, mode, 36)?;
 
     if all.is_empty() {
         return Ok(None);
@@ -87,7 +86,7 @@ pub async fn get_highlight(
     let mut user_highlights: Vec<UserHighlight> = Vec::new();
 
     for (_qq, user_id, username) in user_data {
-        let baseline = match get_baseline_snapshot(storage, *user_id, mode, username) {
+        let baseline = match get_baseline_snapshot(storage, *user_id, mode) {
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(_) => {
