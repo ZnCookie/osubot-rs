@@ -43,7 +43,7 @@ pub struct RecentPlay {
     pub beatmap: BeatmapInfo,
     pub statistics: PlayStatistics,
     #[serde(rename = "max_combo")]
-    pub max_combo: i64,
+    pub max_combo: Option<i64>,
     pub perfect: bool,
     pub created_at: String,
 }
