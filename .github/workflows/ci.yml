@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup nightly for udeps
+        run: rustup toolchain install nightly
+
+      - name: Install cargo-audit and cargo-udeps
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            cargo-audit
+            cargo-udeps
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-index-${{ runner.os }}-
+
+      # Note: not caching target/ here to avoid stable/nightly compiler output pollution
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Audit
+        run: cargo audit
+
+      - name: Udeps
+        run: cargo +nightly udeps
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: osubot-linux
+            binary_name: osubot
+          # gnu (MinGW) not msvc: cross-compiling to msvc from Linux requires
+          # Wine + MSVC build tools; MinGW produces equivalent binaries for pure Rust
+          - target: x86_64-pc-windows-gnu
+            artifact_name: osubot-windows
+            binary_name: osubot.exe
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # If new deps require native libraries, add a Cross.toml at repo root
+      - name: Install cross
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-index-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: cargo-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ matrix.target }}-
+
+      - name: Build Linux
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo build --release --locked
+
+      - name: Build Windows
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Upload artifact (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/release/${{ matrix.binary_name }}
+          retention-days: 7
+
+      - name: Upload artifact (Windows)
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+          retention-days: 7
