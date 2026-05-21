@@ -184,7 +184,7 @@ async fn handle_command(
                             }
                             // Get change from storage (compares with 24h ago snapshot)
                             let change = storage
-                                .calculate_change(user_id, mode, &stats)
+                                .calculate_change(user_id, mode, &stats, &stats.username)
                                 .ok()
                                 .flatten();
                             info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
@@ -229,8 +229,12 @@ async fn handle_command(
             };
             match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
                 Ok(stats) => {
-                    let change = user_id
-                        .and_then(|id| storage.calculate_change(id, mode, &stats).ok().flatten());
+                    let change = user_id.and_then(|id| {
+                        storage
+                            .calculate_change(id, mode, &stats, &stats.username)
+                            .ok()
+                            .flatten()
+                    });
                     let has_change = change.is_some();
                     info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
                     let response = format_stats_with_change(&stats, &change, mode);
@@ -265,7 +269,7 @@ async fn handle_command(
                                 storage.update_binding_username(qq, &stats.username).ok();
                             }
                             let change = storage
-                                .calculate_change(user_id, mode, &stats)
+                                .calculate_change(user_id, mode, &stats, &stats.username)
                                 .ok()
                                 .flatten();
                             info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
@@ -489,10 +493,10 @@ async fn handle_command(
                 }
             };
 
-            let group_bindings: Vec<(i64, String)> = all_bindings
+            let group_bindings: Vec<(i64, i64, String)> = all_bindings
                 .into_iter()
                 .filter(|(qq, _, _)| group_members.contains(qq))
-                .map(|(qq, _, username)| (qq, username))
+                .map(|(qq, user_id, username)| (qq, user_id, username))
                 .collect();
 
             if group_bindings.is_empty() {

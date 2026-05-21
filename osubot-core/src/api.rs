@@ -237,8 +237,17 @@ async fn fetch_user_stats_internal(
     }
 }
 
+/// Encode username for osu! API URL: pure-digit usernames get @ prefix so the API
+/// treats them as username lookups rather than user ID lookups.
+fn url_encode_username(username: &str) -> String {
+    if username.chars().all(|c| c.is_ascii_digit()) {
+        format!("@{}", username)
+    } else {
+        username.to_string()
+    }
+}
+
 /// Fetch user stats by username (for where <username> command)
-/// Pure digit username gets @ prefix so API treats it as username lookup
 pub async fn fetch_user_stats_by_username(
     rate_limiter: &RateLimiter,
     oauth: &OauthTokenCache,
@@ -246,11 +255,7 @@ pub async fn fetch_user_stats_by_username(
     mode: GameMode,
 ) -> Result<UserStats, ApiError> {
     let mode_param = mode.api_value();
-    let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
-        format!("@{}", username)
-    } else {
-        username.to_string()
-    };
+    let url_username = url_encode_username(username);
     let url = format!(
         "https://osu.ppy.sh/api/v2/users/{}/{}",
         url_username, mode_param
@@ -322,13 +327,7 @@ pub async fn get_user_info(
         .map_err(|_| ApiError::RateLimited)?;
     let client = Client::new();
 
-    // 纯数字用户名需要加 @ 前缀，否则 API 会当作 user ID 处理
-    let url_username = if username.chars().all(|c| c.is_ascii_digit()) {
-        format!("@{}", username)
-    } else {
-        username.to_string()
-    };
-
+    let url_username = url_encode_username(username);
     let url = format!("https://osu.ppy.sh/api/v2/users/{}", url_username);
 
     let resp = client

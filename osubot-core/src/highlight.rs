@@ -54,8 +54,9 @@ fn get_baseline_snapshot(
     storage: &Storage,
     user_id: i64,
     mode: GameMode,
+    username: &str,
 ) -> Result<Option<UserStats>, rusqlite::Error> {
-    let all = storage.get_snapshots_within_hours(user_id, mode, 36)?;
+    let all = storage.get_snapshots_within_hours(user_id, mode, 36, username)?;
 
     if all.is_empty() {
         return Ok(None);
@@ -76,7 +77,7 @@ pub async fn get_highlight(
     storage: &Arc<Storage>,
     rate_limiter: &Arc<RateLimiter>,
     oauth: &Arc<OauthTokenCache>,
-    user_data: &[(i64, String)], // (qq, osu_username) pairs
+    user_data: &[(i64, i64, String)], // (qq, user_id, current_username)
     mode: GameMode,
 ) -> Result<HighlightResult, HighlightError> {
     use tokio::sync::Semaphore;
@@ -85,13 +86,8 @@ pub async fn get_highlight(
 
     let mut user_highlights: Vec<UserHighlight> = Vec::new();
 
-    for (_qq, username) in user_data {
-        // Get user_id for storage queries
-        let user_id = match storage.get_user_id_by_qq(*_qq)? {
-            Some(uid) => uid,
-            None => continue,
-        };
-        let baseline = match get_baseline_snapshot(storage, user_id, mode) {
+    for (_qq, user_id, username) in user_data {
+        let baseline = match get_baseline_snapshot(storage, *user_id, mode, username) {
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(_) => {
@@ -100,7 +96,7 @@ pub async fn get_highlight(
         };
 
         let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let result = api::fetch_user_stats_by_user_id(rate_limiter, oauth, user_id, mode).await;
+        let result = api::fetch_user_stats_by_user_id(rate_limiter, oauth, *user_id, mode).await;
         drop(permit);
 
         match result {

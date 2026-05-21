@@ -275,7 +275,7 @@ impl Storage {
 
     // ==================== Snapshot Operations ====================
 
-    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
+    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
@@ -293,14 +293,14 @@ impl Storage {
                 stats.hits,
                 stats.playtime,
             ],
-        )?;
-        Ok(())
+        ).map(|rows| rows > 0)
     }
 
     pub fn get_latest_snapshot(
         &self,
         user_id: i64,
         mode: GameMode,
+        username: &str,
     ) -> SqlResult<Option<UserStats>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -313,7 +313,7 @@ impl Storage {
         let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             Ok(Some(UserStats {
-                username: String::new(), // Caller must set this
+                username: username.to_string(),
                 pp: row.get(0)?,
                 rank: row.get(1)?,
                 country_rank: row.get(2)?,
@@ -336,6 +336,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         hours: i64,
+        username: &str,
     ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
         let conn = self.conn.lock().unwrap();
         let cutoff = Utc::now() - chrono::Duration::hours(hours);
@@ -353,7 +354,7 @@ impl Storage {
             Ok((
                 recorded_str,
                 UserStats {
-                    username: String::new(), // Caller must set this
+                    username: username.to_string(),
                     pp: row.get(1)?,
                     rank: row.get(2)?,
                     country_rank: row.get(3)?,
@@ -387,12 +388,13 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
+        username: &str,
     ) -> SqlResult<Option<(DateTime<Utc>, UserStats)>> {
         let now = Utc::now();
         let target_time = now - chrono::Duration::hours(target_hours_ago);
         let earliest = now - chrono::Duration::hours(max_lookback);
 
-        let all = self.get_snapshots_within_hours(user_id, mode, max_lookback)?;
+        let all = self.get_snapshots_within_hours(user_id, mode, max_lookback, username)?;
 
         let candidates: Vec<_> = all.into_iter().filter(|(dt, _)| *dt >= earliest).collect();
 
@@ -448,8 +450,9 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         current: &UserStats,
+        username: &str,
     ) -> SqlResult<Option<UserChange>> {
-        let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)?;
+        let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36, username)?;
 
         match snapshot {
             None => Ok(None),

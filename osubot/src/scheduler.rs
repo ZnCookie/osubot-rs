@@ -141,18 +141,25 @@ impl Scheduler {
             };
 
         // Save snapshot only when stats changed (rank or playcount differ)
-        let added_snapshot = match self.storage.get_latest_snapshot(user_id, mode) {
+        let added_snapshot = match self.storage.get_latest_snapshot(user_id, mode, "<unknown>") {
             Ok(Some(prev)) => {
                 if prev.rank != current.rank || prev.playcount != current.playcount {
-                    self.storage.save_stats(user_id, mode, &current).is_ok()
+                    self.storage
+                        .save_stats(user_id, mode, &current)
+                        .unwrap_or(false)
                 } else {
                     false
                 }
             }
-            Ok(None) => self.storage.save_stats(user_id, mode, &current).is_ok(),
+            Ok(None) => self
+                .storage
+                .save_stats(user_id, mode, &current)
+                .unwrap_or(false),
             Err(e) => {
                 warn!("get_latest_snapshot error for {user_id}/{mode:?}: {e}");
-                self.storage.save_stats(user_id, mode, &current).is_ok()
+                self.storage
+                    .save_stats(user_id, mode, &current)
+                    .unwrap_or(false)
             }
         };
 
