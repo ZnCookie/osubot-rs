@@ -326,6 +326,21 @@ impl Storage {
         Ok(())
     }
 
+    /// Update current_username for all QQs bound to a given user_id (username change detection).
+    /// Returns the number of bindings updated.
+    pub fn update_binding_username_by_user_id(
+        &self,
+        user_id: i64,
+        new_username: &str,
+    ) -> SqlResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute(
+            "UPDATE user_bindings SET current_username = ?1 WHERE user_id = ?2",
+            params![new_username, user_id],
+        )?;
+        Ok(count)
+    }
+
     // ==================== Snapshot Operations ====================
 
     pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
