@@ -148,17 +148,23 @@ fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i
     (text, mentioned_user_id)
 }
 
-/// Handle command and send response
-async fn handle_command(
+/// Shared bot state passed through command handlers
+#[derive(Clone)]
+struct BotContext {
     storage: Arc<Storage>,
     scheduler: Scheduler,
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
+    write: Arc<Mutex<WriteSink>>,
+    onebot_api: Arc<OneBotApi>,
+}
+
+/// Handle command and send response
+async fn handle_command(
+    ctx: BotContext,
     msg: QQMessage,
     resp_tx: mpsc::Sender<String>,
     irc_nickname: Option<String>,
-    write: Arc<Mutex<WriteSink>>,
-    onebot_api: Arc<OneBotApi>,
 ) {
     let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
         Some(cmd) => cmd,
@@ -168,23 +174,29 @@ async fn handle_command(
     match cmd {
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
-            match storage.get_binding(msg.user_id) {
+            match ctx.storage.get_binding(msg.user_id) {
                 Ok(Some((user_id, current_username))) => {
                     // Trigger update for all modes (bypassing cooldown)
-                    scheduler.trigger_update(user_id);
-                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode)
-                        .await
+                    ctx.scheduler.trigger_update(user_id);
+                    match api::fetch_user_stats_by_user_id(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        user_id,
+                        mode,
+                    )
+                    .await
                     {
                         Ok(stats) => {
                             // Username change detection
                             if stats.username != current_username {
-                                storage
+                                ctx.storage
                                     .update_binding_username(msg.user_id, &stats.username)
                                     .ok();
                             }
-                            storage.set_user_id(&stats.username, user_id).ok();
+                            ctx.storage.set_user_id(&stats.username, user_id).ok();
                             // Get change from storage (compares with 24h ago snapshot)
-                            let change = storage
+                            let change = ctx
+                                .storage
                                 .calculate_change(user_id, mode, &stats)
                                 .ok()
                                 .flatten();
@@ -219,17 +231,20 @@ async fn handle_command(
         }
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
-            match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
+            match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, &username, mode)
+                .await
+            {
                 Ok(stats) => {
                     // Cache user_id for future lookups (even for unbound users)
-                    storage.set_user_id(&stats.username, stats.user_id).ok();
+                    ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
                     // If the user renamed, also map the queried name → user_id
                     if stats.username != username {
-                        storage.set_user_id(&username, stats.user_id).ok();
+                        ctx.storage.set_user_id(&username, stats.user_id).ok();
                     }
                     // Schedule periodic updates for this user
-                    scheduler.trigger_update(stats.user_id);
-                    let change = storage
+                    ctx.scheduler.trigger_update(stats.user_id);
+                    let change = ctx
+                        .storage
                         .calculate_change(stats.user_id, mode, &stats)
                         .ok()
                         .flatten();
@@ -256,18 +271,26 @@ async fn handle_command(
         }
         Command::QueryMentionedUser { qq, mode } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
-            match storage.get_binding(qq) {
+            match ctx.storage.get_binding(qq) {
                 Ok(Some((user_id, current_username))) => {
-                    scheduler.trigger_update(user_id);
-                    match api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode)
-                        .await
+                    ctx.scheduler.trigger_update(user_id);
+                    match api::fetch_user_stats_by_user_id(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        user_id,
+                        mode,
+                    )
+                    .await
                     {
                         Ok(stats) => {
                             if stats.username != current_username {
-                                storage.update_binding_username(qq, &stats.username).ok();
+                                ctx.storage
+                                    .update_binding_username(qq, &stats.username)
+                                    .ok();
                             }
-                            storage.set_user_id(&stats.username, user_id).ok();
-                            let change = storage
+                            ctx.storage.set_user_id(&stats.username, user_id).ok();
+                            let change = ctx
+                                .storage
                                 .calculate_change(user_id, mode, &stats)
                                 .ok()
                                 .flatten();
@@ -305,7 +328,7 @@ async fn handle_command(
         Command::Bind { username } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "Bind command");
             // First check if this QQ already bound
-            match storage.get_binding(msg.user_id) {
+            match ctx.storage.get_binding(msg.user_id) {
                 Ok(Some((_, existing_username))) => {
                     info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
                     let _ = resp_tx
@@ -318,7 +341,7 @@ async fn handle_command(
                 Ok(None) => {
                     if let Some(nickname) = irc_nickname {
                         // IRC auth mode: check rate limit (one pending bind at a time)
-                        match storage.has_pending_bind(msg.user_id) {
+                        match ctx.storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
                                 let _ = resp_tx
                                     .send(
@@ -336,7 +359,10 @@ async fn handle_command(
                             _ => {}
                         }
                         // Generate code and wait for verification
-                        match storage.add_pending_bind(msg.user_id, msg.group_id, &username) {
+                        match ctx
+                            .storage
+                            .add_pending_bind(msg.user_id, msg.group_id, &username)
+                        {
                             Ok(code) => {
                                 info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
                                 let _ = resp_tx
@@ -353,13 +379,17 @@ async fn handle_command(
                         }
                     } else {
                         // Direct bind (original logic)
-                        match api::get_user_info(&rate_limiter, &oauth, &username).await {
+                        match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, &username).await {
                             Ok(Some(user_info)) => {
                                 // Cache the numeric user ID
-                                if let Err(e) = storage.set_user_id(&username, user_info.id) {
+                                if let Err(e) = ctx.storage.set_user_id(&username, user_info.id) {
                                     warn!("Failed to cache user_id for {username}: {e}");
                                 }
-                                match storage.bind(msg.user_id, user_info.id, &user_info.username) {
+                                match ctx.storage.bind(
+                                    msg.user_id,
+                                    user_info.id,
+                                    &user_info.username,
+                                ) {
                                     Ok(Ok(())) => {
                                         info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
                                         let _ = resp_tx
@@ -410,12 +440,12 @@ async fn handle_command(
                 "Unbind command"
             );
             // Check if user has pending unbind confirmation (within 5 minutes)
-            match storage.get_pending_unbind(msg.user_id) {
+            match ctx.storage.get_pending_unbind(msg.user_id) {
                 Ok(Some(_)) => {
                     // Execute unbind and clear pending
-                    match storage.unbind(msg.user_id) {
+                    match ctx.storage.unbind(msg.user_id) {
                         Ok(_) => {
-                            storage.remove_pending_unbind(msg.user_id).ok();
+                            ctx.storage.remove_pending_unbind(msg.user_id).ok();
                             info!(user_id = msg.user_id, "Unbind success");
                             let _ = resp_tx.send("解绑成功".to_string()).await;
                         }
@@ -427,9 +457,9 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     // Ask for confirmation and set pending
-                    match storage.get_binding(msg.user_id) {
+                    match ctx.storage.get_binding(msg.user_id) {
                         Ok(Some((_, current_username))) => {
-                            storage.set_pending_unbind(msg.user_id).ok();
+                            ctx.storage.set_pending_unbind(msg.user_id).ok();
                             info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
                             let _ = resp_tx
                                 .send(format!(
@@ -471,19 +501,19 @@ async fn handle_command(
         Command::Highlight { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "Highlight command");
 
-            let group_members = match get_group_member_list(&write, &onebot_api, msg.group_id).await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(error = %e, "Failed to get group member list");
-                    let _ = resp_tx
-                        .send("无法获取群成员列表，请稍后重试".to_string())
-                        .await;
-                    return;
-                }
-            };
+            let group_members =
+                match get_group_member_list(&ctx.write, &ctx.onebot_api, msg.group_id).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to get group member list");
+                        let _ = resp_tx
+                            .send("无法获取群成员列表，请稍后重试".to_string())
+                            .await;
+                        return;
+                    }
+                };
 
-            let all_bindings = match storage.get_all_user_bindings() {
+            let all_bindings = match ctx.storage.get_all_user_bindings() {
                 Ok(bindings) => bindings,
                 Err(_) => {
                     error!("Highlight failed to get bindings");
@@ -504,7 +534,15 @@ async fn handle_command(
                 return;
             }
 
-            match get_highlight(&storage, &rate_limiter, &oauth, &group_bindings, mode).await {
+            match get_highlight(
+                &ctx.storage,
+                &ctx.rate_limiter,
+                &ctx.oauth,
+                &group_bindings,
+                mode,
+            )
+            .await
+            {
                 Ok(result) => {
                     let response = format_highlight(&result);
                     let _ = resp_tx.send(response).await;
@@ -835,26 +873,17 @@ async fn main() {
                         }
                     });
 
-                    let storage = storage.clone();
-                    let oauth = oauth.clone();
-                    let scheduler = scheduler.clone();
-                    let rate_limiter = rate_limiter.clone();
+                    let ctx = BotContext {
+                        storage: storage.clone(),
+                        scheduler: scheduler.clone(),
+                        oauth: oauth.clone(),
+                        rate_limiter: rate_limiter.clone(),
+                        write: write.clone(),
+                        onebot_api: onebot_api.clone(),
+                    };
                     let irc_nickname = irc_nickname.clone();
-                    let write = write.clone();
-                    let onebot_api = onebot_api.clone();
                     tokio::spawn(async move {
-                        handle_command(
-                            storage,
-                            scheduler,
-                            oauth,
-                            rate_limiter,
-                            qq_msg,
-                            resp_tx,
-                            irc_nickname,
-                            write,
-                            onebot_api,
-                        )
-                        .await;
+                        handle_command(ctx, qq_msg, resp_tx, irc_nickname).await;
                     });
                 }
             }
