@@ -302,6 +302,8 @@ impl Storage {
         let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             Ok(Some(UserStats {
+                // Historical snapshots don't store username, only user_id
+                // Use None for username when constructing from history to indicate unknown
                 username: username.unwrap_or("<unknown>").to_string(),
                 pp: row.get(0)?,
                 rank: row.get(1)?,
@@ -343,6 +345,8 @@ impl Storage {
             Ok((
                 recorded_str,
                 UserStats {
+                    // Historical snapshots don't store username, only user_id
+                    // Use None for username when constructing from history to indicate unknown
                     username: username.unwrap_or("<unknown>").to_string(),
                     pp: row.get(1)?,
                     rank: row.get(2)?,

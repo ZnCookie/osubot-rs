@@ -230,6 +230,10 @@ async fn handle_command(
             };
             match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
                 Ok(stats) => {
+                    // Sync cache if username changed (e.g., user renamed from "Alice" to "Alice_")
+                    if let (Some(user_id), false) = (user_id, stats.username == username) {
+                        storage.set_user_id(&stats.username, user_id).ok();
+                    }
                     let change = user_id.and_then(|id| {
                         storage
                             .calculate_change(id, mode, &stats, Some(&stats.username))
@@ -498,7 +502,6 @@ async fn handle_command(
             let group_bindings: Vec<(i64, i64, String)> = all_bindings
                 .into_iter()
                 .filter(|(qq, _, _)| group_members.contains(qq))
-                .map(|(qq, user_id, username)| (qq, user_id, username))
                 .collect();
 
             if group_bindings.is_empty() {
