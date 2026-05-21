@@ -178,14 +178,14 @@ async fn fetch_user_stats_internal(
     let max_retries = 5;
     let base_delay = Duration::from_secs(1);
 
+    let client = Client::new();
+
     loop {
         let access_token = oauth.get_token().await?;
         rate_limiter
             .acquire()
             .await
             .map_err(|_| ApiError::RateLimited)?;
-
-        let client = Client::new();
 
         let resp = client
             .get(url)

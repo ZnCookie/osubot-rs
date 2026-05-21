@@ -56,7 +56,7 @@ fn get_baseline_snapshot(
     mode: GameMode,
     username: &str,
 ) -> Result<Option<UserStats>, rusqlite::Error> {
-    let all = storage.get_snapshots_within_hours(user_id, mode, 36, username)?;
+    let all = storage.get_snapshots_within_hours(user_id, mode, 36, Some(username))?;
 
     if all.is_empty() {
         return Ok(None);

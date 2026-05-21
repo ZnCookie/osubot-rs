@@ -253,17 +253,6 @@ impl Storage {
         }
     }
 
-    pub fn get_user_id_by_qq(&self, qq: i64) -> SqlResult<Option<i64>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT user_id FROM user_bindings WHERE qq = ?1")?;
-        let mut rows = stmt.query(params![qq])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub fn update_binding_username(&self, qq: i64, new_username: &str) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -300,7 +289,7 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
-        username: &str,
+        username: Option<&str>,
     ) -> SqlResult<Option<UserStats>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -313,7 +302,7 @@ impl Storage {
         let mut rows = stmt.query(params![user_id, mode as i32])?;
         if let Some(row) = rows.next()? {
             Ok(Some(UserStats {
-                username: username.to_string(),
+                username: username.unwrap_or("<unknown>").to_string(),
                 pp: row.get(0)?,
                 rank: row.get(1)?,
                 country_rank: row.get(2)?,
@@ -336,7 +325,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         hours: i64,
-        username: &str,
+        username: Option<&str>,
     ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
         let conn = self.conn.lock().unwrap();
         let cutoff = Utc::now() - chrono::Duration::hours(hours);
@@ -354,7 +343,7 @@ impl Storage {
             Ok((
                 recorded_str,
                 UserStats {
-                    username: username.to_string(),
+                    username: username.unwrap_or("<unknown>").to_string(),
                     pp: row.get(1)?,
                     rank: row.get(2)?,
                     country_rank: row.get(3)?,
@@ -388,7 +377,7 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
-        username: &str,
+        username: Option<&str>,
     ) -> SqlResult<Option<(DateTime<Utc>, UserStats)>> {
         let now = Utc::now();
         let target_time = now - chrono::Duration::hours(target_hours_ago);
@@ -450,7 +439,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         current: &UserStats,
-        username: &str,
+        username: Option<&str>,
     ) -> SqlResult<Option<UserChange>> {
         let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36, username)?;
 

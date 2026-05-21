@@ -141,7 +141,7 @@ impl Scheduler {
             };
 
         // Save snapshot only when stats changed (rank or playcount differ)
-        let added_snapshot = match self.storage.get_latest_snapshot(user_id, mode, "<unknown>") {
+        let added_snapshot = match self.storage.get_latest_snapshot(user_id, mode, None) {
             Ok(Some(prev)) => {
                 if prev.rank != current.rank || prev.playcount != current.playcount {
                     self.storage

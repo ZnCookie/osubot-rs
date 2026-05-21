@@ -181,10 +181,11 @@ async fn handle_command(
                                 storage
                                     .update_binding_username(msg.user_id, &stats.username)
                                     .ok();
+                                storage.set_user_id(&stats.username, user_id).ok();
                             }
                             // Get change from storage (compares with 24h ago snapshot)
                             let change = storage
-                                .calculate_change(user_id, mode, &stats, &stats.username)
+                                .calculate_change(user_id, mode, &stats, Some(&stats.username))
                                 .ok()
                                 .flatten();
                             info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
@@ -231,7 +232,7 @@ async fn handle_command(
                 Ok(stats) => {
                     let change = user_id.and_then(|id| {
                         storage
-                            .calculate_change(id, mode, &stats, &stats.username)
+                            .calculate_change(id, mode, &stats, Some(&stats.username))
                             .ok()
                             .flatten()
                     });
@@ -267,9 +268,10 @@ async fn handle_command(
                         Ok(stats) => {
                             if stats.username != current_username {
                                 storage.update_binding_username(qq, &stats.username).ok();
+                                storage.set_user_id(&stats.username, user_id).ok();
                             }
                             let change = storage
-                                .calculate_change(user_id, mode, &stats, &stats.username)
+                                .calculate_change(user_id, mode, &stats, Some(&stats.username))
                                 .ok()
                                 .flatten();
                             info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
