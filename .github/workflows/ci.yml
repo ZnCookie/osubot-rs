@@ -79,6 +79,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install dependencies for cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
       - name: Install cross
         run: cargo install cross
 
