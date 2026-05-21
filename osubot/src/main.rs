@@ -219,52 +219,36 @@ async fn handle_command(
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
             // Get user_id for change tracking
-            if let Ok(Some(user_id)) = storage.get_user_id(&username) {
-                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode)
-                    .await
-                {
-                    Ok(stats) => {
-                        let change = storage
-                            .calculate_change(user_id, mode, &stats)
-                            .ok()
-                            .flatten();
-                        info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
-                        let response = format_stats_with_change(&stats, &change, mode);
-                        let _ = resp_tx.send(response).await;
-                    }
-                    Err(e) => {
-                        warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
-                        let err_msg = match e {
-                            ApiError::NotFound => "未找到该用户".to_string(),
-                            ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                            ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                            ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
-                            _ => "查询失败，请稍后重试".to_string(),
-                        };
-                        let _ = resp_tx.send(err_msg).await;
+            let user_id = match storage.get_user_id(&username) {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => None,
+                Err(e) => {
+                    warn!("Failed to look up user_id for {username}: {e}");
+                    None
+                }
+            };
+            match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode).await {
+                Ok(stats) => {
+                    let change = user_id
+                        .and_then(|id| storage.calculate_change(id, mode, &stats).ok().flatten());
+                    let has_change = change.is_some();
+                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
+                    let response = format_stats_with_change(&stats, &change, mode);
+                    let _ = resp_tx.send(response).await;
+                    if !has_change && user_id.is_some() {
+                        info!(username = %username, "QueryUser - no change data available");
                     }
                 }
-            } else {
-                // No cached user_id, can't track changes - still allow query
-                match api::fetch_user_stats_by_username(&rate_limiter, &oauth, &username, mode)
-                    .await
-                {
-                    Ok(stats) => {
-                        info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "QueryUser success (no change)");
-                        let response = format_stats_with_change(&stats, &None, mode);
-                        let _ = resp_tx.send(response).await;
-                    }
-                    Err(e) => {
-                        warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
-                        let err_msg = match e {
-                            ApiError::NotFound => "未找到该用户".to_string(),
-                            ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                            ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                            ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
-                            _ => "查询失败，请稍后重试".to_string(),
-                        };
-                        let _ = resp_tx.send(err_msg).await;
-                    }
+                Err(e) => {
+                    warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
+                    let err_msg = match e {
+                        ApiError::NotFound => "未找到该用户".to_string(),
+                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                        _ => "查询失败，请稍后重试".to_string(),
+                    };
+                    let _ = resp_tx.send(err_msg).await;
                 }
             }
         }

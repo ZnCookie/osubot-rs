@@ -145,18 +145,6 @@ impl Storage {
 
     // ==================== Binding Query ====================
 
-    /// Get QQ by user_id
-    pub fn get_qq_by_user_id(&self, user_id: i64) -> SqlResult<Option<i64>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT qq FROM user_bindings WHERE user_id = ?1")?;
-        let mut rows = stmt.query(params![user_id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
-        } else {
-            Ok(None)
-        }
-    }
-
     /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
     pub fn bind(
         &self,
@@ -290,7 +278,7 @@ impl Storage {
     pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+            "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 user_id,
@@ -571,30 +559,6 @@ impl Storage {
             params![user_id, mode as i32, time.timestamp()],
         )?;
         Ok(())
-    }
-
-    // ==================== All Mode Bindings Query ====================
-
-    pub fn get_all_bindings(&self, qq: i64) -> SqlResult<Vec<(GameMode, i64, String)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
-        let mut rows = stmt.query(params![qq])?;
-        let mut results = Vec::new();
-
-        if let Some(row) = rows.next()? {
-            let user_id: i64 = row.get(0)?;
-            let current_username: String = row.get(1)?;
-            for mode in [
-                GameMode::Osu,
-                GameMode::Taiko,
-                GameMode::Catch,
-                GameMode::Mania,
-            ] {
-                results.push((mode, user_id, current_username.clone()));
-            }
-        }
-        Ok(results)
     }
 
     /// Get all user bindings (qq -> user_id, current_username mappings)
