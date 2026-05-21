@@ -55,7 +55,7 @@ jobs:
         run: cargo clippy --locked -- -D warnings
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --workspace
 
       - name: Audit
         run: cargo audit
@@ -85,6 +85,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # If new deps require native libraries, add a Cross.toml at repo root
       - name: Install cross
         if: matrix.target == 'x86_64-pc-windows-gnu'
         uses: taiki-e/install-action@v2
@@ -129,7 +130,7 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: target/release/${{ matrix.binary_name }}
-          retention-days: 30
+          retention-days: 7
 
       - name: Upload artifact (Windows)
         if: matrix.target == 'x86_64-pc-windows-gnu'
@@ -137,4 +138,4 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
-          retention-days: 30
+          retention-days: 7
