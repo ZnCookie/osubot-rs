@@ -53,7 +53,8 @@ pub fn render_html_to_image(
         },
     );
 
-    loop {
+    const MAX_RESOLVE_ITERATIONS: usize = 2000;
+    for _ in 0..MAX_RESOLVE_ITERATIONS {
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources.lock().unwrap().drain(..).collect();
         for resource in resources {
@@ -141,6 +142,13 @@ pub fn render_html_to_image(
                 this_tile_phy_h,
             );
 
+            let expected_tile_size = (render_width * this_tile_phy_h * 4) as usize;
+            if tile_buffer.len() != expected_tile_size {
+                return Err(RenderError::Render(format!(
+                    "tile {} size mismatch: expected {}, got {}",
+                    tile_idx, expected_tile_size, tile_buffer.len()
+                )));
+            }
             all_pixels.extend_from_slice(&tile_buffer);
         }
 
