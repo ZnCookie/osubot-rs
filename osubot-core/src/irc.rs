@@ -102,6 +102,7 @@ impl IrcClient {
             }
 
             let line = line.trim();
+            let line = strip_ircv3_tags(line);
             if line.is_empty() {
                 continue;
             }
@@ -148,5 +149,62 @@ impl IrcClient {
             sender: sender_nick.to_string(),
             message,
         })
+    }
+}
+
+/// Strip IRCv3 message tags from a line. Returns the line without the leading
+/// `@key=value;...` block, or the original line if no tags are present.
+fn strip_ircv3_tags(line: &str) -> &str {
+    line.strip_prefix('@')
+        .and_then(|rest| rest.find(' ').map(|pos| &rest[pos + 1..]))
+        .unwrap_or(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_privmsg_standard() {
+        let result =
+            IrcClient::parse_privmsg(":ZnCookie!~zncookie@user/zncookie PRIVMSG BotNick :123456");
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert_eq!(msg.sender, "ZnCookie");
+        assert_eq!(msg.message, "123456");
+    }
+
+    #[test]
+    fn parse_privmsg_after_tag_stripping() {
+        // Simulate the tagged line arriving from osu! IRC (Bancho).
+        // After tag stripping, parse_privmsg should parse it correctly.
+        let raw = "@time=2026-05-22T13:21:53.547Z :ZnCookie!~zncookie@user/zncookie PRIVMSG BotNick :123456";
+        let stripped = strip_ircv3_tags(raw);
+        let result = IrcClient::parse_privmsg(stripped);
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert_eq!(msg.sender, "ZnCookie");
+        assert_eq!(msg.message, "123456");
+    }
+
+    #[test]
+    fn strip_ircv3_tags_no_tags() {
+        let line = ":server NOTICE * :Hello";
+        assert_eq!(strip_ircv3_tags(line), line);
+    }
+
+    #[test]
+    fn strip_ircv3_tags_with_tags() {
+        let line = "@time=2026-05-22T13:21:53.547Z :nick!user@host PRIVMSG target :hello";
+        assert_eq!(
+            strip_ircv3_tags(line),
+            ":nick!user@host PRIVMSG target :hello"
+        );
+    }
+
+    #[test]
+    fn parse_privmsg_no_match() {
+        assert!(IrcClient::parse_privmsg(":server NOTICE * :Hello").is_none());
+        assert!(IrcClient::parse_privmsg("PING :server").is_none());
     }
 }
