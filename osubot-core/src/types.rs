@@ -60,8 +60,11 @@ pub enum Command {
     QueryMentionedUser { qq: i64, mode: GameMode },
     Bind { username: String },
     Unbind,
-    Help,
     Highlight { mode: GameMode },
+    ProfileCard {
+        username: Option<String>,
+        qq: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone)]
