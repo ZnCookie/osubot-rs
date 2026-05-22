@@ -1,14 +1,14 @@
-use anyrender::{PaintScene as _, render_to_buffer};
-use blitz::dom::DocumentConfig;
+use anyrender::{render_to_buffer, PaintScene as _};
 use blitz::dom::net::Resource;
+use blitz::dom::DocumentConfig;
 use blitz::html::HtmlDocument;
 use blitz::net::Provider;
 use blitz::paint::paint_scene;
 use blitz::traits::net::NetCallback;
 use blitz::traits::shell::{ColorScheme, Viewport};
 use parley::FontContext;
-use peniko::Fill;
 use peniko::kurbo::Rect;
+use peniko::Fill;
 use std::sync::{Arc, Mutex};
 
 use crate::error::RenderError;
@@ -68,13 +68,16 @@ pub fn render_html_to_image(
     document.resolve(0.0);
 
     let root = document.as_ref().root_element();
-    let computed_height = root.final_layout.scroll_height().max(root.final_layout.size.height);
+    let computed_height = root
+        .final_layout
+        .scroll_height()
+        .max(root.final_layout.size.height);
     let needed_logical_height = (computed_height as f64).max(height as f64);
     let render_width = (width as f64 * effective_scale) as u32;
     let total_physical_height = (needed_logical_height * effective_scale) as u32;
 
     if total_physical_height <= GPU_MAX_DIM {
-        let buffer = render_to_buffer::<anyrender_vello::VelloImageRenderer, _>(
+        let buffer = render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
             |scene| {
                 scene.fill(
                     Fill::NonZero,
@@ -96,8 +99,7 @@ pub fn render_html_to_image(
         );
         Ok((buffer, render_width, total_physical_height))
     } else {
-        let num_tiles =
-            (total_physical_height as f64 / GPU_MAX_DIM as f64).ceil() as u32;
+        let num_tiles = (total_physical_height as f64 / GPU_MAX_DIM as f64).ceil() as u32;
         let tile_logical_height = GPU_MAX_DIM as f64 / effective_scale;
 
         let mut all_pixels =
@@ -116,19 +118,14 @@ pub fn render_html_to_image(
                 y: y_offset_css,
             });
 
-            let tile_buffer = render_to_buffer::<anyrender_vello::VelloImageRenderer, _>(
+            let tile_buffer = render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
                 |scene| {
                     scene.fill(
                         Fill::NonZero,
                         Default::default(),
                         peniko::Color::WHITE,
                         Default::default(),
-                        &Rect::new(
-                            0.0,
-                            0.0,
-                            render_width as f64,
-                            this_tile_phy_h as f64,
-                        ),
+                        &Rect::new(0.0, 0.0, render_width as f64, this_tile_phy_h as f64),
                     );
                     paint_scene(
                         scene,
@@ -146,7 +143,9 @@ pub fn render_html_to_image(
             if tile_buffer.len() != expected_tile_size {
                 return Err(RenderError::Render(format!(
                     "tile {} size mismatch: expected {}, got {}",
-                    tile_idx, expected_tile_size, tile_buffer.len()
+                    tile_idx,
+                    expected_tile_size,
+                    tile_buffer.len()
                 )));
             }
             all_pixels.extend_from_slice(&tile_buffer);

@@ -55,12 +55,24 @@ pub struct UserStats {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    QuerySelf { mode: GameMode },
-    QueryUser { username: String, mode: GameMode },
-    QueryMentionedUser { qq: i64, mode: GameMode },
-    Bind { username: String },
+    QuerySelf {
+        mode: GameMode,
+    },
+    QueryUser {
+        username: String,
+        mode: GameMode,
+    },
+    QueryMentionedUser {
+        qq: i64,
+        mode: GameMode,
+    },
+    Bind {
+        username: String,
+    },
     Unbind,
-    Highlight { mode: GameMode },
+    Highlight {
+        mode: GameMode,
+    },
     ProfileCard {
         username: Option<String>,
         qq: Option<i64>,

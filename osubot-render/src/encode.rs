@@ -1,5 +1,5 @@
-use image::RgbImage;
 use image::codecs::jpeg::JpegEncoder;
+use image::RgbImage;
 use std::io::Cursor;
 
 use crate::error::RenderError;

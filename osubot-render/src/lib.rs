@@ -3,8 +3,8 @@ mod error;
 mod render;
 mod style;
 
-use std::sync::OnceLock;
 use parley::FontContext;
+use std::sync::OnceLock;
 
 pub use error::RenderError;
 

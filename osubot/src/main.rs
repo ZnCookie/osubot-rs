@@ -547,7 +547,14 @@ async fn handle_command(
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {
-                    match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, GameMode::Osu).await {
+                    match api::fetch_user_stats_by_username(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        name,
+                        GameMode::Osu,
+                    )
+                    .await
+                    {
                         Ok(stats) => {
                             info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
                             ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
@@ -567,62 +574,83 @@ async fn handle_command(
                         }
                     }
                 }
-                None => match qq {
-                    Some(mentioned_qq) => {
-                        match ctx.storage.get_binding(mentioned_qq) {
-                            Ok(Some((user_id, current_username))) => {
-                                info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "ProfileCard mention");
-                                user_id
-                            }
-                            Ok(None) => {
-                                info!(qq = mentioned_qq, "ProfileCard mention but no binding");
-                                let _ = resp_tx
+                None => {
+                    match qq {
+                        Some(mentioned_qq) => {
+                            match ctx.storage.get_binding(mentioned_qq) {
+                                Ok(Some((user_id, current_username))) => {
+                                    info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "ProfileCard mention");
+                                    user_id
+                                }
+                                Ok(None) => {
+                                    info!(qq = mentioned_qq, "ProfileCard mention but no binding");
+                                    let _ = resp_tx
                                     .send("该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string())
                                     .await;
-                                return;
-                            }
-                            Err(_) => {
-                                error!(qq = mentioned_qq, "ProfileCard mention database error");
-                                let _ = resp_tx.send("数据库错误".to_string()).await;
-                                return;
+                                    return;
+                                }
+                                Err(_) => {
+                                    error!(qq = mentioned_qq, "ProfileCard mention database error");
+                                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                                    return;
+                                }
                             }
                         }
-                    }
-                    None => {
-                        match ctx.storage.get_binding(msg.user_id) {
-                            Ok(Some((user_id, current_username))) => {
-                                info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "ProfileCard self");
-                                user_id
-                            }
-                            Ok(None) => {
-                                let _ = resp_tx
+                        None => {
+                            match ctx.storage.get_binding(msg.user_id) {
+                                Ok(Some((user_id, current_username))) => {
+                                    info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "ProfileCard self");
+                                    user_id
+                                }
+                                Ok(None) => {
+                                    let _ = resp_tx
                                     .send("请先绑定 osu! 用户名，或使用 !profile <用户名> 查询他人".to_string())
                                     .await;
-                                return;
-                            }
-                            Err(_) => {
-                                error!(user_id = msg.user_id, "ProfileCard database error");
-                                let _ = resp_tx.send("数据库错误".to_string()).await;
-                                return;
+                                    return;
+                                }
+                                Err(_) => {
+                                    error!(user_id = msg.user_id, "ProfileCard database error");
+                                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                                    return;
+                                }
                             }
                         }
                     }
-                },
+                }
             };
 
             info!(user_id = target_user_id, qq = ?qq, "ProfileCard command");
 
-            match api::fetch_user_profile(&ctx.rate_limiter, &ctx.oauth, target_user_id, GameMode::Osu).await {
+            match api::fetch_user_profile(
+                &ctx.rate_limiter,
+                &ctx.oauth,
+                target_user_id,
+                GameMode::Osu,
+            )
+            .await
+            {
                 Ok(profile) => {
-                    info!(user_id = target_user_id, html_len = profile.html.len(), hue = profile.profile_hue, "ProfileCard HTML fetched");
+                    info!(
+                        user_id = target_user_id,
+                        html_len = profile.html.len(),
+                        hue = profile.profile_hue,
+                        "ProfileCard HTML fetched"
+                    );
                     match render_profile_card(&profile.html, profile.profile_hue, 800, 1200).await {
                         Ok(jpeg_bytes) => {
-                            info!(user_id = target_user_id, jpeg_len = jpeg_bytes.len(), "ProfileCard rendered");
+                            info!(
+                                user_id = target_user_id,
+                                jpeg_len = jpeg_bytes.len(),
+                                "ProfileCard rendered"
+                            );
                             let write = ctx.write.clone();
                             let group_id = msg.group_id;
                             let resp_tx = resp_tx.clone();
                             tokio::spawn(async move {
-                                if send_group_msg_with_image(&write, group_id, &jpeg_bytes).await.is_err() {
+                                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                                    .await
+                                    .is_err()
+                                {
                                     let _ = resp_tx.send("图片发送失败".to_string()).await;
                                 }
                             });
@@ -691,9 +719,11 @@ async fn send_group_msg_with_image(
         }
     });
     let mut sink = write.lock().await;
-    sink.send(WsMsg::Text(json.to_string().into())).await.map_err(|e| {
-        warn!(error = %e, group_id = group_id, "Failed to send group image message");
-    })
+    sink.send(WsMsg::Text(json.to_string().into()))
+        .await
+        .map_err(|e| {
+            warn!(error = %e, group_id = group_id, "Failed to send group image message");
+        })
 }
 
 async fn call_onebot_api(

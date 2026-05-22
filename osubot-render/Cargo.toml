@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 blitz = "0.2"
 anyrender = "0.6"
-anyrender_vello = "0.6"
+anyrender_vello_cpu = "0.8"
 image = "0.25"
 peniko = "0.5"
 parley = { version = "0.6", features = ["system"] }
