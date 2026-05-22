@@ -648,7 +648,10 @@ async fn handle_irc_message(
 
     let pending = match storage.get_pending_bind(code) {
         Ok(Some(p)) => p,
-        Ok(None) => return,
+        Ok(None) => {
+            warn!(code = code, sender = %irc_msg.sender, "No matching pending bind for IRC code");
+            return;
+        }
         Err(_) => {
             error!("Database error looking up pending bind");
             return;
