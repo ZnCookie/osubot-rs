@@ -334,6 +334,18 @@ impl Storage {
         new_username: &str,
     ) -> SqlResult<usize> {
         let conn = self.conn.lock().unwrap();
+        // Only UPDATE if username actually differs. SQLite returns rows-matched,
+        // not rows-changed, so an unconditional UPDATE would spuriously signal a change.
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT current_username FROM user_bindings WHERE user_id = ?1 LIMIT 1",
+                params![user_id],
+                |row| row.get(0),
+            )
+            .ok();
+        if current.as_deref() == Some(new_username) {
+            return Ok(0);
+        }
         let count = conn.execute(
             "UPDATE user_bindings SET current_username = ?1 WHERE user_id = ?2",
             params![new_username, user_id],
