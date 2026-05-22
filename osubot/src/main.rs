@@ -13,6 +13,7 @@ use osubot_core::{
     OauthTokenCache, RateLimiter,
 };
 use osubot_render::render_profile_card;
+use osubot_render::PROFILE_VIEWPORT_WIDTH;
 use scheduler::Scheduler;
 use serde::Deserialize;
 use std::{
@@ -636,7 +637,14 @@ async fn handle_command(
                         hue = profile.profile_hue,
                         "ProfileCard HTML fetched"
                     );
-                    match render_profile_card(&profile.html, profile.profile_hue, 1650, 1200).await {
+                    match render_profile_card(
+                        &profile.html,
+                        profile.profile_hue,
+                        PROFILE_VIEWPORT_WIDTH,
+                        1200,
+                    )
+                    .await
+                    {
                         Ok(jpeg_bytes) => {
                             info!(
                                 user_id = target_user_id,

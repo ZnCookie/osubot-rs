@@ -47,6 +47,8 @@ pub struct SchedulerConfig {
     pub group_trigger_cooldown_hours: i64,
     #[serde(default = "default_retention_days")]
     pub retention_days: i64,
+    #[serde(default = "default_cache_retention_days")]
+    pub cache_retention_days: u64,
 }
 
 fn default_interval_minutes() -> u64 {
@@ -73,6 +75,9 @@ fn default_group_trigger_cooldown_hours() -> i64 {
 fn default_retention_days() -> i64 {
     180
 }
+fn default_cache_retention_days() -> u64 {
+    7
+}
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
@@ -85,6 +90,7 @@ impl Default for SchedulerConfig {
             user_not_exists_interval_hours: 24,
             group_trigger_cooldown_hours: 1,
             retention_days: 180,
+            cache_retention_days: 7,
         }
     }
 }

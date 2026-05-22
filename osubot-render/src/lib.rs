@@ -1,3 +1,4 @@
+mod cache;
 mod encode;
 mod error;
 mod render;
@@ -7,7 +8,10 @@ use image::imageops;
 use parley::FontContext;
 use std::sync::OnceLock;
 
+pub use cache::cleanup_expired;
 pub use error::RenderError;
+
+pub const PROFILE_VIEWPORT_WIDTH: u32 = 1650;
 
 static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
 
@@ -21,11 +25,13 @@ pub async fn render_profile_card(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
-    let wrapped_html = style::wrap_osu_profile_html(html, profile_hue);
+    let html_with_inlined_images = cache::inline_external_images(html).await;
+    let wrapped_html = style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue);
     let font_ctx = get_font_context();
+    let handle = tokio::runtime::Handle::current();
 
     let (mut pixels, mut w, mut h) = tokio::task::spawn_blocking(move || {
-        render::render_html_to_image(&wrapped_html, font_ctx, width, height)
+        render::render_html_to_image(&wrapped_html, font_ctx, width, height, handle)
     })
     .await
     .map_err(|e| RenderError::Render(e.to_string()))??;
@@ -35,10 +41,15 @@ pub async fn render_profile_card(
         let scale = MAX_PHYSICAL_HEIGHT as f64 / h as f64;
         let new_w = (w as f64 * scale) as u32;
         let new_h = (h as f64 * scale) as u32;
-        let img = image::RgbaImage::from_raw(w, h, pixels)
-            .ok_or(RenderError::Encode("bad buffer".into()))?;
-        let scaled = imageops::resize(&img, new_w, new_h,
-            imageops::FilterType::Lanczos3);
+        let expected = (w as usize) * (h as usize) * 4;
+        let got = pixels.len();
+        let img = image::RgbaImage::from_raw(w, h, pixels).ok_or_else(|| {
+            RenderError::Encode(format!(
+                "bad buffer for rescale: expected {} bytes ({}x{}), got {}",
+                expected, w, h, got
+            ))
+        })?;
+        let scaled = imageops::resize(&img, new_w, new_h, imageops::FilterType::Lanczos3);
         pixels = scaled.into_raw();
         w = new_w;
         h = new_h;
@@ -54,10 +65,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires GPU; run with --ignored"]
+    #[ignore = "requires display server for font rendering; run with --ignored"]
     async fn test_render_profile_card_smoke() {
         let html = r#"<div class="bbcode">Hello <strong>World</strong></div>"#;
-        let result = render_profile_card(html, 333, 1650, 1200).await;
+        let result = render_profile_card(html, 333, PROFILE_VIEWPORT_WIDTH, 1200).await;
         assert!(result.is_ok());
         let jpeg = result.unwrap();
         assert!(!jpeg.is_empty());

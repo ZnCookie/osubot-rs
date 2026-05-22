@@ -5,6 +5,7 @@
 /// (<https://github.com/ppy/osu-web>, AGPLv3) so the fragment renders correctly
 /// standalone.
 pub fn wrap_osu_profile_html(html: &str, profile_hue: u16) -> String {
+    let width = crate::PROFILE_VIEWPORT_WIDTH;
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -45,7 +46,7 @@ body {{
   --hsl-b6: var(--base-hue), 10%, 10%;
 
   font-size: 36px;
-  max-width: 1650px;
+  max-width: {width}px;
   margin: 0 auto;
   padding: 20px;
   box-sizing: border-box;
@@ -299,7 +300,7 @@ audio {{
 .proportional-container__height {{
   display: block;
   position: relative;
-  max-width: 1650px;
+  max-width: {width}px;
   margin: 0 auto;
   overflow: hidden;
 }}

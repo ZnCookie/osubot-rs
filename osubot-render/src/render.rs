@@ -22,8 +22,8 @@ pub fn render_html_to_image(
     font_ctx: &FontContext,
     width: u32,
     height: u32,
+    handle: Handle,
 ) -> Result<(Vec<u8>, u32, u32), RenderError> {
-    let handle = Handle::current();
     let effective_scale = 1.0;
     let viewport_width = (width as f64 * effective_scale) as u32;
     let viewport_height = (height as f64 * effective_scale) as u32;
