@@ -548,30 +548,36 @@ async fn handle_command(
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {
-                    match api::fetch_user_stats_by_username(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
-                        name,
-                        GameMode::Osu,
-                    )
-                    .await
-                    {
-                        Ok(stats) => {
-                            info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
-                            ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
-                            stats.user_id
-                        }
-                        Err(e) => {
-                            warn!(username = %name, error = ?e, "ProfileCard username resolution failed");
-                            let err_msg = match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
-                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
-                                _ => "查询失败，请稍后重试".to_string(),
-                            };
-                            let _ = resp_tx.send(err_msg).await;
-                            return;
+                    // Try local cache first to avoid redundant API call
+                    if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name) {
+                        info!(username = %name, user_id = cached_id, "ProfileCard resolved from local cache");
+                        cached_id
+                    } else {
+                        match api::fetch_user_stats_by_username(
+                            &ctx.rate_limiter,
+                            &ctx.oauth,
+                            name,
+                            GameMode::Osu,
+                        )
+                        .await
+                        {
+                            Ok(stats) => {
+                                info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
+                                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                                stats.user_id
+                            }
+                            Err(e) => {
+                                warn!(username = %name, error = ?e, "ProfileCard username resolution failed");
+                                let err_msg = match e {
+                                    ApiError::NotFound => "未找到该用户".to_string(),
+                                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                                    ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                                    _ => "查询失败，请稍后重试".to_string(),
+                                };
+                                let _ = resp_tx.send(err_msg).await;
+                                return;
+                            }
                         }
                     }
                 }
@@ -887,6 +893,8 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     info!("Starting osubot...");
+
+    osubot_render::ensure_cache_dir();
 
     let config = Config::from_path("osubot.toml").expect("Failed to load config");
 

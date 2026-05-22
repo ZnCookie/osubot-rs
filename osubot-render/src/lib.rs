@@ -8,7 +8,7 @@ use image::imageops;
 use parley::FontContext;
 use std::sync::OnceLock;
 
-pub use cache::cleanup_expired;
+pub use cache::{cleanup_expired, ensure_cache_dir};
 pub use error::RenderError;
 
 pub const PROFILE_VIEWPORT_WIDTH: u32 = 1650;
@@ -30,10 +30,14 @@ pub async fn render_profile_card(
     let font_ctx = get_font_context();
     let handle = tokio::runtime::Handle::current();
 
-    let (mut pixels, mut w, mut h) = tokio::task::spawn_blocking(move || {
-        render::render_html_to_image(&wrapped_html, font_ctx, width, height, handle)
-    })
+    let (mut pixels, mut w, mut h) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || {
+            render::render_html_to_image(&wrapped_html, font_ctx, width, height, handle)
+        }),
+    )
     .await
+    .map_err(|_| RenderError::Render("render timed out after 30s".into()))?
     .map_err(|e| RenderError::Render(e.to_string()))??;
 
     const MAX_PHYSICAL_HEIGHT: u32 = 24000;

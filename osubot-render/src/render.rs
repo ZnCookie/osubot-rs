@@ -24,9 +24,8 @@ pub fn render_html_to_image(
     height: u32,
     handle: Handle,
 ) -> Result<(Vec<u8>, u32, u32), RenderError> {
-    let effective_scale = 1.0;
-    let viewport_width = (width as f64 * effective_scale) as u32;
-    let viewport_height = (height as f64 * effective_scale) as u32;
+    let viewport_width = width;
+    let viewport_height = height;
 
     let loaded_resources: Arc<Mutex<Vec<Resource>>> = Arc::new(Mutex::new(Vec::new()));
     let resource_notify = Arc::new(tokio::sync::Notify::new());
@@ -35,7 +34,10 @@ pub fn render_html_to_image(
     let callback: Arc<dyn NetCallback<Resource>> = Arc::new(
         move |_doc_id: usize, result: Result<Resource, Option<String>>| {
             if let Ok(resource) = result {
-                cb_resources.lock().unwrap().push(resource);
+                cb_resources
+                    .lock()
+                    .expect("loaded_resources lock poisoned")
+                    .push(resource);
                 cb_notify.notify_one();
             }
         },
@@ -52,7 +54,7 @@ pub fn render_html_to_image(
             viewport: Some(Viewport::new(
                 viewport_width,
                 viewport_height,
-                effective_scale as f32,
+                1.0f32,
                 ColorScheme::Light,
             )),
             ..Default::default()
@@ -61,7 +63,11 @@ pub fn render_html_to_image(
 
     loop {
         document.resolve(0.0);
-        let resources: Vec<Resource> = loaded_resources.lock().unwrap().drain(..).collect();
+        let resources: Vec<Resource> = loaded_resources
+            .lock()
+            .expect("loaded_resources lock poisoned")
+            .drain(..)
+            .collect();
         for resource in resources {
             document.load_resource(resource);
         }
@@ -85,8 +91,8 @@ pub fn render_html_to_image(
         .scroll_height()
         .max(root.final_layout.size.height);
     let needed_logical_height = (computed_height as f64).max(height as f64);
-    let render_width = (width as f64 * effective_scale) as u32;
-    let total_physical_height = (needed_logical_height * effective_scale) as u32;
+    let render_width = width;
+    let total_physical_height = needed_logical_height as u32;
 
     if total_physical_height <= GPU_MAX_DIM {
         let buffer = render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
@@ -101,7 +107,7 @@ pub fn render_html_to_image(
                 paint_scene(
                     scene,
                     document.as_ref(),
-                    effective_scale,
+                    1.0,
                     render_width,
                     total_physical_height,
                 );
@@ -112,7 +118,7 @@ pub fn render_html_to_image(
         Ok((buffer, render_width, total_physical_height))
     } else {
         let num_tiles = (total_physical_height as f64 / GPU_MAX_DIM as f64).ceil() as u32;
-        let tile_logical_height = GPU_MAX_DIM as f64 / effective_scale;
+        let tile_logical_height = GPU_MAX_DIM as f64;
 
         let mut all_pixels =
             Vec::with_capacity((render_width * total_physical_height * 4) as usize);
@@ -139,13 +145,7 @@ pub fn render_html_to_image(
                         Default::default(),
                         &Rect::new(0.0, 0.0, render_width as f64, this_tile_phy_h as f64),
                     );
-                    paint_scene(
-                        scene,
-                        document.as_ref(),
-                        effective_scale,
-                        render_width,
-                        this_tile_phy_h,
-                    );
+                    paint_scene(scene, document.as_ref(), 1.0, render_width, this_tile_phy_h);
                 },
                 render_width,
                 this_tile_phy_h,

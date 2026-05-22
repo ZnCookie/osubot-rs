@@ -13,7 +13,6 @@ use osubot_core::{
 };
 
 use crate::config::SchedulerConfig;
-use osubot_render;
 
 #[derive(Clone)]
 pub struct Scheduler {

@@ -1,20 +1,46 @@
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
+use tokio::sync::Mutex;
+
+const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build reqwest client")
+    })
+}
+
+// osu! profile images come from a bounded set of CDN URLs (flags, badges, avatars).
+// The number of unique URLs encountered in practice is limited, so this map's
+// growth rate is negligible over the bot's lifetime.
+fn fetch_locks() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn cache_dir() -> PathBuf {
     static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
     CACHE_DIR
         .get_or_init(|| {
-            let base = dirs_proj()
+            dirs_proj()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("osubot")
-                .join("resources");
-            let _ = std::fs::create_dir_all(&base);
-            base
+                .join("resources")
         })
         .clone()
+}
+
+pub fn ensure_cache_dir() {
+    if let Err(e) = std::fs::create_dir_all(cache_dir()) {
+        tracing::error!("failed to create cache directory: {}", e);
+    }
 }
 
 fn dirs_proj() -> Option<PathBuf> {
@@ -61,7 +87,7 @@ fn detect_mime_and_ext(url: &str, bytes: &[u8]) -> (&'static str, &'static str) 
     } else if bytes.starts_with(b"<svg")
         || bytes
             .strip_prefix(b"\xEF\xBB\xBF")
-            .map_or(false, |b| b.starts_with(b"<svg"))
+            .is_some_and(|b| b.starts_with(b"<svg"))
         || bytes.starts_with(b"<?xml")
     {
         ("image/svg+xml", ".svg")
@@ -102,7 +128,16 @@ async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>,
         }
         match client.get(url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                return resp.bytes().await.map(|b| b.to_vec()).map_err(|_| ());
+                if let Some(len) = resp.content_length() {
+                    if len > MAX_IMAGE_BYTES {
+                        return Err(());
+                    }
+                }
+                let bytes = resp.bytes().await.map(|b| b.to_vec()).map_err(|_| ())?;
+                if bytes.len() > MAX_IMAGE_BYTES as usize {
+                    return Err(());
+                }
+                return Ok(bytes);
             }
             Ok(resp) if resp.status().is_server_error() => {
                 continue;
@@ -126,13 +161,23 @@ async fn fetch_and_cache(
         return Ok((cached, mime.to_string(), hash));
     }
 
+    let url_lock = {
+        let mut locks = fetch_locks().lock().await;
+        locks.entry(url.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+    };
+    let _guard = url_lock.lock().await;
+
+    if let Ok(cached) = std::fs::read(&cache_file) {
+        let (mime, _) = detect_mime_and_ext(url, &cached);
+        return Ok((cached, mime.to_string(), hash));
+    }
+
     let bytes = try_fetch_image(url, client).await?;
 
     let (mime, _) = detect_mime_and_ext(url, &bytes);
-    let cache_file = cache_dir().join(&hash);
 
     if let Err(e) = std::fs::write(&cache_file, &bytes) {
-        eprintln!("[osubot-render] failed to cache {}: {}", url, e);
+        tracing::warn!("failed to cache {}: {}", url, e);
     }
 
     Ok((bytes, mime.to_string(), hash))
@@ -234,27 +279,14 @@ pub async fn inline_external_images(html: &str) -> String {
         urls
     };
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[osubot-render] failed to build reqwest client: {}", e);
-            return html.to_string();
-        }
-    };
+    let client = http_client();
 
-    use std::collections::HashMap;
     let mut url_to_data: HashMap<String, String> = HashMap::new();
 
     for url in &unique_urls {
-        match fetch_and_cache(url, &client).await {
-            Ok((bytes, mime, _hash)) => {
-                let data_uri = build_data_uri(&bytes, &mime);
-                url_to_data.insert(url.clone(), data_uri);
-            }
-            Err(_) => {}
+        if let Ok((bytes, mime, _hash)) = fetch_and_cache(url, client).await {
+            let data_uri = build_data_uri(&bytes, &mime);
+            url_to_data.insert(url.clone(), data_uri);
         }
     }
 
@@ -271,7 +303,10 @@ pub async fn inline_external_images(html: &str) -> String {
         }
     }
 
-    String::from_utf8(result).unwrap_or_else(|_| html.to_string())
+    String::from_utf8(result).unwrap_or_else(|e| {
+        tracing::warn!("image inlining produced invalid UTF-8: {}", e);
+        html.to_string()
+    })
 }
 
 pub fn cleanup_expired(retention_days: u64) {
@@ -290,7 +325,7 @@ pub fn cleanup_expired(retention_days: u64) {
     let cutoff = match cutoff {
         Some(t) => t,
         None => {
-            eprintln!("[osubot-render] failed to compute cutoff time for cache cleanup");
+            tracing::error!("failed to compute cutoff time for cache cleanup");
             return;
         }
     };
@@ -298,10 +333,7 @@ pub fn cleanup_expired(retention_days: u64) {
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!(
-                "[osubot-render] failed to read cache dir for cleanup: {}",
-                e
-            );
+            tracing::error!("failed to read cache dir for cleanup: {}", e);
             return;
         }
     };
@@ -326,8 +358,8 @@ pub fn cleanup_expired(retention_days: u64) {
         }
     }
 
-    eprintln!(
-        "[osubot-render] cache cleanup: {} deleted, {} errors (retention: {} days)",
+    tracing::info!(
+        "cache cleanup: {} deleted, {} errors (retention: {} days)",
         deleted, errors, retention_days
     );
 }
