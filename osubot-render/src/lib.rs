@@ -42,7 +42,7 @@ mod tests {
     #[ignore = "requires GPU; run with --ignored"]
     async fn test_render_profile_card_smoke() {
         let html = r#"<div class="bbcode">Hello <strong>World</strong></div>"#;
-        let result = render_profile_card(html, 333, 400, 600).await;
+        let result = render_profile_card(html, 333, 1650, 1200).await;
         assert!(result.is_ok());
         let jpeg = result.unwrap();
         assert!(!jpeg.is_empty());

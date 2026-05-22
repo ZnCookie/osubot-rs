@@ -636,7 +636,7 @@ async fn handle_command(
                         hue = profile.profile_hue,
                         "ProfileCard HTML fetched"
                     );
-                    match render_profile_card(&profile.html, profile.profile_hue, 800, 1200).await {
+                    match render_profile_card(&profile.html, profile.profile_hue, 1650, 1200).await {
                         Ok(jpeg_bytes) => {
                             info!(
                                 user_id = target_user_id,

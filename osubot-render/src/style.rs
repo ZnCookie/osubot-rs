@@ -44,8 +44,11 @@ body {{
   --hsl-b5: var(--base-hue), 10%, 15%;
   --hsl-b6: var(--base-hue), 10%, 10%;
 
-  margin: 0;
-  padding: 10px;
+  font-size: 36px;
+  max-width: 1650px;
+  margin: 0 auto;
+  padding: 20px;
+  box-sizing: border-box;
   background: hsl(var(--hsl-b6));
   color: hsl(var(--hsl-c1));
   font-family: var(--font-content);
@@ -63,12 +66,24 @@ a:hover {{
   text-decoration: underline;
 }}
 
+a[rel="nofollow"] {{
+  color: #90EE90;
+}}
+
+h1 {{
+  font-size: 32px;
+}}
+
 h2 {{
-  font-size: 1.5em;
+  font-size: 28px;
   font-style: normal;
   font-weight: bold;
   color: hsl(var(--hsl-l1));
   margin: 10px 0 0 0;
+}}
+
+p {{
+  font-size: 20px;
 }}
 
 blockquote {{
@@ -114,7 +129,7 @@ audio {{
 }}
 
 .bbcode h2 {{
-  font-size: 1.5em;
+  font-size: 28px;
   font-style: normal;
   font-weight: bold;
   color: hsl(var(--hsl-l1));
@@ -154,11 +169,28 @@ audio {{
 }}
 
 .bbcode .well {{
-  margin: 0;
+  min-height: 20px;
+  padding: 19px;
+  margin: 0 0 20px 0;
   background: hsl(var(--hsl-b5));
   border: 2px solid hsl(var(--hsl-b1));
-  padding: 9px;
   border-radius: 4px;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.05);
+  text-align: left;
+}}
+
+.bbcode .well blockquote {{
+  border-color: rgba(255,255,255,0.15);
+}}
+
+.bbcode .well-lg {{
+  padding: 24px;
+  border-radius: 6px;
+}}
+
+.bbcode .well-sm {{
+  padding: 9px;
+  border-radius: 3px;
 }}
 
 .bbcode__align-centre {{
@@ -180,22 +212,38 @@ audio {{
 }}
 
 .bbcode-spoilerbox__link {{
+  text-align: left;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+  font-weight: bold;
+  width: max-content;
+  max-width: 100%;
   gap: 4px;
-  color: hsl(var(--hsl-l2));
+  color: #66ccff;
   text-decoration: none;
-  font-weight: 600;
-  font-size: 14px;
   padding: 4px 0;
 }}
+
+.bbcode-spoilerbox__link::before {{
+  content: "↴";
+  display: inline-block;
+  margin-right: 5px;
+  font-size: 1.2em;
+  line-height: 1;
+}}
+
 .bbcode-spoilerbox__link:hover {{
   color: hsl(var(--hsl-l1));
 }}
 
 .bbcode-spoilerbox__body {{
   display: block;
-  padding: 8px 0 0 0;
+  margin-left: 10px;
+  padding: 10px;
+  border-left: 2px solid #66ccff;
+  margin-top: 5px;
 }}
 
 /* ---- imagemap ---- */
@@ -230,14 +278,61 @@ audio {{
 }}
 
 .user-name {{
-  font-weight: 600;
-  color: hsl(var(--hsl-l2));
+  font-weight: bold;
+  color: #FFB6C1;
 }}
 
 /* ---- gallery (visible as-is, no JS lightbox) ---- */
 
 .js-gallery {{
   display: block;
+}}
+
+/* ---- proportional-container ---- */
+
+.proportional-container {{
+  max-width: 100%;
+  display: inline-block;
+  vertical-align: top;
+}}
+
+.proportional-container__height {{
+  display: block;
+  position: relative;
+  max-width: 1650px;
+  margin: 0 auto;
+  overflow: hidden;
+}}
+
+.proportional-container__content {{
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}}
+
+.proportional-container img,
+.proportional-container svg {{
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}}
+
+/* ---- bbcode image and paragraph alignment ---- */
+
+.bbcode img {{
+  display: block;
+  margin: 0 auto;
+}}
+
+.bbcode p {{
+  text-align: left;
 }}
 </style>
 </head>
