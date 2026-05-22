@@ -10,6 +10,8 @@ use parley::FontContext;
 use peniko::kurbo::Rect;
 use peniko::Fill;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::runtime::Handle;
 
 use crate::error::RenderError;
 
@@ -21,16 +23,20 @@ pub fn render_html_to_image(
     width: u32,
     height: u32,
 ) -> Result<(Vec<u8>, u32, u32), RenderError> {
+    let handle = Handle::current();
     let effective_scale = 1.0;
     let viewport_width = (width as f64 * effective_scale) as u32;
     let viewport_height = (height as f64 * effective_scale) as u32;
 
     let loaded_resources: Arc<Mutex<Vec<Resource>>> = Arc::new(Mutex::new(Vec::new()));
+    let resource_notify = Arc::new(tokio::sync::Notify::new());
     let cb_resources = Arc::clone(&loaded_resources);
+    let cb_notify = Arc::clone(&resource_notify);
     let callback: Arc<dyn NetCallback<Resource>> = Arc::new(
         move |_doc_id: usize, result: Result<Resource, Option<String>>| {
             if let Ok(resource) = result {
                 cb_resources.lock().unwrap().push(resource);
+                cb_notify.notify_one();
             }
         },
     );
@@ -53,8 +59,7 @@ pub fn render_html_to_image(
         },
     );
 
-    const MAX_RESOLVE_ITERATIONS: usize = 2000;
-    for _ in 0..MAX_RESOLVE_ITERATIONS {
+    loop {
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources.lock().unwrap().drain(..).collect();
         for resource in resources {
@@ -63,6 +68,13 @@ pub fn render_html_to_image(
         if net.is_empty() {
             break;
         }
+        let notify = Arc::clone(&resource_notify);
+        handle.block_on(async move {
+            tokio::select! {
+                _ = notify.notified() => {},
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+            }
+        });
     }
 
     document.resolve(0.0);
