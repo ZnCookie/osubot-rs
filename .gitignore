@@ -7,3 +7,4 @@ osubot.toml
 *.pem
 .claude/
 docs/
+.superpowers/

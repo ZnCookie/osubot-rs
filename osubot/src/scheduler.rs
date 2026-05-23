@@ -72,6 +72,8 @@ impl Scheduler {
             _ => {}
         }
 
+        osubot_render::cleanup_expired(self.config.cache_retention_days);
+
         *last = Some(now);
     }
 

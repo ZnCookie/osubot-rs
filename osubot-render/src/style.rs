@@ -1,0 +1,359 @@
+/// Return osu-web CSS stylesheet adjusted for standalone rendering.
+///
+/// The API returns only a BBcode HTML fragment that depends on osu! website
+/// stylesheets. This function returns the relevant CSS extracted from osu-web
+/// (<https://github.com/ppy/osu-web>, AGPLv3) with the user's profile hue
+/// injected into CSS custom properties.
+///
+/// NOTE: Takumi does not support the CSS `before` pseudo-element. Two rules are
+/// adjusted:
+///   - blockquote before → border-left
+///   - .bbcode-spoilerbox__link before → handled in convert.rs (text node)
+pub fn osu_web_stylesheet(profile_hue: u16) -> String {
+    let width = crate::PROFILE_VIEWPORT_WIDTH;
+    format!(
+        r#"
+/* osu! profile page CSS - extracted from osu-web (AGPLv3)
+   https://github.com/ppy/osu-web */
+
+:root {{
+  --base-hue: {profile_hue};
+  --font-content: 'Noto Sans', 'Inter', 'Torus', 'Helvetica Neue', Tahoma, Arial, sans-serif;
+  --font-default: 'Noto Sans', 'Torus', 'Inter', 'Helvetica Neue', Tahoma, Arial, sans-serif;
+}}
+
+body {{
+  --hsl-p: var(--base-hue), 100%, 50%;
+  --hsl-h1: var(--base-hue), 100%, 70%;
+  --hsl-h2: var(--base-hue), 50%, 45%;
+  --hsl-c1: var(--base-hue), 40%, 100%;
+  --hsl-c2: var(--base-hue), 40%, 90%;
+  --hsl-l1: var(--base-hue), 40%, 80%;
+  --hsl-l2: var(--base-hue), 40%, 75%;
+  --hsl-l3: var(--base-hue), 40%, 70%;
+  --hsl-l4: var(--base-hue), 40%, 50%;
+  --hsl-d1: var(--base-hue), 20%, 35%;
+  --hsl-d2: var(--base-hue), 20%, 30%;
+  --hsl-d3: var(--base-hue), 20%, 25%;
+  --hsl-d4: var(--base-hue), 20%, 20%;
+  --hsl-d5: var(--base-hue), 20%, 15%;
+  --hsl-d6: var(--base-hue), 20%, 10%;
+  --hsl-f1: var(--base-hue), 10%, 60%;
+  --hsl-b1: var(--base-hue), 10%, 40%;
+  --hsl-b2: var(--base-hue), 10%, 30%;
+  --hsl-b3: var(--base-hue), 10%, 25%;
+  --hsl-b4: var(--base-hue), 10%, 20%;
+  --hsl-b5: var(--base-hue), 10%, 15%;
+  --hsl-b6: var(--base-hue), 10%, 10%;
+
+  font-size: 36px;
+  max-width: {width}px;
+  margin: 0 auto;
+  padding: 20px;
+  box-sizing: border-box;
+  background: hsl(var(--hsl-b6));
+  color: hsl(var(--hsl-c1));
+  font-family: var(--font-content);
+  line-height: 1.35;
+}}
+
+/* ---- base elements ---- */
+
+a {{
+  color: hsl(var(--hsl-l2));
+  text-decoration: none;
+}}
+a:hover {{
+  color: hsl(var(--hsl-l1));
+  text-decoration: underline;
+}}
+
+a[rel="nofollow"] {{
+  color: #90EE90;
+}}
+
+h1 {{
+  font-size: 32px;
+}}
+
+h2 {{
+  font-size: 28px;
+  font-style: normal;
+  font-weight: bold;
+  color: hsl(var(--hsl-l1));
+  margin: 10px 0 0 0;
+}}
+
+p {{
+  font-size: 20px;
+}}
+
+/* before pseudo replaced with border-left — Takumi compatibility */
+blockquote {{
+  font-size: inherit;
+  padding: 0 0 0 20px;
+  border: none;
+  border-left: 2px solid hsl(var(--hsl-c2));
+  color: hsl(var(--hsl-c2));
+  margin: 0;
+}}
+
+img {{
+  max-width: 100%;
+}}
+
+audio {{
+  max-width: 100%;
+}}
+
+/* ---- bbcode ---- */
+
+.bbcode {{
+  font-family: var(--font-content);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  text-align: left;
+}}
+
+.bbcode code {{
+  border-radius: 4px;
+  background-color: hsl(var(--hsl-b5));
+  padding: 1px 4px;
+}}
+
+.bbcode h2 {{
+  font-size: 28px;
+  font-style: normal;
+  font-weight: bold;
+  color: hsl(var(--hsl-l1));
+}}
+
+.bbcode blockquote {{
+  font-size: inherit;
+  padding: 0 0 0 20px;
+  border: none;
+  border-left: 2px solid hsl(var(--hsl-c2));
+  color: hsl(var(--hsl-c2));
+}}
+
+.bbcode pre {{
+  border-radius: 4px;
+  white-space: pre-wrap;
+  background-color: hsl(var(--hsl-b5));
+  color: inherit;
+  padding: 10px;
+  border: none;
+  font-size: inherit;
+}}
+
+.bbcode .spoiler {{
+  background-color: #000 !important;
+  color: #000 !important;
+}}
+
+.bbcode .well {{
+  min-height: 20px;
+  padding: 19px;
+  margin: 0 0 20px 0;
+  background: hsl(var(--hsl-b5));
+  border: 2px solid hsl(var(--hsl-b1));
+  border-radius: 4px;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.05);
+  text-align: left;
+}}
+
+.bbcode .well blockquote {{
+  border-color: rgba(255,255,255,0.15);
+}}
+
+.bbcode .well-lg {{
+  padding: 24px;
+  border-radius: 6px;
+}}
+
+.bbcode .well-sm {{
+  padding: 9px;
+  border-radius: 3px;
+}}
+
+.bbcode__align-centre {{
+  text-align: center;
+}}
+
+.bbcode__align-left {{
+  text-align: left;
+}}
+
+.bbcode__align-right {{
+  text-align: right;
+}}
+
+/* ---- spoilerbox ---- */
+
+.bbcode-spoilerbox {{
+  margin: 10px 0;
+}}
+
+/* before arrow "↴" is handled in convert.rs as a text node */
+.bbcode-spoilerbox__link {{
+  text-align: left;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+  font-weight: bold;
+  width: max-content;
+  max-width: 100%;
+  gap: 4px;
+  color: #66ccff;
+  text-decoration: none;
+  padding: 4px 0;
+}}
+
+.bbcode-spoilerbox__link:hover {{
+  color: hsl(var(--hsl-l1));
+}}
+
+.bbcode-spoilerbox__body {{
+  display: block;
+  margin-left: 10px;
+  padding: 10px;
+  border-left: 2px solid #66ccff;
+  margin-top: 5px;
+}}
+
+/* ---- imagemap ---- */
+
+.imagemap {{
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}}
+
+.imagemap__image {{
+  max-width: 100%;
+  height: auto;
+}}
+
+.imagemap__link {{
+  position: absolute;
+  border: 2px solid rgba(255,255,255,0.7);
+  border-radius: 2px;
+}}
+
+/* ---- js-dependent (visible by default since no JS) ---- */
+
+.js-spoilerbox__body {{
+  display: block;
+}}
+
+/* ---- usercard ---- */
+
+.js-usercard {{
+  font-weight: 600;
+}}
+
+.user-name {{
+  font-weight: bold;
+  color: #FFB6C1;
+}}
+
+/* ---- gallery (visible as-is, no JS lightbox) ---- */
+
+.js-gallery {{
+  display: block;
+}}
+
+/* ---- proportional-container ---- */
+
+.proportional-container {{
+  max-width: 100%;
+  display: inline-block;
+  vertical-align: top;
+}}
+
+.proportional-container__height {{
+  display: block;
+  position: relative;
+  max-width: {width}px;
+  margin: 0 auto;
+  overflow: hidden;
+}}
+
+.proportional-container__content {{
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}}
+
+.proportional-container img,
+.proportional-container svg {{
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}}
+
+/* ---- bbcode image and paragraph alignment ---- */
+
+.bbcode img {{
+  display: block;
+  margin: 0 auto;
+}}
+
+.bbcode p {{
+  text-align: left;
+}}
+"#,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stylesheet_contains_hue() {
+        let css = osu_web_stylesheet(333);
+        assert!(css.contains("--base-hue: 333"));
+    }
+
+    #[test]
+    fn test_stylesheet_contains_required_classes() {
+        let css = osu_web_stylesheet(100);
+        assert!(css.contains(".bbcode"));
+        assert!(css.contains(".spoiler"));
+        assert!(css.contains(".bbcode-spoilerbox"));
+        assert!(css.contains(".imagemap"));
+        assert!(css.contains(".proportional-container"));
+        assert!(css.contains(".well"));
+        assert!(css.contains(".js-usercard"));
+    }
+
+    #[test]
+    fn test_stylesheet_no_html_wrapper() {
+        let css = osu_web_stylesheet(200);
+        assert!(!css.contains("<!DOCTYPE html>"));
+        assert!(!css.contains("<html>"));
+        assert!(!css.contains("<body>"));
+        assert!(!css.contains("<style>"));
+    }
+
+    #[test]
+    fn test_stylesheet_no_pseudo_elements() {
+        let css = osu_web_stylesheet(200);
+        assert!(!css.contains("::before"));
+    }
+
+    #[test]
+    fn test_stylesheet_uses_border_left_instead() {
+        let css = osu_web_stylesheet(200);
+        assert!(css.contains("border-left"));
+    }
+}

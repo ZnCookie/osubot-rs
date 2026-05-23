@@ -1,0 +1,15 @@
+[package]
+name = "osubot-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+takumi = { version = "1.4", features = ["woff2", "woff", "rayon", "svg"] }
+scraper = "0.22"
+image = "0.25"
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+sha2 = "0.10"
+base64 = { version = "0.22", features = ["std"] }
+tracing = "0.1"
