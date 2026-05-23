@@ -162,8 +162,8 @@ struct BotContext {
     onebot_api: Arc<OneBotApi>,
 }
 
-fn profile_dedup() -> &'static RequestDedup<i64, Vec<u8>, String> {
-    static DEDUP: OnceLock<RequestDedup<i64, Vec<u8>, String>> = OnceLock::new();
+fn profile_dedup() -> &'static RequestDedup<i64, Arc<Vec<u8>>, String> {
+    static DEDUP: OnceLock<RequestDedup<i64, Arc<Vec<u8>>, String>> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 
@@ -634,12 +634,15 @@ async fn handle_command(
 
             info!(user_id = target_user_id, qq = ?qq, "ProfileCard command");
 
+            let dedup_rate_limiter = ctx.rate_limiter.clone();
+            let dedup_oauth = ctx.oauth.clone();
+            let dedup_target_id = target_user_id;
             let render_result = profile_dedup()
-                .run_or_wait(target_user_id, || async {
+                .run_or_wait(target_user_id, move || async move {
                     let profile = api::fetch_user_profile(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
-                        target_user_id,
+                        &dedup_rate_limiter,
+                        &dedup_oauth,
+                        dedup_target_id,
                         GameMode::Osu,
                     )
                     .await
@@ -651,7 +654,7 @@ async fn handle_command(
                         _ => "查询失败，请稍后重试".to_string(),
                     })?;
                     info!(
-                        user_id = target_user_id,
+                        user_id = dedup_target_id,
                         html_len = profile.html.len(),
                         hue = profile.profile_hue,
                         "ProfileCard HTML fetched"
@@ -663,7 +666,11 @@ async fn handle_command(
                         1200,
                     )
                     .await
-                    .map_err(|_| "渲染失败，请稍后重试".to_string())
+                    .map(Arc::new)
+                    .map_err(|e| {
+                        warn!(user_id = target_user_id, error = %e, "render failed");
+                        "渲染失败，请稍后重试".to_string()
+                    })
                 })
                 .await;
 

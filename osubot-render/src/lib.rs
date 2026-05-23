@@ -20,10 +20,14 @@ fn get_font_context() -> &'static FontContext {
     FONT_CTX.get_or_init(FontContext::new)
 }
 
+/// Maximum concurrent render operations. Render is CPU-intensive (font rasterization,
+/// layout, paint), so this limits parallel renders to avoid saturating CPU cores.
+const MAX_CONCURRENT_RENDERS: usize = 3;
+
 static RENDER_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
 
 fn render_semaphore() -> &'static Semaphore {
-    RENDER_SEMAPHORE.get_or_init(|| Semaphore::new(3))
+    RENDER_SEMAPHORE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_RENDERS))
 }
 
 pub async fn render_profile_card(
@@ -32,15 +36,17 @@ pub async fn render_profile_card(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
+    let html_with_inlined_images = cache::inline_external_images(html).await;
     let _permit = render_semaphore()
         .acquire()
         .await
         .expect("render semaphore never closed");
-    let html_with_inlined_images = cache::inline_external_images(html).await;
     let wrapped_html = style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue);
     let font_ctx = get_font_context();
     let handle = tokio::runtime::Handle::current();
 
+    // 60s timeout: profile cards with many badges or large user stats can
+    // take significant time to render, especially under concurrent load.
     let (mut pixels, mut w, mut h) = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::task::spawn_blocking(move || {

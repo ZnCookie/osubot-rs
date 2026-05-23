@@ -5,12 +5,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 
+/// Request deduplication: concurrent callers for the same key share one in-flight
+/// request. If the creator panics, waiters receive `Err(E::from("creator panicked"))`
+/// instead of deadlocking.
+///
+/// Note: the error type `E` must implement `From<&'static str>` so that a panic
+/// can be surfaced as an error value. This is only needed for the `run_or_wait` method,
+/// not for constructing the struct.
 pub struct RequestDedup<K, V, E> {
     entries: Mutex<HashMap<K, Arc<Entry<V, E>>>>,
 }
 
+#[derive(Debug)]
+enum StoredResult<V, E> {
+    Ok(V),
+    Err(E),
+    Panicked,
+}
+
 struct Entry<V, E> {
-    result: std::sync::Mutex<Option<Result<V, E>>>,
+    result: std::sync::Mutex<Option<StoredResult<V, E>>>,
     done: Semaphore,
     claimed: AtomicBool,
 }
@@ -29,8 +43,10 @@ where
 
     pub async fn run_or_wait<F, Fut>(&self, key: K, f: F) -> Result<V, E>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<V, E>>,
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<V, E>> + Send + 'static,
+        V: Send + 'static,
+        E: From<&'static str> + Send + 'static,
     {
         let entry = {
             let mut map = self.entries.lock().await;
@@ -48,21 +64,43 @@ where
         let is_creator = !entry.claimed.swap(true, Ordering::AcqRel);
 
         if is_creator {
-            let work_result = f().await;
-            {
-                let mut guard = entry.result.lock().unwrap();
-                *guard = Some(work_result.clone());
-            }
-            entry.done.close();
+            let join_handle = tokio::spawn(f());
+            let work_result = match join_handle.await {
+                Ok(result) => {
+                    let stored = match &result {
+                        Ok(v) => StoredResult::Ok(v.clone()),
+                        Err(e) => StoredResult::Err(e.clone()),
+                    };
+                    {
+                        let mut guard = entry.result.lock().unwrap();
+                        *guard = Some(stored);
+                    }
+                    entry.done.close();
+                    result
+                }
+                Err(join_err) => {
+                    tracing::warn!("dedup creator task failed: {join_err}");
+                    {
+                        let mut guard = entry.result.lock().unwrap();
+                        *guard = Some(StoredResult::Panicked);
+                    }
+                    entry.done.close();
+                    Err(E::from("creator panicked"))
+                }
+            };
+
+            // Safe to remove: waiters hold Arc<Entry> clones, so the entry
+            // stays alive even after removal from the map.
             self.entries.lock().await.remove(&key);
             work_result
         } else {
             let _ = entry.done.acquire().await;
             let guard = entry.result.lock().unwrap();
-            guard
-                .as_ref()
-                .expect("result must be set by creator; panicking closure poisons the entry")
-                .clone()
+            match guard.as_ref().expect("result must be set by creator") {
+                StoredResult::Ok(v) => Ok(v.clone()),
+                StoredResult::Err(e) => Err(e.clone()),
+                StoredResult::Panicked => Err(E::from("creator panicked")),
+            }
         }
     }
 }
@@ -145,9 +183,9 @@ mod tests {
             let call_count = call_count.clone();
             handles.push(tokio::spawn(async move {
                 dedup
-                    .run_or_wait(i, || {
+                    .run_or_wait(i, move || {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        async { Ok(i) }
+                        async move { Ok(i) }
                     })
                     .await
                     .unwrap()
@@ -224,5 +262,30 @@ mod tests {
             .await;
         assert_eq!(result2.unwrap(), 99);
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_creator_panic_waiters_recover() {
+        let dedup = Arc::new(RequestDedup::<u32, String, String>::new());
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+        let dedup_clone = dedup.clone();
+        let barrier_clone = barrier.clone();
+        let _handle = tokio::spawn(async move {
+            barrier_clone.wait().await;
+            dedup_clone
+                .run_or_wait(1, || async {
+                    panic!("intentional test panic");
+                })
+                .await
+        });
+
+        barrier.wait().await;
+        let waiter_result = dedup
+            .run_or_wait(1, || async { Ok("fallback".to_string()) })
+            .await;
+
+        assert!(waiter_result.is_err());
+        assert!(waiter_result.unwrap_err().contains("panic"));
     }
 }
