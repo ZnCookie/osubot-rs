@@ -563,6 +563,9 @@ async fn handle_command(
                             &ctx.rate_limiter,
                             &ctx.oauth,
                             name,
+                            // ProfileCard always uses osu!std — the rendered
+                            // content is mode-independent, so osu!std user ID
+                            // resolution is sufficient.
                             GameMode::Osu,
                         )
                         .await
@@ -638,11 +641,14 @@ async fn handle_command(
             let dedup_oauth = ctx.oauth.clone();
             let dedup_target_id = target_user_id;
             let render_result = profile_dedup()
+                // GameMode::Osu is intentional — profile card content is the
+                // same across all modes, so osu!std is always used.
                 .run_or_wait((target_user_id, GameMode::Osu), move || async move {
                     let profile = api::fetch_user_profile(
                         &dedup_rate_limiter,
                         &dedup_oauth,
                         dedup_target_id,
+                        // Always osu!std: profile card content is mode-independent.
                         GameMode::Osu,
                     )
                     .await

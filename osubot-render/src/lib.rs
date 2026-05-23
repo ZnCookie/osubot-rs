@@ -6,7 +6,7 @@ mod style;
 
 use image::imageops;
 use parley::FontContext;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 
 pub use cache::{cleanup_expired, ensure_cache_dir};
@@ -36,26 +36,34 @@ pub async fn render_profile_card(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
-    let html_with_inlined_images = cache::inline_external_images(html)
-        .await
-        .map_err(|e| RenderError::Render(e.to_string()))?;
+    let html_with_inlined_images = cache::inline_external_images(html).await;
     let _permit = render_semaphore()
         .acquire()
         .await
         .expect("render semaphore never closed");
     let wrapped_html = style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue);
     let font_ctx = get_font_context();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_flag = cancel.clone();
     // 60s timeout: profile cards with many badges or large user stats can
     // take significant time to render, especially under concurrent load.
-    let (mut pixels, mut w, mut h) = tokio::time::timeout(
+    // On timeout, the cancel flag is set so the blocking task exits quickly.
+    let render_result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::task::spawn_blocking(move || {
-            render::render_html_to_image(&wrapped_html, font_ctx, width, height)
+            render::render_html_to_image(&wrapped_html, font_ctx, width, height, &cancel_flag)
         }),
     )
-    .await
-    .map_err(|_| RenderError::Render("render timed out after 60s".into()))?
-    .map_err(|e| RenderError::Render(e.to_string()))??;
+    .await;
+
+    let (mut pixels, mut w, mut h) = match render_result {
+        Ok(Ok(result)) => result?,
+        Ok(Err(e)) => return Err(RenderError::Render(e.to_string())),
+        Err(_) => {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(RenderError::Render("render timed out after 60s".into()));
+        }
+    };
 
     const MAX_PHYSICAL_HEIGHT: u32 = 24000;
     if h > MAX_PHYSICAL_HEIGHT {

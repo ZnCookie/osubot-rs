@@ -221,33 +221,32 @@ mod tests {
     async fn test_error_shared_to_waiters() {
         let dedup = Arc::new(RequestDedup::<u32, String, String>::new());
         let call_count = Arc::new(AtomicUsize::new(0));
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
 
+        // Start the creator first, give it time to claim the entry
         let dedup_clone = dedup.clone();
         let call_count_clone = call_count.clone();
-        let barrier_clone = barrier.clone();
         let handle = tokio::spawn(async move {
-            barrier_clone.wait().await;
             dedup_clone
                 .run_or_wait(1, || {
                     let call_count = call_count_clone.clone();
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         Err("fail".to_string())
                     }
                 })
                 .await
         });
 
-        barrier.wait().await;
-        let call_count_clone2 = call_count.clone();
+        // Small delay to ensure creator has claimed the entry
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Now the waiter arrives — it should see the creator's error
         let waiter_result = dedup
             .run_or_wait(1, || {
-                let call_count = call_count_clone2.clone();
+                let call_count = call_count.clone();
                 async move {
                     call_count.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
                     Err("fail2".to_string())
                 }
             })

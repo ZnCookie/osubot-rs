@@ -17,3 +17,4 @@ sha2 = "0.10"
 base64 = { version = "0.22", features = ["std"] }
 tracing = "0.1"
 futures-util = "0.3"
+dirs = "6"

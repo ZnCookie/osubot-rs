@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_CONCURRENT_FETCHES: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -39,6 +40,12 @@ fn fetch_locks() -> &'static RwLock<HashMap<String, Arc<Mutex<()>>>> {
     LOCKS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+static FETCH_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+
+fn fetch_semaphore() -> &'static Semaphore {
+    FETCH_SEMAPHORE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_FETCHES))
+}
+
 fn cache_dir() -> PathBuf {
     static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
     CACHE_DIR
@@ -58,29 +65,7 @@ pub async fn ensure_cache_dir() {
 }
 
 fn dirs_proj() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Some(PathBuf::from(home).join("Library").join("Caches"));
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-            return Some(PathBuf::from(localappdata));
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let base = std::env::var("XDG_CACHE_HOME")
-                .ok()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(home).join(".cache"));
-            return Some(base);
-        }
-    }
-    None
+    dirs::cache_dir()
 }
 
 fn sha256_hex(url: &str) -> String {
@@ -188,6 +173,20 @@ async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>,
     Err(CacheError::RetriesExhausted)
 }
 
+struct FetchLockGuard {
+    url: String,
+}
+
+impl Drop for FetchLockGuard {
+    fn drop(&mut self) {
+        let url = self.url.clone();
+        tokio::spawn(async move {
+            let mut locks = fetch_locks().write().await;
+            locks.remove(&url);
+        });
+    }
+}
+
 async fn fetch_and_cache(
     url: &str,
     client: &reqwest::Client,
@@ -208,47 +207,33 @@ async fn fetch_and_cache(
             .clone()
     };
 
-    let (bytes, mime) = {
-        let _guard = url_lock.lock().await;
+    let _fetch_guard = FetchLockGuard {
+        url: url.to_string(),
+    };
+    let _guard = url_lock.lock().await;
 
-        if let Ok(cached) = tokio::fs::read(&cache_file).await {
-            let (mime, _) = detect_mime_and_ext(url, &cached);
-            // Remove our fetch_locks entry (or the stale one we found) before returning
-            drop(_guard);
-            {
-                let mut locks = fetch_locks().write().await;
-                locks.remove(url);
-            }
-            return Ok((cached, mime.to_string(), hash));
-        }
-
-        let bytes = match try_fetch_image(url, client).await {
-            Ok(b) => b,
-            Err(e) => {
-                drop(_guard);
-                {
-                    let mut locks = fetch_locks().write().await;
-                    locks.remove(url);
-                }
-                return Err(e);
-            }
-        };
-
-        let (mime, _) = detect_mime_and_ext(url, &bytes);
-
-        if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
-            tracing::warn!("failed to cache {}: {}", url, e);
-        }
-
-        (bytes, mime.to_string())
-    }; // _guard dropped here
-
-    {
-        let mut locks = fetch_locks().write().await;
-        locks.remove(url);
+    if let Ok(cached) = tokio::fs::read(&cache_file).await {
+        let (mime, _) = detect_mime_and_ext(url, &cached);
+        return Ok((cached, mime.to_string(), hash));
     }
 
-    Ok((bytes, mime, hash))
+    let _fetch_permit = fetch_semaphore()
+        .acquire()
+        .await
+        .expect("fetch semaphore never closed");
+
+    let bytes = match try_fetch_image(url, client).await {
+        Ok(b) => b,
+        Err(e) => return Err(e),
+    };
+
+    let (mime, _) = detect_mime_and_ext(url, &bytes);
+
+    if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
+        tracing::warn!("failed to cache {}: {}", url, e);
+    }
+
+    Ok((bytes, mime.to_string(), hash))
 }
 
 struct ImageRef {
@@ -345,10 +330,10 @@ fn build_data_uri(bytes: &[u8], mime: &str) -> String {
     format!("data:{};base64,{}", mime, b64)
 }
 
-pub async fn inline_external_images(html: &str) -> Result<String, CacheError> {
+pub async fn inline_external_images(html: &str) -> String {
     let mut refs = extract_image_refs(html);
     if refs.is_empty() {
-        return Ok(html.to_string());
+        return html.to_string();
     }
 
     let unique_urls = {
@@ -392,7 +377,7 @@ pub async fn inline_external_images(html: &str) -> Result<String, CacheError> {
     }
 
     if url_to_data.is_empty() {
-        return Ok(html.to_string());
+        return html.to_string();
     }
 
     refs.sort_by_key(|r| r.start);
@@ -404,10 +389,10 @@ pub async fn inline_external_images(html: &str) -> Result<String, CacheError> {
         }
     }
 
-    Ok(String::from_utf8(result).unwrap_or_else(|e| {
+    String::from_utf8(result).unwrap_or_else(|e| {
         tracing::warn!("image inlining produced invalid UTF-8: {}", e);
         html.to_string()
-    }))
+    })
 }
 
 pub async fn cleanup_expired(retention_days: u64) {
@@ -455,7 +440,10 @@ pub async fn cleanup_expired(retention_days: u64) {
             match tokio::fs::remove_file(&path).await {
                 Ok(()) => deleted += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => errors += 1,
+                Err(e) => {
+                    tracing::warn!("failed to delete cache file {}: {e}", path.display());
+                    errors += 1;
+                }
             }
         }
     }
@@ -611,7 +599,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let html = "<div>no images here</div>";
         let result = rt.block_on(inline_external_images(html));
-        assert_eq!(result.unwrap(), html);
+        assert_eq!(result, html);
     }
 
     #[tokio::test]

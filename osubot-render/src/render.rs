@@ -9,6 +9,7 @@ use blitz::traits::shell::{ColorScheme, Viewport};
 use parley::FontContext;
 use peniko::kurbo::Rect;
 use peniko::Fill;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,6 +24,7 @@ pub fn render_html_to_image(
     font_ctx: &FontContext,
     width: u32,
     height: u32,
+    cancelled: &AtomicBool,
 ) -> Result<(Vec<u8>, u32, u32), RenderError> {
     let viewport_width = width;
     let viewport_height = height;
@@ -62,6 +64,9 @@ pub fn render_html_to_image(
     );
 
     for _ in 0..MAX_RESOURCE_ITERATIONS {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(RenderError::Render("render cancelled".into()));
+        }
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources
             .lock()
@@ -96,6 +101,9 @@ pub fn render_html_to_image(
     let render_width = width;
     let total_physical_height = needed_logical_height as u32;
 
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(RenderError::Render("render cancelled".into()));
+    }
     if total_physical_height <= MAX_TILE_HEIGHT {
         let buffer = render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
             |scene| {
@@ -139,6 +147,9 @@ pub fn render_html_to_image(
         );
 
         for tile_idx in 0..num_tiles {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(RenderError::Render("render cancelled".into()));
+            }
             let y_offset_css = tile_idx as f64 * tile_logical_height;
             let this_tile_phy_h = if tile_idx == num_tiles - 1 {
                 total_physical_height - (tile_idx * MAX_TILE_HEIGHT)
