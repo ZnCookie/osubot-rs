@@ -9,28 +9,28 @@ use blitz::traits::shell::{ColorScheme, Viewport};
 use parley::FontContext;
 use peniko::kurbo::Rect;
 use peniko::Fill;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::runtime::Handle;
 
 use crate::error::RenderError;
 
-const GPU_MAX_DIM: u32 = 8192;
+const MAX_TILE_HEIGHT: u32 = 8192;
+const MAX_RESOURCE_ITERATIONS: u32 = 50;
 
 pub fn render_html_to_image(
     html: &str,
     font_ctx: &FontContext,
     width: u32,
     height: u32,
-    handle: Handle,
 ) -> Result<(Vec<u8>, u32, u32), RenderError> {
     let viewport_width = width;
     let viewport_height = height;
 
+    let (resource_tx, resource_rx) = mpsc::channel::<()>();
+
     let loaded_resources: Arc<Mutex<Vec<Resource>>> = Arc::new(Mutex::new(Vec::new()));
-    let resource_notify = Arc::new(tokio::sync::Notify::new());
     let cb_resources = Arc::clone(&loaded_resources);
-    let cb_notify = Arc::clone(&resource_notify);
     let callback: Arc<dyn NetCallback<Resource>> = Arc::new(
         move |_doc_id: usize, result: Result<Resource, Option<String>>| {
             if let Ok(resource) = result {
@@ -38,7 +38,7 @@ pub fn render_html_to_image(
                     .lock()
                     .expect("loaded_resources lock poisoned")
                     .push(resource);
-                cb_notify.notify_one();
+                let _ = resource_tx.send(());
             }
         },
     );
@@ -61,7 +61,7 @@ pub fn render_html_to_image(
         },
     );
 
-    loop {
+    for _ in 0..MAX_RESOURCE_ITERATIONS {
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources
             .lock()
@@ -74,13 +74,15 @@ pub fn render_html_to_image(
         if net.is_empty() {
             break;
         }
-        let notify = Arc::clone(&resource_notify);
-        handle.block_on(async move {
-            tokio::select! {
-                _ = notify.notified() => {},
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+        match resource_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                continue;
             }
-        });
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                tracing::warn!("resource channel disconnected, proceeding with partial resources");
+                break;
+            }
+        }
     }
 
     document.resolve(0.0);
@@ -94,7 +96,7 @@ pub fn render_html_to_image(
     let render_width = width;
     let total_physical_height = needed_logical_height as u32;
 
-    if total_physical_height <= GPU_MAX_DIM {
+    if total_physical_height <= MAX_TILE_HEIGHT {
         let buffer = render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
             |scene| {
                 scene.fill(
@@ -115,20 +117,33 @@ pub fn render_html_to_image(
             render_width,
             total_physical_height,
         );
+        let expected = (render_width as usize)
+            .saturating_mul(total_physical_height as usize)
+            .saturating_mul(4);
+        if buffer.len() != expected {
+            return Err(RenderError::Render(format!(
+                "non-tiled render size mismatch: expected {}, got {}",
+                expected,
+                buffer.len()
+            )));
+        }
         Ok((buffer, render_width, total_physical_height))
     } else {
-        let num_tiles = (total_physical_height as f64 / GPU_MAX_DIM as f64).ceil() as u32;
-        let tile_logical_height = GPU_MAX_DIM as f64;
+        let num_tiles = (total_physical_height as f64 / MAX_TILE_HEIGHT as f64).ceil() as u32;
+        let tile_logical_height = MAX_TILE_HEIGHT as f64;
 
-        let mut all_pixels =
-            Vec::with_capacity((render_width * total_physical_height * 4) as usize);
+        let mut all_pixels = Vec::with_capacity(
+            (render_width as usize)
+                .saturating_mul(total_physical_height as usize)
+                .saturating_mul(4),
+        );
 
         for tile_idx in 0..num_tiles {
             let y_offset_css = tile_idx as f64 * tile_logical_height;
             let this_tile_phy_h = if tile_idx == num_tiles - 1 {
-                total_physical_height - (tile_idx * GPU_MAX_DIM)
+                total_physical_height - (tile_idx * MAX_TILE_HEIGHT)
             } else {
-                GPU_MAX_DIM
+                MAX_TILE_HEIGHT
             };
 
             document.set_viewport_scroll(blitz::dom::Point {
@@ -151,7 +166,9 @@ pub fn render_html_to_image(
                 this_tile_phy_h,
             );
 
-            let expected_tile_size = (render_width * this_tile_phy_h * 4) as usize;
+            let expected_tile_size = (render_width as usize)
+                .saturating_mul(this_tile_phy_h as usize)
+                .saturating_mul(4);
             if tile_buffer.len() != expected_tile_size {
                 return Err(RenderError::Render(format!(
                     "tile {} size mismatch: expected {}, got {}",

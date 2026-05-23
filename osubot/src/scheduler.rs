@@ -72,7 +72,7 @@ impl Scheduler {
             _ => {}
         }
 
-        osubot_render::cleanup_expired(self.config.cache_retention_days);
+        osubot_render::cleanup_expired(self.config.cache_retention_days).await;
 
         *last = Some(now);
     }
@@ -84,6 +84,7 @@ impl Scheduler {
             info!("Scheduler tick");
             time::sleep(time::Duration::from_secs(60 * self.config.interval_minutes)).await;
             self.process_due_users().await;
+            self.try_cleanup().await;
         }
     }
 
@@ -93,7 +94,7 @@ impl Scheduler {
             Ok(d) => d,
             Err(e) => {
                 error!("get_due_users failed: {:?}", e);
-                return;
+                Vec::new()
             }
         };
         info!("due users count: {}", due.len());
@@ -102,8 +103,6 @@ impl Scheduler {
             let result = self.eval_activity(user_id, mode).await;
             self.update_next_time(user_id, mode, result.activity);
         }
-
-        self.try_cleanup().await;
     }
 
     /// Evaluate a single user's activity for a single mode

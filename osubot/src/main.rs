@@ -162,8 +162,8 @@ struct BotContext {
     onebot_api: Arc<OneBotApi>,
 }
 
-fn profile_dedup() -> &'static RequestDedup<i64, Arc<Vec<u8>>, String> {
-    static DEDUP: OnceLock<RequestDedup<i64, Arc<Vec<u8>>, String>> = OnceLock::new();
+fn profile_dedup() -> &'static RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String> {
+    static DEDUP: OnceLock<RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String>> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 
@@ -638,7 +638,7 @@ async fn handle_command(
             let dedup_oauth = ctx.oauth.clone();
             let dedup_target_id = target_user_id;
             let render_result = profile_dedup()
-                .run_or_wait(target_user_id, move || async move {
+                .run_or_wait((target_user_id, GameMode::Osu), move || async move {
                     let profile = api::fetch_user_profile(
                         &dedup_rate_limiter,
                         &dedup_oauth,
@@ -905,7 +905,7 @@ async fn main() {
 
     info!("Starting osubot...");
 
-    osubot_render::ensure_cache_dir();
+    osubot_render::ensure_cache_dir().await;
 
     let config = Config::from_path("osubot.toml").expect("Failed to load config");
 

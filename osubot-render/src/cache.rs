@@ -7,6 +7,20 @@ use tokio::sync::{Mutex, RwLock};
 
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
+#[derive(Debug, thiserror::Error)]
+pub enum CacheError {
+    #[error("network request failed: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("HTTP client error: status {status}")]
+    ClientError { status: u16 },
+    #[error("image exceeds maximum size")]
+    TooLarge,
+    #[error("retries exhausted")]
+    RetriesExhausted,
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -17,9 +31,9 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
-// osu! profile images come from a bounded set of CDN URLs (flags, badges, avatars).
-// The number of unique URLs encountered in practice is limited, so this map's
-// growth rate is negligible over the bot's lifetime.
+// Per-URL mutex to prevent thundering-herd cache writes.
+// The lock is removed from the map immediately after the fetch completes,
+// so the map only holds entries for URLs currently being fetched.
 fn fetch_locks() -> &'static RwLock<HashMap<String, Arc<Mutex<()>>>> {
     static LOCKS: OnceLock<RwLock<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     LOCKS.get_or_init(|| RwLock::new(HashMap::new()))
@@ -30,15 +44,15 @@ fn cache_dir() -> PathBuf {
     CACHE_DIR
         .get_or_init(|| {
             dirs_proj()
-                .unwrap_or_else(|| PathBuf::from("."))
+                .unwrap_or_else(std::env::temp_dir)
                 .join("osubot")
                 .join("resources")
         })
         .clone()
 }
 
-pub fn ensure_cache_dir() {
-    if let Err(e) = std::fs::create_dir_all(cache_dir()) {
+pub async fn ensure_cache_dir() {
+    if let Err(e) = tokio::fs::create_dir_all(cache_dir()).await {
         tracing::error!("failed to create cache directory: {}", e);
     }
 }
@@ -84,42 +98,53 @@ fn detect_mime_and_ext(url: &str, bytes: &[u8]) -> (&'static str, &'static str) 
         ("image/gif", ".gif")
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         ("image/webp", ".webp")
-    } else if bytes.starts_with(b"<svg")
-        || bytes
-            .strip_prefix(b"\xEF\xBB\xBF")
-            .is_some_and(|b| b.starts_with(b"<svg"))
-        || bytes.starts_with(b"<?xml")
+    } else if bytes.len() >= 4 && bytes.starts_with(b"<svg") {
+        ("image/svg+xml", ".svg")
+    } else if bytes
+        .strip_prefix(b"\xEF\xBB\xBF")
+        .is_some_and(|b| b.starts_with(b"<svg"))
     {
         ("image/svg+xml", ".svg")
-    } else {
-        let ext = url.split('?').next().and_then(|u| {
-            let lower = u.to_lowercase();
-            if lower.ends_with(".png") {
-                Some(".png")
-            } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-                Some(".jpg")
-            } else if lower.ends_with(".gif") {
-                Some(".gif")
-            } else if lower.ends_with(".webp") {
-                Some(".webp")
-            } else if lower.ends_with(".svg") {
-                Some(".svg")
-            } else {
-                None
-            }
-        });
-        match ext {
-            Some(".png") => ("image/png", ".png"),
-            Some(".jpg") => ("image/jpeg", ".jpg"),
-            Some(".gif") => ("image/gif", ".gif"),
-            Some(".webp") => ("image/webp", ".webp"),
-            Some(".svg") => ("image/svg+xml", ".svg"),
-            _ => ("application/octet-stream", ".bin"),
+    } else if bytes.starts_with(b"<?xml") {
+        let search_window = &bytes[..bytes.len().min(512)];
+        if search_window.windows(4).any(|w| w == b"<svg") {
+            ("image/svg+xml", ".svg")
+        } else {
+            detect_mime_and_ext_fallback(url)
         }
+    } else {
+        detect_mime_and_ext_fallback(url)
     }
 }
 
-async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, ()> {
+fn detect_mime_and_ext_fallback(url: &str) -> (&'static str, &'static str) {
+    let ext = url.split('?').next().and_then(|u| {
+        let lower = u.to_lowercase();
+        if lower.ends_with(".png") {
+            Some(".png")
+        } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            Some(".jpg")
+        } else if lower.ends_with(".gif") {
+            Some(".gif")
+        } else if lower.ends_with(".webp") {
+            Some(".webp")
+        } else if lower.ends_with(".svg") {
+            Some(".svg")
+        } else {
+            None
+        }
+    });
+    match ext {
+        Some(".png") => ("image/png", ".png"),
+        Some(".jpg") => ("image/jpeg", ".jpg"),
+        Some(".gif") => ("image/gif", ".gif"),
+        Some(".webp") => ("image/webp", ".webp"),
+        Some(".svg") => ("image/svg+xml", ".svg"),
+        _ => ("application/octet-stream", ".bin"),
+    }
+}
+
+async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, CacheError> {
     use tokio::time::Duration;
 
     for attempt in 0..3 {
@@ -130,66 +155,100 @@ async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>,
             Ok(resp) if resp.status().is_success() => {
                 if let Some(len) = resp.content_length() {
                     if len > MAX_IMAGE_BYTES {
-                        return Err(());
+                        return Err(CacheError::TooLarge);
                     }
                 }
-                let bytes = resp.bytes().await.map(|b| b.to_vec()).map_err(|_| ())?;
-                if bytes.len() > MAX_IMAGE_BYTES as usize {
-                    return Err(());
+                let mut bytes = Vec::new();
+                let mut stream = resp.bytes_stream();
+                use futures_util::StreamExt;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(CacheError::from)?;
+                    if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
+                        return Err(CacheError::TooLarge);
+                    }
+                    bytes.extend_from_slice(&chunk);
                 }
                 return Ok(bytes);
             }
             Ok(resp) if resp.status().is_server_error() => {
+                tracing::warn!(status = %resp.status(), url = %url, "server error, will retry");
                 continue;
             }
-            Ok(_) => return Err(()),
-            Err(_) => continue,
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                tracing::warn!(status = %status, url = %url, "client error, aborting");
+                return Err(CacheError::ClientError { status });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, url = %url, "request failed, will retry");
+                continue;
+            }
         }
     }
-    Err(())
+    Err(CacheError::RetriesExhausted)
 }
 
 async fn fetch_and_cache(
     url: &str,
     client: &reqwest::Client,
-) -> Result<(Vec<u8>, String, String), ()> {
+) -> Result<(Vec<u8>, String, String), CacheError> {
     let hash = sha256_hex(url);
     let cache_file = cache_dir().join(&hash);
 
-    if let Ok(cached) = std::fs::read(&cache_file) {
+    if let Ok(cached) = tokio::fs::read(&cache_file).await {
         let (mime, _) = detect_mime_and_ext(url, &cached);
         return Ok((cached, mime.to_string(), hash));
     }
 
     let url_lock = {
-        let read = fetch_locks().read().await;
-        if let Some(lock) = read.get(url).cloned() {
-            lock
-        } else {
-            drop(read);
-            let mut locks = fetch_locks().write().await;
-            locks
-                .entry(url.to_string())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        }
+        let mut locks = fetch_locks().write().await;
+        locks
+            .entry(url.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     };
-    let _guard = url_lock.lock().await;
 
-    if let Ok(cached) = std::fs::read(&cache_file) {
-        let (mime, _) = detect_mime_and_ext(url, &cached);
-        return Ok((cached, mime.to_string(), hash));
+    let (bytes, mime) = {
+        let _guard = url_lock.lock().await;
+
+        if let Ok(cached) = tokio::fs::read(&cache_file).await {
+            let (mime, _) = detect_mime_and_ext(url, &cached);
+            // Remove our fetch_locks entry (or the stale one we found) before returning
+            drop(_guard);
+            {
+                let mut locks = fetch_locks().write().await;
+                locks.remove(url);
+            }
+            return Ok((cached, mime.to_string(), hash));
+        }
+
+        let bytes = match try_fetch_image(url, client).await {
+            Ok(b) => b,
+            Err(e) => {
+                drop(_guard);
+                {
+                    let mut locks = fetch_locks().write().await;
+                    locks.remove(url);
+                }
+                return Err(e);
+            }
+        };
+
+        let (mime, _) = detect_mime_and_ext(url, &bytes);
+
+        if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
+            tracing::warn!("failed to cache {}: {}", url, e);
+        }
+
+        (bytes, mime.to_string())
+    }; // _guard dropped here
+
+    {
+        let mut locks = fetch_locks().write().await;
+        locks.remove(url);
     }
 
-    let bytes = try_fetch_image(url, client).await?;
-
-    let (mime, _) = detect_mime_and_ext(url, &bytes);
-
-    if let Err(e) = std::fs::write(&cache_file, &bytes) {
-        tracing::warn!("failed to cache {}: {}", url, e);
-    }
-
-    Ok((bytes, mime.to_string(), hash))
+    Ok((bytes, mime, hash))
 }
 
 struct ImageRef {
@@ -256,12 +315,28 @@ fn find_src_url(bytes: &[u8], tag_start: usize) -> Option<(usize, usize)> {
         .position(|&b| b == b'>')
         .unwrap_or(tag_bytes.len());
     let search_window = &tag_bytes[..tag_len.min(4096)];
-    let src_pos = search_window
+
+    // Try double quote first
+    if let Some(src_pos) = search_window
         .windows(5)
-        .position(|w| w.eq_ignore_ascii_case(b"src=\""))?;
-    let value_start = tag_start + src_pos + 5;
-    let quote_pos = bytes[value_start..].iter().position(|&b| b == b'"')?;
-    Some((value_start, value_start + quote_pos))
+        .position(|w| w.eq_ignore_ascii_case(b"src=\""))
+    {
+        let value_start = tag_start + src_pos + 5;
+        let quote_pos = bytes[value_start..].iter().position(|&b| b == b'"')?;
+        return Some((value_start, value_start + quote_pos));
+    }
+
+    // Try single quote
+    if let Some(src_pos) = search_window
+        .windows(5)
+        .position(|w| w.eq_ignore_ascii_case(b"src='"))
+    {
+        let value_start = tag_start + src_pos + 5;
+        let quote_pos = bytes[value_start..].iter().position(|&b| b == b'\'')?;
+        return Some((value_start, value_start + quote_pos));
+    }
+
+    None
 }
 
 fn build_data_uri(bytes: &[u8], mime: &str) -> String {
@@ -270,10 +345,10 @@ fn build_data_uri(bytes: &[u8], mime: &str) -> String {
     format!("data:{};base64,{}", mime, b64)
 }
 
-pub async fn inline_external_images(html: &str) -> String {
+pub async fn inline_external_images(html: &str) -> Result<String, CacheError> {
     let mut refs = extract_image_refs(html);
     if refs.is_empty() {
-        return html.to_string();
+        return Ok(html.to_string());
     }
 
     let unique_urls = {
@@ -288,19 +363,36 @@ pub async fn inline_external_images(html: &str) -> String {
         urls
     };
 
-    let client = http_client();
+    let client = (*http_client()).clone();
 
     let mut url_to_data: HashMap<String, String> = HashMap::new();
 
-    for url in &unique_urls {
-        if let Ok((bytes, mime, _hash)) = fetch_and_cache(url, client).await {
-            let data_uri = build_data_uri(&bytes, &mime);
-            url_to_data.insert(url.clone(), data_uri);
+    let mut set = tokio::task::JoinSet::new();
+    for url in unique_urls {
+        let client = client.clone();
+        set.spawn(async move {
+            let res = fetch_and_cache(&url, &client).await;
+            (url, res)
+        });
+    }
+
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok((url, Ok((bytes, mime, _hash)))) => {
+                let data_uri = build_data_uri(&bytes, &mime);
+                url_to_data.insert(url, data_uri);
+            }
+            Ok((url, Err(e))) => {
+                tracing::warn!(url = %url, error = %e, "failed to fetch image in parallel batch");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "join error in parallel image fetch");
+            }
         }
     }
 
     if url_to_data.is_empty() {
-        return html.to_string();
+        return Ok(html.to_string());
     }
 
     refs.sort_by_key(|r| r.start);
@@ -312,20 +404,21 @@ pub async fn inline_external_images(html: &str) -> String {
         }
     }
 
-    String::from_utf8(result).unwrap_or_else(|e| {
+    Ok(String::from_utf8(result).unwrap_or_else(|e| {
         tracing::warn!("image inlining produced invalid UTF-8: {}", e);
         html.to_string()
-    })
+    }))
 }
 
-pub fn cleanup_expired(retention_days: u64) {
+pub async fn cleanup_expired(retention_days: u64) {
     if retention_days == 0 {
         return;
     }
 
     let dir = cache_dir();
-    if !dir.exists() {
-        return;
+    match tokio::fs::try_exists(&dir).await {
+        Ok(false) | Err(_) => return,
+        Ok(true) => {}
     }
 
     let cutoff =
@@ -339,7 +432,7 @@ pub fn cleanup_expired(retention_days: u64) {
         }
     };
 
-    let entries = match std::fs::read_dir(&dir) {
+    let mut entries = match tokio::fs::read_dir(&dir).await {
         Ok(entries) => entries,
         Err(e) => {
             tracing::error!("failed to read cache dir for cleanup: {}", e);
@@ -350,16 +443,16 @@ pub fn cleanup_expired(retention_days: u64) {
     let mut deleted = 0u64;
     let mut errors = 0u64;
 
-    for entry in entries.flatten() {
+    while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
 
-        let modified = match entry.metadata().and_then(|m| m.modified()) {
+        let modified = match entry.metadata().await.and_then(|m| m.modified()) {
             Ok(time) => time,
             Err(_) => continue,
         };
 
         if modified < cutoff {
-            match std::fs::remove_file(&path) {
+            match tokio::fs::remove_file(&path).await {
                 Ok(()) => deleted += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => errors += 1,
@@ -518,11 +611,54 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let html = "<div>no images here</div>";
         let result = rt.block_on(inline_external_images(html));
-        assert_eq!(result, html);
+        assert_eq!(result.unwrap(), html);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired_noop_when_disabled() {
+        cleanup_expired(0).await;
     }
 
     #[test]
-    fn test_cleanup_expired_noop_when_disabled() {
-        cleanup_expired(0);
+    fn test_extract_image_refs_single_quote() {
+        let html = r#"<img src='https://a.ppy.sh/1.png'>"#;
+        let refs = extract_image_refs(html);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].url, "https://a.ppy.sh/1.png");
+    }
+
+    #[test]
+    fn test_detect_mime_svg_xml_decl() {
+        let svg =
+            b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"><circle/></svg>";
+        let (mime, ext) = detect_mime_and_ext("https://a.ppy.sh/x", svg);
+        assert_eq!(mime, "image/svg+xml");
+        assert_eq!(ext, ".svg");
+    }
+
+    #[test]
+    fn test_detect_mime_svg_bom() {
+        let svg = b"\xEF\xBB\xBF<svg><circle/></svg>";
+        let (mime, ext) = detect_mime_and_ext("https://a.ppy.sh/x", svg);
+        assert_eq!(mime, "image/svg+xml");
+        assert_eq!(ext, ".svg");
+    }
+
+    #[test]
+    fn test_detect_mime_xml_not_svg() {
+        let xml = b"<?xml version=\"1.0\"?>\n<html><body>not svg</body></html>";
+        let (mime, ext) = detect_mime_and_ext("https://a.ppy.sh/x.foo", xml);
+        assert_eq!(mime, "application/octet-stream");
+        assert_eq!(ext, ".bin");
+    }
+
+    #[test]
+    fn test_extract_image_refs_mixed_quotes() {
+        let html = r#"<img src="https://a.ppy.sh/1.png"><img src='https://a.ppy.sh/2.jpg'>"#;
+        let refs = extract_image_refs(html);
+        assert_eq!(refs.len(), 2);
+        let urls: Vec<&str> = refs.iter().map(|r| r.url.as_str()).collect();
+        assert!(urls.contains(&"https://a.ppy.sh/1.png"));
+        assert!(urls.contains(&"https://a.ppy.sh/2.jpg"));
     }
 }

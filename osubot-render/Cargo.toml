@@ -12,7 +12,8 @@ peniko = "0.5"
 parley = { version = "0.6", features = ["system"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "1"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
 sha2 = "0.10"
 base64 = { version = "0.22", features = ["std"] }
 tracing = "0.1"
+futures-util = "0.3"

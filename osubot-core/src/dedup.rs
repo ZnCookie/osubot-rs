@@ -3,17 +3,10 @@ use std::future::Future;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
-/// Request deduplication: concurrent callers for the same key share one in-flight
-/// request. If the creator panics, waiters receive `Err(E::from("creator panicked"))`
-/// instead of deadlocking.
-///
-/// Note: the error type `E` must implement `From<&'static str>` so that a panic
-/// can be surfaced as an error value. This is only needed for the `run_or_wait` method,
-/// not for constructing the struct.
 pub struct RequestDedup<K, V, E> {
-    entries: Mutex<HashMap<K, Arc<Entry<V, E>>>>,
+    entries: std::sync::Mutex<HashMap<K, Arc<Entry<V, E>>>>,
 }
 
 #[derive(Debug)]
@@ -29,6 +22,29 @@ struct Entry<V, E> {
     claimed: AtomicBool,
 }
 
+struct CleanupGuard<'a, K, V, E>
+where
+    K: Eq + Hash + Clone,
+{
+    dedup: &'a RequestDedup<K, V, E>,
+    key: K,
+    entry: Arc<Entry<V, E>>,
+}
+
+impl<'a, K, V, E> Drop for CleanupGuard<'a, K, V, E>
+where
+    K: Eq + Hash + Clone,
+{
+    fn drop(&mut self) {
+        self.entry.done.close();
+        let mut map = match self.dedup.entries.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        map.remove(&self.key);
+    }
+}
+
 impl<K, V, E> RequestDedup<K, V, E>
 where
     K: Eq + Hash + Clone,
@@ -37,7 +53,7 @@ where
 {
     pub fn new() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -49,7 +65,7 @@ where
         E: From<&'static str> + Send + 'static,
     {
         let entry = {
-            let mut map = self.entries.lock().await;
+            let mut map = self.entries.lock().unwrap();
             map.entry(key.clone())
                 .or_insert_with(|| {
                     Arc::new(Entry {
@@ -64,6 +80,12 @@ where
         let is_creator = !entry.claimed.swap(true, Ordering::AcqRel);
 
         if is_creator {
+            let _guard = CleanupGuard {
+                dedup: self,
+                key: key.clone(),
+                entry: entry.clone(),
+            };
+
             let join_handle = tokio::spawn(f());
             let work_result = match join_handle.await {
                 Ok(result) => {
@@ -89,9 +111,6 @@ where
                 }
             };
 
-            // Safe to remove: waiters hold Arc<Entry> clones, so the entry
-            // stays alive even after removal from the map.
-            self.entries.lock().await.remove(&key);
             work_result
         } else {
             let _ = entry.done.acquire().await;
@@ -287,5 +306,36 @@ mod tests {
 
         assert!(waiter_result.is_err());
         assert!(waiter_result.unwrap_err().contains("panic"));
+    }
+
+    #[tokio::test]
+    async fn test_creator_drop_cleans_map() {
+        let dedup = Arc::new(RequestDedup::<u32, String, String>::new());
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+        let dedup_clone = dedup.clone();
+        let barrier_clone = barrier.clone();
+        let handle = tokio::spawn(async move {
+            barrier_clone.wait().await;
+            dedup_clone
+                .run_or_wait(1, || async {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Ok("never".to_string())
+                })
+                .await
+        });
+
+        barrier.wait().await;
+        // Give the creator a moment to claim the entry
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        // After abort, the map should be empty because CleanupGuard::drop runs
+        let map = dedup.entries.lock().unwrap();
+        assert!(
+            !map.contains_key(&1),
+            "map should not contain key 1 after creator is aborted"
+        );
     }
 }
