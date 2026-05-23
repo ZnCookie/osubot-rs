@@ -22,7 +22,7 @@ fn get_font_context() -> &'static FontContext {
 
 /// Maximum concurrent render operations. Render is CPU-intensive (font rasterization,
 /// layout, paint), so this limits parallel renders to avoid saturating CPU cores.
-const MAX_CONCURRENT_RENDERS: usize = 3;
+const MAX_CONCURRENT_RENDERS: usize = 1;
 
 static RENDER_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
 
