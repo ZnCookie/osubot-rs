@@ -355,6 +355,8 @@ pub async fn get_user_info(
 struct OsuProfileResponse {
     page: ProfilePage,
     profile_hue: Option<u16>,
+    username: String,
+    avatar_url: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -366,6 +368,8 @@ struct ProfilePage {
 pub struct UserProfile {
     pub html: String,
     pub profile_hue: u16,
+    pub username: String,
+    pub avatar_url: String,
 }
 
 /// Fetch user profile page HTML from osu! API v2 by user ID.
@@ -426,6 +430,8 @@ pub async fn fetch_user_profile(
         return Ok(UserProfile {
             html: data.page.html,
             profile_hue: data.profile_hue.unwrap_or(333),
+            username: data.username,
+            avatar_url: data.avatar_url,
         });
     }
 }

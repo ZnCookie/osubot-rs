@@ -3,8 +3,8 @@
 
 :root {
   --base-hue: {{PROFILE_HUE}};
-  --font-content: 'Inter', 'Torus', 'Helvetica Neue', Tahoma, Arial, sans-serif;
-  --font-default: 'Torus', 'Inter', 'Helvetica Neue', Tahoma, Arial, sans-serif;
+  --font-content: 'Noto Sans', 'Noto Sans SC', 'Noto Sans JP', 'Noto Sans KR', sans-serif, 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-default: 'Noto Sans', 'Noto Sans SC', 'Noto Sans JP', 'Noto Sans KR', sans-serif, 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji';
 }
 
 body {
@@ -31,7 +31,7 @@ body {
   --hsl-b5: var(--base-hue), 10%, 15%;
   --hsl-b6: var(--base-hue), 10%, 10%;
 
-  font-size: 36px;
+  font-size: 18px;
   max-width: {{VIEWPORT_WIDTH}}px;
   margin: 0 auto;
   padding: 20px;
@@ -40,6 +40,7 @@ body {
   color: hsl(var(--hsl-c1));
   font-family: var(--font-content);
   line-height: 1.35;
+  scroll-behavior: smooth;
 }
 
 /* ---- base elements ---- */
@@ -48,29 +49,15 @@ a {
   color: hsl(var(--hsl-l2));
   text-decoration: none;
 }
-a:hover {
-  color: hsl(var(--hsl-l1));
-  text-decoration: underline;
-}
-
 a[rel="nofollow"] {
   color: #90EE90;
 }
 
-h1 {
-  font-size: 32px;
-}
-
 h2 {
-  font-size: 28px;
   font-style: normal;
   font-weight: bold;
   color: hsl(var(--hsl-l1));
   margin: 10px 0 0 0;
-}
-
-p {
-  font-size: 20px;
 }
 
 blockquote {
@@ -92,12 +79,20 @@ blockquote::before {
   background-color: hsl(var(--hsl-c2));
 }
 
-img {
+img, svg {
   max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+img {
+  display: inline-block;
 }
 
-audio {
-  max-width: 100%;
+audio,
+iframe {
+  display: none;
 }
 
 /* ---- bbcode ---- */
@@ -110,13 +105,12 @@ audio {
 }
 
 .bbcode code {
-  border-radius: 4px;
+  border-radius: 6px;
   background-color: hsl(var(--hsl-b5));
   padding: 1px 4px;
 }
 
 .bbcode h2 {
-  font-size: 28px;
   font-style: normal;
   font-weight: bold;
   color: hsl(var(--hsl-l1));
@@ -141,7 +135,7 @@ audio {
 }
 
 .bbcode pre {
-  border-radius: 4px;
+  border-radius: 6px;
   white-space: pre-wrap;
   background-color: hsl(var(--hsl-b5));
   color: inherit;
@@ -152,18 +146,19 @@ audio {
 
 .bbcode .spoiler {
   background-color: #000 !important;
-  color: #000 !important;
+  color: #fff !important;
 }
 
 .bbcode .well {
   min-height: 20px;
   padding: 19px;
-  margin: 0 0 20px 0;
+  margin-bottom: 20px;
   background: hsl(var(--hsl-b5));
-  border: 2px solid hsl(var(--hsl-b1));
+  border: 1px solid hsl(var(--hsl-b1));
   border-radius: 4px;
-  box-shadow: inset 0 1px 1px rgba(0,0,0,0.05);
-  text-align: left;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, .05);
+  color: inherit;
+  text-align: center;
 }
 
 .bbcode .well blockquote {
@@ -180,8 +175,30 @@ audio {
   border-radius: 3px;
 }
 
+.bbcode__normal-line-height {
+  line-height: inherit;
+}
+
+.bbcode__list-title {
+  list-style: none;
+  margin: 0;
+}
+
 .bbcode__align-centre {
   text-align: center;
+}
+
+.bbcode__align-centre .bbcode__image-link {
+  display: inline-block;
+  font-size: 0;
+  line-height: 0;
+  vertical-align: top;
+}
+
+.bbcode__align-centre .bbcode__image-link > img,
+.bbcode__align-centre .bbcode__image-link > svg {
+  display: block;
+  vertical-align: top;
 }
 
 .bbcode__align-left {
@@ -207,10 +224,8 @@ audio {
   font-weight: bold;
   width: max-content;
   max-width: 100%;
-  gap: 4px;
   color: #66ccff;
   text-decoration: none;
-  padding: 4px 0;
 }
 
 .bbcode-spoilerbox__link::before {
@@ -219,10 +234,6 @@ audio {
   margin-right: 5px;
   font-size: 1.2em;
   line-height: 1;
-}
-
-.bbcode-spoilerbox__link:hover {
-  color: hsl(var(--hsl-l1));
 }
 
 .bbcode-spoilerbox__body {
@@ -248,8 +259,7 @@ audio {
 
 .imagemap__link {
   position: absolute;
-  border: 2px solid rgba(255,255,255,0.7);
-  border-radius: 2px;
+  border: none;
 }
 
 /* ---- js-dependent (visible by default since no JS) ---- */

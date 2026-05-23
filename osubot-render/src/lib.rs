@@ -33,6 +33,8 @@ fn render_semaphore() -> &'static Semaphore {
 pub async fn render_profile_card(
     html: &str,
     profile_hue: u16,
+    avatar_url: &str,
+    username: &str,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
@@ -41,7 +43,8 @@ pub async fn render_profile_card(
         .acquire()
         .await
         .expect("render semaphore never closed");
-    let wrapped_html = style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue);
+    let wrapped_html =
+        style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue, avatar_url, username);
     let font_ctx = get_font_context();
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_flag = cancel.clone();
@@ -97,7 +100,7 @@ mod tests {
     #[ignore = "requires display server for font rendering; run with --ignored"]
     async fn test_render_profile_card_smoke() {
         let html = r#"<div class="bbcode">Hello <strong>World</strong></div>"#;
-        let result = render_profile_card(html, 333, PROFILE_VIEWPORT_WIDTH, 1200).await;
+        let result = render_profile_card(html, 333, "", "test", PROFILE_VIEWPORT_WIDTH, 1200).await;
         assert!(result.is_ok());
         let jpeg = result.unwrap();
         assert!(!jpeg.is_empty());

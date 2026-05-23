@@ -668,6 +668,8 @@ async fn handle_command(
                     render_profile_card(
                         &profile.html,
                         profile.profile_hue,
+                        &profile.avatar_url,
+                        &profile.username,
                         PROFILE_VIEWPORT_WIDTH,
                         1200,
                     )
