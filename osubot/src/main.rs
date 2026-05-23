@@ -5,6 +5,7 @@ use config::Config;
 use futures_util::{SinkExt, StreamExt};
 use osubot_core::{
     api::{self, ApiError},
+    dedup::RequestDedup,
     highlight::{format_highlight, get_highlight, HighlightError},
     parse_command,
     response::format_stats_with_change,
@@ -20,7 +21,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -159,6 +160,11 @@ struct BotContext {
     rate_limiter: Arc<RateLimiter>,
     write: Arc<Mutex<WriteSink>>,
     onebot_api: Arc<OneBotApi>,
+}
+
+fn profile_dedup() -> &'static RequestDedup<i64, Vec<u8>, String> {
+    static DEDUP: OnceLock<RequestDedup<i64, Vec<u8>, String>> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
 }
 
 /// Handle command and send response
@@ -628,63 +634,61 @@ async fn handle_command(
 
             info!(user_id = target_user_id, qq = ?qq, "ProfileCard command");
 
-            match api::fetch_user_profile(
-                &ctx.rate_limiter,
-                &ctx.oauth,
-                target_user_id,
-                GameMode::Osu,
-            )
-            .await
-            {
-                Ok(profile) => {
+            let render_result = profile_dedup()
+                .run_or_wait(target_user_id, || async {
+                    let profile = api::fetch_user_profile(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        target_user_id,
+                        GameMode::Osu,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => "未找到该用户".to_string(),
+                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                        _ => "查询失败，请稍后重试".to_string(),
+                    })?;
                     info!(
                         user_id = target_user_id,
                         html_len = profile.html.len(),
                         hue = profile.profile_hue,
                         "ProfileCard HTML fetched"
                     );
-                    match render_profile_card(
+                    render_profile_card(
                         &profile.html,
                         profile.profile_hue,
                         PROFILE_VIEWPORT_WIDTH,
                         1200,
                     )
                     .await
-                    {
-                        Ok(jpeg_bytes) => {
-                            info!(
-                                user_id = target_user_id,
-                                jpeg_len = jpeg_bytes.len(),
-                                "ProfileCard rendered"
-                            );
-                            let write = ctx.write.clone();
-                            let group_id = msg.group_id;
-                            let resp_tx = resp_tx.clone();
-                            tokio::spawn(async move {
-                                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
-                                    .await
-                                    .is_err()
-                                {
-                                    let _ = resp_tx.send("图片发送失败".to_string()).await;
-                                }
-                            });
+                    .map_err(|_| "渲染失败，请稍后重试".to_string())
+                })
+                .await;
+
+            match render_result {
+                Ok(jpeg_bytes) => {
+                    info!(
+                        user_id = target_user_id,
+                        jpeg_len = jpeg_bytes.len(),
+                        "ProfileCard rendered"
+                    );
+                    let write = ctx.write.clone();
+                    let group_id = msg.group_id;
+                    let resp_tx = resp_tx.clone();
+                    tokio::spawn(async move {
+                        if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                            .await
+                            .is_err()
+                        {
+                            let _ = resp_tx.send("图片发送失败".to_string()).await;
                         }
-                        Err(e) => {
-                            error!(user_id = target_user_id, error = ?e, "ProfileCard render failed");
-                            let _ = resp_tx.send("渲染失败，请稍后重试".to_string()).await;
-                        }
-                    }
+                    });
                 }
-                Err(e) => {
-                    warn!(user_id = target_user_id, error = ?e, "ProfileCard fetch failed");
-                    let err_msg = match e {
-                        ApiError::NotFound => "未找到该用户".to_string(),
-                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
-                        _ => "查询失败，请稍后重试".to_string(),
-                    };
-                    let _ = resp_tx.send(err_msg).await;
+                Err(msg) => {
+                    warn!(user_id = target_user_id, msg = %msg, "ProfileCard failed");
+                    let _ = resp_tx.send(msg).await;
                 }
             }
         }

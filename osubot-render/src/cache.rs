@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -20,9 +20,9 @@ fn http_client() -> &'static reqwest::Client {
 // osu! profile images come from a bounded set of CDN URLs (flags, badges, avatars).
 // The number of unique URLs encountered in practice is limited, so this map's
 // growth rate is negligible over the bot's lifetime.
-fn fetch_locks() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
-    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+fn fetch_locks() -> &'static RwLock<HashMap<String, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<RwLock<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn cache_dir() -> PathBuf {
@@ -162,8 +162,17 @@ async fn fetch_and_cache(
     }
 
     let url_lock = {
-        let mut locks = fetch_locks().lock().await;
-        locks.entry(url.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+        let read = fetch_locks().read().await;
+        if let Some(lock) = read.get(url).cloned() {
+            lock
+        } else {
+            drop(read);
+            let mut locks = fetch_locks().write().await;
+            locks
+                .entry(url.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        }
     };
     let _guard = url_lock.lock().await;
 
@@ -360,7 +369,9 @@ pub fn cleanup_expired(retention_days: u64) {
 
     tracing::info!(
         "cache cleanup: {} deleted, {} errors (retention: {} days)",
-        deleted, errors, retention_days
+        deleted,
+        errors,
+        retention_days
     );
 }
 

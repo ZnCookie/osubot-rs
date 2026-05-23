@@ -1,5 +1,6 @@
 pub mod api;
 pub mod commands;
+pub mod dedup;
 pub mod highlight;
 pub mod irc;
 pub mod rate_limiter;
