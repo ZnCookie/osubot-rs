@@ -1,5 +1,5 @@
 [target.x86_64-pc-windows-gnu]
 environment = { PYTHON3 = "/usr/bin/python3" }
 pre-build = [
-    "sh -c 'set -e; apt-get update; apt-get install -y python3.11; ln -sf /usr/bin/python3.11 /usr/bin/python3; ln -sf /usr/bin/python3.11 /usr/bin/python'",
+    "sh -c 'set -e; python3 --version'",
 ]
