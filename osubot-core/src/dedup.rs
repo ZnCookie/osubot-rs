@@ -285,25 +285,25 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_creator_panic_waiters_recover() {
         let dedup = Arc::new(RequestDedup::<u32, String, String>::new());
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
 
         let dedup_clone = dedup.clone();
-        let barrier_clone = barrier.clone();
-        let _handle = tokio::spawn(async move {
-            barrier_clone.wait().await;
+        let creator_handle = tokio::spawn(async move {
             dedup_clone
                 .run_or_wait(1, || async {
+                    // Keep the creator alive so the waiter has time to join
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     panic!("intentional test panic");
                 })
                 .await
         });
 
-        barrier.wait().await;
+        // Wait for creator to claim the entry
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let waiter_result = dedup
             .run_or_wait(1, || async { Ok("fallback".to_string()) })
             .await;
 
-        assert!(waiter_result.is_err());
+        assert!(creator_handle.await.unwrap().unwrap_err().contains("panic"));
         assert!(waiter_result.unwrap_err().contains("panic"));
     }
 
