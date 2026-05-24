@@ -289,7 +289,7 @@ mod tests {
 
         let dedup_clone = dedup.clone();
         let barrier_clone = barrier.clone();
-        let _handle = tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
             dedup_clone
                 .run_or_wait(1, || async {
@@ -302,6 +302,9 @@ mod tests {
         let waiter_result = dedup
             .run_or_wait(1, || async { Ok("fallback".to_string()) })
             .await;
+
+        // Ensure the first handle completes before checking the result
+        handle.await.unwrap();
 
         assert!(waiter_result.is_err());
         assert!(waiter_result.unwrap_err().contains("panic"));
