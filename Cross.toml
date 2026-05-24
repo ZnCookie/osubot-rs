@@ -1,7 +1,5 @@
 [target.x86_64-pc-windows-gnu]
-environment = { PYTHON3 = "/usr/bin/python3" }
+environment = { PYTHON3 = "python3" }
 pre-build = [
-    "export DEBIAN_FRONTEND=noninteractive",
-    "apt-get update",
-    "apt-get install -y python3",
+    "apt-get update && apt-get install -y python3.11 && ln -sf /usr/bin/python3.11 /usr/bin/python3 && ln -sf /usr/bin/python3.11 /usr/bin/python",
 ]
