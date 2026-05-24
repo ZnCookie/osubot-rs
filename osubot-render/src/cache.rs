@@ -180,7 +180,8 @@ impl Drop for FetchLockGuard {
     fn drop(&mut self) {
         let _ = fetch_locks()
             .lock()
-            .map(|mut locks| locks.remove(&self.url));
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.url);
     }
 }
 
