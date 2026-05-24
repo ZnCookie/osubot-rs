@@ -1,5 +1,2 @@
 [target.x86_64-pc-windows-gnu]
-environment = { PYTHON3 = "/usr/bin/python3" }
-pre-build = [
-    "sh -c 'set -e; python3 --version'",
-]
+image = "ghcr.io/cross-rs/cross:x86_64-pc-windows-gnu-latest"
