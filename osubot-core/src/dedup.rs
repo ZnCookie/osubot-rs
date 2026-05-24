@@ -37,17 +37,11 @@ where
 {
     fn drop(&mut self) {
         self.entry.done.close();
-        let result = match self.entry.result.lock() {
-            Ok(guard) => guard.is_some(),
-            Err(poisoned) => poisoned.into_inner().is_some(),
+        let mut map = match self.dedup.entries.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         };
-        if !result {
-            let mut map = match self.dedup.entries.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            map.remove(&self.key);
-        }
+        map.remove(&self.key);
     }
 }
 
@@ -104,11 +98,6 @@ where
                         *guard = Some(stored);
                     }
                     entry.done.close();
-                    let mut map = match self.entries.lock() {
-                        Ok(guard) => guard,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    map.remove(&key);
                     result
                 }
                 Err(join_err) => {
@@ -118,11 +107,6 @@ where
                         *guard = Some(StoredResult::Panicked);
                     }
                     entry.done.close();
-                    let mut map = match self.entries.lock() {
-                        Ok(guard) => guard,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    map.remove(&key);
                     Err(E::from("creator panicked"))
                 }
             };
