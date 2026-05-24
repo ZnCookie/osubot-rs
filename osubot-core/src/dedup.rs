@@ -324,6 +324,8 @@ mod tests {
         });
 
         barrier.wait().await;
+        // Yield to allow the spawned task to run first and become the creator
+        tokio::task::yield_now().await;
         let waiter_result = dedup
             .run_or_wait(1, || async { Ok("fallback".to_string()) })
             .await;

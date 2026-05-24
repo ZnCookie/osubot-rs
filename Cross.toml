@@ -1,2 +1,2 @@
 [target.x86_64-pc-windows-gnu]
-image = "ghcr.io/cross-rs/cross:x86_64-pc-windows-gnu-latest"
+image = "ghcr.io/cross-rs/cross:latest"
