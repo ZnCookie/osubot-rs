@@ -162,8 +162,10 @@ struct BotContext {
     onebot_api: Arc<OneBotApi>,
 }
 
-fn profile_dedup() -> &'static RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String> {
-    static DEDUP: OnceLock<RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String>> = OnceLock::new();
+type ProfileDedup = RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String>;
+
+fn profile_dedup() -> &'static ProfileDedup {
+    static DEDUP: OnceLock<ProfileDedup> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 

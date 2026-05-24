@@ -61,7 +61,18 @@ pub async fn render_profile_card(
 
     let (mut pixels, mut w, mut h) = match render_result {
         Ok(Ok(result)) => result?,
-        Ok(Err(e)) => return Err(RenderError::Render(e.to_string())),
+        Ok(Err(e)) => {
+            if e.is_panic() {
+                let panic_payload = e.into_panic();
+                let panic_msg = panic_payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                return Err(RenderError::Render(format!("render panicked: {panic_msg}")));
+            }
+            return Err(RenderError::Render(e.to_string()));
+        }
         Err(_) => {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             return Err(RenderError::Render("render timed out after 60s".into()));

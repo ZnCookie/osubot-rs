@@ -21,10 +21,11 @@ pub fn wrap_osu_profile_html(
         avatar_url, username
     );
     let css = PROFILE_CSS
-        .replace("{{PROFILE_HUE}}", &profile_hue.to_string())
-        .replace(
+        .replacen("{{PROFILE_HUE}}", &profile_hue.to_string(), 1)
+        .replacen(
             "{{VIEWPORT_WIDTH}}",
             &crate::PROFILE_VIEWPORT_WIDTH.to_string(),
+            2,
         );
     format!(
         r#"<!DOCTYPE html>

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, Semaphore};
 
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_CONCURRENT_FETCHES: usize = 8;
@@ -35,9 +35,9 @@ fn http_client() -> &'static reqwest::Client {
 // Per-URL mutex to prevent thundering-herd cache writes.
 // The lock is removed from the map immediately after the fetch completes,
 // so the map only holds entries for URLs currently being fetched.
-fn fetch_locks() -> &'static RwLock<HashMap<String, Arc<Mutex<()>>>> {
-    static LOCKS: OnceLock<RwLock<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-    LOCKS.get_or_init(|| RwLock::new(HashMap::new()))
+fn fetch_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 static FETCH_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
@@ -83,11 +83,10 @@ fn detect_mime_and_ext(url: &str, bytes: &[u8]) -> (&'static str, &'static str) 
         ("image/gif", ".gif")
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         ("image/webp", ".webp")
-    } else if bytes.len() >= 4 && bytes.starts_with(b"<svg") {
-        ("image/svg+xml", ".svg")
-    } else if bytes
-        .strip_prefix(b"\xEF\xBB\xBF")
-        .is_some_and(|b| b.starts_with(b"<svg"))
+    } else if (bytes.len() >= 4 && bytes.starts_with(b"<svg"))
+        || bytes
+            .strip_prefix(b"\xEF\xBB\xBF")
+            .is_some_and(|b| b.starts_with(b"<svg"))
     {
         ("image/svg+xml", ".svg")
     } else if bytes.starts_with(b"<?xml") {
@@ -179,11 +178,9 @@ struct FetchLockGuard {
 
 impl Drop for FetchLockGuard {
     fn drop(&mut self) {
-        let url = self.url.clone();
-        tokio::spawn(async move {
-            let mut locks = fetch_locks().write().await;
-            locks.remove(&url);
-        });
+        let _ = fetch_locks()
+            .lock()
+            .map(|mut locks| locks.remove(&self.url));
     }
 }
 
@@ -200,7 +197,7 @@ async fn fetch_and_cache(
     }
 
     let url_lock = {
-        let mut locks = fetch_locks().write().await;
+        let mut locks = fetch_locks().lock().unwrap_or_else(|e| e.into_inner());
         locks
             .entry(url.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -648,5 +645,31 @@ mod tests {
         let urls: Vec<&str> = refs.iter().map(|r| r.url.as_str()).collect();
         assert!(urls.contains(&"https://a.ppy.sh/1.png"));
         assert!(urls.contains(&"https://a.ppy.sh/2.jpg"));
+    }
+
+    #[test]
+    fn test_fetch_locks_sync_drop_no_panic() {
+        let mut locks = fetch_locks().lock().unwrap_or_else(|e| e.into_inner());
+        locks.insert("test-url".to_string(), Arc::new(Mutex::new(())));
+        drop(locks);
+        let guard = FetchLockGuard {
+            url: "test-url".to_string(),
+        };
+        drop(guard);
+        let locks = fetch_locks().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!locks.contains_key("test-url"));
+    }
+
+    #[test]
+    fn test_fetch_locks_poisoned_mutex_no_panic() {
+        let poisoned = std::thread::spawn(|| {
+            let _lock = fetch_locks().lock().unwrap();
+            panic!("intentional poison");
+        });
+        assert!(poisoned.join().is_err());
+        let guard = FetchLockGuard {
+            url: "poison-url".to_string(),
+        };
+        drop(guard);
     }
 }
