@@ -1,2 +1,12 @@
 [target.x86_64-pc-windows-gnu]
-pre-build = ["apt-get update && apt-get install -y python3"]
+environment = { PYTHON3 = "/usr/bin/python3a" }
+pre-build = [
+    "export DEBIAN_FRONTEND=noninteractive",
+    "apt-get update",
+    "apt-get install -y software-properties-common",
+    "add-apt-repository -y ppa:deadsnakes/ppa",
+    "apt-get update",
+    "apt-get install -y python3.10",
+    "ln -sf /usr/bin/python3.10 /usr/bin/python3",
+    "ln -sf /usr/bin/python3.10 /usr/bin/python",
+]

@@ -37,11 +37,17 @@ where
 {
     fn drop(&mut self) {
         self.entry.done.close();
-        let mut map = match self.dedup.entries.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+        let result = match self.entry.result.lock() {
+            Ok(guard) => guard.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
         };
-        map.remove(&self.key);
+        if !result {
+            let mut map = match self.dedup.entries.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            map.remove(&self.key);
+        }
     }
 }
 
@@ -98,6 +104,11 @@ where
                         *guard = Some(stored);
                     }
                     entry.done.close();
+                    let mut map = match self.entries.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    map.remove(&key);
                     result
                 }
                 Err(join_err) => {
@@ -107,6 +118,11 @@ where
                         *guard = Some(StoredResult::Panicked);
                     }
                     entry.done.close();
+                    let mut map = match self.entries.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    map.remove(&key);
                     Err(E::from("creator panicked"))
                 }
             };
@@ -279,6 +295,31 @@ mod tests {
             })
             .await;
         assert_eq!(result2.unwrap(), 99);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_retry_after_error() {
+        let dedup: RequestDedup<u32, u32, String> = RequestDedup::new();
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let call_count_clone = call_count.clone();
+        let result1 = dedup
+            .run_or_wait(1, || {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                async { Err("first fail".to_string()) }
+            })
+            .await;
+        assert_eq!(result1.unwrap_err(), "first fail");
+
+        let call_count_clone = call_count.clone();
+        let result2 = dedup
+            .run_or_wait(1, || {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                async { Ok(42) }
+            })
+            .await;
+        assert_eq!(result2.unwrap(), 42);
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
