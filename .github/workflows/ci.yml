@@ -150,6 +150,8 @@ jobs:
           msystem: mingw64
           update: true
           install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
             mingw-w64-x86_64-librsvg
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-glib2
