@@ -18,3 +18,7 @@ base64 = { version = "0.22", features = ["std"] }
 tracing = "0.1"
 futures-util = "0.3"
 dirs = "6"
+librsvg = { version = "2", default-features = false }
+cairo-rs = "0.22"
+gio = "0.22"
+glib = "0.22"

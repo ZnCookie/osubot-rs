@@ -20,6 +20,8 @@ pub enum CacheError {
     RetriesExhausted,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("SVG rasterization failed: {0}")]
+    SvgRasterizationFailed(String),
 }
 
 fn http_client() -> &'static reqwest::Client {
@@ -71,6 +73,12 @@ fn dirs_proj() -> Option<PathBuf> {
 fn sha256_hex(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
     format!("{:x}", hasher.finalize())
 }
 
@@ -126,6 +134,106 @@ fn detect_mime_and_ext_fallback(url: &str) -> (&'static str, &'static str) {
         Some(".svg") => ("image/svg+xml", ".svg"),
         _ => ("application/octet-stream", ".bin"),
     }
+}
+
+/// Rasterize SVG bytes to PNG using librsvg.
+/// Returns PNG-encoded bytes on success.
+fn rasterize_svg_to_png(svg_bytes: &[u8]) -> Result<Vec<u8>, CacheError> {
+    // Load SVG using rsvg::Loader with a MemoryInputStream
+    let memory_stream =
+        gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(svg_bytes.to_vec()));
+    let handle = rsvg::Loader::new()
+        .read_stream::<gio::MemoryInputStream, gio::File, gio::Cancellable>(
+            &memory_stream,
+            None,
+            None,
+        )
+        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
+
+    // Get intrinsic dimensions
+    let dims = rsvg::CairoRenderer::new(&handle)
+        .intrinsic_size_in_pixels()
+        .unwrap_or((100.0, 100.0));
+    let width = dims.0.ceil() as i32;
+    let height = dims.1.ceil() as i32;
+
+    // Create Cairo surface
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
+        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
+    let cr = cairo::Context::new(&surface)
+        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
+
+    // Render SVG
+    rsvg::CairoRenderer::new(&handle)
+        .render_document(
+            &cr,
+            &cairo::Rectangle::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        )
+        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
+
+    // Encode as PNG
+    let mut png_bytes = Vec::new();
+    surface
+        .write_to_png(&mut png_bytes)
+        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
+    Ok(png_bytes)
+}
+
+/// Rasterize SVG to PNG with caching.
+/// Cache key is SHA256 of SVG bytes. Same SVG always maps to same PNG.
+/// Uses per-URL locks + double-check to avoid concurrent rasterization of the same SVG.
+/// Writes via temp file + atomic rename to avoid partial cache files.
+async fn rasterize_svg_to_png_cached(svg_bytes: &[u8], url: &str) -> Result<Vec<u8>, CacheError> {
+    let cache_key = sha256_hex_bytes(svg_bytes);
+    let cache_file = cache_dir().join(format!("{}.png", cache_key));
+
+    // Fast path: check cache without lock
+    if let Ok(cached) = tokio::fs::read(&cache_file).await {
+        return Ok(cached);
+    }
+
+    // Slow path: acquire per-URL lock
+    let url_lock = {
+        let mut locks = fetch_locks().lock().unwrap_or_else(|e| e.into_inner());
+        locks
+            .entry(url.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    let _fetch_guard = FetchLockGuard {
+        url: url.to_string(),
+    };
+    let _guard = url_lock.lock().await;
+
+    // Double-check
+    if let Ok(cached) = tokio::fs::read(&cache_file).await {
+        return Ok(cached);
+    }
+
+    // Rasterize in blocking task
+    let svg_bytes = svg_bytes.to_vec();
+    let png_bytes = tokio::task::spawn_blocking(move || rasterize_svg_to_png(&svg_bytes))
+        .await
+        .map_err(|e| {
+            CacheError::SvgRasterizationFailed(format!("spawn_blocking failed: {}", e))
+        })??;
+
+    // Write to temp file
+    let temp_file = cache_dir().join(format!("{}.tmp", cache_key));
+    tokio::fs::write(&temp_file, &png_bytes)
+        .await
+        .map_err(|e| {
+            CacheError::SvgRasterizationFailed(format!("failed to write temp file: {}", e))
+        })?;
+
+    // Atomic rename
+    tokio::fs::rename(&temp_file, &cache_file)
+        .await
+        .map_err(|e| {
+            CacheError::SvgRasterizationFailed(format!("failed to rename temp file: {}", e))
+        })?;
+
+    Ok(png_bytes)
 }
 
 async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, CacheError> {
@@ -360,7 +468,18 @@ pub async fn inline_external_images(html: &str) -> String {
     while let Some(res) = set.join_next().await {
         match res {
             Ok((url, Ok((bytes, mime, _hash)))) => {
-                let data_uri = build_data_uri(&bytes, &mime);
+                let (final_bytes, final_mime) = if mime == "image/svg+xml" {
+                    match rasterize_svg_to_png_cached(&bytes, &url).await {
+                        Ok(png_bytes) => (png_bytes, "image/png".to_string()),
+                        Err(e) => {
+                            tracing::warn!(url = %url, error = %e, "SVG rasterization failed, falling back to original SVG");
+                            (bytes, mime)
+                        }
+                    }
+                } else {
+                    (bytes, mime)
+                };
+                let data_uri = build_data_uri(&final_bytes, &final_mime);
                 url_to_data.insert(url, data_uri);
             }
             Ok((url, Err(e))) => {
@@ -462,6 +581,24 @@ mod tests {
         let b = sha256_hex("https://a.ppy.sh/1234");
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
+    }
+
+    #[test]
+    fn test_sha256_hex_bytes_deterministic() {
+        let bytes = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let hash1 = sha256_hex_bytes(bytes);
+        let hash2 = sha256_hex_bytes(bytes);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64);
+    }
+
+    #[test]
+    fn test_sha256_hex_bytes_different_for_different_content() {
+        let bytes1 = b"<svg></svg>";
+        let bytes2 = b"<svg viewBox=\"0 0 100 100\"></svg>";
+        let hash1 = sha256_hex_bytes(bytes1);
+        let hash2 = sha256_hex_bytes(bytes2);
+        assert_ne!(hash1, hash2);
     }
 
     #[test]
@@ -670,5 +807,25 @@ mod tests {
             url: "poison-url".to_string(),
         };
         drop(guard);
+    }
+
+    #[test]
+    fn test_rasterize_svg_to_png_valid_svg() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>"#;
+        let result = rasterize_svg_to_png(svg);
+        assert!(result.is_ok());
+        let png = result.unwrap();
+        assert!(!png.is_empty());
+        // PNG magic bytes
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn test_rasterize_svg_to_png_malformed_svg() {
+        let svg = b"not an svg at all";
+        let result = rasterize_svg_to_png(svg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, CacheError::SvgRasterizationFailed(_)));
     }
 }
