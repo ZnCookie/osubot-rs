@@ -2,8 +2,8 @@
 
 :root {
   --base-hue: {{PROFILE_HUE}};
-  --font-content: 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Sans', 'Source Han Sans CN', 'WenQuanYi Micro Hei', sans-serif;
-  --font-default: 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Sans', 'Source Han Sans CN', 'WenQuanYi Micro Hei', sans-serif;
+  --font-content: 'Noto Sans', 'Noto Color Emoji', 'Source Han Sans CN', 'WenQuanYi Micro Hei', sans-serif;
+  --font-default: 'Noto Sans', 'Noto Color Emoji', 'Source Han Sans CN', 'WenQuanYi Micro Hei', sans-serif;
 }
 
 body {
