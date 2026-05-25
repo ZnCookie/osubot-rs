@@ -93,5 +93,93 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         return Some(Command::Highlight { mode });
     }
 
+    // 个人主页卡片: !profile [用户名] or !profile + @mention
+    if let Some(rest) = msg.strip_prefix("!profile") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            // !profile alone — could be self or mention
+            if let Some(qq) = mentioned_user_id {
+                return Some(Command::ProfileCard {
+                    username: None,
+                    qq: Some(qq),
+                });
+            }
+            return Some(Command::ProfileCard {
+                username: None,
+                qq: None,
+            });
+        }
+        // !profile <username>
+        return Some(Command::ProfileCard {
+            username: Some(rest.to_string()),
+            qq: None,
+        });
+    }
+
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_self() {
+        let cmd = parse_command("!profile", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_mention() {
+        let cmd = parse_command("!profile", Some(123456)).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: Some(123456),
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_with_username() {
+        let cmd = parse_command("!profile ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_username_with_mention() {
+        let cmd = parse_command("!profile ZnCookie", Some(123456)).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_with_spaces_around_username() {
+        let cmd = parse_command("!profile  ZnCookie  ", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+            }
+        );
+    }
 }

@@ -1,0 +1,25 @@
+[package]
+name = "osubot-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blitz = "0.2"
+anyrender = "0.6"
+anyrender_vello_cpu = "0.8"
+image = "0.25"
+peniko = "0.5"
+parley = { version = "0.6", features = ["system"] }
+vello_cpu = { version = "0.0.4", default-features = false, features = ["std", "text", "png"] }
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
+sha2 = "0.10"
+base64 = { version = "0.22", features = ["std"] }
+tracing = "0.1"
+futures-util = "0.3"
+dirs = "6"
+librsvg = { version = "2", default-features = false }
+cairo-rs = "0.22"
+gio = "0.22"
+glib = "0.22"

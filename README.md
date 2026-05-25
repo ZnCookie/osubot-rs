@@ -9,6 +9,7 @@
 - 绑定 osu! 账号支持 IRC 鉴权，防止冒名绑定
 - 后台定时更新，活跃玩家更新更频繁
 - 今日高光：显示群内用户当日最飞升、最肝、最长游戏时间
+- 个人主页卡片：生成 osu! 个人主页渲染图片（!profile）
 
 ## 命令
 
@@ -35,6 +36,11 @@
 - `今日高光` — 查看当日最飞升、最肝、最长游戏时间（默认 osu!std）
 - `今日高光,<模式>` — 查看指定模式的当日高光，模式为 0~3
 
+### 个人主页卡片
+- `!profile` — 生成自己的 osu! 个人主页卡片（图片）
+- `!profile <用户名>` — 生成指定用户的个人主页卡片
+- `!profile` + `@<QQ用户>` — 生成被 @ 用户的个人主页卡片
+
 ## 配置
 
 ```bash
@@ -55,6 +61,42 @@ password = "IRC 密码"  # 在 https://osu.ppy.sh/p/irc 获取
 ```
 IRC 断线会自动重连（5 秒间隔，无限重试）。
 
+## 用户安装要求
+
+发行包自带所有 C 运行时库（librsvg、cairo、glib2、pango），无需手动安装。唯一需要的是字体：
+
+### 字体
+
+`!profile` 使用系统字体渲染个人主页，CSS 字体栈为：
+```
+'Noto Sans', 'Noto Color Emoji', 'Source Han Sans CN', 'WenQuanYi Micro Hei', sans-serif
+```
+
+如需使用其他字体，修改 `osubot-render/styles/profile.css` 中的 `--font-content` 和 `--font-default` 变量。
+
+**Linux (Arch):**
+```bash
+sudo pacman -S noto-fonts noto-fonts-cjk noto-fonts-emoji adobe-source-han-sans-cn-fonts
+```
+
+**Windows:**
+- 下载安装 [Noto Sans](https://fonts.google.com/noto/specimen/Noto+Sans)、[Noto Color Emoji](https://fonts.google.com/noto/specimen/Noto+Color+Emoji)、[Source Han Sans CN](https://github.com/adobe-fonts/source-han-sans/releases)
+- 或将字体文件放到 `C:\Windows\Fonts\`
+
+### 开发者编译依赖
+
+如需从源码编译，需要安装以下开发包：
+
+**Linux (Arch):**
+```bash
+sudo pacman -S librsvg cairo glib2 pango pkgconf
+```
+
+**Windows (MSYS2):**
+```bash
+pacman -S mingw-w64-x86_64-librsvg mingw-w64-x86_64-cairo mingw-w64-x86_64-glib2 mingw-w64-x86_64-pango mingw-w64-x86_64-pkgconf
+```
+
 ## 运行
 
 ```bash
@@ -64,7 +106,7 @@ cargo run --release
 ## 技术细节
 
 - **语言**: Rust (stable, edition 2021)
-- **异步运行时**: Tokio 单线程事件循环
+- **异步运行时**: Tokio 多线程事件循环
 - **存储**: SQLite (rusqlite)，存储用户绑定、数据快照和游玩记录
 - **WebSocket**: tokio-tungstenite 连接 OneBot 11 正向 WebSocket
 - **API**: osu! API v2，OAuth client credentials 认证
@@ -88,6 +130,16 @@ osubot-rs/
 │       ├── storage.rs  # SQLite 存储
 │       ├── irc.rs      # IRC 连接与消息监听
 │       └── types.rs    # 数据类型定义
+├── osubot-render/      # 个人主页渲染
+│   ├── src/
+│   │   ├── lib.rs      # 渲染入口
+│   │   ├── render.rs   # HTML → 位图渲染 (Blitz + Vello CPU)
+│   │   ├── style.rs    # CSS 注入
+│   │   ├── cache.rs    # SVG/图片缓存
+│   │   ├── encode.rs   # JPEG 编码
+│   │   └── error.rs    # 错误类型
+│   └── styles/
+│       └── profile.css # 个人主页样式（含字体配置）
 └── osubot.example.toml # 配置模板
 ```
 

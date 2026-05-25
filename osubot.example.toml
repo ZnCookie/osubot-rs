@@ -20,6 +20,7 @@ path = "osubot.db"
 # user_not_exists_interval_hours = 24 # 用户不存在
 # group_trigger_cooldown_hours = 1
 # retention_days = 180
+# cache_retention_days = 7
 
 # [irc]
 # IRC 鉴权绑定（需在 https://osu.ppy.sh/p/irc 获取密码）

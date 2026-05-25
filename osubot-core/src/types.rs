@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameMode {
     Osu = 0,
     Taiko = 1,
@@ -55,13 +55,28 @@ pub struct UserStats {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    QuerySelf { mode: GameMode },
-    QueryUser { username: String, mode: GameMode },
-    QueryMentionedUser { qq: i64, mode: GameMode },
-    Bind { username: String },
+    QuerySelf {
+        mode: GameMode,
+    },
+    QueryUser {
+        username: String,
+        mode: GameMode,
+    },
+    QueryMentionedUser {
+        qq: i64,
+        mode: GameMode,
+    },
+    Bind {
+        username: String,
+    },
     Unbind,
-    Help,
-    Highlight { mode: GameMode },
+    Highlight {
+        mode: GameMode,
+    },
+    ProfileCard {
+        username: Option<String>,
+        qq: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone)]

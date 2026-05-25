@@ -736,10 +736,11 @@ impl Storage {
 
     /// Prune records older than retention_days from stats history and play records.
     /// Returns (deleted_stats, deleted_play_records).
-    pub fn prune_old_records(&self, retention_days: i64) -> SqlResult<(u64, u64, u64)> {
+    pub fn prune_old_records(&self, retention_days: u64) -> SqlResult<(u64, u64, u64)> {
         let conn = self.conn.lock().unwrap();
 
-        let cutoff_stats = Utc::now() - chrono::Duration::days(retention_days);
+        let retention_i64 = retention_days as i64;
+        let cutoff_stats = Utc::now() - chrono::Duration::days(retention_i64);
         let cutoff_stats_str = cutoff_stats.to_rfc3339();
 
         let deleted_stats = conn.execute(
@@ -747,7 +748,7 @@ impl Storage {
             params![cutoff_stats_str],
         )? as u64;
 
-        let cutoff_plays_ts = (Utc::now() - chrono::Duration::days(retention_days)).timestamp();
+        let cutoff_plays_ts = (Utc::now() - chrono::Duration::days(retention_i64)).timestamp();
 
         let deleted_plays = conn.execute(
             "DELETE FROM user_play_records WHERE played_at < ?1",

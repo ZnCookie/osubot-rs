@@ -349,3 +349,89 @@ pub async fn get_user_info(
     let user: OsuUserInfo = resp.json().await?;
     Ok(Some(user))
 }
+
+/// osu! API v2 user profile page response
+#[derive(Debug, serde::Deserialize)]
+struct OsuProfileResponse {
+    page: ProfilePage,
+    profile_hue: Option<u16>,
+    username: String,
+    avatar_url: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProfilePage {
+    html: String,
+}
+
+/// Fetched user profile data for rendering
+pub struct UserProfile {
+    pub html: String,
+    pub profile_hue: u16,
+    pub username: String,
+    pub avatar_url: String,
+}
+
+/// Fetch user profile page HTML from osu! API v2 by user ID.
+/// Returns the BBcode HTML fragment and profile hue for CSS theming.
+pub async fn fetch_user_profile(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    user_id: i64,
+    mode: GameMode,
+) -> Result<UserProfile, ApiError> {
+    let mut retry_count = 0;
+    let max_retries = 5;
+    let base_delay = Duration::from_secs(1);
+
+    let url = format!(
+        "https://osu.ppy.sh/api/v2/users/{}/{}?key=id",
+        user_id,
+        mode.api_value()
+    );
+
+    let client = Client::new();
+
+    loop {
+        let access_token = oauth.get_token().await?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
+
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await?;
+
+        if resp.status() == 401 {
+            oauth.invalidate();
+            if retry_count < max_retries {
+                let delay =
+                    Duration::from_secs(base_delay.as_secs() * 2_u64.pow(retry_count as u32));
+                retry_count += 1;
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return Err(ApiError::OAuthError);
+        }
+
+        if resp.status() == 404 {
+            return Err(ApiError::NotFound);
+        }
+
+        if !resp.status().is_success() {
+            return Err(ApiError::InvalidResponse);
+        }
+
+        let data: OsuProfileResponse = resp.json().await?;
+
+        return Ok(UserProfile {
+            html: data.page.html,
+            profile_hue: data.profile_hue.unwrap_or(333),
+            username: data.username,
+            avatar_url: data.avatar_url,
+        });
+    }
+}

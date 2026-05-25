@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-gnu]
+image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:main"
+pre-build = ["apt-get update && apt-get install -y python3 libglib2.0-dev libcairo2-dev libpango1.0-dev librsvg2-dev"]
