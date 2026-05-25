@@ -1,5 +1,4 @@
-/* osu! profile page CSS - extracted from osu-web (AGPLv3)
-   https://github.com/ppy/osu-web */
+/* osu! profile page CSS */
 
 :root {
   --base-hue: {{PROFILE_HUE}};
@@ -31,7 +30,7 @@ body {
   --hsl-b5: var(--base-hue), 10%, 15%;
   --hsl-b6: var(--base-hue), 10%, 10%;
 
-  font-size: 18px;
+  font-size: 45px;
   max-width: {{VIEWPORT_WIDTH}}px;
   margin: 0 auto;
   padding: 20px;
@@ -157,8 +156,9 @@ iframe {
   text-align: center;
 }
 
+/* 新增：让 well 内的引用块边框变成半透明白色，不依赖动态色相 */
 .bbcode .well blockquote {
-  border-color: rgba(255,255,255,0.15);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .bbcode .well-lg {
@@ -184,6 +184,12 @@ iframe {
   text-align: center;
 }
 
+.bbcode__align-centre ul,
+.bbcode__align-centre ol {
+  list-style-position: inside;
+  padding-left: 0;
+}
+
 .bbcode__align-centre .bbcode__image-link {
   display: inline-block;
   font-size: 0;
@@ -203,6 +209,12 @@ iframe {
 
 .bbcode__align-right {
   text-align: right;
+}
+
+.bbcode__align-right ul,
+.bbcode__align-right ol {
+  list-style-position: inside;
+  padding-left: 0;
 }
 
 /* ---- spoilerbox ---- */
@@ -308,9 +320,14 @@ iframe {
   object-fit: contain;
 }
 
+/* 新增：让容器内图片更完整地适配容器尺寸，防止意外拉伸 */
 .proportional-container img,
 .proportional-container svg {
   max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
 
 /* ---- bbcode image and paragraph alignment ---- */
