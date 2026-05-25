@@ -20,6 +20,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev
+
       - name: Setup nightly for udeps
         run: rustup toolchain install nightly
 
@@ -84,6 +87,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev
 
       # If new deps require native libraries, add a Cross.toml at repo root
       - name: Install cross
