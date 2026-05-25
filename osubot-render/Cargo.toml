@@ -10,6 +10,7 @@ anyrender_vello_cpu = "0.8"
 image = "0.25"
 peniko = "0.5"
 parley = { version = "0.6", features = ["system"] }
+vello_cpu = { version = "0.0.4", default-features = false, features = ["std", "text", "png"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "1"
 reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
