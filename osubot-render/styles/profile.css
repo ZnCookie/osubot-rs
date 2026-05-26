@@ -95,7 +95,8 @@ iframe {
 .bbcode {
   font-family: var(--font-content);
   line-height: 1.5;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
   text-align: left;
 }
 
