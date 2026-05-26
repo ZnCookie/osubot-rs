@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1"
 osubot-core = { path = "../osubot-core" }
 osubot-render = { path = "../osubot-render" }
 tokio = { version = "1", features = ["full"] }

@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -130,9 +131,10 @@ impl Default for IrcConfig {
 }
 
 impl Config {
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let config: Config =
+            toml::from_str(&content).map_err(|e| anyhow!("Failed to parse config: {}", e))?;
         Ok(config)
     }
 }

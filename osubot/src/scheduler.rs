@@ -179,22 +179,27 @@ impl Scheduler {
         }
 
         // Always fetch and save recent plays (get_user_recent already takes user_id)
-        let recent_plays =
-            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
-                Ok(plays) => plays,
-                Err(e) => {
-                    error!("Failed to fetch recent plays for user {user_id}: {e:?}");
-                    Vec::new()
-                }
-            };
+        let recent_plays = match api::get_user_recent(
+            &self.rate_limiter,
+            &self.oauth,
+            user_id,
+            mode,
+            true,
+        )
+        .await
+        {
+            Ok(plays) => plays,
+            Err(e) => {
+                error!("Failed to fetch recent plays for user {user_id}: {e:?}");
+                Vec::new()
+            }
+        };
 
         // Convert API response to storage format (Unix timestamps)
         let records: Vec<i64> = recent_plays
             .iter()
             .filter_map(|p| {
-                let ts = DateTime::parse_from_rfc3339(&p.created_at)
-                    .ok()?
-                    .timestamp();
+                let ts = DateTime::parse_from_rfc3339(&p.ended_at).ok()?.timestamp();
                 Some(ts)
             })
             .collect();

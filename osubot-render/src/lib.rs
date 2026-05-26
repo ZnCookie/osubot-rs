@@ -1,8 +1,10 @@
 mod cache;
+pub(crate) use cache::fetch_url_as_data_uri;
 mod encode;
 mod error;
 mod render;
 mod style;
+mod svg_score_card;
 
 use image::imageops;
 use parley::FontContext;
@@ -11,6 +13,7 @@ use tokio::sync::Semaphore;
 
 pub use cache::{cleanup_expired, ensure_cache_dir};
 pub use error::RenderError;
+pub use svg_score_card::ScoreCardData;
 
 pub const PROFILE_VIEWPORT_WIDTH: u32 = 1650;
 
@@ -20,8 +23,6 @@ fn get_font_context() -> &'static FontContext {
     FONT_CTX.get_or_init(FontContext::new)
 }
 
-/// Maximum concurrent render operations. Render is CPU-intensive (font rasterization,
-/// layout, paint), so this limits parallel renders to avoid saturating CPU cores.
 const MAX_CONCURRENT_RENDERS: usize = 1;
 
 static RENDER_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
@@ -48,9 +49,6 @@ pub async fn render_profile_card(
     let font_ctx = get_font_context();
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_flag = cancel.clone();
-    // 60s timeout: profile cards with many badges or large user stats can
-    // take significant time to render, especially under concurrent load.
-    // On timeout, the cancel flag is set so the blocking task exits quickly.
     let render_result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::task::spawn_blocking(move || {
@@ -101,6 +99,29 @@ pub async fn render_profile_card(
     let jpeg = encode::encode_jpeg(pixels, w, h, 80).await?;
 
     Ok(jpeg)
+}
+
+pub async fn render_score_card(data: ScoreCardData) -> Result<Vec<u8>, RenderError> {
+    use svg_score_card::render_score_card_svg;
+
+    let data = data.with_inlined_images().await;
+
+    let _permit = render_semaphore()
+        .acquire()
+        .await
+        .expect("render semaphore never closed");
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || render_score_card_svg(&data)),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(jpeg)) => jpeg.map_err(|e| RenderError::Render(e.to_string())),
+        Ok(Err(e)) => Err(RenderError::Render(e.to_string())),
+        Err(_) => Err(RenderError::Render("render timed out after 60s".into())),
+    }
 }
 
 #[cfg(test)]

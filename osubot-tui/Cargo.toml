@@ -1,0 +1,15 @@
+[package]
+name = "osubot-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+osubot-core = { path = "../osubot-core" }
+osubot-render = { path = "../osubot-render" }
+osubot = { path = "../osubot" }
+tokio = { version = "1", features = ["full"] }
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

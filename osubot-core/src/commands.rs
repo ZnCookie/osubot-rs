@@ -94,7 +94,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
-    if let Some(rest) = msg.strip_prefix("!profile") {
+    if let Some(rest) = msg.strip_prefix("!profile").filter(|r| r.is_empty() || r.starts_with(' ') || r.starts_with(':')) {
         let rest = rest.trim();
         if rest.is_empty() {
             // !profile alone — could be self or mention
@@ -116,7 +116,65 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         });
     }
 
+    // !pr or !re commands: !pr :0, !pr user :1, !re :2, etc.
+    if let Some(rest) = msg.strip_prefix("!pr").filter(|r| r.is_empty() || r.starts_with(' ') || r.starts_with(':'))
+        .or_else(|| msg.strip_prefix("!re").filter(|r| r.is_empty() || r.starts_with(' ') || r.starts_with(':')))
+    {
+        let include_fails = msg.starts_with("!re");
+        let rest = rest.trim();
+
+        // Parse: [username] [:mode]
+        let (username, mode) = parse_score_card_args(rest);
+
+        return Some(Command::ScoreCard {
+            username,
+            mode,
+            include_fails,
+        });
+    }
+
     None
+}
+
+fn parse_score_card_args(rest: &str) -> (Option<String>, GameMode) {
+    if rest.is_empty() {
+        return (None, GameMode::Osu);
+    }
+
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    match parts.len() {
+        1 => {
+            let part = parts[0];
+            if let Some(stripped) = part.strip_prefix(':') {
+                (
+                    None,
+                    GameMode::from_mode_str(stripped).unwrap_or(GameMode::Osu),
+                )
+            } else {
+                (Some(part.to_string()), GameMode::Osu)
+            }
+        }
+        2 => {
+            let (first, second) = (parts[0], parts[1]);
+            if let Some(stripped) = second.strip_prefix(':') {
+                (
+                    Some(first.to_string()),
+                    GameMode::from_mode_str(stripped).unwrap_or(GameMode::Osu),
+                )
+            } else if let Some(stripped) = first.strip_prefix(':') {
+                (
+                    None,
+                    GameMode::from_mode_str(stripped).unwrap_or(GameMode::Osu),
+                )
+            } else {
+                (
+                    Some(first.to_string()),
+                    GameMode::from_mode_str(second).unwrap_or(GameMode::Osu),
+                )
+            }
+        }
+        _ => (None, GameMode::Osu),
+    }
 }
 
 #[cfg(test)]
@@ -179,6 +237,71 @@ mod tests {
             Command::ProfileCard {
                 username: Some("ZnCookie".to_string()),
                 qq: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_self() {
+        let cmd = parse_command("!pr", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreCard {
+                username: None,
+                mode: GameMode::Osu,
+                include_fails: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_with_mode() {
+        let cmd = parse_command("!pr :1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreCard {
+                username: None,
+                mode: GameMode::Taiko,
+                include_fails: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_with_username() {
+        let cmd = parse_command("!pr ZnCookie :0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreCard {
+                username: Some("ZnCookie".to_string()),
+                mode: GameMode::Osu,
+                include_fails: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_re_self() {
+        let cmd = parse_command("!re", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreCard {
+                username: None,
+                mode: GameMode::Osu,
+                include_fails: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_re_with_mode() {
+        let cmd = parse_command("!re :3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreCard {
+                username: None,
+                mode: GameMode::Mania,
+                include_fails: true,
             }
         );
     }

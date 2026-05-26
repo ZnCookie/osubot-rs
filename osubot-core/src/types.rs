@@ -77,6 +77,11 @@ pub enum Command {
         username: Option<String>,
         qq: Option<i64>,
     },
+    ScoreCard {
+        username: Option<String>,
+        mode: GameMode,
+        include_fails: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -114,4 +119,148 @@ pub enum UserActivity {
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub activity: UserActivity,
+}
+
+/// Grade ranks for scores
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grade {
+    X,
+    SS,
+    S,
+    A,
+    B,
+    C,
+    D,
+    F,
+}
+
+impl Grade {
+    pub fn from_rank_str(s: &str) -> Grade {
+        match s {
+            "X" => Grade::X,
+            "SS" => Grade::SS,
+            "S" => Grade::S,
+            "A" => Grade::A,
+            "B" => Grade::B,
+            "C" => Grade::C,
+            "D" => Grade::D,
+            _ => Grade::F,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Grade::X => "X",
+            Grade::SS => "SS",
+            Grade::S => "S",
+            Grade::A => "A",
+            Grade::B => "B",
+            Grade::C => "C",
+            Grade::D => "D",
+            Grade::F => "F",
+        }
+    }
+}
+
+/// Beatmapset cover image URLs
+#[derive(Debug, Clone)]
+pub struct Covers {
+    pub cover: String,
+    pub cover_2x: String,
+    pub card: String,
+    pub card_2x: String,
+    pub list: String,
+    pub list_2x: String,
+    pub slimcover: String,
+    pub slimcover_2x: String,
+}
+
+/// Beatmapset info from osu! API v2
+#[derive(Debug, Clone)]
+pub struct Beatmapset {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub creator: String,
+    pub covers: Covers,
+}
+
+/// Beatmap info from osu! API v2 (nested in score.beatmap)
+#[derive(Debug, Clone)]
+pub struct Beatmap {
+    pub id: i64,
+    pub difficulty_rating: f64,
+    pub version: String,
+    pub cs: f32,
+    pub ar: f32,
+    pub od: f32,
+    pub hp: f32,
+    pub bpm: f32,
+    pub total_length: i32,
+    pub hit_length: i32,
+    pub max_combo: i32,
+    pub circle_count: Option<i32>,
+    pub slider_count: Option<i32>,
+    pub spinner_count: Option<i32>,
+    pub beatmapset: Option<Beatmapset>,
+}
+
+/// Hit statistics per judgment type
+#[derive(Debug, Clone)]
+pub struct LazerStatistics {
+    pub perfect: i32,
+    pub great: i32,
+    pub good: i32,
+    pub ok: i32,
+    pub meh: i32,
+    pub miss: i32,
+    pub large_tick_hit: i32,
+    pub large_tick_miss: i32,
+    pub small_tick_hit: i32,
+    pub small_tick_miss: i32,
+    pub slider_tail_hit: i32,
+    pub large_bonus: i32,
+    pub small_bonus: i32,
+    pub ignore_hit: i32,
+    pub ignore_miss: i32,
+    pub legacy_combo_increase: i32,
+}
+
+/// Score info parsed from API
+#[derive(Debug, Clone)]
+pub struct ScoreInfo {
+    pub score: i64,
+    pub pp: f64,
+    pub accuracy: f64,
+    pub max_combo: i32,
+    pub grade: Grade,
+    pub passed: bool,
+    pub rank: String,
+    pub ended_at: String,
+    pub mods: Vec<String>,
+    pub statistics: LazerStatistics,
+    pub maximum_statistics: Option<LazerStatistics>,
+}
+
+/// Player info from score
+#[derive(Debug, Clone)]
+pub struct PlayerInfo {
+    pub username: String,
+    pub avatar_url: String,
+}
+
+/// Complete score card data for rendering
+#[derive(Debug, Clone)]
+pub struct ScoreCard {
+    pub beatmap: Beatmap,
+    pub player: PlayerInfo,
+    pub score: ScoreInfo,
+}
+
+#[derive(Debug, Clone)]
+pub struct QQMessage {
+    pub group_id: i64,
+    pub user_id: i64,
+    pub message: String,
+    pub mentioned_user_id: Option<i64>,
 }

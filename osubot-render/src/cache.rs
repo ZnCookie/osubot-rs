@@ -434,6 +434,23 @@ fn build_data_uri(bytes: &[u8], mime: &str) -> String {
     format!("data:{};base64,{}", mime, b64)
 }
 
+pub async fn fetch_url_as_data_uri(url: &str) -> Result<String, CacheError> {
+    let client = (*http_client()).clone();
+    let (bytes, mime, _hash) = fetch_and_cache(url, &client).await?;
+    let (final_bytes, final_mime) = if mime == "image/svg+xml" {
+        match rasterize_svg_to_png_cached(&bytes, url).await {
+            Ok(png_bytes) => (png_bytes, "image/png".to_string()),
+            Err(e) => {
+                tracing::warn!(url = %url, error = %e, "SVG rasterization failed, falling back to original SVG");
+                (bytes, mime)
+            }
+        }
+    } else {
+        (bytes, mime)
+    };
+    Ok(build_data_uri(&final_bytes, &final_mime))
+}
+
 pub async fn inline_external_images(html: &str) -> String {
     let mut refs = extract_image_refs(html);
     if refs.is_empty() {
