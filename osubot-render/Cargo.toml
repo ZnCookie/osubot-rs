@@ -23,3 +23,5 @@ librsvg = { version = "2", default-features = false }
 cairo-rs = "0.22"
 gio = "0.22"
 glib = "0.22"
+rosu-pp = "4"
+osubot-core = { path = "../osubot-core" }

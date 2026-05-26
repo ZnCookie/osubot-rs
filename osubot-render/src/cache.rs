@@ -510,6 +510,17 @@ pub async fn inline_external_images(html: &str) -> String {
     })
 }
 
+pub async fn fetch_image_data_uri(url: &str) -> Option<String> {
+    let client = (*http_client()).clone();
+    match fetch_and_cache(url, &client).await {
+        Ok((bytes, mime, _hash)) => Some(build_data_uri(&bytes, &mime)),
+        Err(e) => {
+            tracing::warn!(url = %url, error = %e, "failed to fetch image for data URI");
+            None
+        }
+    }
+}
+
 pub async fn cleanup_expired(retention_days: u64) {
     if retention_days == 0 {
         return;

@@ -179,8 +179,12 @@ impl Scheduler {
         }
 
         // Always fetch and save recent plays (get_user_recent already takes user_id)
+        // include_fails=1 provides richer data for activity detection;
+        // limit=10 compensates for the per-user batching the scheduler performs
         let recent_plays =
-            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
+            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode, false, 10)
+                .await
+            {
                 Ok(plays) => plays,
                 Err(e) => {
                     error!("Failed to fetch recent plays for user {user_id}: {e:?}");

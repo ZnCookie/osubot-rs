@@ -77,6 +77,14 @@ pub enum Command {
         username: Option<String>,
         qq: Option<i64>,
     },
+    PassShow {
+        username: Option<String>,
+        mode: GameMode,
+    },
+    RecentShow {
+        username: Option<String>,
+        mode: GameMode,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,25 @@
 use crate::types::{Command, GameMode};
 
+fn parse_username_and_mode(rest: &str) -> (Option<String>, GameMode) {
+    if let Some(colon_pos) = rest.rfind(':') {
+        if let Some(mode) = GameMode::from_mode_str(&rest[colon_pos + 1..]) {
+            let uname = rest[..colon_pos].trim();
+            return (
+                if uname.is_empty() {
+                    None
+                } else {
+                    Some(uname.to_string())
+                },
+                mode,
+            );
+        }
+    }
+    if rest.trim().is_empty() {
+        return (None, GameMode::Osu);
+    }
+    (Some(rest.to_string()), GameMode::Osu)
+}
+
 /// 解析用户消息为命令
 /// 支持格式:
 /// - `~` / `~0` - 查询自己 std
@@ -116,6 +136,48 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         });
     }
 
+    if let Some(rest) = msg.strip_prefix("!pr") {
+        if rest
+            .as_bytes()
+            .first()
+            .map_or(false, |b| b.is_ascii_alphanumeric())
+            && !rest.starts_with(':')
+            && !rest.starts_with(' ')
+        {
+            return None;
+        }
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some(Command::PassShow {
+                username: None,
+                mode: GameMode::Osu,
+            });
+        }
+        let (username, mode) = parse_username_and_mode(rest);
+        return Some(Command::PassShow { username, mode });
+    }
+
+    if let Some(rest) = msg.strip_prefix("!re") {
+        if rest
+            .as_bytes()
+            .first()
+            .map_or(false, |b| b.is_ascii_alphanumeric())
+            && !rest.starts_with(':')
+            && !rest.starts_with(' ')
+        {
+            return None;
+        }
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some(Command::RecentShow {
+                username: None,
+                mode: GameMode::Osu,
+            });
+        }
+        let (username, mode) = parse_username_and_mode(rest);
+        return Some(Command::RecentShow { username, mode });
+    }
+
     None
 }
 
@@ -181,5 +243,108 @@ mod tests {
                 qq: None,
             }
         );
+    }
+
+    #[test]
+    fn test_pr_self_std() {
+        let cmd = parse_command("!pr", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::PassShow {
+                username: None,
+                mode: GameMode::Osu
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_self_mode() {
+        let cmd = parse_command("!pr:2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::PassShow {
+                username: None,
+                mode: GameMode::Catch
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_username_std() {
+        let cmd = parse_command("!pr ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::PassShow {
+                username: Some("ZnCookie".to_string()),
+                mode: GameMode::Osu
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_username_mode() {
+        let cmd = parse_command("!pr ZnCookie:1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::PassShow {
+                username: Some("ZnCookie".to_string()),
+                mode: GameMode::Taiko
+            }
+        );
+    }
+
+    #[test]
+    fn test_re_self_std() {
+        let cmd = parse_command("!re", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::RecentShow {
+                username: None,
+                mode: GameMode::Osu
+            }
+        );
+    }
+
+    #[test]
+    fn test_re_self_mode() {
+        let cmd = parse_command("!re:3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::RecentShow {
+                username: None,
+                mode: GameMode::Mania
+            }
+        );
+    }
+
+    #[test]
+    fn test_re_username_std() {
+        let cmd = parse_command("!re some_user", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::RecentShow {
+                username: Some("some_user".to_string()),
+                mode: GameMode::Osu
+            }
+        );
+    }
+
+    #[test]
+    fn test_re_username_mode() {
+        let cmd = parse_command("!re some_user:0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::RecentShow {
+                username: Some("some_user".to_string()),
+                mode: GameMode::Osu
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_re_not_substring() {
+        assert!(parse_command("!pre", None).is_none());
+        assert!(parse_command("!red", None).is_none());
+        assert!(parse_command("!reset", None).is_none());
     }
 }

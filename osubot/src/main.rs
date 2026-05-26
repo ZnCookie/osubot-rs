@@ -169,6 +169,13 @@ fn profile_dedup() -> &'static ProfileDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
+type ScorePanelDedup = RequestDedup<(i64, GameMode, bool), Arc<Vec<u8>>, String>;
+
+fn score_panel_dedup() -> &'static ScorePanelDedup {
+    static DEDUP: OnceLock<ScorePanelDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
 /// Handle command and send response
 async fn handle_command(
     ctx: BotContext,
@@ -553,6 +560,194 @@ async fn handle_command(
                 }
             }
         }
+        Command::PassShow { ref username, mode } | Command::RecentShow { ref username, mode } => {
+            let is_pass = matches!(cmd, Command::PassShow { .. });
+            let cmd_name = if is_pass { "PassShow" } else { "RecentShow" };
+
+            let target_user_id = match username {
+                Some(ref name) => {
+                    if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name) {
+                        info!(cmd = cmd_name, username = %name, user_id = cached_id, "score panel resolved from cache");
+                        cached_id
+                    } else {
+                        match api::fetch_user_stats_by_username(
+                            &ctx.rate_limiter,
+                            &ctx.oauth,
+                            name,
+                            GameMode::Osu,
+                        )
+                        .await
+                        {
+                            Ok(stats) => {
+                                info!(cmd = cmd_name, username = %name, user_id = stats.user_id, "score panel resolved by API");
+                                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                                stats.user_id
+                            }
+                            Err(e) => {
+                                warn!(cmd = cmd_name, username = %name, error = ?e, "username resolution failed");
+                                let err_msg = match e {
+                                    ApiError::NotFound => format!("未找到玩家: {}", name),
+                                    ApiError::RateLimited => "API 请求频繁，请稍后再试".to_string(),
+                                    _ => "查询失败，请稍后重试".to_string(),
+                                };
+                                let _ = resp_tx.send(err_msg).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                None => match ctx.storage.get_binding(msg.user_id) {
+                    Ok(Some((user_id, _))) => {
+                        info!(
+                            cmd = cmd_name,
+                            qq = msg.user_id,
+                            osu_id = user_id,
+                            "score panel self query"
+                        );
+                        user_id
+                    }
+                    Ok(None) => {
+                        let _ = resp_tx
+                            .send("请先绑定 osu! 账号：绑定 <用户名>".to_string())
+                            .await;
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = resp_tx.send("数据库错误".to_string()).await;
+                        return;
+                    }
+                },
+            };
+
+            info!(cmd = cmd_name, user_id = target_user_id, mode = ?mode, is_pass = is_pass, "fetching scores for panel");
+
+            let dedup_rate_limiter = ctx.rate_limiter.clone();
+            let dedup_oauth = ctx.oauth.clone();
+            let render_result = score_panel_dedup()
+                .run_or_wait((target_user_id, mode, is_pass), {
+                    let target_user_id = target_user_id;
+                    let is_pass = is_pass;
+                    move || {
+                        let rate_limiter = dedup_rate_limiter.clone();
+                        let oauth = dedup_oauth.clone();
+                        async move {
+                            let scores = api::get_user_recent(
+                                &rate_limiter,
+                                &oauth,
+                                target_user_id,
+                                mode,
+                                is_pass,
+                                1,
+                            )
+                            .await
+                            .map_err(|e| match e {
+                                ApiError::NotFound => if is_pass {
+                                    "还没有通过的谱面"
+                                } else {
+                                    "还没有最近成绩"
+                                }
+                                .to_string(),
+                                ApiError::RateLimited => "API 请求频繁，请稍后再试".to_string(),
+                                _ => "查询失败，请稍后重试".to_string(),
+                            })?;
+
+                            let score = scores.into_iter().next().ok_or_else(|| {
+                                if is_pass {
+                                    "还没有通过的谱面"
+                                } else {
+                                    "还没有最近成绩"
+                                }
+                                .to_string()
+                            })?;
+
+                            let stats = api::fetch_user_stats_by_user_id(
+                                &rate_limiter,
+                                &oauth,
+                                target_user_id,
+                                mode,
+                            )
+                            .await
+                            .map_err(|_| "查询失败".to_string())?;
+
+                            let flag_emoji = country_code_to_flag(&stats.country_code);
+                            let beatmap: osubot_core::api::BeatmapInfo = score.beatmap.clone().into();
+
+                            let cover_data_uri = {
+                                let cover_url = score.beatmapset.as_ref().and_then(|bs| {
+                                    let url = if bs.covers.cover_2x.is_empty() {
+                                        bs.covers.cover.clone()
+                                    } else {
+                                        bs.covers.cover_2x.clone()
+                                    };
+                                    if url.is_empty() { None } else { Some(url) }
+                                });
+                                match cover_url {
+                                    Some(ref url) => osubot_render::fetch_image_data_uri(url).await,
+                                    None => None,
+                                }
+                            };
+
+                            let avatar_url = format!("https://a.ppy.sh/{}", stats.user_id);
+
+                            let panel_html = osubot_render::score_panel_html::builder::build_score_panel_html(
+                                &score,
+                                &stats.username,
+                                &avatar_url,
+                                &flag_emoji,
+                                stats.rank,
+                                stats.country_rank,
+                                Some(stats.pp),
+                                mode.name(),
+                                &beatmap,
+                                score.beatmapset.as_ref(),
+                                cover_data_uri.as_deref(),
+                                &None,
+                            );
+
+                            let jpeg = osubot_render::render_score_panel_html(
+                                &panel_html,
+                                1920,
+                                1080,
+                            )
+                            .await
+                            .map(Arc::new)
+                            .map_err(|e| {
+                                warn!(user_id = target_user_id, error = %e, "score panel render failed");
+                                "渲染失败，请稍后重试".to_string()
+                            })?;
+
+                            Ok(jpeg)
+                        }
+                    }
+                })
+                .await;
+
+            match render_result {
+                Ok(jpeg_bytes) => {
+                    info!(
+                        cmd = cmd_name,
+                        user_id = target_user_id,
+                        jpeg_len = jpeg_bytes.len(),
+                        "score panel rendered"
+                    );
+                    let write = ctx.write.clone();
+                    let group_id = msg.group_id;
+                    let resp_tx = resp_tx.clone();
+                    tokio::spawn(async move {
+                        if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                            .await
+                            .is_err()
+                        {
+                            let _ = resp_tx.send("图片发送失败".to_string()).await;
+                        }
+                    });
+                }
+                Err(msg) => {
+                    warn!(cmd = cmd_name, user_id = target_user_id, msg = %msg, "score panel failed");
+                    let _ = resp_tx.send(msg).await;
+                }
+            }
+        }
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {
@@ -817,6 +1012,22 @@ async fn get_group_member_list(
         }
     }
     Ok(members)
+}
+
+/// Convert ISO 3166-1 alpha-2 country code to regional indicator flag emoji.
+fn country_code_to_flag(code: &str) -> String {
+    let code = code.to_uppercase();
+    let mut flag = String::with_capacity(8);
+    for c in code.chars() {
+        if c.is_ascii_alphabetic() {
+            // Regional indicator symbols start at U+1F1E6 for 'A'
+            let cp = 0x1F1E6u32 + (c as u32 - 'A' as u32);
+            if let Some(ch) = char::from_u32(cp) {
+                flag.push(ch);
+            }
+        }
+    }
+    flag
 }
 
 async fn handle_irc_message(

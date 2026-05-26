@@ -1,14 +1,106 @@
 use crate::rate_limiter::RateLimiter;
 use crate::types::{GameMode, UserStats};
 use reqwest::Client;
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-/// osu! API v2 beatmap info from recent plays
-#[derive(Debug, serde::Deserialize)]
+/// Deserialization-only raw beatmap (the nested "beatmap" field in API responses)
+/// Public so external test code in osubot-render can construct mock instances.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BeatmapRaw {
+    pub id: i64,
+    pub version: String,
+    pub difficulty_rating: f64,
+    pub cs: f64,
+    pub ar: f64,
+    #[serde(rename = "accuracy")]
+    pub od: f64,
+    #[serde(rename = "drain")]
+    pub hp: f64,
+    pub bpm: Option<f64>,
+    pub total_length: i64,
+    pub max_combo: Option<i64>,
+    pub status: String,
+}
+
+/// Public flat beatmap info
+#[derive(Debug, Clone)]
 pub struct BeatmapInfo {
     pub id: i64,
+    pub version: String,
+    pub difficulty_rating: f64,
+    pub cs: f64,
+    pub ar: f64,
+    pub od: f64,
+    pub hp: f64,
+    pub bpm: f64,
+    pub total_length: i64,
+    pub max_combo: Option<i64>,
+    pub status: String,
+}
+
+impl From<BeatmapRaw> for BeatmapInfo {
+    fn from(raw: BeatmapRaw) -> Self {
+        Self {
+            id: raw.id,
+            version: raw.version,
+            difficulty_rating: raw.difficulty_rating,
+            cs: raw.cs,
+            ar: raw.ar,
+            od: raw.od,
+            hp: raw.hp,
+            bpm: raw.bpm.unwrap_or(0.0),
+            total_length: raw.total_length,
+            max_combo: raw.max_combo,
+            status: raw.status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BeatmapSetInfo {
+    pub id: i64,
+    pub artist: String,
+    pub title: String,
+    pub creator: String,
+    pub covers: BeatmapCovers,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BeatmapCovers {
+    pub cover: String,
+    #[serde(rename = "cover@2x")]
+    pub cover_2x: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecentPlay {
+    pub id: i64,
+    pub beatmap: BeatmapRaw,
+    pub beatmapset: Option<BeatmapSetInfo>,
+    pub score: i64,
+    pub accuracy: f64,
+    pub mods: Vec<String>,
+    pub rank: String,
+    pub pp: Option<f64>,
+    pub statistics: PlayStatistics,
+    pub max_combo: Option<i64>,
+    pub perfect: bool,
+    pub passed: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScoreDetail {
+    pub weight: Option<ScoreWeight>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScoreWeight {
+    pub percentage: f64,
+    pub pp: f64,
 }
 
 /// osu! API v2 play count breakdown
@@ -25,7 +117,7 @@ pub struct PlayCount {
 }
 
 /// osu! API v2 play statistics
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PlayStatistics {
     #[serde(rename = "count_100")]
     pub count_100: i64,
@@ -35,17 +127,6 @@ pub struct PlayStatistics {
     pub count_50: i64,
     #[serde(rename = "count_miss")]
     pub count_miss: i64,
-}
-
-/// osu! API v2 recent play entry
-#[derive(Debug, serde::Deserialize)]
-pub struct RecentPlay {
-    pub beatmap: BeatmapInfo,
-    pub statistics: PlayStatistics,
-    #[serde(rename = "max_combo")]
-    pub max_combo: Option<i64>,
-    pub perfect: bool,
-    pub created_at: String,
 }
 
 /// osu! API v2 basic user info (for activity detection)
@@ -284,36 +365,59 @@ pub async fn get_user_recent(
     oauth: &OauthTokenCache,
     user_id: i64,
     mode: GameMode,
+    passed_only: bool,
+    limit: u32,
 ) -> Result<Vec<RecentPlay>, ApiError> {
-    let access_token = oauth.get_token().await?;
-    rate_limiter
-        .acquire()
-        .await
-        .map_err(|_| ApiError::RateLimited)?;
+    let mut retry_count = 0;
+    let max_retries = 5;
+    let base_delay = Duration::from_secs(1);
     let client = Client::new();
 
-    let url = format!(
-        "https://osu.ppy.sh/api/v2/users/{}/scores/recent?mode={}",
-        user_id,
-        mode.api_value()
-    );
+    loop {
+        let access_token = oauth.get_token().await?;
+        rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| ApiError::RateLimited)?;
 
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .send()
-        .await?;
+        let include_fails = if passed_only { "0" } else { "1" };
+        let url = format!(
+            "https://osu.ppy.sh/api/v2/users/{}/scores/recent?mode={}&include_fails={}&limit={}",
+            user_id,
+            mode.api_value(),
+            include_fails,
+            limit
+        );
 
-    if resp.status() == 404 {
-        return Err(ApiError::NotFound);
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await?;
+
+        if resp.status() == 401 {
+            oauth.invalidate();
+            if retry_count < max_retries {
+                retry_count += 1;
+                tokio::time::sleep(Duration::from_secs(
+                    base_delay.as_secs() * 2_u64.pow(retry_count as u32),
+                ))
+                .await;
+                continue;
+            }
+            return Err(ApiError::OAuthError);
+        }
+
+        if resp.status() == 404 {
+            return Err(ApiError::NotFound);
+        }
+        if !resp.status().is_success() {
+            return Err(ApiError::InvalidResponse);
+        }
+
+        let plays: Vec<RecentPlay> = resp.json().await?;
+        return Ok(plays);
     }
-
-    if !resp.status().is_success() {
-        return Err(ApiError::InvalidResponse);
-    }
-
-    let plays: Vec<RecentPlay> = resp.json().await?;
-    Ok(plays)
 }
 
 /// Get basic user info from osu! API v2 (for activity detection)
@@ -433,5 +537,94 @@ pub async fn fetch_user_profile(
             username: data.username,
             avatar_url: data.avatar_url,
         });
+    }
+}
+
+pub async fn get_score_detail(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    mode: GameMode,
+    score_id: i64,
+) -> Result<Option<ScoreDetail>, ApiError> {
+    let access_token = oauth.get_token().await?;
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::RateLimited)?;
+    let client = Client::new();
+    let url = format!(
+        "https://osu.ppy.sh/api/v2/scores/{}/{score_id}",
+        mode.api_value()
+    );
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .send()
+        .await?;
+
+    if resp.status() == 404 {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(ApiError::InvalidResponse);
+    }
+    let detail: ScoreDetail = resp.json().await?;
+    Ok(Some(detail))
+}
+
+pub async fn fetch_beatmap_osu_file(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    beatmap_id: i64,
+) -> Result<Vec<u8>, ApiError> {
+    let access_token = oauth.get_token().await?;
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::RateLimited)?;
+    let client = Client::new();
+    let url = format!("https://osu.ppy.sh/osu/{beatmap_id}");
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .send()
+        .await?;
+
+    if resp.status() == 404 {
+        return Err(ApiError::NotFound);
+    }
+    if !resp.status().is_success() {
+        return Err(ApiError::InvalidResponse);
+    }
+    let bytes = resp.bytes().await?;
+    Ok(bytes.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_recent_play_full() {
+        let json = r#"{
+            "id": 123456,"beatmap": {"id":123456,"version":"Insane","difficulty_rating":5.67,"cs":4.0,"ar":9.0,"accuracy":8.0,"drain":6.0,"bpm":180.0,"total_length":180,"max_combo":500,"status":"ranked"},
+            "beatmapset": {"id":789,"artist":"DJ Generic","title":"Test Song","creator":"DJ Generic","covers":{"cover":"https://a.ppy.sh/1.jpg","cover@2x":"https://a.ppy.sh/1@2x.jpg"}},
+            "score":1234567,"accuracy":0.9876,"mods":["HD","DT"],"rank":"SH","pp":234.5,
+            "statistics":{"count_100":5,"count_300":1200,"count_50":0,"count_miss":2},
+            "max_combo":456,"perfect":false,"passed":true,"created_at":"2024-01-01T00:00:00Z"
+        }"#;
+        let play: RecentPlay = serde_json::from_str(json).unwrap();
+        assert_eq!(play.beatmap.id, 123456);
+        assert_eq!(play.score, 1234567);
+        assert_eq!(play.mods, vec!["HD", "DT"]);
+        assert_eq!(play.rank, "SH");
+        assert!((play.pp.unwrap() - 234.5).abs() < 0.01);
+        assert!(play.passed);
+        let bs = play.beatmapset.unwrap();
+        assert_eq!(bs.artist, "DJ Generic");
+        assert_eq!(bs.covers.cover_2x, "https://a.ppy.sh/1@2x.jpg");
+        let bm: BeatmapInfo = play.beatmap.into();
+        assert_eq!(bm.bpm, 180.0);
+        assert_eq!(bm.od, 8.0);
     }
 }
