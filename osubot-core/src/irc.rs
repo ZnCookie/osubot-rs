@@ -2,7 +2,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const READ_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
@@ -156,7 +156,7 @@ impl IrcClient {
 
             // Log non-PRIVMSG messages for debugging
             if !line.contains("PRIVMSG") {
-                debug!(line = %line, "IRC non-PRIVMSG");
+                trace!(line = %line, "IRC non-PRIVMSG");
             }
 
             // Parse PRIVMSG
