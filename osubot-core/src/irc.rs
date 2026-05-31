@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, trace, warn};
 
-const READ_TIMEOUT_SECS: u64 = 300; // 5 minutes
+const READ_TIMEOUT_SECS: u64 = 120; // 2 minutes
 
 #[derive(Debug, Clone)]
 pub struct IrcConfig {
