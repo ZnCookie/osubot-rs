@@ -403,7 +403,10 @@ async fn handle_command(
                                     Ok(Ok(())) => {
                                         info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
                                         let _ = resp_tx
-                                            .send(format!("[CQ:at,qq={}] 成功绑定为{}", msg.user_id, user_info.username))
+                                            .send(format!(
+                                                "[CQ:at,qq={}] 成功绑定为{}",
+                                                msg.user_id, user_info.username
+                                            ))
                                             .await;
                                     }
                                     Ok(Err(bound_qq)) => {
@@ -457,7 +460,9 @@ async fn handle_command(
                         Ok(_) => {
                             ctx.storage.remove_pending_unbind(msg.user_id).ok();
                             info!(user_id = msg.user_id, "Unbind success");
-                            let _ = resp_tx.send(format!("[CQ:at,qq={}] 解绑成功", msg.user_id)).await;
+                            let _ = resp_tx
+                                .send(format!("[CQ:at,qq={}] 解绑成功", msg.user_id))
+                                .await;
                         }
                         Err(_) => {
                             error!(user_id = msg.user_id, "Unbind failed");
@@ -864,7 +869,10 @@ async fn handle_irc_message(
                 Ok(Ok(())) => {
                     storage.remove_pending_bind(code).ok();
                     info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
-                    let msg = format!("[CQ:at,qq={}] 成功绑定为{}", pending.qq_user_id, info.username);
+                    let msg = format!(
+                        "[CQ:at,qq={}] 成功绑定为{}",
+                        pending.qq_user_id, info.username
+                    );
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Ok(Err(_)) => {
