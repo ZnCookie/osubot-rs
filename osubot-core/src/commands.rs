@@ -94,6 +94,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
+    // Must be checked before !p/!r to avoid "!profile" being matched as "!p" + "rofile"
     if let Some(rest) = msg.strip_prefix("!profile") {
         let rest = rest.trim();
         if rest.is_empty() {
@@ -114,6 +115,74 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             username: Some(rest.to_string()),
             qq: None,
         });
+    }
+
+    // Pass/Recent score commands: !p, !r, !ps, !rs
+    // Format: !p [username] [:mode] [#N]
+    // IMPORTANT: !ps and !rs MUST come before !p and !r in this array.
+    // If !p were checked first via strip_prefix, it would match "!ps" as
+    // !p + "s" (parsing "s" as a username) instead of matching !ps correctly.
+    for (prefix, is_pass, default_limit) in [
+        ("!ps", true, 10u32),
+        ("!rs", false, 10u32),
+        ("!p", true, 1u32),
+        ("!r", false, 1u32),
+    ] {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            let rest = rest.trim();
+            // Parse #N suffix (from end)
+            let (rest, limit) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                match num_str.parse::<u32>() {
+                    Ok(n) if n >= 1 => (rest[..hash_pos].trim(), n.min(100)),
+                    Ok(_) => (rest[..hash_pos].trim(), default_limit),
+                    _ => (rest[..hash_pos].trim(), default_limit),
+                }
+            } else {
+                (rest, default_limit)
+            };
+            // Parse :mode suffix (from end, after #N removal)
+            let (username_part, mode) = if let Some(colon_pos) = rest.rfind(':') {
+                let mode_str = &rest[colon_pos + 1..];
+                if mode_str.is_empty() {
+                    // Bare colon with no mode string — treat as no mode specified
+                    (rest[..colon_pos].trim(), GameMode::Osu)
+                } else {
+                    match GameMode::from_mode_str(mode_str) {
+                        Some(mode) => (rest[..colon_pos].trim(), mode),
+                        None => return None, // Invalid mode string, ignore command
+                    }
+                }
+            } else {
+                (rest, GameMode::Osu)
+            };
+            let (username, qq) = if username_part.is_empty() {
+                if let Some(qq) = mentioned_user_id {
+                    (None, Some(qq))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (Some(username_part.to_string()), None)
+            };
+            return Some(if is_pass {
+                Command::Pass {
+                    mode,
+                    username,
+                    qq,
+                    limit,
+                    is_summary: default_limit > 1,
+                }
+            } else {
+                Command::Recent {
+                    mode,
+                    username,
+                    qq,
+                    limit,
+                    is_summary: default_limit > 1,
+                }
+            });
+        }
     }
 
     None
@@ -180,6 +249,310 @@ mod tests {
                 username: Some("ZnCookie".to_string()),
                 qq: None,
             }
+        );
+    }
+
+    #[test]
+    fn test_pass_self() {
+        let cmd = parse_command("!p", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_mode() {
+        let cmd = parse_command("!p :1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Taiko,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_username() {
+        let cmd = parse_command("!p ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_username_mode() {
+        let cmd = parse_command("!p ZnCookie :2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_self() {
+        let cmd = parse_command("!r", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_multiple() {
+        let cmd = parse_command("!rs", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 10,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_mention() {
+        let cmd = parse_command("!p", Some(123456)).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: Some(123456),
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_no_conflict_with_profile() {
+        // !profile should still work
+        let cmd = parse_command("!profile", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_mode_no_space() {
+        let cmd = parse_command("!p:3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Mania,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_with_hash() {
+        let cmd = parse_command("!p #2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 2,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_multiple_with_hash() {
+        let cmd = parse_command("!ps #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 5,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_multiple_username_hash() {
+        let cmd = parse_command("!ps ZnCookie #3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 3,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_multiple_username_mode_hash() {
+        let cmd = parse_command("!ps ZnCookie :2 #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 5,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_clamp_100() {
+        let cmd = parse_command("!ps #200", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 100,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_zero_ignored() {
+        let cmd = parse_command("!p #0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_garbage_ignored_with_username() {
+        let cmd = parse_command("!p ZnCookie #xyz", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_garbage_ignored_self() {
+        let cmd = parse_command("!p #xyz", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_with_hash() {
+        let cmd = parse_command("!r #3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 3,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_multiple_with_hash() {
+        let cmd = parse_command("!rs #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 5,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_ps_invalid_mode_returns_none() {
+        let result = parse_command("!ps :xyz", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_ps_empty_mode_defaults_to_osu() {
+        let result = parse_command("!ps :", None);
+        assert_eq!(
+            result,
+            Some(Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 10,
+                is_summary: true,
+            })
         );
     }
 }

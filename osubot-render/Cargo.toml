@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+osubot-types = { path = "../osubot-types" }
+rosu-mods = "0.4"
 blitz = "0.2"
 anyrender = "0.6"
 anyrender_vello_cpu = "0.8"

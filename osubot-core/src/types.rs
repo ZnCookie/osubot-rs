@@ -1,40 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GameMode {
-    Osu = 0,
-    Taiko = 1,
-    Catch = 2,
-    Mania = 3,
-}
-
-impl GameMode {
-    pub fn from_mode_str(s: &str) -> Option<GameMode> {
-        match s.trim() {
-            "0" | "" => Some(GameMode::Osu),
-            "1" => Some(GameMode::Taiko),
-            "2" => Some(GameMode::Catch),
-            "3" => Some(GameMode::Mania),
-            _ => None,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            GameMode::Osu => "osu!",
-            GameMode::Taiko => "taiko",
-            GameMode::Catch => "catch",
-            GameMode::Mania => "mania",
-        }
-    }
-
-    pub fn api_value(&self) -> &'static str {
-        match self {
-            GameMode::Osu => "osu",
-            GameMode::Taiko => "taiko",
-            GameMode::Catch => "fruits",
-            GameMode::Mania => "mania",
-        }
-    }
-}
+pub use osubot_types::{
+    format_length, format_play_datetime, GameMode, Score, ScoreStatistics, ScoreUser,
+};
 
 #[derive(Debug, Clone)]
 pub struct UserStats {
@@ -43,12 +9,12 @@ pub struct UserStats {
     pub pp: f64,
     pub rank: i64,
     pub country_rank: i64,
-    pub country_code: String, // e.g., "CN", "US", "JP"
+    pub country_code: String,
     pub ranked_score: i64,
     pub accuracy: f64,
     pub playcount: i64,
     pub hits: i64,
-    pub playtime: i64, // seconds
+    pub playtime: i64,
     pub rank_change: Option<i64>,
     pub country_rank_change: Option<i64>,
 }
@@ -77,6 +43,20 @@ pub enum Command {
         username: Option<String>,
         qq: Option<i64>,
     },
+    Pass {
+        mode: GameMode,
+        username: Option<String>,
+        qq: Option<i64>,
+        limit: u32,
+        is_summary: bool,
+    },
+    Recent {
+        mode: GameMode,
+        username: Option<String>,
+        qq: Option<i64>,
+        limit: u32,
+        is_summary: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -104,10 +84,10 @@ impl UserChange {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserActivity {
-    SemiActive, // 4h内有游玩记录
-    Normal,     // 当日有游玩记录，或近期有活动但无今日记录
-    NoRecent,   // 当日无游玩记录，8h内有活动
-    Inactive,   // 48h以上无游玩记录
+    SemiActive,
+    Normal,
+    NoRecent,
+    Inactive,
     UserNotExists,
 }
 

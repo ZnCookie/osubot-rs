@@ -17,3 +17,4 @@ futures-util = "0.3"
 base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] }
+image = "0.25"

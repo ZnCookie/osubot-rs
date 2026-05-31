@@ -8,7 +8,7 @@ pub struct RateLimitError;
 pub struct RateLimiter {
     state: Arc<Mutex<State>>,
     notify: Arc<Notify>,
-    _refill: tokio::task::JoinHandle<()>,
+    _refill: tokio::task::AbortHandle,
 }
 
 struct State {
@@ -28,7 +28,7 @@ impl RateLimiter {
 
         let state_clone = state.clone();
         let notify_clone = notify.clone();
-        let _refill = tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(200));
             loop {
                 interval.tick().await;
@@ -45,10 +45,12 @@ impl RateLimiter {
             }
         });
 
+        let abort = handle.abort_handle();
+
         Self {
             state,
             notify,
-            _refill,
+            _refill: abort,
         }
     }
 
@@ -77,5 +79,11 @@ impl RateLimiter {
         } else {
             false
         }
+    }
+}
+
+impl Drop for RateLimiter {
+    fn drop(&mut self) {
+        self._refill.abort();
     }
 }

@@ -207,6 +207,15 @@ impl Storage {
         })
     }
 
+    /// Execute a closure with a database connection, recovering from poisoned mutex.
+    fn with_conn<F, R>(&self, f: F) -> SqlResult<R>
+    where
+        F: FnOnce(&Connection) -> SqlResult<R>,
+    {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        f(&conn)
+    }
+
     // ==================== Binding Query ====================
 
     /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
@@ -306,15 +315,16 @@ impl Storage {
     }
 
     pub fn get_binding(&self, qq: i64) -> SqlResult<Option<(i64, String)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
-        let mut rows = stmt.query(params![qq])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some((row.get(0)?, row.get(1)?)))
-        } else {
-            Ok(None)
-        }
+        self.with_conn(|conn| {
+            let mut stmt =
+                conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
+            let mut rows = stmt.query(params![qq])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some((row.get(0)?, row.get(1)?)))
+            } else {
+                Ok(None)
+            }
+        })
     }
 
     pub fn update_binding_username(&self, qq: i64, new_username: &str) -> SqlResult<()> {
@@ -356,25 +366,26 @@ impl Storage {
     // ==================== Snapshot Operations ====================
 
     pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                user_id,
-                mode as i32,
-                Utc::now().to_rfc3339(),
-                stats.pp,
-                stats.rank,
-                stats.country_rank,
-                stats.ranked_score,
-                stats.accuracy,
-                stats.playcount,
-                stats.hits,
-                stats.playtime,
-            ],
-        )?;
-        Ok(())
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    user_id,
+                    mode as i32,
+                    Utc::now().to_rfc3339(),
+                    stats.pp,
+                    stats.rank,
+                    stats.country_rank,
+                    stats.ranked_score,
+                    stats.accuracy,
+                    stats.playcount,
+                    stats.hits,
+                    stats.playtime,
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn get_latest_snapshot(
@@ -382,34 +393,35 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
     ) -> SqlResult<Option<UserStats>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
-             FROM user_stats_history
-             WHERE user_id = ?1 AND mode = ?2
-             ORDER BY recorded_at DESC
-             LIMIT 1",
-        )?;
-        let mut rows = stmt.query(params![user_id, mode as i32])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(UserStats {
-                user_id: 0,
-                username: String::new(),
-                pp: row.get(0)?,
-                rank: row.get(1)?,
-                country_rank: row.get(2)?,
-                country_code: "XX".to_string(),
-                ranked_score: row.get(3)?,
-                accuracy: row.get(4)?,
-                playcount: row.get(5)?,
-                hits: row.get(6)?,
-                playtime: row.get(7)?,
-                rank_change: None,
-                country_rank_change: None,
-            }))
-        } else {
-            Ok(None)
-        }
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
+                 FROM user_stats_history
+                 WHERE user_id = ?1 AND mode = ?2
+                 ORDER BY recorded_at DESC
+                 LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![user_id, mode as i32])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(UserStats {
+                    user_id: 0,
+                    username: String::new(),
+                    pp: row.get(0)?,
+                    rank: row.get(1)?,
+                    country_rank: row.get(2)?,
+                    country_code: "XX".to_string(),
+                    ranked_score: row.get(3)?,
+                    accuracy: row.get(4)?,
+                    playcount: row.get(5)?,
+                    hits: row.get(6)?,
+                    playtime: row.get(7)?,
+                    rank_change: None,
+                    country_rank_change: None,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
     }
 
     pub fn get_snapshots_within_hours(
@@ -537,12 +549,12 @@ impl Storage {
             None => Ok(None),
             Some((_, past)) => {
                 let rank_change = if current.rank != 0 && past.rank != 0 {
-                    Some(current.rank - past.rank)
+                    Some(past.rank - current.rank)
                 } else {
                     None
                 };
                 let country_rank_change = if current.country_rank != 0 && past.country_rank != 0 {
-                    Some(current.country_rank - past.country_rank)
+                    Some(past.country_rank - current.country_rank)
                 } else {
                     None
                 };
@@ -732,6 +744,17 @@ impl Storage {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM pending_unbind WHERE qq = ?1", params![qq])?;
         Ok(())
+    }
+
+    /// Prune expired pending unbind records (older than 5 minutes).
+    pub fn prune_expired_pending_unbinds(&self) -> SqlResult<usize> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        let deleted = conn.execute(
+            "DELETE FROM pending_unbind WHERE created_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(deleted)
     }
 
     /// Prune records older than retention_days from stats history and play records.

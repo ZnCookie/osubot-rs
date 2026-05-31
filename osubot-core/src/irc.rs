@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio_rustls::TlsConnector;
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
@@ -47,12 +49,21 @@ impl IrcClient {
         }
 
         let addr = format!("{}:{}", self.config.server, self.config.port);
-        let retry_delay = tokio::time::Duration::from_secs(5);
+        let mut reconnect_delay = tokio::time::Duration::from_secs(5);
+        const MAX_RECONNECT_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(300);
+
+        // Create TLS config once (reusable across reconnections)
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(tls_config));
 
         loop {
-            info!(server = %addr, nickname = %self.config.nickname, "Connecting to IRC");
+            info!(server = %addr, nickname = %self.config.nickname, "Connecting to IRC (TLS)");
 
-            match self.connect_and_listen(&addr).await {
+            match self.connect_and_listen(&addr, &connector).await {
                 Ok(()) => {
                     warn!("IRC listener exited cleanly, reconnecting...");
                 }
@@ -61,16 +72,30 @@ impl IrcClient {
                 }
             }
 
-            tokio::time::sleep(retry_delay).await;
+            info!(
+                delay_secs = reconnect_delay.as_secs(),
+                "Waiting before reconnect"
+            );
+            tokio::time::sleep(reconnect_delay).await;
+            reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
         }
     }
 
     async fn connect_and_listen(
         &self,
         addr: &str,
+        connector: &TlsConnector,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let stream = TcpStream::connect(addr).await?;
-        let (reader, mut writer) = stream.into_split();
+        // Establish TCP connection
+        let tcp = TcpStream::connect(addr).await?;
+
+        // Perform TLS handshake
+        let domain = rustls::pki_types::ServerName::try_from(self.config.server.clone())
+            .map_err(|e| format!("Invalid server name '{}': {}", self.config.server, e))?;
+        let tls_stream = connector.connect(domain, tcp).await?;
+
+        // Split TLS stream into reader/writer halves
+        let (reader, mut writer) = tokio::io::split(tls_stream);
         let mut reader = BufReader::new(reader);
 
         // Send PASS, NICK, USER
@@ -91,7 +116,7 @@ impl IrcClient {
             .await?;
         writer.flush().await?;
 
-        info!("IRC connection established");
+        info!("IRC TLS connection established");
 
         let mut line = String::new();
         loop {
@@ -109,7 +134,11 @@ impl IrcClient {
 
             // Handle PING to keep alive
             if line.starts_with("PING") {
-                let pong = line.replace("PING", "PONG");
+                let pong = if let Some(rest) = line.strip_prefix("PING") {
+                    format!("PONG{}", rest)
+                } else {
+                    line.to_string()
+                };
                 writer.write_all(format!("{}\r\n", pong).as_bytes()).await?;
                 writer.flush().await?;
                 continue;

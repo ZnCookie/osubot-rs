@@ -80,28 +80,33 @@ pub async fn get_highlight(
     mode: GameMode,
 ) -> Result<HighlightResult, HighlightError> {
     use tokio::sync::Semaphore;
+    use tokio::task::JoinSet;
 
     let semaphore = Arc::new(Semaphore::new(8)); // max 8 concurrent API calls
 
-    let mut user_highlights: Vec<UserHighlight> = Vec::new();
-
+    let mut join_set = JoinSet::new();
     for (_qq, user_id, username) in user_data {
-        let baseline = match get_baseline_snapshot(storage, *user_id, mode) {
-            Ok(Some(s)) => s,
-            Ok(None) => continue,
-            Err(_) => {
-                continue;
-            }
-        };
+        let storage = storage.clone();
+        let sem = semaphore.clone();
+        let rate_limiter = rate_limiter.clone();
+        let oauth = oauth.clone();
+        let user_id = *user_id;
+        let username = username.clone();
 
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let result = api::fetch_user_stats_by_user_id(rate_limiter, oauth, *user_id, mode).await;
-        drop(permit);
+        join_set.spawn(async move {
+            let baseline = match get_baseline_snapshot(&storage, user_id, mode) {
+                Ok(Some(s)) => s,
+                Ok(None) => return None,
+                Err(_) => return None,
+            };
 
-        match result {
-            Ok(current) => {
-                user_highlights.push(UserHighlight {
-                    username: username.clone(),
+            let _permit = sem.acquire().await.unwrap();
+            let result =
+                api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await;
+
+            match result {
+                Ok(current) => Some(UserHighlight {
+                    username,
                     old_pp: baseline.pp,
                     new_pp: current.pp,
                     pp_increase: current.pp - baseline.pp,
@@ -111,11 +116,16 @@ pub async fn get_highlight(
                     old_playtime: baseline.playtime,
                     new_playtime: current.playtime,
                     playtime_increase: current.playtime - baseline.playtime,
-                });
+                }),
+                Err(_) => None,
             }
-            Err(_) => {
-                continue;
-            }
+        });
+    }
+
+    let mut user_highlights: Vec<UserHighlight> = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        if let Ok(Some(h)) = result {
+            user_highlights.push(h);
         }
     }
 
@@ -126,7 +136,11 @@ pub async fn get_highlight(
     let most_pp_increase = user_highlights
         .iter()
         .filter(|h| h.pp_increase > 0.0)
-        .max_by(|a, b| a.pp_increase.partial_cmp(&b.pp_increase).unwrap())
+        .max_by(|a, b| {
+            a.pp_increase
+                .partial_cmp(&b.pp_increase)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .cloned();
 
     let most_hits_increase = user_highlights

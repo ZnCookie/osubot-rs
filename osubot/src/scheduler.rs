@@ -72,7 +72,17 @@ impl Scheduler {
             _ => {}
         }
 
+        // Prune expired pending unbinds
+        match self.storage.prune_expired_pending_unbinds() {
+            Ok(deleted) if deleted > 0 => {
+                info!(deleted, "pruned expired pending unbinds");
+            }
+            _ => {}
+        }
+
         osubot_render::cleanup_expired(self.config.cache_retention_days).await;
+        osubot_core::cache::cleanup_replays(self.config.cache_retention_days).await;
+        osubot_core::cache::cleanup_beatmaps(self.config.cache_retention_days).await;
 
         *last = Some(now);
     }
@@ -149,9 +159,15 @@ impl Scheduler {
                         activity: UserActivity::UserNotExists,
                     };
                 }
-                Err(_) => {
+                Err(ApiError::RateLimited) => {
                     return osubot_core::types::UpdateResult {
-                        activity: UserActivity::Inactive,
+                        activity: UserActivity::NoRecent,
+                    };
+                }
+                Err(_) => {
+                    // Other transient errors: use shorter retry interval (6h instead of 48h)
+                    return osubot_core::types::UpdateResult {
+                        activity: UserActivity::NoRecent,
                     };
                 }
             };
@@ -180,7 +196,9 @@ impl Scheduler {
 
         // Always fetch and save recent plays (get_user_recent already takes user_id)
         let recent_plays =
-            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
+            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode, false, 100)
+                .await
+            {
                 Ok(plays) => plays,
                 Err(e) => {
                     error!("Failed to fetch recent plays for user {user_id}: {e:?}");
@@ -269,19 +287,10 @@ impl Scheduler {
         let _ = self.storage.set_next_update(user_id, mode, next);
     }
 
-    /// Trigger update for user (all 4 modes)
-    pub fn trigger_update(&self, user_id: i64) {
-        for mode in [
-            GameMode::Osu,
-            GameMode::Taiko,
-            GameMode::Catch,
-            GameMode::Mania,
-        ] {
-            // Check cooldown
-            if !self.is_in_cooldown(user_id, mode) {
-                // Set next_update to now (immediate)
-                let _ = self.storage.set_next_update(user_id, mode, Utc::now());
-            }
+    /// Trigger update for user (single mode only)
+    pub fn trigger_update(&self, user_id: i64, mode: GameMode) {
+        if !self.is_in_cooldown(user_id, mode) {
+            let _ = self.storage.set_next_update(user_id, mode, Utc::now());
         }
     }
 

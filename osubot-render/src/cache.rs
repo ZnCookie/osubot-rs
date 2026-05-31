@@ -24,7 +24,7 @@ pub enum CacheError {
     SvgRasterizationFailed(String),
 }
 
-fn http_client() -> &'static reqwest::Client {
+pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -227,11 +227,13 @@ async fn rasterize_svg_to_png_cached(svg_bytes: &[u8], url: &str) -> Result<Vec<
         })?;
 
     // Atomic rename
-    tokio::fs::rename(&temp_file, &cache_file)
-        .await
-        .map_err(|e| {
-            CacheError::SvgRasterizationFailed(format!("failed to rename temp file: {}", e))
-        })?;
+    match tokio::fs::rename(&temp_file, &cache_file).await {
+        Ok(()) => {}
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&temp_file).await;
+            return Err(CacheError::Io(e));
+        }
+    }
 
     Ok(png_bytes)
 }
@@ -291,7 +293,7 @@ impl Drop for FetchLockGuard {
     }
 }
 
-async fn fetch_and_cache(
+pub async fn fetch_and_cache(
     url: &str,
     client: &reqwest::Client,
 ) -> Result<(Vec<u8>, String, String), CacheError> {

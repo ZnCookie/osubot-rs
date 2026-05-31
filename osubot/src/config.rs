@@ -114,7 +114,7 @@ fn default_irc_server() -> String {
 }
 
 fn default_irc_port() -> u16 {
-    6667
+    6697
 }
 
 impl Default for IrcConfig {
