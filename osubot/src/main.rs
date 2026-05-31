@@ -343,8 +343,8 @@ async fn handle_command(
                     info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
                     let _ = resp_tx
                         .send(format!(
-                            "你已经绑定为{},如需修改请先解绑",
-                            existing_username
+                            "[CQ:at,qq={}] 你已经绑定为{},如需修改请先解绑",
+                            msg.user_id, existing_username
                         ))
                         .await;
                 }
@@ -377,8 +377,8 @@ async fn handle_command(
                                 info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
                                 let _ = resp_tx
                                     .send(format!(
-                                        "您的验证码是 {}，请在两分钟内通过osu!发送私信给 {} 来完成验证",
-                                        code, nickname
+                                        "[CQ:at,qq={}] 您的验证码是 {}，请在两分钟内通过osu!发送私信给 {} 来完成验证",
+                                        msg.user_id, code, nickname
                                     ))
                                     .await;
                             }
@@ -403,7 +403,7 @@ async fn handle_command(
                                     Ok(Ok(())) => {
                                         info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
                                         let _ = resp_tx
-                                            .send(format!("成功绑定为{}", user_info.username))
+                                            .send(format!("[CQ:at,qq={}] 成功绑定为{}", msg.user_id, user_info.username))
                                             .await;
                                     }
                                     Ok(Err(bound_qq)) => {
@@ -457,7 +457,7 @@ async fn handle_command(
                         Ok(_) => {
                             ctx.storage.remove_pending_unbind(msg.user_id).ok();
                             info!(user_id = msg.user_id, "Unbind success");
-                            let _ = resp_tx.send("解绑成功".to_string()).await;
+                            let _ = resp_tx.send(format!("[CQ:at,qq={}] 解绑成功", msg.user_id)).await;
                         }
                         Err(_) => {
                             error!(user_id = msg.user_id, "Unbind failed");
@@ -473,8 +473,8 @@ async fn handle_command(
                             info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
                             let _ = resp_tx
                                 .send(format!(
-                                    "确定要解除绑定 {} 吗？回复\"解绑\"确认",
-                                    current_username
+                                    "[CQ:at,qq={}] 确定要解除绑定 {} 吗？回复\"解绑\"确认",
+                                    msg.user_id, current_username
                                 ))
                                 .await;
                         }
@@ -864,7 +864,7 @@ async fn handle_irc_message(
                 Ok(Ok(())) => {
                     storage.remove_pending_bind(code).ok();
                     info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
-                    let msg = format!("成功绑定为{}", info.username);
+                    let msg = format!("[CQ:at,qq={}] 成功绑定为{}", pending.qq_user_id, info.username);
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Ok(Err(_)) => {
