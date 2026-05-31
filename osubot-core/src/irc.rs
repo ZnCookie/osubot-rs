@@ -1,7 +1,10 @@
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tokio::time::{timeout, Duration};
+use tracing::{debug, error, info, warn};
+
+const READ_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 #[derive(Debug, Clone)]
 pub struct IrcConfig {
@@ -91,19 +94,55 @@ impl IrcClient {
             .await?;
         writer.flush().await?;
 
-        info!("IRC connection established");
+        info!(nickname = %self.config.nickname, "IRC connection established");
 
         let mut line = String::new();
+        let mut consecutive_timeouts: u32 = 0;
         loop {
             line.clear();
-            if reader.read_line(&mut line).await? == 0 {
-                warn!("IRC connection closed");
-                return Ok(());
+            match timeout(
+                Duration::from_secs(READ_TIMEOUT_SECS),
+                reader.read_line(&mut line),
+            )
+            .await
+            {
+                Ok(Ok(0)) => {
+                    warn!("IRC connection closed by server");
+                    return Ok(());
+                }
+                Ok(Ok(_)) => {
+                    consecutive_timeouts = 0;
+                }
+                Ok(Err(e)) => {
+                    warn!(error = %e, "IRC read error");
+                    return Err(e.into());
+                }
+                Err(_) => {
+                    // Read timeout — connection may be dead
+                    consecutive_timeouts += 1;
+                    if consecutive_timeouts >= 2 {
+                        warn!("IRC read timeout twice in a row, reconnecting");
+                        return Ok(());
+                    }
+                    info!("IRC read timeout, sending PING to check connection");
+                    if let Err(e) = writer.write_all(b"PING :keepalive\r\n").await {
+                        warn!(error = %e, "Failed to send PING");
+                        return Err(e.into());
+                    }
+                    writer.flush().await?;
+                    continue;
+                }
             }
 
             let line = line.trim();
             let line = strip_ircv3_tags(line);
             if line.is_empty() {
+                continue;
+            }
+
+            // Handle PONG (response to our PING)
+            if line.starts_with("PONG") {
+                debug!(line = %line, "IRC PONG received");
                 continue;
             }
 
@@ -113,6 +152,11 @@ impl IrcClient {
                 writer.write_all(format!("{}\r\n", pong).as_bytes()).await?;
                 writer.flush().await?;
                 continue;
+            }
+
+            // Log non-PRIVMSG messages for debugging
+            if !line.contains("PRIVMSG") {
+                debug!(line = %line, "IRC non-PRIVMSG");
             }
 
             // Parse PRIVMSG
