@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html><head><style>:root {
+  --score-hue: 200;
+  --score-sat: 60%;
+  --primary: hsl(var(--score-hue), var(--score-sat), 75%);
+  --primary-strong: hsl(var(--score-hue), var(--score-sat), 60%);
+  --primary-container: hsl(var(--score-hue), var(--score-sat), 30%);
+  --on-primary-container: hsl(var(--score-hue), 30%, 90%);
+  --tertiary: hsl(calc(var(--score-hue) + 60), var(--score-sat), 70%);
+  --tertiary-container: hsl(calc(var(--score-hue) + 60), var(--score-sat), 25%);
+  --surface: #2b2930;
+  --on-surface: #e6e1e5;
+  --outline: #938f99;
+
+  --hit-300: #7ec8ff;
+  --hit-100: #a0e0aa;
+  --hit-50: #f0c870;
+  --hit-miss: #ff9090;
+  --hit-geki: #fface8;
+  --hit-katu: #80e0c0;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+.score-card {
+  width: 2560px;
+  height: 1440px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 48px;
+  font-family: 'Noto Sans', 'Source Han Sans CN', sans-serif;
+  color: var(--on-surface);
+  background: var(--surface);
+}
+
+.bg-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  opacity: 0.7;
+}
+
+.bg-gradient {
+  position: absolute;
+  inset: 0;
+  background: rgba(28, 27, 31, 0.30);
+  z-index: 1;
+}
+
+.content {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  padding: 48px 320px;
+  gap: 16px;
+}
+
+.surface {
+  background: rgba(43, 41, 48, 0.75);
+  border-radius: 40px;
+}
+
+/* ===== Chips ===== */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 24px;
+  border-radius: 16px;
+  border: 2px solid rgba(73, 69, 79, 0.8);
+  font-size: 24px;
+  font-weight: 600;
+  color: #cac4d0;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chip-filled {
+  background: rgba(92, 42, 26, 0.8);
+  border: none;
+  color: #ffdad0;
+}
+
+.chip-status {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip-status-ranked {
+  background: rgba(160, 224, 170, 0.2);
+  border-color: rgba(160, 224, 170, 0.4);
+  color: #c0f0c8;
+}
+
+.chip-status-qualified {
+  background: rgba(126, 200, 255, 0.2);
+  border-color: rgba(126, 200, 255, 0.4);
+  color: #a0d8ff;
+}
+
+.chip-status-loved {
+  background: rgba(255, 90, 120, 0.2);
+  border-color: rgba(255, 90, 120, 0.4);
+  color: #ffb0c0;
+}
+
+.chip-status-approved {
+  background: rgba(160, 224, 170, 0.2);
+  border-color: rgba(160, 224, 170, 0.4);
+  color: #c0f0c8;
+}
+
+.chip-status-graveyard {
+  background: rgba(147, 143, 153, 0.2);
+  border-color: rgba(147, 143, 153, 0.4);
+  color: #a0a0a0;
+}
+
+.chip-status-wip {
+  background: rgba(240, 200, 112, 0.2);
+  border-color: rgba(240, 200, 112, 0.4);
+  color: #f0d080;
+}
+
+.chip-status-pending {
+  background: rgba(240, 200, 112, 0.2);
+  border-color: rgba(240, 200, 112, 0.4);
+  color: #f0d080;
+}
+
+.chip-diff {
+  background: rgba(240, 192, 160, 0.15);
+  border-color: rgba(240, 192, 160, 0.3);
+  color: #f0c0a0;
+  max-width: 560px;
+  overflow: hidden;
+  gap: 10px;
+}
+
+.chip-diff .star { flex-shrink: 0; }
+.chip-diff .diff-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chip-fav {
+  background: rgba(255, 90, 90, 0.25);
+  border: 2px solid rgba(255, 90, 90, 0.4);
+  color: #fff;
+  gap: 12px;
+}
+
+.chip-fav .chip-icon { font-size: 28px; }
+
+.chip-plays {
+  background: rgba(90, 160, 255, 0.25);
+  border: 2px solid rgba(90, 160, 255, 0.4);
+  color: #fff;
+  gap: 12px;
+}
+
+.chip-plays .chip-icon {
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 12px 0 12px 20px;
+  border-color: transparent transparent transparent #fff;
+  flex-shrink: 0;
+}
+
+.chip-info {
+  background: rgba(255,255,255,0.06);
+  border: 2px solid rgba(255,255,255,0.15);
+  color: #b0adb5;
+  gap: 8px;
+}
+
+.chip-info .chip-icon {
+  font-size: 24px;
+  opacity: 0.7;
+}
+
+.chip-info .chip-label {
+  font-size: 18px;
+  opacity: 0.6;
+}
+
+/* ===== Top Row ===== */
+.top-row {
+  display: flex;
+  gap: 24px;
+  flex-shrink: 0;
+}
+
+.top-row > .beatmap-card {
+  flex: 0 0 auto;
+  width: calc(1920px - 24px - 440px);
+  max-width: calc(1920px - 24px - 440px);
+}
+
+/* ===== Middle Row ===== */
+.middle-row {
+  display: flex;
+  gap: 24px;
+  flex-shrink: 0;
+}
+
+.middle-row > .user-card {
+  flex: 0 0 auto;
+  width: calc(1920px - 24px - 440px);
+  max-width: calc(1920px - 24px - 440px);
+}
+
+/* ===== Score Row ===== */
+.score-row {
+  display: flex;
+  gap: 24px;
+  flex-shrink: 0;
+}
+
+.beatmap-card {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  padding: 32px 40px;
+  min-width: 0;
+}
+
+.cover-wrap {
+  width: 384px; height: 216px;
+  border-radius: 28px;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.5);
+}
+
+.cover-wrap img { width: 100%; height: 100%; object-fit: cover; }
+
+.beatmap-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.beatmap-title {
+  font-size: 52px;
+  font-weight: 500;
+  color: #e6e1e5;
+  line-height: 68px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.beatmap-artist {
+  font-size: 30px;
+  color: var(--outline);
+}
+
+.bottom-chips {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.info-chips {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.meta-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 32px 48px;
+  width: 440px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.meta-line {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.meta-label {
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--outline);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  width: 100px;
+  flex-shrink: 0;
+}
+
+.meta-val {
+  font-size: 34px;
+  color: #cac4d0;
+  text-align: center;
+  flex: 1;
+}
+
+.meta-val-big {
+  font-size: 52px;
+  font-weight: 600;
+}
+
+.user-card {
+  padding: 32px 40px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  min-width: 0;
+}
+
+.user-avatar {
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  background: rgba(79, 55, 139, 0.7);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 8px solid var(--primary-container);
+}
+
+.user-info-mid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.user-name {
+  font-size: 44px;
+  font-weight: 500;
+  color: #e6e1e5;
+  line-height: 56px;
+}
+
+.user-ranks {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+}
+
+.rank-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.rank-hash {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.rank-val {
+  font-size: 40px;
+  font-weight: 600;
+  color: #e6e1e5;
+}
+
+.rank-label {
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--outline);
+  margin-left: 4px;
+}
+
+.user-pp-section {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.user-pp-val {
+  font-size: 44px;
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 56px;
+}
+
+.user-pp-change {
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 40px;
+}
+
+.user-pp-change.up { color: #a0e0aa; }
+.user-pp-change.down { color: #ff9090; }
+.user-pp-change.zero { color: #938f99; }
+
+.rank-change {
+  font-size: 28px;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.rank-change.up { color: #a0e0aa; }
+.rank-change.down { color: #ff9090; }
+.rank-change.zero { color: #938f99; }
+
+.stats-card {
+  padding: 32px 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  flex-shrink: 0;
+  width: 440px;
+  box-sizing: border-box;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-row .label {
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--outline);
+  width: 44px;
+}
+
+.stat-row .track {
+  flex: 1;
+  height: 8px;
+  background: rgba(73, 69, 79, 0.8);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-row .fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--primary-container), var(--primary));
+  z-index: 2;
+}
+
+.stat-row .fill-over {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  z-index: 1;
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(90deg, rgba(255,80,80,0.6), rgba(255,40,40,0.9));
+}
+
+.stat-row .fill-under {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  z-index: 1;
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(90deg, rgba(80,200,100,0.6), rgba(60,220,80,0.9));
+}
+
+.stat-row .val {
+  font-size: 26px;
+  font-weight: 500;
+  color: #cac4d0;
+  text-align: right;
+  white-space: nowrap;
+  flex: 0 0 100px;
+}
+
+.stat-row .val span { display: inline; }
+
+.val-eff-up { color: #ff6666; }
+.val-eff-down { color: #66cc77; }
+
+.hits-card {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 24px;
+}
+
+.hits-row {
+  display: flex;
+  gap: 16px;
+}
+
+.hit-card {
+  width: 132px;
+  height: 132px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 28px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.hit-card .num {
+  font-size: 42px;
+  font-weight: 600;
+  line-height: 52px;
+  margin-top: 4px;
+}
+
+.hit-card .label {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--outline);
+  margin-top: 2px;
+}
+
+.hit-300 { background: rgba(126, 200, 255, 0.18); }
+.hit-300 .num { color: #7ec8ff; }
+.hit-300 .label { color: #7ec8ff; }
+
+.hit-100 { background: rgba(160, 224, 170, 0.18); }
+.hit-100 .num { color: #a0e0aa; }
+.hit-100 .label { color: #a0e0aa; }
+
+.hit-50 { background: rgba(240, 200, 112, 0.18); }
+.hit-50 .num { color: #f0c870; }
+.hit-50 .label { color: #f0c870; }
+
+.hit-miss { background: rgba(255, 144, 144, 0.18); }
+.hit-miss .num { color: #ff9090; }
+.hit-miss .label { color: #ff9090; }
+
+.hit-geki { background: rgba(255, 172, 232, 0.18); }
+.hit-geki .num { color: #fface8; }
+.hit-geki .label { color: #fface8; }
+
+.hit-katu { background: rgba(128, 224, 192, 0.18); }
+.hit-katu .num { color: #80e0c0; }
+.hit-katu .label { color: #80e0c0; }
+
+.hit-300-mania {
+  background: linear-gradient(to bottom, rgba(255, 172, 232, 0.22) 50%, rgba(126, 200, 255, 0.22) 50%);
+}
+.hit-300-mania .mania-geki { color: #fface8; }
+.hit-300-mania .mania-300 { color: #7ec8ff; }
+
+.hit-50-mania {
+  background: linear-gradient(to bottom, rgba(240, 200, 112, 0.22) 50%, rgba(255, 144, 144, 0.22) 50%);
+}
+.hit-50-mania .mania-50 { color: #f0c870; }
+.hit-50-mania .mania-miss { color: #ff9090; }
+
+.detail-card {
+  flex: 1;
+  padding: 20px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+}
+
+/* detail-card 子卡布局 */
+.detail-subcard-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.subcard-pp {
+  flex: 2;
+  background: rgba(126,200,255,0.2);
+  border: 2px solid rgba(126,200,255,0.35);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 0 32px rgba(126,200,255,0.15);
+  padding-bottom: 12px;
+}
+
+.subcard-valwrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.subcard-pp .pp-val {
+  font-size: 120px;
+  font-weight: 700;
+  color: #a8dcff;
+  line-height: 1;
+  text-shadow: 0 2px 16px rgba(126,200,255,0.4);
+}
+
+.subcard-pp .pp-unit {
+  font-size: 28px;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.subcard-pp .pp-label {
+  font-size: 13px;
+  color: #7ec8ff;
+  letter-spacing: 3px;
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.subcard-pp-predict {
+  width: 100%;
+  background: rgba(255,255,255,0.04);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.subcard-breakdown {
+  width: 100%;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.subcard-if-acc {
+  width: 100%;
+  padding: 0 20px;
+  display: flex;
+  justify-content: space-around;
+}
+
+.detail-subcard-footer-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.subcard-if-fc, .subcard-ur {
+  background: rgba(255,255,255,0.04);
+  border-radius: 18px;
+  padding: 16px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 240px;
+}
+
+.subcard-combo {
+  flex: 1;
+  background: linear-gradient(to right, rgba(160,224,170,0.25) var(--combo-pct, 50%), rgba(43,41,48,0.4) var(--combo-pct, 50%));
+  border: 2px solid rgba(160,224,170,0.6);
+  border-radius: 20px;
+  padding: 16px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.subcard-combo .fc-label {
+  font-size: 13px;
+  color: #b0adb5;
+  letter-spacing: 3px;
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.subcard-combo .fc-val {
+  font-size: 72px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-align: center;
+  width: 100%;
+}
+
+.subcard-combo .combo-cur {
+  color: #cac4d0;
+}
+
+.subcard-combo .combo-max {
+  color: #938f99;
+}
+
+.subcard-combo .combo-unit {
+  font-size: 28px;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.subcard-combo .combo-sep {
+  font-size: 28px;
+  color: #938f99;
+  margin: 0 6px;
+}
+
+.subcard-combo.combo-fc .fc-label {
+  color: #c0f0c8;
+}
+
+.subcard-combo.combo-fc .combo-cur {
+  color: #c0f0c8;
+}
+
+.subcard-combo.combo-fc .combo-sep {
+  color: #c0f0c8;
+}
+
+.subcard-if-fc .fc-label, .subcard-ur .ur-label {
+  font-size: 28px;
+  color: #938f99;
+  letter-spacing: 2px;
+  font-weight: 500;
+}
+
+.subcard-if-fc .fc-val, .subcard-ur .ur-val {
+  font-size: 44px;
+  font-weight: 600;
+  color: #cac4d0;
+}
+
+.subcard-if-fc .pp-unit {
+  font-size: 28px;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.chip-unit {
+  font-size: 16px;
+  font-weight: 500;
+  margin-left: 3px;
+  opacity: 0.7;
+}
+
+.chip-label {
+  color: #938f99;
+}
+
+.if-acc-item .val-unit {
+  font-size: 18px;
+  font-weight: 500;
+  margin-left: 4px;
+  opacity: 0.65;
+}
+
+.if-fc-line {
+  font-size: 32px;
+  font-weight: 500;
+  color: #938f99;
+}
+
+.combo-current {
+  color: var(--combo-color, #c0f0c8);
+}
+
+.combo-divider {
+  color: #938f99;
+  margin: 0 6px;
+}
+
+.combo-total {
+  color: #938f99;
+}
+
+.combo-group {
+  display: inline-flex;
+  align-items: center;
+  height: 72px;
+  padding: 0 12px 0 32px;
+  border-radius: 20px;
+  font-size: 50px;
+  font-weight: 600;
+  border: 3px solid rgba(160, 224, 170, 0.5);
+  background: linear-gradient(to right, rgba(160,224,170,0.25) var(--combo-pct, 50%), rgba(43,41,48,0.4) var(--combo-pct, 50%));
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+.pp-breakdown {
+  width: 100%;
+  margin-top: 4px;
+  margin-bottom: 16px;
+}
+
+.pp-labels {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+  justify-content: center;
+}
+
+.pp-label {
+  font-size: 32px;
+  font-weight: 500;
+}
+
+.pp-chip-aim {
+  background: rgba(138, 180, 248, 0.2);
+  border-color: rgba(138, 180, 248, 0.4);
+  color: #8AB4F8;
+}
+
+.pp-chip-speed {
+  background: rgba(242, 139, 130, 0.2);
+  border-color: rgba(242, 139, 130, 0.4);
+  color: #F28B82;
+}
+
+.pp-chip-acc {
+  background: rgba(129, 201, 149, 0.2);
+  border-color: rgba(129, 201, 149, 0.4);
+  color: #81C995;
+}
+
+.pp-chip-fl {
+  background: rgba(215, 174, 251, 0.2);
+  border-color: rgba(215, 174, 251, 0.4);
+  color: #D7AEFB;
+}
+
+.pp-chip-diff {
+  background: rgba(253, 214, 99, 0.2);
+  border-color: rgba(253, 214, 99, 0.4);
+  color: #FDD663;
+}
+
+.rank-badge {
+  width: 280px;
+  height: 280px;
+  border-radius: 40px;
+  background: rgba(92, 42, 26, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 220px;
+  font-weight: 900;
+  color: #ffdad0;
+  flex-shrink: 0;
+}
+
+.rank-s {
+  background: rgba(160, 140, 60, 0.6);
+  color: #ffd700;
+  text-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+}
+
+.rank-s-silver {
+  background: rgba(120, 130, 140, 0.6);
+  color: #e0e8f0;
+  text-shadow: 0 0 20px rgba(200, 210, 220, 0.5);
+}
+
+.rank-a {
+  background: rgba(40, 120, 60, 0.6);
+  color: #81C995;
+  text-shadow: 0 0 20px rgba(129, 201, 149, 0.4);
+}
+
+.rank-b {
+  background: rgba(40, 80, 140, 0.6);
+  color: #8AB4F8;
+  text-shadow: 0 0 20px rgba(138, 180, 248, 0.4);
+}
+
+.rank-c {
+  background: rgba(90, 50, 130, 0.6);
+  color: #D7AEFB;
+  text-shadow: 0 0 20px rgba(215, 174, 251, 0.4);
+}
+
+.rank-d {
+  background: rgba(140, 80, 30, 0.6);
+  color: #F0A060;
+  text-shadow: 0 0 20px rgba(240, 160, 96, 0.4);
+}
+
+.rank-f {
+  background: rgba(70, 70, 70, 0.6);
+  color: #938f99;
+  text-shadow: 0 0 20px rgba(147, 143, 153, 0.3);
+}
+
+.mod-chips {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ===== If-ACC ===== */
+.if-acc {
+  display: flex;
+  justify-content: space-evenly;
+  width: 100%;
+  margin-top: 16px;
+}
+
+.if-acc-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.if-acc-item .label {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--outline);
+}
+
+.if-acc-item .val {
+  font-size: 34px;
+  font-weight: 500;
+  color: #cac4d0;
+  line-height: 42px;
+}
+
+/* ===== Score/ACC modules ===== */
+.score-acc-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.score-acc-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 280px;
+  height: 280px;
+}
+
+.stat-mod {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.stat-mod .stat-val {
+  font-size: 56px;
+  font-weight: 600;
+  color: #e6e1e5;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.stat-mod .stat-label {
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--outline);
+}
+
+.stat-mod-score {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.stat-mod-acc {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+
+
+</style></head><body>
+<div class="score-card">
+  <img class="bg-img" src="" />
+  <div class="bg-gradient"></div>
+  <div class="content">
+    <div class="top-row">
+      <div class="beatmap-card surface">
+        <div class="cover-wrap"><img src="" /></div>
+        <div class="beatmap-text">
+          <div class="beatmap-title">Max Test Title for Overflow</div>
+          <div class="beatmap-artist">Maximum</div>
+          <div class="bottom-chips">
+            
+            <span class="chip chip-status chip-status-ranked">Ranked</span>
+            <span class="chip chip-diff"><span class="star">★ 12.00</span><span class="diff-name">MaxExtra</span></span><span class="chip chip-fav"><span class="chip-icon">♥</span><span class="chip-num">99,999</span></span><span class="chip chip-plays"><span class="chip-icon"></span><span class="chip-num">1000.0K</span></span>
+          </div>
+          <div class="info-chips">
+            <span class="chip chip-info"><span class="chip-icon">♫</span><span class="chip-label">BPM</span><span class="chip-num">300</span></span>
+            <span class="chip chip-info"><span class="chip-icon">◷</span><span class="chip-label">Length</span><span class="chip-num">120:00</span></span>
+            <span class="chip chip-info"><span class="chip-icon">✎</span><span class="chip-label">Mapper</span><span class="chip-num">MaxMapper</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="meta-card surface">
+        <div class="meta-line"><span class="meta-label">BID</span><span class="meta-val meta-val-big">999999</span></div><div class="meta-line"><span class="meta-label">Played</span><span class="meta-val">2025/12/31 23:59:59</span></div>
+      </div>
+    </div>
+
+    <div class="middle-row">
+      <div class="user-card surface">
+        <div class="user-avatar"><img src="" /></div>
+        <div class="user-info-mid">
+          <div class="user-name">MaxPlayerName</div>
+          <div class="user-ranks">
+            <div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">999,999</span><span class="rank-change down">-99999</span><span class="rank-label">Global</span></div>
+            <div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">999,999</span><span class="rank-change down">-99999</span><span class="rank-label">JP</span></div>
+          </div>
+        </div>
+        <div class="user-pp-section">
+          <span class="user-pp-val">100000pp</span>
+          <span class="user-pp-change up">+999</span>
+        </div>
+      </div>
+      <div class="stats-card surface"><div class="stat-row"><span class="label">AR</span><div class="track"></div><span class="val"><span>-</span></span></div><div class="stat-row"><span class="label">OD</span><div class="track"><div class="fill" style="width:70%"></div><div class="fill-over" style="left:calc(70% - 2px); width:calc(30% + 2px)"></div></div><span class="val"><span class="val-eff-up">12.5</span><span>[7.0]</span></span></div><div class="stat-row"><span class="label">CS</span><div class="track"></div><span class="val"><span>-</span></span></div><div class="stat-row"><span class="label">HP</span><div class="track"><div class="fill" style="width:55%"></div><div class="fill-under" style="left:calc(55% - 2px); width:calc(15% + 2px)"></div></div><span class="val"><span class="val-eff-down">5.5</span><span>[7.0]</span></span></div></div>
+    </div>
+
+    <div class="score-row">
+      <div class="hits-card surface">
+        <div class="hits-row"><div class="hit-card hit-300"><div class="num">9999×</div><div class="label">300</div></div><div class="hit-card hit-100"><div class="num">9999×</div><div class="label">150</div></div><div class="hit-card hit-miss"><div class="num">9999×</div><div class="label">miss</div></div></div>
+        <div class="score-acc-row">
+          <div class="rank-badge rank-s">X</div>
+          <div class="score-acc-stack">
+            <div class="stat-mod stat-mod-score"><div class="stat-val">9,999,999</div><div class="stat-label">SCORE</div></div>
+            <div class="stat-mod stat-mod-acc"><div class="stat-val">99.99%</div><div class="stat-label">ACC</div></div>
+          </div>
+        </div>
+        <div class="mod-chips"><span class="chip chip-filled">Lazer</span><span class="chip chip-filled">EZ</span><span class="chip chip-filled">DT</span><span class="chip chip-filled">FL</span><span class="chip chip-filled">HD</span><span class="chip chip-filled">HR</span></div>
+      </div>
+      <div class="detail-card surface">
+        <div class="detail-subcard-row">
+          <div class="subcard-pp">
+            <div class="subcard-valwrap">
+              <div class="pp-val">10000<span class="pp-unit">pp</span></div>
+            </div>
+            <div class="pp-label">PERFORMANCE</div>
+          </div>
+        </div><div class="subcard-pp-predict"><div class="subcard-breakdown"><span class="chip pp-chip-aim"><span class="chip-label">AIM</span> 10000<span class="chip-unit">pp</span></span><span class="chip pp-chip-speed"><span class="chip-label">SPD</span> 10000<span class="chip-unit">pp</span></span><span class="chip pp-chip-acc"><span class="chip-label">ACC</span> 10000<span class="chip-unit">pp</span></span><span class="chip pp-chip-fl"><span class="chip-label">FL</span> 10000<span class="chip-unit">pp</span></span><span class="chip pp-chip-diff"><span class="chip-label">DIFF</span> 10000<span class="chip-unit">pp</span></span></div><div class="subcard-if-acc"><div class="if-acc-item"><span class="val">10000<span class="val-unit">pp</span></span><span class="label">95%</span></div><div class="if-acc-item"><span class="val">10000<span class="val-unit">pp</span></span><span class="label">97%</span></div><div class="if-acc-item"><span class="val">10000<span class="val-unit">pp</span></span><span class="label">98%</span></div><div class="if-acc-item"><span class="val">10000<span class="val-unit">pp</span></span><span class="label">99%</span></div><div class="if-acc-item"><span class="val">10000<span class="val-unit">pp</span></span><span class="label">100%</span></div></div></div><div class="detail-subcard-footer-row"><div class="subcard-if-fc"><span class="fc-label">IF FC</span><span class="fc-val">10000<span class="pp-unit">pp</span></span></div><div class="subcard-combo combo-fc" style="--combo-pct: 100%"><span class="fc-label">COMBO</span><span class="fc-val"><span class="combo-cur">9999<span class="combo-unit">x</span></span><span class="combo-sep"> / </span><span class="combo-max">9999<span class="combo-unit">x</span></span></span></div><div class="subcard-ur"><span class="ur-label">UR</span><span class="ur-val">1000</span></div></div>      </div>
+    </div>
+  </div>
+</div>
+</body></html>

@@ -1,15 +1,19 @@
-use crate::types::{GameMode, UserChange, UserStats};
+use crate::types::{GameMode, Score, UserChange, UserStats};
+use osubot_types::{
+    format_accuracy, format_length, format_mods, format_number, format_play_datetime,
+    trim_trailing_zeros,
+};
+use phf::phf_map;
 
-/// 格式化用户数据为响应字符串
 pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     let username = &stats.username;
     let mode_name = mode.name();
 
-    let pp = trim_trailing_zeros(format!("{:.2}", stats.pp));
+    let pp = trim_trailing_zeros(&format!("{:.2}", stats.pp));
     let rank = stats.rank.to_string();
     let country_rank = stats.country_rank.to_string();
-    let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64); // 转成 m
-    let acc = trim_trailing_zeros(format!("{:.2}", stats.accuracy));
+    let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64);
+    let acc = format_accuracy(stats.accuracy / 100.0); // stats.hit_accuracy is a percentage (e.g., 98.5), divide to get 0-1 fraction
     let playcount = stats.playcount.to_string();
     let hits = format_number(stats.hits);
     let playtime = format_playtime(stats.playtime);
@@ -35,7 +39,7 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
          #{rank_str}\n\
          {country_rank_str}\n\
          {ranked_score}m Ranked谱面总分\n\
-         {acc}% 准确率\n\
+         {acc} 准确率\n\
          {playcount} 游玩次数\n\
          {hits} 总命中次数\n\
          {playtime}游玩时间",
@@ -52,75 +56,14 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     )
 }
 
-/// 格式化整数，加千位分隔符
-fn format_number<T: itoa::Integer>(value: T) -> String {
-    let mut buf = itoa::Buffer::new();
-    let formatted = buf.format(value);
-
-    let chars: Vec<char> = formatted.chars().collect();
-    let len = chars.len();
-
-    let mut result = String::new();
-    for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(*c);
-    }
-
-    result
-}
-
-/// 格式化浮点数，加千位分隔符和小数位
-#[allow(dead_code)]
-fn format_float(value: f64, decimals: usize) -> String {
-    let int_part = value as i64;
-
-    // 格式整数部分
-    let mut int_buf = itoa::Buffer::new();
-    let int_formatted = int_buf.format(int_part);
-
-    let chars: Vec<char> = int_formatted.chars().collect();
-    let len = chars.len();
-
-    let mut int_result = String::new();
-    for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i).is_multiple_of(3) {
-            int_result.push(',');
-        }
-        int_result.push(*c);
-    }
-
-    // 格式小数部分
-    let multiplier = 10_f64.powi(decimals as i32);
-    let dec_part = ((value - int_part as f64) * multiplier).round() as i64;
-
-    let mut dec_buf = itoa::Buffer::new();
-    let dec_formatted = dec_buf.format(dec_part);
-
-    format!(
-        "{}.{:0>width$}",
-        int_result,
-        dec_formatted,
-        width = decimals
-    )
-}
-
-/// 去除数字字符串末尾的无效零（如 33570.10 → 33570.1）
-fn trim_trailing_zeros(s: String) -> String {
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
-}
-
-/// 格式化排名变化
 fn format_change(change: Option<i64>) -> String {
     match change {
-        Some(c) if c > 0 => format!("↓{}", c),
-        Some(c) if c < 0 => format!("↑{}", c.abs()),
+        Some(c) if c > 0 => format!("↑{}", c),
+        Some(c) if c < 0 => format!("↓{}", c.abs()),
         _ => String::new(),
     }
 }
 
-/// 格式化游玩时间
 fn format_playtime(seconds: i64) -> String {
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
@@ -128,7 +71,161 @@ fn format_playtime(seconds: i64) -> String {
     format!("{} 小时 {} 分钟 {} 秒", hours, minutes, secs)
 }
 
-/// 格式化小变化（用于 playcount, hits, playtime）
+fn format_star_rating(stars: f64) -> String {
+    let full = stars.floor() as usize;
+    let empty = 10_usize.saturating_sub(full);
+    let filled: String = "\u{2605}".repeat(full.min(10));
+    let empty: String = "\u{2606}".repeat(empty);
+    format!("{}{} {:.2}*", filled, empty, stars)
+}
+
+fn format_combo(score: &Score) -> String {
+    if score.is_perfect {
+        format!("{}x (FC)", score.max_combo)
+    } else {
+        format!("{}x", score.max_combo)
+    }
+}
+
+struct ScoreDisplayFields {
+    length: String,
+    stars: String,
+    pp_str: String,
+    combo_str: String,
+    acc: String,
+}
+
+fn compute_display_fields(score: &Score) -> ScoreDisplayFields {
+    ScoreDisplayFields {
+        length: format_length(score.length_seconds),
+        stars: format_star_rating(score.star_rating),
+        pp_str: match score.pp {
+            Some(pp) => format!("{:.2}", pp),
+            None => "--".to_string(),
+        },
+        combo_str: format_combo(score),
+        acc: format_accuracy(score.accuracy), // score.accuracy is already a 0-1 fraction from the API
+    }
+}
+
+pub fn format_score(
+    score: &Score,
+    username: &str,
+    mode: GameMode,
+    position: Option<usize>,
+    is_pass: bool,
+) -> String {
+    let fields = compute_display_fields(score);
+
+    let mods_str = if score.mods.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", format_mods(&score.mods))
+    };
+
+    let client_tag = if score.is_lazer { " (lazer)" } else { "" };
+    let label = if is_pass {
+        "最近通过"
+    } else {
+        "最近游玩"
+    };
+    let position_str = match position {
+        Some(pos) => format!("#{} {}{}", pos + 1, label, client_tag),
+        None => format!("{}{}", label, client_tag),
+    };
+
+    let score_val = format_number(score.score_value);
+    let play_time = format_play_datetime(&score.created_at);
+
+    let hits_str = if mode == GameMode::Mania {
+        format!(
+            "{geki}/{n300}/{katu}/{n100}/{n50}/{miss}",
+            geki = score.statistics.count_geki,
+            n300 = score.statistics.count_300,
+            katu = score.statistics.count_katu,
+            n100 = score.statistics.count_100,
+            n50 = score.statistics.count_50,
+            miss = score.statistics.count_miss,
+        )
+    } else {
+        format!(
+            "{n300}/{n100}/{n50}/{miss}",
+            n300 = score.statistics.count_300,
+            n100 = score.statistics.count_100,
+            n50 = score.statistics.count_50,
+            miss = score.statistics.count_miss,
+        )
+    };
+
+    format!(
+        "{artist} - {title} ({creator}) [{version}]\n\
+         {stars} [{length}]\n\n\
+         {username}: {pp}pp\n\
+         [{rank}] {score_val} | {acc} | {combo}\n\
+         {hits}{mods}\n\
+         {play_time}\n\n\
+         {position}",
+        artist = score.artist,
+        title = score.title,
+        creator = score.creator,
+        version = score.version,
+        stars = fields.stars,
+        length = fields.length,
+        username = username,
+        pp = fields.pp_str,
+        rank = score.rank,
+        score_val = score_val,
+        acc = fields.acc,
+        combo = fields.combo_str,
+        hits = hits_str,
+        mods = mods_str,
+        play_time = play_time,
+        position = position_str,
+    )
+}
+
+pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, is_pass: bool) -> String {
+    let label = if is_pass {
+        "最近通过"
+    } else {
+        "最近游玩"
+    };
+    let mode_name = mode.name();
+
+    let mut lines = vec![format!("{}的{} ({})：\n", username, label, mode_name)];
+
+    for (i, score) in scores.iter().enumerate() {
+        let fields = compute_display_fields(score);
+
+        let lazer_tag = if score.is_lazer { " (lazer)" } else { "" };
+        let mods_str = if score.mods.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", format_mods(&score.mods))
+        };
+        let play_time = format_play_datetime(&score.created_at);
+
+        lines.push(format!(
+            "#{idx} {artist} - {title} [{version}] {stars}{lazer_tag}\n   [{rank}] {pp}pp | {acc} | {combo} | {length}{mods} | {play_time}",
+            idx = i + 1,
+            artist = score.artist,
+            title = score.title,
+            version = score.version,
+            stars = fields.stars,
+            lazer_tag = lazer_tag,
+            rank = score.rank,
+            pp = fields.pp_str,
+            acc = fields.acc,
+            combo = fields.combo_str,
+            length = fields.length,
+            mods = mods_str,
+            play_time = play_time,
+        ));
+    }
+
+    lines.join("\n\n")
+}
+
 fn format_small_change(change: Option<i64>) -> String {
     match change {
         Some(c) if c > 0 => format!("(+{})", format_number(c)),
@@ -137,7 +234,6 @@ fn format_small_change(change: Option<i64>) -> String {
     }
 }
 
-/// 非空字符串加空格前缀
 fn space_prefix(s: String) -> String {
     if s.is_empty() {
         String::new()
@@ -146,14 +242,13 @@ fn space_prefix(s: String) -> String {
     }
 }
 
-/// 格式化浮点变化（用于 pp, accuracy）(+X.XX) / (-X.XX)
 fn format_float_change(change: Option<f64>, suffix: &str) -> String {
     match change {
         Some(c) if c != 0.0 => {
             let abs = c.abs();
             let sign = if c > 0.0 { "+" } else { "-" };
             let formatted = format!("{:.2}", abs);
-            let trimmed = trim_trailing_zeros(formatted);
+            let trimmed = trim_trailing_zeros(&formatted);
             if trimmed.is_empty() || trimmed == "0" {
                 return format!("({sign})");
             }
@@ -168,267 +263,266 @@ fn format_float_change(change: Option<f64>, suffix: &str) -> String {
     }
 }
 
-// country_code to full name mapping (complete list from osu!)
+static COUNTRY_NAMES: phf::Map<&'static str, &'static str> = phf_map! {
+    "A1" => "Anonymous Proxy",
+    "A2" => "Satellite Provider",
+    "AD" => "Andorra",
+    "AE" => "United Arab Emirates",
+    "AF" => "Afghanistan",
+    "AG" => "Antigua and Barbuda",
+    "AI" => "Anguilla",
+    "AL" => "Albania",
+    "AM" => "Armenia",
+    "AN" => "Netherlands Antilles",
+    "AO" => "Angola",
+    "AP" => "Asia/Pacific Region",
+    "AQ" => "Antarctica",
+    "AR" => "Argentina",
+    "AS" => "American Samoa",
+    "AT" => "Austria",
+    "AU" => "Australia",
+    "AW" => "Aruba",
+    "AX" => "Aland Islands",
+    "AZ" => "Azerbaijan",
+    "BA" => "Bosnia and Herzegovina",
+    "BB" => "Barbados",
+    "BD" => "Bangladesh",
+    "BE" => "Belgium",
+    "BF" => "Burkina Faso",
+    "BG" => "Bulgaria",
+    "BH" => "Bahrain",
+    "BI" => "Burundi",
+    "BJ" => "Benin",
+    "BL" => "Saint Barthelemy",
+    "BM" => "Bermuda",
+    "BN" => "Brunei",
+    "BO" => "Bolivia",
+    "BR" => "Brazil",
+    "BS" => "Bahamas",
+    "BT" => "Bhutan",
+    "BV" => "Bouvet Island",
+    "BW" => "Botswana",
+    "BY" => "Belarus",
+    "BZ" => "Belize",
+    "CA" => "Canada",
+    "CC" => "Cocos (Keeling) Islands",
+    "CD" => "Congo, The Democratic Republic of the",
+    "CF" => "Central African Republic",
+    "CG" => "Congo",
+    "CH" => "Switzerland",
+    "CI" => "Cote D'Ivoire",
+    "CK" => "Cook Islands",
+    "CL" => "Chile",
+    "CM" => "Cameroon",
+    "CN" => "China",
+    "CO" => "Colombia",
+    "CR" => "Costa Rica",
+    "CU" => "Cuba",
+    "CV" => "Cabo Verde",
+    "CX" => "Christmas Island",
+    "CY" => "Cyprus",
+    "CZ" => "Czechia",
+    "DE" => "Germany",
+    "DJ" => "Djibouti",
+    "DK" => "Denmark",
+    "DM" => "Dominica",
+    "DO" => "Dominican Republic",
+    "DZ" => "Algeria",
+    "EC" => "Ecuador",
+    "EE" => "Estonia",
+    "EG" => "Egypt",
+    "EH" => "Western Sahara",
+    "ER" => "Eritrea",
+    "ES" => "Spain",
+    "ET" => "Ethiopia",
+    "EU" => "Europe",
+    "FI" => "Finland",
+    "FJ" => "Fiji",
+    "FK" => "Falkland Islands (Malvinas)",
+    "FM" => "Micronesia, Federated States of",
+    "FO" => "Faroe Islands",
+    "FR" => "France",
+    "FX" => "France, Metropolitan",
+    "GA" => "Gabon",
+    "GB" => "United Kingdom",
+    "GD" => "Grenada",
+    "GE" => "Georgia",
+    "GF" => "French Guiana",
+    "GG" => "Guernsey",
+    "GH" => "Ghana",
+    "GI" => "Gibraltar",
+    "GL" => "Greenland",
+    "GM" => "Gambia",
+    "GN" => "Guinea",
+    "GP" => "Guadeloupe",
+    "GQ" => "Equatorial Guinea",
+    "GR" => "Greece",
+    "GS" => "South Georgia and the South Sandwich Islands",
+    "GT" => "Guatemala",
+    "GU" => "Guam",
+    "GW" => "Guinea-Bissau",
+    "GY" => "Guyana",
+    "HK" => "Hong Kong",
+    "HM" => "Heard Island and McDonald Islands",
+    "HN" => "Honduras",
+    "HR" => "Croatia",
+    "HT" => "Haiti",
+    "HU" => "Hungary",
+    "ID" => "Indonesia",
+    "IE" => "Ireland",
+    "IL" => "Israel",
+    "IM" => "Isle of Man",
+    "IN" => "India",
+    "IO" => "British Indian Ocean Territory",
+    "IQ" => "Iraq",
+    "IR" => "Iran, Islamic Republic of",
+    "IS" => "Iceland",
+    "IT" => "Italy",
+    "JE" => "Jersey",
+    "JM" => "Jamaica",
+    "JO" => "Jordan",
+    "JP" => "Japan",
+    "KE" => "Kenya",
+    "KG" => "Kyrgyzstan",
+    "KH" => "Cambodia",
+    "KI" => "Kiribati",
+    "KM" => "Comoros",
+    "KN" => "Saint Kitts and Nevis",
+    "KP" => "Korea, Democratic People's Republic of",
+    "KR" => "South Korea",
+    "KW" => "Kuwait",
+    "KY" => "Cayman Islands",
+    "KZ" => "Kazakhstan",
+    "LA" => "Lao People's Democratic Republic",
+    "LB" => "Lebanon",
+    "LC" => "Saint Lucia",
+    "LI" => "Liechtenstein",
+    "LK" => "Sri Lanka",
+    "LR" => "Liberia",
+    "LS" => "Lesotho",
+    "LT" => "Lithuania",
+    "LU" => "Luxembourg",
+    "LV" => "Latvia",
+    "LY" => "Libya",
+    "MA" => "Morocco",
+    "MC" => "Monaco",
+    "MD" => "Moldova",
+    "ME" => "Montenegro",
+    "MF" => "Saint Martin",
+    "MG" => "Madagascar",
+    "MH" => "Marshall Islands",
+    "MK" => "North Macedonia",
+    "ML" => "Mali",
+    "MM" => "Myanmar",
+    "MN" => "Mongolia",
+    "MO" => "Macau",
+    "MP" => "Northern Mariana Islands",
+    "MQ" => "Martinique",
+    "MR" => "Mauritania",
+    "MS" => "Montserrat",
+    "MT" => "Malta",
+    "MU" => "Mauritius",
+    "MV" => "Maldives",
+    "MW" => "Malawi",
+    "MX" => "Mexico",
+    "MY" => "Malaysia",
+    "MZ" => "Mozambique",
+    "NA" => "Namibia",
+    "NC" => "New Caledonia",
+    "NE" => "Niger",
+    "NF" => "Norfolk Island",
+    "NG" => "Nigeria",
+    "NI" => "Nicaragua",
+    "NL" => "Netherlands",
+    "NO" => "Norway",
+    "NP" => "Nepal",
+    "NR" => "Nauru",
+    "NU" => "Niue",
+    "NZ" => "New Zealand",
+    "O1" => "Other",
+    "OM" => "Oman",
+    "PA" => "Panama",
+    "PE" => "Peru",
+    "PF" => "French Polynesia",
+    "PG" => "Papua New Guinea",
+    "PH" => "Philippines",
+    "PK" => "Pakistan",
+    "PL" => "Poland",
+    "PM" => "Saint Pierre and Miquelon",
+    "PN" => "Pitcairn",
+    "PR" => "Puerto Rico",
+    "PS" => "Palestine, State of",
+    "PT" => "Portugal",
+    "PW" => "Palau",
+    "PY" => "Paraguay",
+    "QA" => "Qatar",
+    "RE" => "Reunion",
+    "RO" => "Romania",
+    "RS" => "Serbia",
+    "RU" => "Russian Federation",
+    "RW" => "Rwanda",
+    "SA" => "Saudi Arabia",
+    "SB" => "Solomon Islands",
+    "SC" => "Seychelles",
+    "SD" => "Sudan",
+    "SE" => "Sweden",
+    "SG" => "Singapore",
+    "SH" => "Saint Helena",
+    "SI" => "Slovenia",
+    "SJ" => "Svalbard and Jan Mayen",
+    "SK" => "Slovakia",
+    "SL" => "Sierra Leone",
+    "SM" => "San Marino",
+    "SN" => "Senegal",
+    "SO" => "Somalia",
+    "SR" => "Suriname",
+    "ST" => "Sao Tome and Principe",
+    "SV" => "El Salvador",
+    "SY" => "Syrian Arab Republic",
+    "SZ" => "Eswatini",
+    "TC" => "Turks and Caicos Islands",
+    "TD" => "Chad",
+    "TF" => "French Southern Territories",
+    "TG" => "Togo",
+    "TH" => "Thailand",
+    "TJ" => "Tajikistan",
+    "TK" => "Tokelau",
+    "TL" => "Timor-Leste",
+    "TM" => "Turkmenistan",
+    "TN" => "Tunisia",
+    "TO" => "Tonga",
+    "TR" => "Türkiye",
+    "TT" => "Trinidad and Tobago",
+    "TV" => "Tuvalu",
+    "TW" => "Taiwan",
+    "TZ" => "Tanzania, United Republic of",
+    "UA" => "Ukraine",
+    "UG" => "Uganda",
+    "UM" => "United States Minor Outlying Islands",
+    "US" => "United States",
+    "UY" => "Uruguay",
+    "UZ" => "Uzbekistan",
+    "VA" => "Holy See (Vatican City State)",
+    "VC" => "Saint Vincent and the Grenadines",
+    "VE" => "Venezuela",
+    "VG" => "Virgin Islands, British",
+    "VI" => "Virgin Islands, U.S.",
+    "VN" => "Vietnam",
+    "VU" => "Vanuatu",
+    "WF" => "Wallis and Futuna",
+    "WS" => "Samoa",
+    "XX" => "",
+    "YE" => "Yemen",
+    "YT" => "Mayotte",
+    "ZA" => "South Africa",
+    "ZM" => "Zambia",
+    "ZW" => "Zimbabwe",
+};
+
 fn country_name(code: &str) -> &'static str {
-    match code {
-        "A1" => "Anonymous Proxy",
-        "A2" => "Satellite Provider",
-        "AD" => "Andorra",
-        "AE" => "United Arab Emirates",
-        "AF" => "Afghanistan",
-        "AG" => "Antigua and Barbuda",
-        "AI" => "Anguilla",
-        "AL" => "Albania",
-        "AM" => "Armenia",
-        "AN" => "Netherlands Antilles",
-        "AO" => "Angola",
-        "AP" => "Asia/Pacific Region",
-        "AQ" => "Antarctica",
-        "AR" => "Argentina",
-        "AS" => "American Samoa",
-        "AT" => "Austria",
-        "AU" => "Australia",
-        "AW" => "Aruba",
-        "AX" => "Aland Islands",
-        "AZ" => "Azerbaijan",
-        "BA" => "Bosnia and Herzegovina",
-        "BB" => "Barbados",
-        "BD" => "Bangladesh",
-        "BE" => "Belgium",
-        "BF" => "Burkina Faso",
-        "BG" => "Bulgaria",
-        "BH" => "Bahrain",
-        "BI" => "Burundi",
-        "BJ" => "Benin",
-        "BL" => "Saint Barthelemy",
-        "BM" => "Bermuda",
-        "BN" => "Brunei",
-        "BO" => "Bolivia",
-        "BR" => "Brazil",
-        "BS" => "Bahamas",
-        "BT" => "Bhutan",
-        "BV" => "Bouvet Island",
-        "BW" => "Botswana",
-        "BY" => "Belarus",
-        "BZ" => "Belize",
-        "CA" => "Canada",
-        "CC" => "Cocos (Keeling) Islands",
-        "CD" => "Congo, The Democratic Republic of the",
-        "CF" => "Central African Republic",
-        "CG" => "Congo",
-        "CH" => "Switzerland",
-        "CI" => "Cote D'Ivoire",
-        "CK" => "Cook Islands",
-        "CL" => "Chile",
-        "CM" => "Cameroon",
-        "CN" => "China",
-        "CO" => "Colombia",
-        "CR" => "Costa Rica",
-        "CU" => "Cuba",
-        "CV" => "Cabo Verde",
-        "CX" => "Christmas Island",
-        "CY" => "Cyprus",
-        "CZ" => "Czechia",
-        "DE" => "Germany",
-        "DJ" => "Djibouti",
-        "DK" => "Denmark",
-        "DM" => "Dominica",
-        "DO" => "Dominican Republic",
-        "DZ" => "Algeria",
-        "EC" => "Ecuador",
-        "EE" => "Estonia",
-        "EG" => "Egypt",
-        "EH" => "Western Sahara",
-        "ER" => "Eritrea",
-        "ES" => "Spain",
-        "ET" => "Ethiopia",
-        "EU" => "Europe",
-        "FI" => "Finland",
-        "FJ" => "Fiji",
-        "FK" => "Falkland Islands (Malvinas)",
-        "FM" => "Micronesia, Federated States of",
-        "FO" => "Faroe Islands",
-        "FR" => "France",
-        "FX" => "France, Metropolitan",
-        "GA" => "Gabon",
-        "GB" => "United Kingdom",
-        "GD" => "Grenada",
-        "GE" => "Georgia",
-        "GF" => "French Guiana",
-        "GG" => "Guernsey",
-        "GH" => "Ghana",
-        "GI" => "Gibraltar",
-        "GL" => "Greenland",
-        "GM" => "Gambia",
-        "GN" => "Guinea",
-        "GP" => "Guadeloupe",
-        "GQ" => "Equatorial Guinea",
-        "GR" => "Greece",
-        "GS" => "South Georgia and the South Sandwich Islands",
-        "GT" => "Guatemala",
-        "GU" => "Guam",
-        "GW" => "Guinea-Bissau",
-        "GY" => "Guyana",
-        "HK" => "Hong Kong",
-        "HM" => "Heard Island and McDonald Islands",
-        "HN" => "Honduras",
-        "HR" => "Croatia",
-        "HT" => "Haiti",
-        "HU" => "Hungary",
-        "ID" => "Indonesia",
-        "IE" => "Ireland",
-        "IL" => "Israel",
-        "IM" => "Isle of Man",
-        "IN" => "India",
-        "IO" => "British Indian Ocean Territory",
-        "IQ" => "Iraq",
-        "IR" => "Iran, Islamic Republic of",
-        "IS" => "Iceland",
-        "IT" => "Italy",
-        "JE" => "Jersey",
-        "JM" => "Jamaica",
-        "JO" => "Jordan",
-        "JP" => "Japan",
-        "KE" => "Kenya",
-        "KG" => "Kyrgyzstan",
-        "KH" => "Cambodia",
-        "KI" => "Kiribati",
-        "KM" => "Comoros",
-        "KN" => "Saint Kitts and Nevis",
-        "KP" => "Korea, Democratic People's Republic of",
-        "KR" => "South Korea",
-        "KW" => "Kuwait",
-        "KY" => "Cayman Islands",
-        "KZ" => "Kazakhstan",
-        "LA" => "Lao People's Democratic Republic",
-        "LB" => "Lebanon",
-        "LC" => "Saint Lucia",
-        "LI" => "Liechtenstein",
-        "LK" => "Sri Lanka",
-        "LR" => "Liberia",
-        "LS" => "Lesotho",
-        "LT" => "Lithuania",
-        "LU" => "Luxembourg",
-        "LV" => "Latvia",
-        "LY" => "Libya",
-        "MA" => "Morocco",
-        "MC" => "Monaco",
-        "MD" => "Moldova",
-        "ME" => "Montenegro",
-        "MF" => "Saint Martin",
-        "MG" => "Madagascar",
-        "MH" => "Marshall Islands",
-        "MK" => "North Macedonia",
-        "ML" => "Mali",
-        "MM" => "Myanmar",
-        "MN" => "Mongolia",
-        "MO" => "Macau",
-        "MP" => "Northern Mariana Islands",
-        "MQ" => "Martinique",
-        "MR" => "Mauritania",
-        "MS" => "Montserrat",
-        "MT" => "Malta",
-        "MU" => "Mauritius",
-        "MV" => "Maldives",
-        "MW" => "Malawi",
-        "MX" => "Mexico",
-        "MY" => "Malaysia",
-        "MZ" => "Mozambique",
-        "NA" => "Namibia",
-        "NC" => "New Caledonia",
-        "NE" => "Niger",
-        "NF" => "Norfolk Island",
-        "NG" => "Nigeria",
-        "NI" => "Nicaragua",
-        "NL" => "Netherlands",
-        "NO" => "Norway",
-        "NP" => "Nepal",
-        "NR" => "Nauru",
-        "NU" => "Niue",
-        "NZ" => "New Zealand",
-        "O1" => "Other",
-        "OM" => "Oman",
-        "PA" => "Panama",
-        "PE" => "Peru",
-        "PF" => "French Polynesia",
-        "PG" => "Papua New Guinea",
-        "PH" => "Philippines",
-        "PK" => "Pakistan",
-        "PL" => "Poland",
-        "PM" => "Saint Pierre and Miquelon",
-        "PN" => "Pitcairn",
-        "PR" => "Puerto Rico",
-        "PS" => "Palestine, State of",
-        "PT" => "Portugal",
-        "PW" => "Palau",
-        "PY" => "Paraguay",
-        "QA" => "Qatar",
-        "RE" => "Reunion",
-        "RO" => "Romania",
-        "RS" => "Serbia",
-        "RU" => "Russian Federation",
-        "RW" => "Rwanda",
-        "SA" => "Saudi Arabia",
-        "SB" => "Solomon Islands",
-        "SC" => "Seychelles",
-        "SD" => "Sudan",
-        "SE" => "Sweden",
-        "SG" => "Singapore",
-        "SH" => "Saint Helena",
-        "SI" => "Slovenia",
-        "SJ" => "Svalbard and Jan Mayen",
-        "SK" => "Slovakia",
-        "SL" => "Sierra Leone",
-        "SM" => "San Marino",
-        "SN" => "Senegal",
-        "SO" => "Somalia",
-        "SR" => "Suriname",
-        "ST" => "Sao Tome and Principe",
-        "SV" => "El Salvador",
-        "SY" => "Syrian Arab Republic",
-        "SZ" => "Eswatini",
-        "TC" => "Turks and Caicos Islands",
-        "TD" => "Chad",
-        "TF" => "French Southern Territories",
-        "TG" => "Togo",
-        "TH" => "Thailand",
-        "TJ" => "Tajikistan",
-        "TK" => "Tokelau",
-        "TL" => "Timor-Leste",
-        "TM" => "Turkmenistan",
-        "TN" => "Tunisia",
-        "TO" => "Tonga",
-        "TR" => "Türkiye",
-        "TT" => "Trinidad and Tobago",
-        "TV" => "Tuvalu",
-        "TW" => "Taiwan",
-        "TZ" => "Tanzania, United Republic of",
-        "UA" => "Ukraine",
-        "UG" => "Uganda",
-        "UM" => "United States Minor Outlying Islands",
-        "US" => "United States",
-        "UY" => "Uruguay",
-        "UZ" => "Uzbekistan",
-        "VA" => "Holy See (Vatican City State)",
-        "VC" => "Saint Vincent and the Grenadines",
-        "VE" => "Venezuela",
-        "VG" => "Virgin Islands, British",
-        "VI" => "Virgin Islands, U.S.",
-        "VN" => "Vietnam",
-        "VU" => "Vanuatu",
-        "WF" => "Wallis and Futuna",
-        "WS" => "Samoa",
-        "XX" => "",
-        "YE" => "Yemen",
-        "YT" => "Mayotte",
-        "ZA" => "South Africa",
-        "ZM" => "Zambia",
-        "ZW" => "Zimbabwe",
-        _ => "Unknown", // Return Unknown if code not found
-    }
+    COUNTRY_NAMES.get(code).copied().unwrap_or("Unknown")
 }
 
-/// 格式化带变化统计的用户数据
 pub fn format_stats_with_change(
     stats: &UserStats,
     change: &Option<UserChange>,
@@ -437,15 +531,14 @@ pub fn format_stats_with_change(
     let username = &stats.username;
     let mode_name = mode.name();
 
-    let pp = trim_trailing_zeros(format!("{:.2}", stats.pp));
+    let pp = trim_trailing_zeros(&format!("{:.2}", stats.pp));
     let rank = stats.rank.to_string();
     let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64); // 转成 m
-    let acc = trim_trailing_zeros(format!("{:.2}", stats.accuracy));
+    let acc = format_accuracy(stats.accuracy / 100.0); // stats.hit_accuracy is a percentage (e.g., 98.5), divide to get 0-1 fraction
     let playcount = stats.playcount.to_string();
     let hits = format_number(stats.hits);
     let playtime = format_playtime(stats.playtime);
 
-    // 从 change 中提取，如果没有 change 或 change 为 0 则显示 —
     let rank_str = match change {
         Some(c) if c.rank_change != Some(0) => {
             let change_str = format_change(c.rank_change);
@@ -454,7 +547,6 @@ pub fn format_stats_with_change(
         _ => rank.to_string(),
     };
 
-    // country_rank 显示为 {Country Name} #数字 格式，有变化时显示 (change)，无变化时不显示括号
     let country_rank = stats.country_rank.to_string();
     let country = country_name(&stats.country_code);
     let country_rank_change_str = match change {
@@ -465,7 +557,6 @@ pub fn format_stats_with_change(
         _ => format!("{country} #{country_rank}"),
     };
 
-    // pp 和 accuracy 变化格式化
     let pp_change_str = format_float_change(
         change
             .as_ref()
@@ -495,7 +586,6 @@ pub fn format_stats_with_change(
             .and_then(|c| c.playtime_change.filter(|&v| v != 0)),
     );
 
-    // Add space before change string if non-empty
     let pp_change_str = space_prefix(pp_change_str);
     let acc_change_str = space_prefix(acc_change_str);
     let playcount_change_str = space_prefix(playcount_change_str);
@@ -508,7 +598,7 @@ pub fn format_stats_with_change(
          #{rank_str}\n\
          {country_rank_change_str}\n\
          {ranked_score}m Ranked谱面总分\n\
-         {acc}% 准确率{acc_change_str}\n\
+         {acc} 准确率{acc_change_str}\n\
          {playcount} 游玩次数{playcount_change_str}\n\
          {hits} 总命中次数{hits_change_str}\n\
          {playtime}游玩时间{playtime_change_str}",
@@ -528,4 +618,164 @@ pub fn format_stats_with_change(
         playtime = playtime,
         playtime_change_str = playtime_change_str,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Score, ScoreStatistics, ScoreUser};
+    use rosu_mods::GameMods;
+
+    fn make_score(is_perfect: bool) -> Score {
+        let mut mods = GameMods::new();
+        mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+        mods.insert(rosu_mods::GameMod::HardRockOsu(Default::default()));
+        Score {
+            score_id: 88888,
+            beatmap_id: 100,
+            beatmapset_id: 200,
+            artist: "Artist".to_string(),
+            title: "Song".to_string(),
+            version: "Expert".to_string(),
+            creator: "Mapper".to_string(),
+            star_rating: 6.5,
+            bpm: 200.0,
+            ar: 9.5,
+            od: 8.5,
+            cs: 4.0,
+            hp: 5.0,
+            length_seconds: 180,
+            score_value: 900000,
+            accuracy: 0.985,
+            max_combo: 400,
+            beatmap_max_combo: 500,
+            pp: Some(250.0),
+            pp_breakdown: None,
+            pp_if_acc: None,
+            rank: "S".to_string(),
+            mods,
+            is_perfect,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            is_lazer: false,
+            has_replay: true,
+            legacy_score_id: None,
+            statistics: ScoreStatistics {
+                count_geki: 0,
+                count_300: 300,
+                count_katu: 0,
+                count_100: 5,
+                count_50: 0,
+                count_miss: 0,
+            },
+            cover_url: String::new(),
+            user: ScoreUser {
+                avatar_url: String::new(),
+                country_code: String::new(),
+                global_rank: None,
+                country_rank: None,
+                pp: 0.0,
+            },
+            fav_count: None,
+            play_count: None,
+            status: "ranked".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_format_score_single_pass() {
+        let score = make_score(false);
+        let output = format_score(&score, "TestUser", GameMode::Osu, Some(0), true);
+        assert!(output.contains("Artist - Song (Mapper) [Expert]"));
+        assert!(output.contains("TestUser: 250.00pp"));
+        assert!(output.contains("[S] 900,000"));
+        assert!(output.contains("98.5%"));
+        assert!(output.contains("400x"));
+        assert!(output.contains("300/5/0/0"));
+        assert!(output.contains("HD HR"));
+        assert!(output.contains("#1 最近通过"));
+    }
+
+    #[test]
+    fn test_format_score_single_recent() {
+        let score = make_score(false);
+        let output = format_score(&score, "TestUser", GameMode::Osu, Some(2), false);
+        assert!(output.contains("#3 最近游玩"));
+    }
+
+    #[test]
+    fn test_format_score_pp_null() {
+        let mut score = make_score(false);
+        score.pp = None;
+        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        assert!(output.contains("TestUser: --pp"));
+    }
+
+    #[test]
+    fn test_format_score_no_mods() {
+        let mut score = make_score(false);
+        score.mods = GameMods::new();
+        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        assert!(output.contains("300/5/0/0\n"));
+    }
+
+    #[test]
+    fn test_format_score_is_perfect() {
+        let score = make_score(true);
+        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        assert!(output.contains("400x (FC)"));
+    }
+
+    #[test]
+    fn test_format_score_lazer_tag() {
+        let mut score = make_score(false);
+        score.is_lazer = true;
+        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        assert!(output.contains("(lazer)"));
+    }
+
+    #[test]
+    fn test_format_score_play_time() {
+        let score = make_score(false);
+        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        assert!(output.contains("2024/01/01 08:00:00"));
+    }
+
+    #[test]
+    fn test_format_scores_mods_and_time() {
+        let scores = vec![make_score(false), make_score(true)];
+        let output = format_scores(&scores, "TestUser", GameMode::Osu, true);
+        assert!(output.contains("HD HR"));
+        assert!(output.contains("2024/01/01 08:00:00"));
+    }
+
+    #[test]
+    fn test_format_change_positive_shows_up() {
+        assert_eq!(format_change(Some(2)), "↑2");
+    }
+
+    #[test]
+    fn test_format_change_negative_shows_down() {
+        assert_eq!(format_change(Some(-3)), "↓3");
+    }
+
+    #[test]
+    fn test_format_change_zero_shows_empty() {
+        assert_eq!(format_change(Some(0)), "");
+        assert_eq!(format_change(None), "");
+    }
+
+    #[test]
+    fn test_format_score_mania_hits() {
+        let mut score = make_score(false);
+        score.statistics = ScoreStatistics {
+            count_geki: 100,
+            count_300: 200,
+            count_katu: 50,
+            count_100: 30,
+            count_50: 10,
+            count_miss: 5,
+        };
+        let output = format_score(&score, "TestUser", GameMode::Mania, None, true);
+        assert!(output.contains("100/200/50/30/10/5"));
+    }
 }

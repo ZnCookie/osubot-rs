@@ -1,5 +1,4 @@
-use image::codecs::jpeg::JpegEncoder;
-use image::RgbImage;
+use image::DynamicImage;
 use std::io::Cursor;
 
 use crate::error::RenderError;
@@ -31,17 +30,15 @@ fn encode_jpeg_sync(
         )));
     }
 
-    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
-    for chunk in rgba[..pixel_count * 4].chunks_exact(4) {
-        rgb_data.extend_from_slice(&chunk[..3]);
-    }
-    let rgb = RgbImage::from_raw(width, height, rgb_data)
-        .ok_or_else(|| RenderError::Encode("invalid buffer dimensions".into()))?;
-
+    let img = DynamicImage::ImageRgba8(
+        image::RgbaImage::from_raw(width, height, rgba.to_vec())
+            .ok_or_else(|| RenderError::Encode("Invalid buffer".into()))?,
+    );
+    let rgb_img = img.to_rgb8();
     let mut buf = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality);
-    encoder
-        .encode_image(&rgb)
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    rgb_img
+        .write_with_encoder(encoder)
         .map_err(|e| RenderError::Encode(e.to_string()))?;
     Ok(buf.into_inner())
 }

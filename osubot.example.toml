@@ -30,3 +30,20 @@ path = "osubot.db"
 # port = 6667
 # nickname = "你的osu用户名"
 # password = "IRC密码"
+
+# [group_filter]
+# 群聊黑白名单（可选，默认黑名单模式，名单为空=所有群可用）
+# mode = "blacklist"        # "blacklist" 或 "whitelist"
+# group_ids = []            # 黑名单/白名单的群号列表
+
+# [groups.default]
+# 命令开关（可选，默认全部开启）
+# query = true              # ~、where、查
+# score = true              # !p、!ps、!r、!rs
+# profile = true            # !profile
+# highlight = true          # 今日高光
+# bind = true               # 绑定、解绑
+
+# [groups.123456789]
+# 特定群的覆盖配置（可选，节名 = 群号）
+# highlight = false         # 该群禁用今日高光

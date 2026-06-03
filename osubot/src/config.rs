@@ -1,4 +1,6 @@
+use osubot_core::types::CommandGroup;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -11,6 +13,10 @@ pub struct Config {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub irc: IrcConfig,
+    #[serde(default)]
+    pub group_filter: GroupFilterConfig,
+    #[serde(default)]
+    pub groups: GroupsConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -129,6 +135,93 @@ impl Default for IrcConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterMode {
+    Blacklist,
+    Whitelist,
+}
+
+/// 群聊黑白名单配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct GroupFilterConfig {
+    #[serde(default = "default_filter_mode")]
+    pub mode: FilterMode,
+    #[serde(default)]
+    pub group_ids: Vec<i64>,
+}
+
+fn default_filter_mode() -> FilterMode {
+    FilterMode::Blacklist
+}
+
+impl Default for GroupFilterConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_filter_mode(),
+            group_ids: Vec::new(),
+        }
+    }
+}
+
+impl GroupFilterConfig {
+    pub fn is_group_allowed(&self, group_id: i64) -> bool {
+        match self.mode {
+            FilterMode::Whitelist => self.group_ids.contains(&group_id),
+            FilterMode::Blacklist => !self.group_ids.contains(&group_id),
+        }
+    }
+}
+
+/// 单个群的命令开关配置
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct GroupConfig {
+    pub query: Option<bool>,
+    pub score: Option<bool>,
+    pub profile: Option<bool>,
+    pub highlight: Option<bool>,
+    pub bind: Option<bool>,
+}
+
+impl GroupConfig {
+    pub fn is_enabled(&self, group_name: CommandGroup) -> bool {
+        let default = true;
+        match group_name {
+            CommandGroup::Query => self.query.unwrap_or(default),
+            CommandGroup::Score => self.score.unwrap_or(default),
+            CommandGroup::Profile => self.profile.unwrap_or(default),
+            CommandGroup::Highlight => self.highlight.unwrap_or(default),
+            CommandGroup::Bind => self.bind.unwrap_or(default),
+        }
+    }
+}
+
+/// 命令开关配置（default + 每群覆盖）
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct GroupsConfig {
+    #[serde(default)]
+    pub default: GroupConfig,
+    #[serde(flatten)]
+    pub overrides: HashMap<String, GroupConfig>,
+}
+
+impl GroupsConfig {
+    pub fn get_group_config(&self, group_id: i64) -> GroupConfig {
+        let key = group_id.to_string();
+        if let Some(override_cfg) = self.overrides.get(&key) {
+            GroupConfig {
+                query: override_cfg.query.or(self.default.query),
+                score: override_cfg.score.or(self.default.score),
+                profile: override_cfg.profile.or(self.default.profile),
+                highlight: override_cfg.highlight.or(self.default.highlight),
+                bind: override_cfg.bind.or(self.default.bind),
+            }
+        } else {
+            self.default.clone()
+        }
+    }
+}
+
 impl Config {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
@@ -153,6 +246,197 @@ impl Default for Config {
             },
             scheduler: SchedulerConfig::default(),
             irc: IrcConfig::default(),
+            group_filter: GroupFilterConfig::default(),
+            groups: GroupsConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_group_filter_default() {
+        let cfg = GroupFilterConfig::default();
+        assert_eq!(cfg.mode, FilterMode::Blacklist);
+        assert!(cfg.group_ids.is_empty());
+        assert!(cfg.is_group_allowed(123456));
+    }
+
+    #[test]
+    fn test_group_filter_blacklist() {
+        let cfg = GroupFilterConfig {
+            mode: FilterMode::Blacklist,
+            group_ids: vec![111, 222],
+        };
+        assert!(!cfg.is_group_allowed(111));
+        assert!(!cfg.is_group_allowed(222));
+        assert!(cfg.is_group_allowed(333));
+    }
+
+    #[test]
+    fn test_group_filter_whitelist() {
+        let cfg = GroupFilterConfig {
+            mode: FilterMode::Whitelist,
+            group_ids: vec![111, 222],
+        };
+        assert!(cfg.is_group_allowed(111));
+        assert!(cfg.is_group_allowed(222));
+        assert!(!cfg.is_group_allowed(333));
+    }
+
+    #[test]
+    fn test_group_config_is_enabled_default_true() {
+        let cfg = GroupConfig::default();
+        assert!(cfg.is_enabled(CommandGroup::Query));
+        assert!(cfg.is_enabled(CommandGroup::Score));
+        assert!(cfg.is_enabled(CommandGroup::Profile));
+        assert!(cfg.is_enabled(CommandGroup::Highlight));
+        assert!(cfg.is_enabled(CommandGroup::Bind));
+    }
+
+    #[test]
+    fn test_group_config_is_enabled_disabled() {
+        let cfg = GroupConfig {
+            query: Some(true),
+            score: Some(false),
+            profile: None,
+            highlight: Some(false),
+            bind: None,
+        };
+        assert!(cfg.is_enabled(CommandGroup::Query));
+        assert!(!cfg.is_enabled(CommandGroup::Score));
+        assert!(cfg.is_enabled(CommandGroup::Profile));
+        assert!(!cfg.is_enabled(CommandGroup::Highlight));
+        assert!(cfg.is_enabled(CommandGroup::Bind));
+    }
+
+    #[test]
+    fn test_groups_config_get_default() {
+        let cfg = GroupsConfig::default();
+        let group = cfg.get_group_config(999);
+        assert!(group.is_enabled(CommandGroup::Query));
+        assert!(group.is_enabled(CommandGroup::Score));
+    }
+
+    #[test]
+    fn test_groups_config_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "123".to_string(),
+            GroupConfig {
+                highlight: Some(false),
+                bind: Some(false),
+                ..Default::default()
+            },
+        );
+        let cfg = GroupsConfig {
+            default: GroupConfig {
+                query: Some(true),
+                score: Some(false),
+                ..Default::default()
+            },
+            overrides,
+        };
+
+        let g123 = cfg.get_group_config(123);
+        assert!(g123.is_enabled(CommandGroup::Query));
+        assert!(!g123.is_enabled(CommandGroup::Score));
+        assert!(g123.is_enabled(CommandGroup::Profile));
+        assert!(!g123.is_enabled(CommandGroup::Highlight));
+        assert!(!g123.is_enabled(CommandGroup::Bind));
+
+        let g999 = cfg.get_group_config(999);
+        assert!(g999.is_enabled(CommandGroup::Query));
+        assert!(!g999.is_enabled(CommandGroup::Score));
+        assert!(g999.is_enabled(CommandGroup::Highlight));
+    }
+
+    #[test]
+    fn test_config_from_toml_missing_groups() {
+        let toml_str = r#"
+            [osu]
+            api_key = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.group_filter.mode, FilterMode::Blacklist);
+        assert!(config.group_filter.group_ids.is_empty());
+        assert!(config.groups.default.query.is_none());
+        assert!(config.groups.overrides.is_empty());
+    }
+
+    #[test]
+    fn test_config_from_toml_with_groups() {
+        let toml_str = r#"
+            [osu]
+            api_key = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+
+            [group_filter]
+            mode = "whitelist"
+            group_ids = [111, 222]
+
+            [groups.default]
+            highlight = false
+
+            [groups.111]
+            highlight = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.group_filter.mode, FilterMode::Whitelist);
+        assert_eq!(config.group_filter.group_ids, vec![111, 222]);
+        assert_eq!(config.groups.default.highlight, Some(false));
+        assert_eq!(config.groups.overrides["111"].highlight, Some(true));
+
+        let g111 = config.groups.get_group_config(111);
+        assert!(g111.is_enabled(CommandGroup::Highlight));
+        let g222 = config.groups.get_group_config(222);
+        assert!(!g222.is_enabled(CommandGroup::Highlight));
+    }
+
+    #[test]
+    fn test_group_filter_invalid_mode_fails() {
+        let toml_str = r#"
+            [osu]
+            api_key = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+            [group_filter]
+            mode = "typo"
+            group_ids = [111]
+        "#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_group_filter_uppercase_whitelist_fails() {
+        let toml_str = r#"
+            [osu]
+            api_key = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+            [group_filter]
+            mode = "Whitelist"
+            group_ids = [111]
+        "#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
     }
 }
