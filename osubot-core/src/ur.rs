@@ -22,11 +22,7 @@ async fn download_replay(
         score_id
     };
     if effective_id == 0 {
-        tracing::warn!(
-            score_id,
-            ?legacy_score_id,
-            "both score_id and legacy_score_id are 0/None, replay caching will collide"
-        );
+        return Err(ApiError::InvalidResponse);
     }
     let cache_path = replay_cache_dir().join(format!("{}.osr", effective_id));
     let cached = tokio::task::spawn_blocking({

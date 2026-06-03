@@ -1,4 +1,5 @@
 mod config;
+mod constants;
 mod scheduler;
 
 use config::Config;
@@ -30,14 +31,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
-/// 命令处理超时（秒）
-const COMMAND_TIMEOUT_SECS: u64 = 120;
-/// 渲染超时（秒）
-const RENDER_TIMEOUT_SECS: u64 = 30;
-/// OneBot API 请求超时（秒）
-const ONEBOT_API_TIMEOUT_SECS: u64 = 5;
-/// UR 计算超时（秒）
-const UR_TIMEOUT_SECS: u64 = 10;
+use constants::*;
 
 #[derive(Debug, Clone)]
 struct QQMessage {
@@ -56,7 +50,7 @@ struct OneBotResponse {
 
 struct UserRateLimit {
     last_command: std::time::Instant,
-    command_count: u32,
+    command_timestamps: Vec<std::time::Instant>,
 }
 
 struct PendingEntry {
@@ -621,41 +615,44 @@ async fn handle_command(
         return;
     }
 
-    // 用户命令频率限制（5次/3秒）
+    // 用户命令频率限制（滑动窗口：3秒内最多5次）
     let rate_limited = {
         let mut entry = ctx
             .command_rate_limits
             .entry(msg.user_id)
             .or_insert(UserRateLimit {
                 last_command: std::time::Instant::now(),
-                command_count: 0,
+                command_timestamps: Vec::new(),
             });
-        let elapsed = entry.last_command.elapsed();
-        if elapsed < Duration::from_secs(3) {
-            entry.command_count += 1;
-            entry.command_count > 5
-        } else {
-            entry.last_command = std::time::Instant::now();
-            entry.command_count = 1;
-            false
-        }
+
+        let now = std::time::Instant::now();
+        // 清理超过3秒的记录
+        entry
+            .command_timestamps
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(3));
+        entry.command_timestamps.push(now);
+        entry.last_command = now;
+
+        // 检查是否超过限制
+        entry.command_timestamps.len() > 5
     };
     if rate_limited {
         let _ = resp_tx.send("操作太频繁，请稍后再试".to_string()).await;
         return;
     }
 
-    // 定期清理过期的 rate limit 条目（每 60 秒）
+    // 定期清理不活跃的用户（每60秒清理30秒内无命令的用户）
     static LAST_CLEANUP: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
     let last = LAST_CLEANUP.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
     if let Ok(mut last_time) = last.try_lock() {
         if last_time.elapsed() >= Duration::from_secs(60) {
             ctx.command_rate_limits
-                .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(60));
+                .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(30));
             *last_time = std::time::Instant::now();
         }
     }
 
+    // Handle command and send response
     match cmd {
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
@@ -672,12 +669,14 @@ async fn handle_command(
                     .await
                     {
                         Ok(stats) => {
+                            // Username change detection
                             if stats.username != current_username {
                                 ctx.storage
                                     .update_binding_username(msg.user_id, &stats.username)
                                     .ok();
                             }
                             ctx.storage.set_user_id(&stats.username, user_id).ok();
+                            // Get change from storage (compares with 24h ago snapshot)
                             let change = ctx
                                 .storage
                                 .calculate_change(user_id, mode, &stats)
@@ -726,6 +725,7 @@ async fn handle_command(
                 .await
             {
                 Ok(stats) => {
+                    // Cache user_id for future lookups (even for unbound users)
                     ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
                     if stats.username != username {
                         ctx.storage.set_user_id(&username, stats.user_id).ok();
@@ -1644,23 +1644,28 @@ async fn main() {
         // Update the shared write handle for the IRC bridge
         {
             let mut cw = current_write.lock().await;
-            if let Some(old) = cw.take() {
+            let old = cw.replace(write.clone());
+            if let Some(old) = old {
                 let mut sink = old.lock().await;
                 if let Err(e) = sink.close().await {
                     tracing::debug!(error = %e, "failed to close old WebSocket sink");
                 }
             }
-            *cw = Some(write.clone());
         }
+
+        let connection_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         // Periodic ping to keep connection alive
         let ping_write = write.clone();
         let ping_shutdown = shutdown.clone();
+        let ping_connection_alive = connection_alive.clone();
         let ping_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                if ping_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                if ping_shutdown.load(std::sync::atomic::Ordering::Relaxed)
+                    || !ping_connection_alive.load(std::sync::atomic::Ordering::Relaxed)
+                {
                     break;
                 }
                 let mut sink = ping_write.lock().await;
@@ -1750,6 +1755,7 @@ async fn main() {
             }
         }
 
+        connection_alive.store(false, std::sync::atomic::Ordering::Relaxed);
         ping_handle.abort();
 
         // Clear the write handle so the IRC bridge doesn't use a stale connection

@@ -306,6 +306,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
     }
 }
 
+/// osu! API v2 basic user info (for activity detection)
 #[derive(Debug, serde::Deserialize)]
 pub struct OsuUserInfo {
     pub id: i64,
@@ -345,6 +346,7 @@ struct OsuApiBeatmap {
     status: String,
 }
 
+/// osu! API v2 beatmap info from recent plays
 #[derive(Debug, serde::Deserialize)]
 struct OsuApiBeatmapset {
     #[serde(default)]
@@ -694,11 +696,13 @@ fn json_to_api_error(e: reqwest::Error) -> ApiError {
     }
 }
 
+/// osu! OAuth token response
 #[derive(Debug, serde::Deserialize)]
 struct OauthResponse {
     access_token: String,
 }
 
+/// osu! API v2 user response — top-level fields
 #[derive(Debug, serde::Deserialize)]
 struct OsuApiV2User {
     id: i64,
@@ -707,6 +711,7 @@ struct OsuApiV2User {
     statistics: Option<OsuStatistics>,
 }
 
+/// osu! API v2 statistics sub-object
 #[derive(Debug, serde::Deserialize)]
 struct OsuStatistics {
     pp: Option<f64>,
