@@ -119,9 +119,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
 
     // Pass/Recent score commands: !p, !r, !ps, !rs
     // Format: !p [username] [:mode] [#N]
-    // IMPORTANT: !ps and !rs MUST come before !p and !r in this array.
-    // If !p were checked first via strip_prefix, it would match "!ps" as
-    // !p + "s" (parsing "s" as a username) instead of matching !ps correctly.
+    // Negative lookahead: command letter must NOT be followed by another letter/digit/underscore/hyphen.
+    // This prevents !pv, !profile, !rabc from matching while allowing !p, !p v, !p:3, !p#5.
     for (prefix, is_pass, default_limit) in [
         ("!ps", true, 10u32),
         ("!rs", false, 10u32),
@@ -129,6 +128,10 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         ("!r", false, 1u32),
     ] {
         if let Some(rest) = msg.strip_prefix(prefix) {
+            // Negative lookahead: skip if command is immediately followed by a word character
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
             let rest = rest.trim();
             // Parse #N suffix (from end)
             let (rest, limit) = if let Some(hash_pos) = rest.rfind('#') {
@@ -644,6 +647,49 @@ mod tests {
             }
             .group_name(),
             CommandGroup::Score
+        );
+    }
+
+    #[test]
+    fn test_pv_not_matched() {
+        assert!(parse_command("!pv", None).is_none());
+    }
+
+    #[test]
+    fn test_rabc_not_matched() {
+        assert!(parse_command("!rabc", None).is_none());
+    }
+
+    #[test]
+    fn test_punderscore_not_matched() {
+        assert!(parse_command("!p_test", None).is_none());
+    }
+
+    #[test]
+    fn test_phyphen_not_matched() {
+        assert!(parse_command("!r-test", None).is_none());
+    }
+
+    #[test]
+    fn test_profile_not_matched_as_p() {
+        // !profile should match ProfileCard, not Pass
+        let cmd = parse_command("!profile", None).unwrap();
+        assert!(matches!(cmd, Command::ProfileCard { .. }));
+    }
+
+    #[test]
+    fn test_ps_not_affected() {
+        // !ps should still work
+        let cmd = parse_command("!ps", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 10,
+                is_summary: true,
+            }
         );
     }
 }
