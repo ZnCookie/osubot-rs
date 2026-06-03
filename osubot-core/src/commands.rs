@@ -15,7 +15,7 @@ use crate::types::{Command, GameMode};
 pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Command> {
     let msg = msg.trim();
     // Normalize fullwidth characters to ASCII equivalents
-    let msg = msg.replace('～', "~").replace('，', ",");
+    let msg = msg.replace('～', "~").replace('，', ",").replace('！', "!");
 
     // 查询自己: ~ 或 ~<模式>
     if msg.starts_with('~') {
@@ -94,6 +94,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
+    // Must be checked before !p/!r to avoid "!profile" being matched as "!p" + "rofile"
     if let Some(rest) = msg.strip_prefix("!profile") {
         let rest = rest.trim();
         if rest.is_empty() {
@@ -116,12 +117,84 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         });
     }
 
+    // Pass/Recent score commands: !p, !r, !ps, !rs
+    // Format: !p [username] [:mode] [#N]
+    // Negative lookahead: command letter must NOT be followed by another letter/digit/underscore/hyphen.
+    // This prevents !pv, !profile, !rabc from matching while allowing !p, !p v, !p:3, !p#5.
+    for (prefix, is_pass, default_limit) in [
+        ("!ps", true, 10u32),
+        ("!rs", false, 10u32),
+        ("!p", true, 1u32),
+        ("!r", false, 1u32),
+    ] {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            // Negative lookahead: skip if command is immediately followed by a word character
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let rest = rest.trim();
+            // Parse #N suffix (from end)
+            let (rest, limit) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                match num_str.parse::<u32>() {
+                    Ok(n) if n >= 1 => (rest[..hash_pos].trim(), n.min(100)),
+                    Ok(_) => (rest[..hash_pos].trim(), default_limit),
+                    _ => (rest[..hash_pos].trim(), default_limit),
+                }
+            } else {
+                (rest, default_limit)
+            };
+            // Parse :mode suffix (from end, after #N removal)
+            let (username_part, mode) = if let Some(colon_pos) = rest.rfind(':') {
+                let mode_str = &rest[colon_pos + 1..];
+                if mode_str.is_empty() {
+                    // Bare colon with no mode string — treat as no mode specified
+                    (rest[..colon_pos].trim(), GameMode::Osu)
+                } else {
+                    match GameMode::from_mode_str(mode_str) {
+                        Some(mode) => (rest[..colon_pos].trim(), mode),
+                        None => return None, // Invalid mode string, ignore command
+                    }
+                }
+            } else {
+                (rest, GameMode::Osu)
+            };
+            let (username, qq) = if username_part.is_empty() {
+                if let Some(qq) = mentioned_user_id {
+                    (None, Some(qq))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (Some(username_part.to_string()), None)
+            };
+            return Some(if is_pass {
+                Command::Pass {
+                    mode,
+                    username,
+                    qq,
+                    limit,
+                    is_summary: default_limit > 1,
+                }
+            } else {
+                Command::Recent {
+                    mode,
+                    username,
+                    qq,
+                    limit,
+                    is_summary: default_limit > 1,
+                }
+            });
+        }
+    }
+
     None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::CommandGroup;
 
     #[test]
     fn test_profile_self() {
@@ -179,6 +252,443 @@ mod tests {
             Command::ProfileCard {
                 username: Some("ZnCookie".to_string()),
                 qq: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_self() {
+        let cmd = parse_command("!p", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_mode() {
+        let cmd = parse_command("!p :1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Taiko,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_username() {
+        let cmd = parse_command("!p ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_username_mode() {
+        let cmd = parse_command("!p ZnCookie :2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_self() {
+        let cmd = parse_command("!r", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_multiple() {
+        let cmd = parse_command("!rs", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 10,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_mention() {
+        let cmd = parse_command("!p", Some(123456)).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: Some(123456),
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_no_conflict_with_profile() {
+        // !profile should still work
+        let cmd = parse_command("!profile", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_mode_no_space() {
+        let cmd = parse_command("!p:3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Mania,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_with_hash() {
+        let cmd = parse_command("!p #2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 2,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_multiple_with_hash() {
+        let cmd = parse_command("!ps #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 5,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_multiple_username_hash() {
+        let cmd = parse_command("!ps ZnCookie #3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 3,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_multiple_username_mode_hash() {
+        let cmd = parse_command("!ps ZnCookie :2 #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 5,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_clamp_100() {
+        let cmd = parse_command("!ps #200", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 100,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_zero_ignored() {
+        let cmd = parse_command("!p #0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_garbage_ignored_with_username() {
+        let cmd = parse_command("!p ZnCookie #xyz", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_hash_garbage_ignored_self() {
+        let cmd = parse_command("!p #xyz", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_with_hash() {
+        let cmd = parse_command("!r #3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 3,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recent_multiple_with_hash() {
+        let cmd = parse_command("!rs #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 5,
+                is_summary: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_ps_invalid_mode_returns_none() {
+        let result = parse_command("!ps :xyz", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fullwidth_exclamation() {
+        let cmd = parse_command("！profile", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: None,
+            }
+        );
+
+        let cmd = parse_command("！p", None).unwrap();
+        assert!(matches!(cmd, Command::Pass { .. }));
+
+        let cmd = parse_command("！rs", None).unwrap();
+        assert!(matches!(cmd, Command::Recent { .. }));
+    }
+
+    #[test]
+    fn parse_ps_empty_mode_defaults_to_osu() {
+        let result = parse_command("!ps :", None);
+        assert_eq!(
+            result,
+            Some(Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 10,
+                is_summary: true,
+            })
+        );
+    }
+
+    #[test]
+    fn test_command_group_name() {
+        assert_eq!(
+            Command::QuerySelf {
+                mode: GameMode::Osu
+            }
+            .group_name(),
+            CommandGroup::Query
+        );
+        assert_eq!(
+            Command::QueryUser {
+                username: "x".into(),
+                mode: GameMode::Osu
+            }
+            .group_name(),
+            CommandGroup::Query
+        );
+        assert_eq!(
+            Command::QueryMentionedUser {
+                qq: 1,
+                mode: GameMode::Osu
+            }
+            .group_name(),
+            CommandGroup::Query
+        );
+        assert_eq!(
+            Command::Bind {
+                username: "x".into()
+            }
+            .group_name(),
+            CommandGroup::Bind
+        );
+        assert_eq!(Command::Unbind.group_name(), CommandGroup::Bind);
+        assert_eq!(
+            Command::Highlight {
+                mode: GameMode::Osu
+            }
+            .group_name(),
+            CommandGroup::Highlight
+        );
+        assert_eq!(
+            Command::ProfileCard {
+                username: None,
+                qq: None
+            }
+            .group_name(),
+            CommandGroup::Profile
+        );
+        assert_eq!(
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false
+            }
+            .group_name(),
+            CommandGroup::Score
+        );
+        assert_eq!(
+            Command::Recent {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                is_summary: false
+            }
+            .group_name(),
+            CommandGroup::Score
+        );
+    }
+
+    #[test]
+    fn test_pv_not_matched() {
+        assert!(parse_command("!pv", None).is_none());
+    }
+
+    #[test]
+    fn test_rabc_not_matched() {
+        assert!(parse_command("!rabc", None).is_none());
+    }
+
+    #[test]
+    fn test_punderscore_not_matched() {
+        assert!(parse_command("!p_test", None).is_none());
+    }
+
+    #[test]
+    fn test_phyphen_not_matched() {
+        assert!(parse_command("!r-test", None).is_none());
+    }
+
+    #[test]
+    fn test_profile_not_matched_as_p() {
+        // !profile should match ProfileCard, not Pass
+        let cmd = parse_command("!profile", None).unwrap();
+        assert!(matches!(cmd, Command::ProfileCard { .. }));
+    }
+
+    #[test]
+    fn test_ps_not_affected() {
+        // !ps should still work
+        let cmd = parse_command("!ps", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 10,
+                is_summary: true,
             }
         );
     }

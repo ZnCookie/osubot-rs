@@ -1,5 +1,13 @@
 const PROFILE_CSS: &str = include_str!("../styles/profile.css");
 
+pub(crate) fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 /// Wrap osu! profile page HTML fragment with the necessary CSS.
 ///
 /// The API returns only a BBcode HTML fragment that depends on osu! website
@@ -18,7 +26,8 @@ pub fn wrap_osu_profile_html(
 </div>
 <div class="user-name" style="text-align:center;margin-bottom:20px">{}</div>
 <hr style="border:0;height:1px;background:#ffffff;margin:20px 0">"#,
-        avatar_url, username
+        escape_html(avatar_url),
+        escape_html(username),
     );
     let css = PROFILE_CSS
         .replacen("{{PROFILE_HUE}}", &profile_hue.to_string(), 1)

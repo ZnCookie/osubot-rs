@@ -50,7 +50,8 @@ impl IrcClient {
         }
 
         let addr = format!("{}:{}", self.config.server, self.config.port);
-        let retry_delay = tokio::time::Duration::from_secs(5);
+        let mut reconnect_delay = tokio::time::Duration::from_secs(5);
+        const MAX_RECONNECT_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(300);
 
         loop {
             info!(server = %addr, nickname = %self.config.nickname, "Connecting to IRC");
@@ -64,7 +65,12 @@ impl IrcClient {
                 }
             }
 
-            tokio::time::sleep(retry_delay).await;
+            info!(
+                delay_secs = reconnect_delay.as_secs(),
+                "Waiting before reconnect"
+            );
+            tokio::time::sleep(reconnect_delay).await;
+            reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
         }
     }
 
@@ -72,8 +78,12 @@ impl IrcClient {
         &self,
         addr: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let stream = TcpStream::connect(addr).await?;
-        let (reader, mut writer) = stream.into_split();
+        // osu! IRC 服务端 (irc.ppy.sh:6667) 仅支持明文 TCP，不支持 TLS。
+        // 这是 osu! 官方的限制，非本项目的设计选择。
+        let tcp = TcpStream::connect(addr).await?;
+
+        // Split stream into reader/writer halves
+        let (reader, mut writer) = tcp.into_split();
         let mut reader = BufReader::new(reader);
 
         // Send PASS, NICK, USER
@@ -148,7 +158,11 @@ impl IrcClient {
 
             // Handle PING to keep alive
             if line.starts_with("PING") {
-                let pong = line.replace("PING", "PONG");
+                let pong = if let Some(rest) = line.strip_prefix("PING") {
+                    format!("PONG{}", rest)
+                } else {
+                    line.to_string()
+                };
                 writer.write_all(format!("{}\r\n", pong).as_bytes()).await?;
                 writer.flush().await?;
                 continue;

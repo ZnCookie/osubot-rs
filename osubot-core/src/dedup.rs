@@ -65,7 +65,7 @@ where
         E: From<&'static str> + Send + 'static,
     {
         let entry = {
-            let mut map = self.entries.lock().unwrap();
+            let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
             map.entry(key.clone())
                 .or_insert_with(|| {
                     Arc::new(Entry {
@@ -94,7 +94,7 @@ where
                         Err(e) => StoredResult::Err(e.clone()),
                     };
                     {
-                        let mut guard = entry.result.lock().unwrap();
+                        let mut guard = entry.result.lock().unwrap_or_else(|e| e.into_inner());
                         *guard = Some(stored);
                     }
                     entry.done.close();
@@ -103,7 +103,7 @@ where
                 Err(join_err) => {
                     tracing::warn!("dedup creator task failed: {join_err}");
                     {
-                        let mut guard = entry.result.lock().unwrap();
+                        let mut guard = entry.result.lock().unwrap_or_else(|e| e.into_inner());
                         *guard = Some(StoredResult::Panicked);
                     }
                     entry.done.close();
@@ -114,11 +114,12 @@ where
             work_result
         } else {
             let _ = entry.done.acquire().await;
-            let guard = entry.result.lock().unwrap();
-            match guard.as_ref().expect("result must be set by creator") {
-                StoredResult::Ok(v) => Ok(v.clone()),
-                StoredResult::Err(e) => Err(e.clone()),
-                StoredResult::Panicked => Err(E::from("creator panicked")),
+            let guard = entry.result.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(StoredResult::Ok(v)) => Ok(v.clone()),
+                Some(StoredResult::Err(e)) => Err(e.clone()),
+                Some(StoredResult::Panicked) => Err(E::from("creator panicked")),
+                None => Err(E::from("creator abandoned")),
             }
         }
     }

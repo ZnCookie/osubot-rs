@@ -1,4 +1,5 @@
 mod config;
+mod constants;
 mod scheduler;
 
 use config::Config;
@@ -8,13 +9,13 @@ use osubot_core::{
     dedup::RequestDedup,
     highlight::{format_highlight, get_highlight, HighlightError},
     parse_command,
-    response::format_stats_with_change,
+    response::{format_score, format_scores, format_stats_with_change},
     storage::Storage,
-    types::{Command, GameMode},
+    types::{format_play_datetime, Command, GameMode, Score, UserStats},
     OauthTokenCache, RateLimiter,
 };
-use osubot_render::render_profile_card;
 use osubot_render::PROFILE_VIEWPORT_WIDTH;
+use osubot_render::{render_profile_card, render_score_card};
 use scheduler::Scheduler;
 use serde::Deserialize;
 use std::{
@@ -27,8 +28,10 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
+
+use constants::*;
 
 #[derive(Debug, Clone)]
 struct QQMessage {
@@ -45,8 +48,18 @@ struct OneBotResponse {
     echo: Option<String>,
 }
 
+struct UserRateLimit {
+    last_command: std::time::Instant,
+    command_timestamps: Vec<std::time::Instant>,
+}
+
+struct PendingEntry {
+    sender: oneshot::Sender<serde_json::Value>,
+    created_at: std::time::Instant,
+}
+
 struct OneBotApi {
-    pending: Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>,
+    pending: Mutex<HashMap<String, PendingEntry>>,
 }
 
 impl OneBotApi {
@@ -77,7 +90,8 @@ struct OneBotMessage {
     message: Option<serde_json::Value>,
 }
 
-/// Parse OneBot 11 JSON message, extract group message
+/// Parse a OneBot JSON message into a `QQMessage`.
+/// Returns `None` if the message is not a group message or lacks required fields.
 fn parse_onebot_message(json: &str) -> Option<QQMessage> {
     let msg: OneBotMessage = serde_json::from_str(json).ok()?;
 
@@ -98,11 +112,8 @@ fn parse_onebot_message(json: &str) -> Option<QQMessage> {
     })
 }
 
-/// Extract plain text and first valid @mention QQ ID from OneBot message array.
-/// Returns None for mentioned_user_id when:
-/// - No "at" segments
-/// - More than one "at" segment
-/// - The "at" segment's qq value is not a valid i64 (e.g. "all" for @全体成员)
+/// Extract plain text and a single @mention user ID from a OneBot message array.
+/// Returns `(text, mentioned_user_id)` — the mention is `Some` only if exactly one user is @mentioned.
 fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i64>) {
     let arr = match message.as_array() {
         Some(a) => a,
@@ -151,13 +162,14 @@ fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i
     (text, mentioned_user_id)
 }
 
-/// Shared bot state passed through command handlers
 #[derive(Clone)]
 struct BotContext {
     storage: Arc<Storage>,
     scheduler: Scheduler,
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
+    command_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>>,
+    groups_config: Arc<config::GroupsConfig>,
     write: Arc<Mutex<WriteSink>>,
     onebot_api: Arc<OneBotApi>,
 }
@@ -169,7 +181,422 @@ fn profile_dedup() -> &'static ProfileDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
-/// Handle command and send response
+type ScoreDedup = RequestDedup<(i64, bool, u32, GameMode), Arc<Vec<Score>>, String>;
+
+fn score_dedup() -> &'static ScoreDedup {
+    static DEDUP: OnceLock<ScoreDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
+async fn resolve_score_user(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    username: &Option<String>,
+    qq: &Option<i64>,
+    mode: GameMode,
+    resp_tx: &mpsc::Sender<String>,
+) -> Option<(i64, String, UserStats)> {
+    tracing::debug!("resolve_score_user: starting");
+    if let Some(ref name) = username {
+        // Look up by username
+        tracing::debug!("resolve_score_user: looking up by username '{}'", name);
+        match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
+            Ok(stats) => {
+                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                Some((stats.user_id, stats.username.clone(), stats))
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, username = %name, "resolve_score_user: API lookup failed");
+                let err_msg = match e {
+                    ApiError::NotFound => format!("找不到用户 \"{}\"", name),
+                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
+                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                        format!("请求过于频繁，请 {} 秒后再试", secs)
+                    }
+                    ApiError::RateLimitedWithRetryAfter(None) => {
+                        "请求过于频繁，请稍后再试".to_string()
+                    }
+                    ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
+                    _ => "获取数据失败，请稍后再试".to_string(),
+                };
+                let _ = resp_tx.send(err_msg).await;
+                None
+            }
+        }
+    } else {
+        let (user_id, _stored_name, error_msg) = if let Some(mentioned_qq) = qq {
+            match ctx.storage.get_binding(*mentioned_qq) {
+                Ok(Some((user_id, name))) => (user_id, name, None),
+                Ok(None) => (
+                    0,
+                    String::new(),
+                    Some("该用户还没有绑定 osu! 账号".to_string()),
+                ),
+                Err(_) => (0, String::new(), Some("数据库错误".to_string())),
+            }
+        } else {
+            match ctx.storage.get_binding(msg.user_id) {
+                Ok(Some((user_id, name))) => (user_id, name, None),
+                Ok(None) => (
+                    0,
+                    String::new(),
+                    Some("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string()),
+                ),
+                Err(_) => (0, String::new(), Some("数据库错误".to_string())),
+            }
+        };
+        if let Some(err) = error_msg {
+            let _ = resp_tx.send(err).await;
+            return None;
+        }
+        tracing::info!("resolve_score_user: fetching stats for user_id={}", user_id);
+        match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
+            Ok(stats) => {
+                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                Some((user_id, stats.username.clone(), stats))
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, user_id, "resolve_score_user: API lookup failed for bound user");
+                let _ = resp_tx
+                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .await;
+                None
+            }
+        }
+    }
+}
+
+struct ScoreQueryParams<'a> {
+    mode: GameMode,
+    username: &'a Option<String>,
+    qq: &'a Option<i64>,
+    is_pass: bool,
+    limit: u32,
+    is_single: bool,
+}
+
+async fn handle_score_query(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    params: ScoreQueryParams<'_>,
+) {
+    tracing::debug!("handle_score_query: starting");
+    let (user_id, resolved_username, user_stats) = match resolve_score_user(
+        ctx,
+        msg,
+        params.username,
+        params.qq,
+        params.mode,
+        resp_tx,
+    )
+    .await
+    {
+        Some(u) => {
+            tracing::debug!(
+                "resolve_score_user: resolved user_id={}, username={}",
+                u.0,
+                u.1
+            );
+            u
+        }
+        None => {
+            tracing::warn!("resolve_score_user: returned None");
+            return;
+        }
+    };
+    ctx.scheduler.trigger_update(user_id, params.mode);
+    let include_fails = !params.is_pass;
+    let dedup_key = (user_id, params.is_pass, params.limit, params.mode);
+    let dedup_username = resolved_username.clone();
+    let dedup_rate_limiter = ctx.rate_limiter.clone();
+    let dedup_oauth = ctx.oauth.clone();
+    let dedup_mode = params.mode;
+    let dedup_user_id = user_id;
+
+    tracing::debug!(
+        "Fetching scores for user_id={}, mode={:?}, limit={}",
+        user_id,
+        params.mode,
+        params.limit
+    );
+    let score_result: Result<Arc<Vec<Score>>, String> = score_dedup()
+        .run_or_wait(dedup_key, move || {
+            let dedup_rate_limiter = dedup_rate_limiter.clone();
+            let dedup_oauth = dedup_oauth.clone();
+            async move {
+                api::get_user_recent(
+                    &dedup_rate_limiter,
+                    &dedup_oauth,
+                    dedup_user_id,
+                    dedup_mode,
+                    include_fails,
+                    params.limit,
+                )
+                .await
+                .map(Arc::new)
+                .map_err(|e| {
+                    warn!(user_id = dedup_user_id, mode = ?dedup_mode, error = ?e, "Score query failed");
+                    match e {
+                        ApiError::NotFound => "未找到该用户".to_string(),
+                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => format!("请求过于频繁，请 {} 秒后再试", secs),
+                        ApiError::RateLimitedWithRetryAfter(None) => "请求过于频繁，请稍后再试".to_string(),
+                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
+                        e => {
+                            tracing::error!(error = ?e, "Score query error details");
+                            "获取数据失败，请稍后再试".to_string()
+                        }
+                    }
+                })
+            }
+        })
+        .await;
+
+    match score_result {
+        Ok(scores) => {
+            if scores.is_empty() {
+                let empty_msg = if include_fails {
+                    "最近没有游玩记录（包括失败）"
+                } else {
+                    "最近没有游玩记录"
+                };
+                let _ = resp_tx.send(empty_msg.to_string()).await;
+                return;
+            }
+            if params.is_single {
+                let index = (params.limit - 1) as usize;
+                if index >= scores.len() {
+                    let _ = resp_tx
+                        .send(format!(
+                            "没有第{}条记录，只有{}条",
+                            params.limit,
+                            scores.len()
+                        ))
+                        .await;
+                    return;
+                }
+                let position = Some(index);
+                let score = &scores[index];
+
+                // Try rendering score card image (with overall timeout)
+                let play_time = format_play_datetime(&score.created_at);
+                let user_global_rank = if user_stats.rank > 0 {
+                    Some(user_stats.rank)
+                } else {
+                    None
+                };
+                let user_country_rank = if user_stats.country_rank > 0 {
+                    Some(user_stats.country_rank)
+                } else {
+                    None
+                };
+                let change = ctx
+                    .storage
+                    .calculate_change(user_id, params.mode, &user_stats)
+                    .ok()
+                    .flatten();
+
+                let pp_change = change.as_ref().and_then(|c| c.pp_change);
+                let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
+                let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+                tracing::debug!(
+                    "Starting score card render for {} (pp={}, rank={:?}, country_rank={:?}, pp_change={:?})",
+                    dedup_username,
+                    user_stats.pp,
+                    user_global_rank,
+                    user_country_rank,
+                    pp_change
+                );
+                // 计算 UR（异步，10秒超时，失败不影响渲染）
+                // osu! 模式、有效 score_id 且有 replay 时尝试（rosu_replay 支持 stable 与 lazer）
+                tracing::debug!(score_id = score.score_id, mode = ?params.mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
+                let ur_result = if params.mode == GameMode::Osu
+                    && score.score_id > 0
+                    && score.has_replay
+                {
+                    let rl = ctx.rate_limiter.clone();
+                    let oa = ctx.oauth.clone();
+                    let mods = score.mods.clone();
+                    let ur = tokio::time::timeout(
+                        std::time::Duration::from_secs(UR_TIMEOUT_SECS),
+                        osubot_core::ur::calculate_score_ur(
+                            &rl,
+                            &oa,
+                            osubot_core::ur::ScoreUrParams {
+                                score_id: score.score_id,
+                                legacy_score_id: score.legacy_score_id,
+                                beatmap_id: score.beatmap_id,
+                                mode: params.mode,
+                                mods: mods.clone(),
+                            },
+                        ),
+                    )
+                    .await;
+                    match ur {
+                        Ok(Some(ur_val)) => {
+                            tracing::debug!(
+                                score_id = score.score_id,
+                                total_ur = ur_val,
+                                "UR calculation succeeded"
+                            );
+                            Some(ur_val)
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                score_id = score.score_id,
+                                "UR calculation returned None"
+                            );
+                            None
+                        }
+                        Err(_) => {
+                            tracing::warn!(score_id = score.score_id, "UR calculation timed out");
+                            None
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        score_id = score.score_id,
+                        mode = ?params.mode,
+                        is_lazer = score.is_lazer,
+                        has_replay = score.has_replay,
+                        "Skipping UR calculation"
+                    );
+                    None
+                };
+
+                // 计算 PP 分解和 if-acc（单张成绩卡片需要）
+                let mut score = score.clone();
+                osubot_core::enrich_score_with_pp(&mut score, params.mode).await;
+
+                // 计算 mod 调整后的 AR/OD/CS/HP
+                let (ar_eff, od_eff, cs_eff, hp_eff) = {
+                    let (a, o, c, h) = osubot_core::apply_mod_adjustment_to_stats(
+                        params.mode,
+                        score.ar,
+                        score.od,
+                        score.cs,
+                        score.hp,
+                        &score.mods,
+                    );
+                    let same = (a - score.ar).abs() < 0.01
+                        && (o - score.od).abs() < 0.01
+                        && (c - score.cs).abs() < 0.01
+                        && (h - score.hp).abs() < 0.01;
+                    if same {
+                        (None, None, None, None)
+                    } else {
+                        (Some(a), Some(o), Some(c), Some(h))
+                    }
+                };
+
+                let cover_image: Option<image::DynamicImage> = if !score.cover_url.is_empty() {
+                    match osubot_render::cache::fetch_and_cache(
+                        &score.cover_url,
+                        osubot_render::cache::http_client(),
+                    )
+                    .await
+                    {
+                        Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+
+                let ur_value = ur_result;
+
+                // 30s outer timeout for score card rendering.
+                // The cancel flag is shared with render_score_card; if this
+                // timeout fires, it sets the flag so the blocking render
+                // detects it at loop boundaries and aborts early.
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel_clone = cancel.clone();
+                let render_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(RENDER_TIMEOUT_SECS),
+                    render_score_card(osubot_render::ScoreCardParams {
+                        score: &score,
+                        username: &dedup_username,
+                        mode: params.mode,
+                        user_pp: user_stats.pp,
+                        user_global_rank,
+                        user_country_rank,
+                        country_code: &user_stats.country_code,
+                        avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
+                        play_time: &play_time,
+                        fav_count: score.fav_count,
+                        play_count: score.play_count,
+                        pp_change,
+                        global_rank_change,
+                        country_rank_change,
+                        ranked_status: &score.status,
+                        ur_value,
+                        ar_eff,
+                        od_eff,
+                        cs_eff,
+                        hp_eff,
+                        cover_image,
+                        cancel_flag: Some(cancel_clone),
+                    }),
+                )
+                .await;
+
+                match render_result {
+                    Ok(Ok(jpeg_bytes)) => {
+                        tracing::info!(
+                            "Score card rendered successfully, {} bytes",
+                            jpeg_bytes.len()
+                        );
+                        let jpeg = Arc::new(jpeg_bytes);
+                        let write = ctx.write.clone();
+                        let group_id = msg.group_id;
+                        let resp_tx_img = resp_tx.clone();
+                        tokio::spawn(async move {
+                            if send_group_msg_with_image(&write, group_id, &jpeg)
+                                .await
+                                .is_err()
+                            {
+                                let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                            }
+                        });
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "render_score_card failed, falling back to text");
+                        let response = format_score(
+                            &score,
+                            &dedup_username,
+                            params.mode,
+                            position,
+                            params.is_pass,
+                        );
+                        let _ = resp_tx.send(response).await;
+                    }
+                    Err(_) => {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        warn!("render_score_card timed out after 30s, falling back to text");
+                        let response = format_score(
+                            &score,
+                            &dedup_username,
+                            params.mode,
+                            position,
+                            params.is_pass,
+                        );
+                        let _ = resp_tx.send(response).await;
+                    }
+                }
+            } else {
+                let response = format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                let _ = resp_tx.send(response).await;
+            }
+        }
+        Err(err_msg) => {
+            let _ = resp_tx.send(err_msg).await;
+        }
+    }
+}
+
+/// Main command dispatcher. Parses the command text, resolves the target user,
+/// executes the appropriate query, and sends the response via `resp_tx`.
 async fn handle_command(
     ctx: BotContext,
     msg: QQMessage,
@@ -181,13 +608,58 @@ async fn handle_command(
         None => return,
     };
 
+    // 命令开关检查
+    let group_cfg = ctx.groups_config.get_group_config(msg.group_id);
+    if !group_cfg.is_enabled(cmd.group_name()) {
+        debug!(group_id = msg.group_id, command = ?cmd.group_name(), "命令已禁用，跳过");
+        return;
+    }
+
+    // 用户命令频率限制（滑动窗口：3秒内最多5次）
+    let rate_limited = {
+        let mut entry = ctx
+            .command_rate_limits
+            .entry(msg.user_id)
+            .or_insert(UserRateLimit {
+                last_command: std::time::Instant::now(),
+                command_timestamps: Vec::new(),
+            });
+
+        let now = std::time::Instant::now();
+        // 清理超过3秒的记录
+        entry
+            .command_timestamps
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(3));
+        entry.command_timestamps.push(now);
+        entry.last_command = now;
+
+        // 检查是否超过限制
+        entry.command_timestamps.len() > 5
+    };
+    if rate_limited {
+        let _ = resp_tx.send("操作太频繁，请稍后再试".to_string()).await;
+        return;
+    }
+
+    // 定期清理不活跃的用户（每60秒清理30秒内无命令的用户）
+    static LAST_CLEANUP: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
+    let last = LAST_CLEANUP.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+    if let Ok(mut last_time) = last.try_lock() {
+        if last_time.elapsed() >= Duration::from_secs(60) {
+            ctx.command_rate_limits
+                .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(30));
+            *last_time = std::time::Instant::now();
+        }
+    }
+
+    // Handle command and send response
     match cmd {
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
             match ctx.storage.get_binding(msg.user_id) {
                 Ok(Some((user_id, current_username))) => {
-                    // Trigger update for all modes (bypassing cooldown)
-                    ctx.scheduler.trigger_update(user_id);
+                    // Trigger update for the queried mode (bypassing cooldown)
+                    ctx.scheduler.trigger_update(user_id, mode);
                     match api::fetch_user_stats_by_user_id(
                         &ctx.rate_limiter,
                         &ctx.oauth,
@@ -220,7 +692,15 @@ async fn handle_command(
                                 ApiError::NotFound => "未找到该用户".to_string(),
                                 ApiError::MissingApiKey => "API Key 未配置".to_string(),
                                 ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                                    format!("查询繁忙，请 {} 秒后再试", secs)
+                                }
+                                ApiError::RateLimitedWithRetryAfter(None) => {
+                                    "查询繁忙，请稍后再试".to_string()
+                                }
+                                ApiError::ClientRateLimited => {
+                                    "本地请求限流，请稍后再试".to_string()
+                                }
                                 _ => "查询失败，请稍后重试".to_string(),
                             };
                             let _ = resp_tx.send(err_msg).await;
@@ -247,12 +727,10 @@ async fn handle_command(
                 Ok(stats) => {
                     // Cache user_id for future lookups (even for unbound users)
                     ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
-                    // If the user renamed, also map the queried name → user_id
                     if stats.username != username {
                         ctx.storage.set_user_id(&username, stats.user_id).ok();
                     }
-                    // Schedule periodic updates for this user
-                    ctx.scheduler.trigger_update(stats.user_id);
+                    ctx.scheduler.trigger_update(stats.user_id, mode);
                     let change = ctx
                         .storage
                         .calculate_change(stats.user_id, mode, &stats)
@@ -272,7 +750,13 @@ async fn handle_command(
                         ApiError::NotFound => "未找到该用户".to_string(),
                         ApiError::MissingApiKey => "API Key 未配置".to_string(),
                         ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                            format!("查询繁忙，请 {} 秒后再试", secs)
+                        }
+                        ApiError::RateLimitedWithRetryAfter(None) => {
+                            "查询繁忙，请稍后再试".to_string()
+                        }
+                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
                         _ => "查询失败，请稍后重试".to_string(),
                     };
                     let _ = resp_tx.send(err_msg).await;
@@ -283,7 +767,7 @@ async fn handle_command(
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
             match ctx.storage.get_binding(qq) {
                 Ok(Some((user_id, current_username))) => {
-                    ctx.scheduler.trigger_update(user_id);
+                    ctx.scheduler.trigger_update(user_id, mode);
                     match api::fetch_user_stats_by_user_id(
                         &ctx.rate_limiter,
                         &ctx.oauth,
@@ -314,7 +798,15 @@ async fn handle_command(
                                 ApiError::NotFound => "未找到该用户".to_string(),
                                 ApiError::MissingApiKey => "API Key 未配置".to_string(),
                                 ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimited => "查询繁忙，请稍后重试".to_string(),
+                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                                    format!("查询繁忙，请 {} 秒后再试", secs)
+                                }
+                                ApiError::RateLimitedWithRetryAfter(None) => {
+                                    "查询繁忙，请稍后重试".to_string()
+                                }
+                                ApiError::ClientRateLimited => {
+                                    "本地请求限流，请稍后再试".to_string()
+                                }
                                 _ => "查询失败，请稍后重试".to_string(),
                             };
                             let _ = resp_tx.send(err_msg).await;
@@ -337,7 +829,6 @@ async fn handle_command(
         }
         Command::Bind { username } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "Bind command");
-            // First check if this QQ already bound
             match ctx.storage.get_binding(msg.user_id) {
                 Ok(Some((_, existing_username))) => {
                     info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
@@ -350,7 +841,6 @@ async fn handle_command(
                 }
                 Ok(None) => {
                     if let Some(nickname) = irc_nickname {
-                        // IRC auth mode: check rate limit (one pending bind at a time)
                         match ctx.storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
                                 let _ = resp_tx
@@ -368,7 +858,6 @@ async fn handle_command(
                             }
                             _ => {}
                         }
-                        // Generate code and wait for verification
                         match ctx
                             .storage
                             .add_pending_bind(msg.user_id, msg.group_id, &username)
@@ -388,10 +877,8 @@ async fn handle_command(
                             }
                         }
                     } else {
-                        // Direct bind (original logic)
                         match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, &username).await {
                             Ok(Some(user_info)) => {
-                                // Cache the numeric user ID
                                 if let Err(e) = ctx.storage.set_user_id(&username, user_info.id) {
                                     warn!("Failed to cache user_id for {username}: {e}");
                                 }
@@ -432,7 +919,15 @@ async fn handle_command(
                                     ApiError::NotFound => "未找到该用户".to_string(),
                                     ApiError::MissingApiKey => "API Key 未配置".to_string(),
                                     ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                    ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                                        format!("查询繁忙，请 {} 秒后再试", secs)
+                                    }
+                                    ApiError::RateLimitedWithRetryAfter(None) => {
+                                        "查询繁忙，请稍后再试".to_string()
+                                    }
+                                    ApiError::ClientRateLimited => {
+                                        "本地请求限流，请稍后再试".to_string()
+                                    }
                                     _ => "查询失败，请稍后重试".to_string(),
                                 };
                                 let _ = resp_tx.send(err_msg).await;
@@ -561,7 +1056,6 @@ async fn handle_command(
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {
-                    // Try local cache first to avoid redundant API call
                     if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name) {
                         info!(username = %name, user_id = cached_id, "ProfileCard resolved from local cache");
                         cached_id
@@ -570,9 +1064,6 @@ async fn handle_command(
                             &ctx.rate_limiter,
                             &ctx.oauth,
                             name,
-                            // ProfileCard always uses osu!std — the rendered
-                            // content is mode-independent, so osu!std user ID
-                            // resolution is sufficient.
                             GameMode::Osu,
                         )
                         .await
@@ -588,7 +1079,15 @@ async fn handle_command(
                                     ApiError::NotFound => "未找到该用户".to_string(),
                                     ApiError::MissingApiKey => "API Key 未配置".to_string(),
                                     ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                    ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                                        format!("查询繁忙，请 {} 秒后再试", secs)
+                                    }
+                                    ApiError::RateLimitedWithRetryAfter(None) => {
+                                        "查询繁忙，请稍后再试".to_string()
+                                    }
+                                    ApiError::ClientRateLimited => {
+                                        "本地请求限流，请稍后再试".to_string()
+                                    }
                                     _ => "查询失败，请稍后重试".to_string(),
                                 };
                                 let _ = resp_tx.send(err_msg).await;
@@ -648,14 +1147,11 @@ async fn handle_command(
             let dedup_oauth = ctx.oauth.clone();
             let dedup_target_id = target_user_id;
             let render_result = profile_dedup()
-                // GameMode::Osu is intentional — profile card content is the
-                // same across all modes, so osu!std is always used.
                 .run_or_wait((target_user_id, GameMode::Osu), move || async move {
                     let profile = api::fetch_user_profile(
                         &dedup_rate_limiter,
                         &dedup_oauth,
                         dedup_target_id,
-                        // Always osu!std: profile card content is mode-independent.
                         GameMode::Osu,
                     )
                     .await
@@ -663,7 +1159,13 @@ async fn handle_command(
                         ApiError::NotFound => "未找到该用户".to_string(),
                         ApiError::MissingApiKey => "API Key 未配置".to_string(),
                         ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                        ApiError::RateLimited => "查询繁忙，请稍后再试".to_string(),
+                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                            format!("查询繁忙，请 {} 秒后再试", secs)
+                        }
+                        ApiError::RateLimitedWithRetryAfter(None) => {
+                            "查询繁忙，请稍后再试".to_string()
+                        }
+                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
                         _ => "查询失败，请稍后重试".to_string(),
                     })?;
                     info!(
@@ -714,6 +1216,52 @@ async fn handle_command(
                 }
             }
         }
+        Command::Pass {
+            mode,
+            username,
+            qq,
+            limit,
+            is_summary,
+        } => {
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "Pass command");
+            handle_score_query(
+                &ctx,
+                &msg,
+                &resp_tx,
+                ScoreQueryParams {
+                    mode,
+                    username: &username,
+                    qq: &qq,
+                    is_pass: true,
+                    limit,
+                    is_single: !is_summary,
+                },
+            )
+            .await;
+        }
+        Command::Recent {
+            mode,
+            username,
+            qq,
+            limit,
+            is_summary,
+        } => {
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "Recent command");
+            handle_score_query(
+                &ctx,
+                &msg,
+                &resp_tx,
+                ScoreQueryParams {
+                    mode,
+                    username: &username,
+                    qq: &qq,
+                    is_pass: false,
+                    limit,
+                    is_single: !is_summary,
+                },
+            )
+            .await;
+        }
     }
 }
 
@@ -724,6 +1272,7 @@ type WriteSink = futures_util::stream::SplitSink<
     WsMsg,
 >;
 
+/// Send a text message to a QQ group via the OneBot WebSocket connection.
 async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &str) {
     let json = serde_json::json!({
         "action": "send_group_msg",
@@ -733,9 +1282,12 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
         }
     });
     let mut sink = write.lock().await;
-    let _ = sink.send(WsMsg::Text(json.to_string().into())).await;
+    if let Err(e) = sink.send(WsMsg::Text(json.to_string().into())).await {
+        tracing::error!("发送群消息失败: {}", e);
+    }
 }
 
+/// Send a message with a base64-encoded image to a QQ group via the OneBot WebSocket connection.
 async fn send_group_msg_with_image(
     write: &Arc<Mutex<WriteSink>>,
     group_id: i64,
@@ -775,7 +1327,13 @@ async fn call_onebot_api(
     let echo = next_echo();
     let (tx, rx) = oneshot::channel();
 
-    api.pending.lock().await.insert(echo.clone(), tx);
+    api.pending.lock().await.insert(
+        echo.clone(),
+        PendingEntry {
+            sender: tx,
+            created_at: std::time::Instant::now(),
+        },
+    );
 
     let json = serde_json::json!({
         "action": action,
@@ -790,7 +1348,7 @@ async fn call_onebot_api(
             .map_err(|e| e.to_string())?;
     }
 
-    let result = tokio::time::timeout(Duration::from_secs(5), rx).await;
+    let result = tokio::time::timeout(Duration::from_secs(ONEBOT_API_TIMEOUT_SECS), rx).await;
     api.pending.lock().await.remove(&echo);
 
     match result {
@@ -845,8 +1403,6 @@ async fn handle_irc_message(
         }
     };
 
-    // Check if the sender matches the target username
-    // osu! replaces spaces with underscores in IRC nicks
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
         storage.remove_pending_bind(code).ok();
         let msg = "绑定失败（绑定的不是本人）";
@@ -854,17 +1410,14 @@ async fn handle_irc_message(
         return;
     }
 
-    // Get user info first to obtain user_id
     match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
         Ok(Some(info)) => {
-            // Cache the numeric user ID
             if let Err(e) = storage.set_user_id(&pending.target_username, info.id) {
                 warn!(
                     "Failed to cache user_id for {}: {e}",
                     pending.target_username
                 );
             }
-            // Perform the bind
             match storage.bind(pending.qq_user_id, info.id, &info.username) {
                 Ok(Ok(())) => {
                     storage.remove_pending_bind(code).ok();
@@ -907,7 +1460,6 @@ async fn handle_irc_message(
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("osubot=debug,osubot_core=debug,info"));
 
@@ -939,7 +1491,6 @@ async fn main() {
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
-    // Backfill osu! user IDs for existing bindings that don't have cached IDs
     match storage.get_users_without_ids() {
         Ok(users) if !users.is_empty() => {
             info!("Backfilling user IDs for {} users...", users.len());
@@ -965,7 +1516,6 @@ async fn main() {
         Err(e) => error!("Failed to query users without IDs: {e}"),
     }
 
-    // Create and spawn scheduler
     let scheduler = Scheduler::new(
         storage.clone(),
         oauth.clone(),
@@ -990,7 +1540,6 @@ async fn main() {
         None
     };
 
-    // Set up IRC client
     let (irc_tx, mut irc_rx) = mpsc::channel::<osubot_core::irc::IrcPrivateMessage>(100);
 
     if irc_enabled {
@@ -1013,84 +1562,210 @@ async fn main() {
         warn!("API Key not configured. Please set osu.api_key in osubot.toml");
     }
 
-    let (ws_stream, _) = connect_async(&config.bot.onebot_url)
-        .await
-        .expect("Failed to connect to OneBot 11");
-
-    info!("Connected to OneBot 11");
-    info!("WebSocket connection established");
-
-    let (write, mut read) = ws_stream.split();
-    let write = Arc::new(Mutex::new(write));
     let onebot_api = Arc::new(OneBotApi::new());
 
-    // Spawn IRC message handler
-    let write_for_irc = write.clone();
+    let onebot_cleanup = onebot_api.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let mut pending = onebot_cleanup.pending.lock().await;
+            let before = pending.len();
+            pending.retain(|_, entry| entry.created_at.elapsed() < Duration::from_secs(30));
+            let removed = before.saturating_sub(pending.len());
+            if removed > 0 {
+                tracing::warn!(removed, "cleaned up stale pending OneBot API entries");
+            }
+        }
+    });
+
+    let user_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>> =
+        Arc::new(dashmap::DashMap::new());
+    let groups_config_arc = Arc::new(config.groups.clone());
+
+    // Shared write handle: the IRC bridge reads from this on each message,
+    // and the reconnection loop updates it when a new connection is established.
+    let current_write: Arc<Mutex<Option<Arc<Mutex<WriteSink>>>>> = Arc::new(Mutex::new(None));
+
+    let cw_for_irc = current_write.clone();
     let storage_for_irc = storage.clone();
     let rate_limiter_for_irc = rate_limiter.clone();
     let oauth_for_irc = oauth.clone();
     tokio::spawn(async move {
         while let Some(irc_msg) = irc_rx.recv().await {
-            let storage = storage_for_irc.clone();
-            let write = write_for_irc.clone();
-            let rate_limiter = rate_limiter_for_irc.clone();
-            let oauth = oauth_for_irc.clone();
-            tokio::spawn(async move {
-                handle_irc_message(storage, irc_msg, write, rate_limiter, oauth).await;
-            });
+            let write_opt = { cw_for_irc.lock().await.clone() };
+            if let Some(write) = write_opt {
+                let storage = storage_for_irc.clone();
+                let rate_limiter = rate_limiter_for_irc.clone();
+                let oauth = oauth_for_irc.clone();
+                tokio::spawn(async move {
+                    handle_irc_message(storage, irc_msg, write, rate_limiter, oauth).await;
+                });
+            } else {
+                warn!("No active WebSocket connection, dropping IRC message");
+            }
         }
     });
 
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                // Route API responses to pending callers
-                if let Ok(resp) = serde_json::from_str::<OneBotResponse>(&text) {
-                    if resp.status.is_some() {
-                        if let Some(echo) = resp.echo {
-                            let mut pending = onebot_api.pending.lock().await;
-                            if let Some(tx) = pending.remove(&echo) {
-                                let _ = tx.send(resp.data.unwrap_or(serde_json::Value::Null));
-                            }
-                            continue;
-                        }
-                    }
-                }
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-                if let Some(qq_msg) = parse_onebot_message(&text) {
-                    let (resp_tx, mut resp_rx) = mpsc::channel::<String>(1);
+    let shutdown_clone = shutdown.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("收到关闭信号，正在优雅关闭...");
+        shutdown_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
 
-                    let write_clone = write.clone();
-                    let group_id = qq_msg.group_id;
-                    tokio::spawn(async move {
-                        if let Some(response) = resp_rx.recv().await {
-                            send_group_msg(&write_clone, group_id, &response).await;
-                        }
-                    });
-
-                    let ctx = BotContext {
-                        storage: storage.clone(),
-                        scheduler: scheduler.clone(),
-                        oauth: oauth.clone(),
-                        rate_limiter: rate_limiter.clone(),
-                        write: write.clone(),
-                        onebot_api: onebot_api.clone(),
-                    };
-                    let irc_nickname = irc_nickname.clone();
-                    tokio::spawn(async move {
-                        handle_command(ctx, qq_msg, resp_tx, irc_nickname).await;
-                    });
-                }
-            }
-            Ok(Message::Close(_)) => {
-                info!("Connection closed");
-                break;
+    let mut reconnect_delay = 1u64;
+    loop {
+        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("正在关闭，不再重连");
+            break;
+        }
+        info!(url = %config.bot.onebot_url, "正在连接 OneBot WebSocket");
+        let ws_stream = match connect_async(&config.bot.onebot_url).await {
+            Ok((stream, _)) => {
+                reconnect_delay = 1;
+                stream
             }
             Err(e) => {
-                error!("WebSocket error: {}", e);
+                error!(error = %e, delay = reconnect_delay, "WebSocket 连接失败，{}秒后重试", reconnect_delay);
+                tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
+                reconnect_delay = (reconnect_delay * 2).min(60);
+                continue;
+            }
+        };
+
+        info!("WebSocket 连接已建立");
+
+        let (write, mut read) = ws_stream.split();
+        let write = Arc::new(Mutex::new(write));
+
+        // Update the shared write handle for the IRC bridge
+        {
+            let mut cw = current_write.lock().await;
+            let old = cw.replace(write.clone());
+            if let Some(old) = old {
+                let mut sink = old.lock().await;
+                if let Err(e) = sink.close().await {
+                    tracing::debug!(error = %e, "failed to close old WebSocket sink");
+                }
+            }
+        }
+
+        let connection_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        // Periodic ping to keep connection alive
+        let ping_write = write.clone();
+        let ping_shutdown = shutdown.clone();
+        let ping_connection_alive = connection_alive.clone();
+        let ping_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                if ping_shutdown.load(std::sync::atomic::Ordering::Relaxed)
+                    || !ping_connection_alive.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    break;
+                }
+                let mut sink = ping_write.lock().await;
+                if let Err(e) = sink.send(Message::Ping(vec![].into())).await {
+                    tracing::debug!(error = %e, "WebSocket ping failed");
+                    break;
+                }
+            }
+        });
+
+        // Message loop
+        loop {
+            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
-            _ => {}
+            match read.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(resp) = serde_json::from_str::<OneBotResponse>(&text) {
+                        if resp.status.is_some() {
+                            if let Some(echo) = resp.echo {
+                                let mut pending = onebot_api.pending.lock().await;
+                                if let Some(entry) = pending.remove(&echo) {
+                                    let _ = entry
+                                        .sender
+                                        .send(resp.data.unwrap_or(serde_json::Value::Null));
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
+                    if let Some(qq_msg) = parse_onebot_message(&text) {
+                        // 群黑白名单检查
+                        if !config.group_filter.is_group_allowed(qq_msg.group_id) {
+                            debug!(group_id = qq_msg.group_id, mode = ?config.group_filter.mode, "群被过滤，跳过");
+                            continue;
+                        }
+
+                        let (resp_tx, mut resp_rx) = mpsc::channel::<String>(1);
+
+                        let write_clone = write.clone();
+                        let group_id = qq_msg.group_id;
+                        tokio::spawn(async move {
+                            if let Some(response) = resp_rx.recv().await {
+                                send_group_msg(&write_clone, group_id, &response).await;
+                            }
+                        });
+
+                        let ctx = BotContext {
+                            storage: storage.clone(),
+                            scheduler: scheduler.clone(),
+                            oauth: oauth.clone(),
+                            rate_limiter: rate_limiter.clone(),
+                            command_rate_limits: user_rate_limits.clone(),
+                            groups_config: groups_config_arc.clone(),
+                            write: write.clone(),
+                            onebot_api: onebot_api.clone(),
+                        };
+                        let irc_nickname = irc_nickname.clone();
+                        tokio::spawn(async move {
+                            if tokio::time::timeout(
+                                Duration::from_secs(COMMAND_TIMEOUT_SECS),
+                                handle_command(ctx, qq_msg, resp_tx.clone(), irc_nickname),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                tracing::warn!("命令处理超时（120秒）");
+                                let _ = resp_tx.send("命令处理超时，请稍后重试".to_string()).await;
+                            }
+                        });
+                    }
+                }
+                Some(Ok(Message::Close(_))) => {
+                    warn!("WebSocket 连接关闭，{}秒后重连", reconnect_delay);
+                    break;
+                }
+                Some(Err(e)) => {
+                    error!(error = %e, "WebSocket 错误，{}秒后重连", reconnect_delay);
+                    break;
+                }
+                None => {
+                    warn!("WebSocket 流结束，{}秒后重连", reconnect_delay);
+                    break;
+                }
+                _ => {}
+            }
         }
+
+        connection_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        ping_handle.abort();
+
+        // Clear the write handle so the IRC bridge doesn't use a stale connection
+        {
+            let mut cw = current_write.lock().await;
+            *cw = None;
+        }
+
+        tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
+        reconnect_delay = (reconnect_delay * 2).min(60);
     }
+    scheduler.shutdown();
 }

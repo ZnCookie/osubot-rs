@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
@@ -21,6 +22,7 @@ pub struct Scheduler {
     rate_limiter: Arc<RateLimiter>,
     config: SchedulerConfig,
     last_cleanup: Arc<TokioMutex<Option<DateTime<Utc>>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Scheduler {
@@ -36,6 +38,7 @@ impl Scheduler {
             rate_limiter,
             config,
             last_cleanup: Arc::new(TokioMutex::new(None)),
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -72,15 +75,33 @@ impl Scheduler {
             _ => {}
         }
 
+        // Prune expired pending unbinds
+        match self.storage.prune_expired_pending_unbinds() {
+            Ok(deleted) if deleted > 0 => {
+                info!(deleted, "pruned expired pending unbinds");
+            }
+            _ => {}
+        }
+
         osubot_render::cleanup_expired(self.config.cache_retention_days).await;
+        osubot_core::cache::cleanup_replays(self.config.cache_retention_days).await;
+        osubot_core::cache::cleanup_beatmaps(self.config.cache_retention_days).await;
 
         *last = Some(now);
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
     }
 
     /// Background task entry point - only processes due users/modes
     pub async fn run(&self) {
         info!("Scheduler task started");
         loop {
+            if self.shutdown.load(Ordering::Relaxed) {
+                info!("Scheduler shutting down");
+                break;
+            }
             info!("Scheduler tick");
             time::sleep(time::Duration::from_secs(60 * self.config.interval_minutes)).await;
             self.process_due_users().await;
@@ -149,9 +170,20 @@ impl Scheduler {
                         activity: UserActivity::UserNotExists,
                     };
                 }
-                Err(_) => {
+                Err(ApiError::RateLimitedWithRetryAfter(_)) => {
                     return osubot_core::types::UpdateResult {
-                        activity: UserActivity::Inactive,
+                        activity: UserActivity::NoRecent,
+                    };
+                }
+                Err(ApiError::ClientRateLimited) => {
+                    return osubot_core::types::UpdateResult {
+                        activity: UserActivity::NoRecent,
+                    };
+                }
+                Err(_) => {
+                    // Other transient errors: use shorter retry interval (6h instead of 48h)
+                    return osubot_core::types::UpdateResult {
+                        activity: UserActivity::NoRecent,
                     };
                 }
             };
@@ -180,7 +212,9 @@ impl Scheduler {
 
         // Always fetch and save recent plays (get_user_recent already takes user_id)
         let recent_plays =
-            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode).await {
+            match api::get_user_recent(&self.rate_limiter, &self.oauth, user_id, mode, false, 100)
+                .await
+            {
                 Ok(plays) => plays,
                 Err(e) => {
                     error!("Failed to fetch recent plays for user {user_id}: {e:?}");
@@ -269,19 +303,10 @@ impl Scheduler {
         let _ = self.storage.set_next_update(user_id, mode, next);
     }
 
-    /// Trigger update for user (all 4 modes)
-    pub fn trigger_update(&self, user_id: i64) {
-        for mode in [
-            GameMode::Osu,
-            GameMode::Taiko,
-            GameMode::Catch,
-            GameMode::Mania,
-        ] {
-            // Check cooldown
-            if !self.is_in_cooldown(user_id, mode) {
-                // Set next_update to now (immediate)
-                let _ = self.storage.set_next_update(user_id, mode, Utc::now());
-            }
+    /// Trigger update for user (single mode only)
+    pub fn trigger_update(&self, user_id: i64, mode: GameMode) {
+        if !self.is_in_cooldown(user_id, mode) {
+            let _ = self.storage.set_next_update(user_id, mode, Utc::now());
         }
     }
 
