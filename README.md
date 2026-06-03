@@ -70,6 +70,31 @@ password = "IRC 密码"  # 在 https://osu.ppy.sh/p/irc 获取
 ```
 IRC 断线会自动重连（5 秒间隔，无限重试）。
 
+### 群黑白名单
+
+控制哪些群可以使用 bot，默认黑名单模式（所有群可用）：
+```toml
+[group_filter]
+mode = "blacklist"        # "blacklist" 或 "whitelist"
+group_ids = [123456789]   # 黑名单=禁用这些群，白名单=仅允许这些群
+```
+
+### 群命令开关
+
+按群控制命令开关，默认全部开启：
+```toml
+[groups.default]
+query = true      # ~、where、查
+score = true      # !p、!ps、!r、!rs
+profile = true    # !profile
+highlight = true  # 今日高光
+bind = true       # 绑定、解绑
+
+# 特定群覆盖（节名 = 群号）
+[groups.123456789]
+highlight = false  # 该群禁用今日高光
+```
+
 ## 用户安装要求
 
 发行包自带所有 C 运行时库（librsvg、cairo、glib2、pango），无需手动安装。唯一需要的是字体：
@@ -119,7 +144,7 @@ cargo run --release
 - **存储**: SQLite (rusqlite)，存储用户绑定、数据快照和游玩记录
 - **WebSocket**: tokio-tungstenite 连接 OneBot 11 正向 WebSocket
 - **API**: osu! API v2，OAuth client credentials 认证
-- **PP 计算**: rosu-pp v4，支持回放逐步性能计算
+- **PP 计算**: rosu-pp v4，支持 PP 分解和准确率推测
 - **渲染**: Blitz + Vello CPU（HTML 转位图）、librsvg/cairo（SVG 光栅化）
 - **JPEG 质量**: 成绩卡片 90、个人主页 80、内嵌图片 85-90
 - **准确率显示**: floor 截断（与 osu!lazer 官方行为一致），尾随 0 自动去除
@@ -134,6 +159,7 @@ osubot-rs/
 │   └── src/
 │       ├── main.rs     # WebSocket 连接、消息循环、命令分发
 │       ├── config.rs   # TOML 配置加载
+│       ├── constants.rs # 超时常量定义
 │       └── scheduler.rs # 后台定时更新调度器
 ├── osubot-core/        # 核心库
 │   └── src/
@@ -145,6 +171,7 @@ osubot-rs/
 │       ├── ur.rs        # 回放解析 + UR 计算
 │       ├── dedup.rs     # 请求去重
 │       ├── rate_limiter.rs # 令牌桶限流
+│       ├── cache.rs     # replay/beatmap 文件缓存
 │       ├── irc.rs       # IRC 连接与消息监听
 │       └── types.rs     # 数据类型定义
 ├── osubot-render/      # 渲染引擎（个人主页 + 分数卡片）
@@ -172,6 +199,7 @@ osubot-rs/
 | 普通 | 当日（本地0点至今）有游玩记录 | 8 小时 |
 | 无最近 | 当日无游玩记录，8h 内有活动 | 6 小时 |
 | 不活跃 | 48 小时以上无游玩记录 | 48 小时 |
+| 用户不存在 | API 返回 NotFound | 24 小时 |
 
 调度器通过 osu! API 的 `/users/{id}/scores/recent` 接口获取玩家最近游玩记录，写入数据库。每次调度都保存一份数据快照，不依赖"变化"判断。群内手动查询会触发 `trigger_update`（1 小时冷却），确保交互后及时刷新数据。
 
@@ -181,7 +209,7 @@ osubot-rs/
 
 ### 请求去重与限流
 
-并发的相同请求（如多人同时查询同一用户）通过 `RequestDedup` 只执行一次 API 调用。所有 osu! API 请求经过令牌桶限流（60 突发/5 每秒），防止触发 API 速率限制。
+并发的相同请求（如多人同时查询同一用户）通过 `RequestDedup` 只执行一次 API 调用。所有 osu! API 请求经过令牌桶限流（60 突发/1 每秒），防止触发 API 速率限制。
 
 ## 许可
 

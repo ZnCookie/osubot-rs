@@ -19,21 +19,19 @@ cargo test --locked -p <crate> <name> # 运行单个测试
 
 ## 架构
 
-四 crate 工作空间，依赖方向严格单向：
+四 crate 工作空间，`osubot-types` 为底层共享类型，`osubot-core` 和 `osubot-render` 互相独立，`osubot` 二进制整合两者：
 
 ```
 osubot-types   ← 共享类型（Score、GameMode、格式化工具），依赖 chrono、rosu-mods
-    ↑
-osubot-core    ← 领域逻辑（API 客户端、存储、命令解析、去重、限流、IRC、UR 计算）
-    ↑
-osubot-render  ← HTML 转图片渲染（blitz/Vello CPU，librsvg 处理 SVG）
-    ↑
-osubot         ← 二进制入口（WebSocket 循环、命令调度、后台调度器）
+    ↑           ↑
+osubot-core    osubot-render  ← 两者无依赖关系，均只依赖 osubot-types
+    ↑           ↑
+    └─── osubot ───┘          ← 二进制入口（WebSocket 循环、命令调度、后台调度器）
 ```
 
-**osubot-core 关键模块**：`api.rs`（osu! API + OAuth 缓存 + 401 重试 + mod 完整解析（通过 rosu_mods::GameMods 保留 DT 倍率、DA 等 lazer 模组设置）+ PP 本地 fallback）、`storage.rs`（SQLite 用户绑定/快照/游玩记录）、`commands.rs`（中英文命令解析，`!ps`/`!rs` 优先于 `!p`/`!r` 避免前缀冲突）、`dedup.rs`（信号量去重，相同请求只执行一次）、`rate_limiter.rs`（令牌桶 60 突发/5 每秒）、`ur.rs`（回放解析 + 误差排序贪心 note-key 匹配 + UR 计算 + replay 时序偏移修正）
+**osubot-core 关键模块**：`api.rs`（osu! API + OAuth 缓存 + 401 重试 + mod 完整解析（通过 rosu_mods::GameMods 保留 DT 倍率、DA 等 lazer 模组设置）+ PP 本地 fallback）、`storage.rs`（SQLite 用户绑定/快照/游玩记录）、`commands.rs`（中英文命令解析，`!ps`/`!rs` 优先于 `!p`/`!r` 避免前缀冲突）、`dedup.rs`（信号量去重，相同请求只执行一次）、`rate_limiter.rs`（令牌桶 60 突发/1 每秒）、`ur.rs`（回放解析 + 误差排序贪心 note-key 匹配 + UR 计算 + replay 时序偏移修正）
 
-**osubot-render**：信号量限制并发 1 个渲染任务。流程：下载缓存图片 → 提取封面主色调 → 生成内联 CSS 和 data URI 的 HTML → blitz 布局 → Vello CPU 光栅化（超高内容分块渲染）→ JPEG 编码。图片缓存在 `$XDG_CACHE/osubot/resources/`，SHA256 命名。
+**osubot-render**：信号量限制并发 1 个渲染任务。流程：下载缓存图片 → 提取封面主色调 → 生成内联 CSS 和 data URI 的 HTML → blitz 布局 → Vello CPU 光栅化（超高内容分块渲染）→ JPEG 编码。图片缓存在 `~/.cache/osubot/resources/`，SHA256 命名。
 
 **osubot（二进制）**：`main.rs` 拥有 WebSocket 循环和命令调度，每条消息 spawn 独立 tokio 任务，通过 `mpsc::channel(1)` 返回响应。`scheduler.rs` 按用户活跃度（4h~48h）轮询更新，命令处理时通过 `trigger_update` 刷新数据。
 
@@ -43,5 +41,5 @@ osubot         ← 二进制入口（WebSocket 循环、命令调度、后台调
 - **异步**：CPU 密集任务用 `spawn_blocking`，取消用 `Arc<AtomicBool>` 在渲染循环边界检查
 - **超时**：UR 10s、渲染 30s/60s、OneBot API 5s、限流获取 10s
 - **OneBot 协议**：通过 `echo` 字段 + `oneshot::channel` 关联请求响应，图片用 base64 CQ 段发送
-- **调度器**：非 cron，用 SQLite 中的 `next_update` 时间戳，按活跃度（SemiActive/Normal/NoRecent/Inactive）动态调整间隔
+- **调度器**：非 cron，用 SQLite 中的 `next_update` 时间戳，按活跃度（SemiActive/Normal/NoRecent/Inactive/UserNotExists）动态调整间隔
 - **约定**：`Cargo.lock` 已提交，CI 命令用 `--locked`；CSS 通过 `include_str!` 内联；静态去重实例用 `OnceLock`
