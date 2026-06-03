@@ -310,6 +310,8 @@ fn calculate_ur(errors: &[f64]) -> f64 {
         return 0.0;
     }
     let mean = errors.iter().sum::<f64>() / errors.len() as f64;
+    // 使用总体方差（除以 N）而非样本方差（除以 N-1），
+    // 与社区 UR 计算公式一致。对于大样本量差异可忽略。
     let variance = errors.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / errors.len() as f64;
     variance.sqrt() * 10.0
 }

@@ -645,12 +645,15 @@ async fn handle_command(
         return;
     }
 
-    // 定期清理过期的 rate limit 条目（每 100 次命令）
-    static CLEANUP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let old_count = CLEANUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if (old_count + 1).is_multiple_of(100) {
-        ctx.command_rate_limits
-            .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(60));
+    // 定期清理过期的 rate limit 条目（每 60 秒）
+    static LAST_CLEANUP: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
+    let last = LAST_CLEANUP.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+    if let Ok(mut last_time) = last.try_lock() {
+        if last_time.elapsed() >= Duration::from_secs(60) {
+            ctx.command_rate_limits
+                .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(60));
+            *last_time = std::time::Instant::now();
+        }
     }
 
     match cmd {

@@ -100,7 +100,7 @@ pub async fn get_highlight(
                 Err(_) => return None,
             };
 
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore unexpectedly closed");
             let result =
                 api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await;
 

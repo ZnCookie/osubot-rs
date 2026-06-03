@@ -209,6 +209,7 @@ pub fn trim_trailing_zeros(s: &str) -> String {
 /// `hit_accuracy` as a percentage (e.g., 98.5). Divide by 100 before calling
 /// if the source is a percentage.
 pub fn format_accuracy(accuracy: f64) -> String {
+    let accuracy = accuracy.clamp(0.0, 1.0);
     let pct = (accuracy * 10000.0).floor() / 100.0;
     format!("{}%", trim_trailing_zeros(&format!("{:.2}", pct)))
 }
@@ -288,5 +289,14 @@ mod tests {
         assert_eq!(format_accuracy(1.0), "100%");
         assert_eq!(format_accuracy(0.0), "0%");
         assert_eq!(format_accuracy(0.5), "50%");
+    }
+
+    #[test]
+    fn test_format_accuracy_edge_cases() {
+        assert_eq!(format_accuracy(0.9899), "98.99%");
+        assert_eq!(format_accuracy(-0.5), "0%");
+        assert_eq!(format_accuracy(1.5), "100%");
+        assert_eq!(format_accuracy(0.0), "0%");
+        assert_eq!(format_accuracy(0.0001), "0.01%");
     }
 }

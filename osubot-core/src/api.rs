@@ -153,6 +153,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
         PerformanceAttributes::Mania(attrs) => Some(PpBreakdown {
             aim: None,
             speed: None,
+            // Mania 不区分 accuracy/strain PP（rosu-pp v4.0.1 无 pp_acc 字段）
             accuracy: 0.0,
             flashlight: None,
             difficulty: Some(attrs.pp_difficulty),
@@ -249,9 +250,9 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
     let statistics = score.statistics.clone();
 
     let (pp_breakdown, pp_if_acc) = tokio::task::spawn_blocking(move || {
-        // Catch 模式的 convert 谱面无法被 rosu-pp Beatmap::from_path 解析，
-        // 与其让 calculate_pp_breakdown 打 warn 日志后返回 None，
-        // 不如直接跳过，避免日志噪音。
+        // Catch 模式的 rosu-pp CatchPerformanceAttributes 不包含拆解字段
+        //（仅有 pp 和 difficulty），因此无法生成 PpBreakdown。
+        // 其他模式（Osu/Taiko/Mania）均可正常计算拆解。
         let breakdown = if !is_catch {
             calculate_pp_breakdown(PpCalcParams {
                 osu_path: &osu_path,
@@ -266,6 +267,12 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
         } else {
             None
         };
+        if is_catch && breakdown.is_none() {
+            tracing::debug!(
+                beatmap_id = %osu_path.file_stem().unwrap_or_default().to_string_lossy(),
+                "Catch mode: PP breakdown not available (rosu-pp limitation)"
+            );
+        }
         let if_acc = calculate_pp_if_acc(
             PpCalcParams {
                 osu_path: &osu_path,
@@ -455,7 +462,10 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
                 let json_str = format!("\"{s}\"");
                 let mut de = serde_json::Deserializer::from_str(&json_str);
                 seed.deserialize(&mut de)
-                    .unwrap_or_else(|_| rosu_mods::GameMod::new(s, ros_mode))
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(mod_str = %s, error = %e, "Failed to deserialize mod, falling back to basic");
+                        rosu_mods::GameMod::new(s, ros_mode)
+                    })
             }
             OsuApiMod::Object {
                 acronym,
@@ -465,7 +475,10 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
                 let json_str = json.to_string();
                 let mut de = serde_json::Deserializer::from_str(&json_str);
                 seed.deserialize(&mut de)
-                    .unwrap_or_else(|_| rosu_mods::GameMod::new(acronym, ros_mode))
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(acronym = %acronym, error = %e, "Failed to deserialize mod with settings, falling back to basic");
+                        rosu_mods::GameMod::new(acronym, ros_mode)
+                    })
             }
             OsuApiMod::Object {
                 acronym,
@@ -474,7 +487,10 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
                 let json_str = serde_json::json!({"acronym": acronym}).to_string();
                 let mut de = serde_json::Deserializer::from_str(&json_str);
                 seed.deserialize(&mut de)
-                    .unwrap_or_else(|_| rosu_mods::GameMod::new(acronym, ros_mode))
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(acronym = %acronym, error = %e, "Failed to deserialize mod, falling back to basic");
+                        rosu_mods::GameMod::new(acronym, ros_mode)
+                    })
             }
         };
         mods.insert(gamemod);

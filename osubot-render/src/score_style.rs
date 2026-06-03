@@ -671,9 +671,19 @@ pub fn wrap_score_html(data: &ScoreCardData) -> String {
 
 fn format_plays(val: i64) -> String {
     if val >= 1_000_000 {
-        format!("{:.1}M", val as f64 / 1_000_000.0)
+        let f = val as f64 / 1_000_000.0;
+        if f == f.floor() {
+            format!("{:.0}M", f)
+        } else {
+            format!("{:.1}M", f)
+        }
     } else if val >= 1_000 {
-        format!("{:.1}K", val as f64 / 1_000.0)
+        let f = val as f64 / 1_000.0;
+        if f == f.floor() {
+            format!("{:.0}K", f)
+        } else {
+            format!("{:.1}K", f)
+        }
     } else {
         val.to_string()
     }
@@ -856,6 +866,9 @@ mod tests {
         assert_eq!(format_plays(56700), "56.7K");
         assert_eq!(format_plays(1234567), "1.2M");
         assert_eq!(format_plays(500), "500");
+        assert_eq!(format_plays(1000), "1K");
+        assert_eq!(format_plays(1000000), "1M");
+        assert_eq!(format_plays(1500), "1.5K");
     }
 
     #[test]
