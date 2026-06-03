@@ -258,14 +258,22 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
         external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
     let cancel_flag = cancel.clone();
 
-    let render_result = tokio::task::spawn_blocking(move || {
-        render::render_html_to_image(&html, font_ctx, 2560, 1440, &cancel_flag)
-    })
+    let render_result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || {
+            render::render_html_to_image(&html, font_ctx, 2560, 1440, &cancel_flag)
+        }),
+    )
     .await;
 
     let (pixels, w, h) = match render_result {
-        Ok(result) => result?,
-        Err(e) => return Err(RenderError::Render(extract_panic_message(e))),
+        Ok(Ok(result)) => result?,
+        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
+        Err(_) => {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!("score card render timed out after 60s");
+            return Err(RenderError::Render("render timed out after 60s".into()));
+        }
     };
 
     let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;

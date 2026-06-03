@@ -1653,7 +1653,7 @@ async fn main() {
         // Periodic ping to keep connection alive
         let ping_write = write.clone();
         let ping_shutdown = shutdown.clone();
-        tokio::spawn(async move {
+        let ping_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
@@ -1720,12 +1720,13 @@ async fn main() {
                         tokio::spawn(async move {
                             if tokio::time::timeout(
                                 Duration::from_secs(COMMAND_TIMEOUT_SECS),
-                                handle_command(ctx, qq_msg, resp_tx, irc_nickname),
+                                handle_command(ctx, qq_msg, resp_tx.clone(), irc_nickname),
                             )
                             .await
                             .is_err()
                             {
                                 tracing::warn!("命令处理超时（120秒）");
+                                let _ = resp_tx.send("命令处理超时，请稍后重试".to_string()).await;
                             }
                         });
                     }
@@ -1745,6 +1746,8 @@ async fn main() {
                 _ => {}
             }
         }
+
+        ping_handle.abort();
 
         // Clear the write handle so the IRC bridge doesn't use a stale connection
         {

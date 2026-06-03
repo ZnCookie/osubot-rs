@@ -202,7 +202,7 @@ fn render_top_row(data: &ScoreCardData) -> String {
     html.push_str(
         r#"<div class="meta-line"><span class="meta-label">Played</span><span class="meta-val">"#,
     );
-    html.push_str(play_display);
+    html.push_str(&escape_html(play_display));
     html.push_str(
         r#"</span></div>
       </div>
@@ -461,7 +461,7 @@ fn render_score_row(data: &ScoreCardData) -> String {
         "SH" | "S" => "S",
         other => other,
     };
-    html.push_str(rank_display);
+    html.push_str(&escape_html(rank_display));
     html.push_str(
         r#"</div>
           <div class="score-acc-stack">
