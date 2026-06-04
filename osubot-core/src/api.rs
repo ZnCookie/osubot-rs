@@ -11,6 +11,16 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+/// Convert osubot GameMode to rosu_pp GameMode (for DifficultyAttributes comparison / try_mode)
+fn to_rosu_pp_game_mode(mode: GameMode) -> rosu_pp::model::mode::GameMode {
+    match mode {
+        GameMode::Osu => rosu_pp::model::mode::GameMode::Osu,
+        GameMode::Taiko => rosu_pp::model::mode::GameMode::Taiko,
+        GameMode::Catch => rosu_pp::model::mode::GameMode::Catch,
+        GameMode::Mania => rosu_pp::model::mode::GameMode::Mania,
+    }
+}
+
 /// Parameters for PP calculation functions.
 /// `accuracy` is raw (0.0~1.0) — functions internally convert to percentage for rosu_pp.
 pub struct PpCalcParams<'a> {
@@ -94,6 +104,33 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     Ok(cache_path)
 }
 
+/// Apply mode-appropriate stats to a `Performance` calculator and compute the result.
+///
+/// For Mania with statistics available, uses hit-count fields (`n_geki`, `n_katu`, etc.).
+/// For all other modes, uses combo + accuracy + misses.
+fn apply_stats_and_calculate(
+    perf: rosu_pp::Performance<'_>,
+    mode: GameMode,
+    statistics: Option<&ScoreStatistics>,
+    accuracy: f64,
+    max_combo: u32,
+    miss_count: u32,
+) -> rosu_pp::any::PerformanceAttributes {
+    let perf = if let (GameMode::Mania, Some(s)) = (mode, statistics) {
+        perf.n_geki(s.count_geki as u32)
+            .n300(s.count_300 as u32)
+            .n_katu(s.count_katu as u32)
+            .n100(s.count_100 as u32)
+            .n50(s.count_50 as u32)
+            .misses(miss_count)
+    } else {
+        perf.combo(max_combo)
+            .accuracy(accuracy * 100.0)
+            .misses(miss_count)
+    };
+    perf.calculate()
+}
+
 pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     use rosu_pp::any::PerformanceAttributes;
     use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods, Performance};
@@ -108,29 +145,51 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
         }
     };
 
-    let diff_attrs = Difficulty::new()
-        .mods(pp_mods.clone())
-        .lazer(params.is_lazer)
-        .calculate(&map);
+    let map_mode = to_rosu_pp_game_mode(params.mode);
+    let needs_convert = map.mode != map_mode;
 
-    let perf = Performance::new(diff_attrs)
-        .mods(pp_mods)
-        .lazer(params.is_lazer);
-
-    let perf = if let (GameMode::Mania, Some(s)) = (params.mode, params.statistics) {
-        perf.n_geki(s.count_geki as u32)
-            .n300(s.count_300 as u32)
-            .n_katu(s.count_katu as u32)
-            .n100(s.count_100 as u32)
-            .n50(s.count_50 as u32)
-            .misses(params.miss_count as u32)
+    let diff_attrs = if !needs_convert {
+        Some(
+            Difficulty::new()
+                .mods(pp_mods.clone())
+                .lazer(params.is_lazer)
+                .calculate(&map),
+        )
     } else {
-        perf.combo(params.max_combo as u32)
-            .accuracy(params.accuracy * 100.0)
-            .misses(params.miss_count as u32)
+        None
     };
 
-    let perf_attrs = perf.calculate();
+    let perf_attrs = if needs_convert {
+        let perf = Performance::new(&map).mods(pp_mods).lazer(params.is_lazer);
+        let perf = match perf.try_mode(map_mode) {
+            Ok(converted) => converted,
+            Err(_) => {
+                tracing::warn!(?params.mode, "try_mode failed; cannot convert");
+                return None;
+            }
+        };
+        apply_stats_and_calculate(
+            perf,
+            params.mode,
+            params.statistics,
+            params.accuracy,
+            params.max_combo as u32,
+            params.miss_count as u32,
+        )
+    } else {
+        let perf = Performance::new(diff_attrs.unwrap())
+            .mods(pp_mods)
+            .lazer(params.is_lazer);
+        apply_stats_and_calculate(
+            perf,
+            params.mode,
+            params.statistics,
+            params.accuracy,
+            params.max_combo as u32,
+            params.miss_count as u32,
+        )
+    };
+
     let total_pp = perf_attrs.pp();
 
     match perf_attrs {
@@ -153,13 +212,15 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
         PerformanceAttributes::Mania(attrs) => Some(PpBreakdown {
             aim: None,
             speed: None,
-            // Mania 不区分 accuracy/strain PP（rosu-pp v4.0.1 无 pp_acc 字段）
             accuracy: 0.0,
             flashlight: None,
             difficulty: Some(attrs.pp_difficulty),
             total_pp,
         }),
-        _ => None,
+        PerformanceAttributes::Catch(_) => {
+            tracing::debug!("Catch performance computed; no breakdown available");
+            None
+        }
     }
 }
 
@@ -175,47 +236,110 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         }
     };
 
-    let diff_attrs = Difficulty::new()
-        .mods(pp_mods.clone())
-        .lazer(params.is_lazer)
-        .calculate(&map);
-    let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
-        let perf = Performance::new(diff_attrs.clone())
-            .mods(pp_mods.clone())
-            .combo(combo)
-            .accuracy(acc * 100.0)
-            .misses(misses)
-            .lazer(params.is_lazer)
-            .calculate();
-        perf.pp()
-    };
+    let map_mode = to_rosu_pp_game_mode(params.mode);
+    let needs_convert = map.mode != map_mode;
 
     let combo = params.max_combo as u32;
     let bm_combo = beatmap_max_combo as u32;
     let misses = params.miss_count as u32;
 
+    let diff_attrs = if !needs_convert {
+        Some(
+            Difficulty::new()
+                .mods(pp_mods.clone())
+                .lazer(params.is_lazer)
+                .calculate(&map),
+        )
+    } else {
+        None
+    };
+
+    let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
+        if needs_convert {
+            let perf = Performance::new(&map)
+                .mods(pp_mods.clone())
+                .lazer(params.is_lazer);
+            let perf = match perf.try_mode(map_mode) {
+                Ok(p) => p,
+                Err(_) => return 0.0,
+            };
+            perf.combo(combo)
+                .accuracy(acc * 100.0)
+                .misses(misses)
+                .calculate()
+                .pp()
+        } else {
+            Performance::new(diff_attrs.as_ref().unwrap().clone())
+                .mods(pp_mods.clone())
+                .combo(combo)
+                .accuracy(acc * 100.0)
+                .misses(misses)
+                .lazer(params.is_lazer)
+                .calculate()
+                .pp()
+        }
+    };
+
+    let calc_mania_fc = |counts: &ScoreStatistics, miss_override: u32| -> f64 {
+        if needs_convert {
+            let perf = Performance::new(&map)
+                .mods(pp_mods.clone())
+                .lazer(params.is_lazer);
+            let perf = match perf.try_mode(map_mode) {
+                Ok(p) => p,
+                Err(_) => return 0.0,
+            };
+            perf.n_geki(counts.count_geki as u32)
+                .n300(counts.count_300 as u32)
+                .n_katu(counts.count_katu as u32)
+                .n100(counts.count_100 as u32)
+                .n50(counts.count_50 as u32)
+                .misses(miss_override)
+                .calculate()
+                .pp()
+        } else {
+            Performance::new(diff_attrs.as_ref().unwrap().clone())
+                .mods(pp_mods.clone())
+                .n_geki(counts.count_geki as u32)
+                .n300(counts.count_300 as u32)
+                .n_katu(counts.count_katu as u32)
+                .n100(counts.count_100 as u32)
+                .n50(counts.count_50 as u32)
+                .misses(miss_override)
+                .lazer(params.is_lazer)
+                .calculate()
+                .pp()
+        }
+    };
+
     let if_fc = if let (GameMode::Mania, Some(s)) = (params.mode, params.statistics) {
-        let perf = Performance::new(diff_attrs.clone())
-            .mods(pp_mods.clone())
-            .n_geki(s.count_geki as u32)
-            .n300((s.count_300 + s.count_miss) as u32)
-            .n_katu(s.count_katu as u32)
-            .n100(s.count_100 as u32)
-            .n50(s.count_50 as u32)
-            .misses(0)
-            .lazer(params.is_lazer)
-            .calculate();
-        perf.pp()
+        let fc_counts = ScoreStatistics {
+            count_geki: s.count_geki,
+            count_300: s.count_300 + s.count_miss,
+            count_katu: s.count_katu,
+            count_100: s.count_100,
+            count_50: s.count_50,
+            count_miss: 0,
+        };
+        calc_mania_fc(&fc_counts, 0)
     } else {
         calc_pp(params.accuracy, bm_combo, 0)
     };
 
+    let calc_acc = |acc: f64| -> f64 {
+        if matches!(params.mode, GameMode::Mania) {
+            calc_pp(acc, combo, 0)
+        } else {
+            calc_pp(acc, combo, misses)
+        }
+    };
+
     Some(PpIfAcc {
-        acc_95: calc_pp(0.95, combo, misses),
-        acc_97: calc_pp(0.97, combo, misses),
-        acc_98: calc_pp(0.98, combo, misses),
-        acc_99: calc_pp(0.99, combo, misses),
-        acc_100: calc_pp(1.0, combo, misses),
+        acc_95: calc_acc(0.95),
+        acc_97: calc_acc(0.97),
+        acc_98: calc_acc(0.98),
+        acc_99: calc_acc(0.99),
+        acc_100: calc_acc(1.0),
         if_fc,
     })
 }
