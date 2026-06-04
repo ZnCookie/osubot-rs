@@ -83,7 +83,7 @@ fn mania_breakdown_difficulty_only_and_no_aim() {
 }
 
 #[test]
-fn catch_breakdown_is_none() {
+fn catch_breakdown_returns_minimal() {
     let result = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2118524.osu"),
         mode: GameMode::Catch,
@@ -157,7 +157,7 @@ fn std_to_taiko_convert_produces_taiko_breakdown() {
 }
 
 #[test]
-fn std_to_catch_convert_produces_none() {
+fn std_to_catch_convert_returns_minimal() {
     let result = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
         mode: GameMode::Catch,
@@ -270,6 +270,27 @@ fn mania_acc_95_on_convert_uses_accuracy_path() {
         if_acc.acc_95, if_acc.acc_100,
         "acc_95 and acc_100 should differ for Mania convert"
     );
+}
+
+// === Empty mods with star rating (production path via enrich_score_with_pp) ===
+
+#[test]
+fn std_no_mods_with_star_rating_calculates_breakdown() {
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods: GameMods::new(),
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: Some(5.5),
+    })
+    .expect("should return breakdown");
+    assert!(pp.aim.unwrap() > 0.0, "aim should be calculated even without mods");
+    assert!(pp.speed.unwrap() > 0.0, "speed should be calculated");
+    assert!(pp.total_pp > 0.0, "total_pp should be calculated");
 }
 
 // === Star rating ===

@@ -159,7 +159,7 @@ fn apply_stats_and_calculate(
 fn has_only_non_difficulty_mods(mods: &GameMods) -> bool {
     use rosu_mods::GameModIntermode;
     if mods.is_empty() {
-        return true;
+        return false;
     }
     mods.iter().all(|m| {
         let intermode = m.intermode();
