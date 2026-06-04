@@ -10,6 +10,8 @@ use crate::types::{Command, GameMode};
 /// - `where <用户名>,<模式>` - 查询他人指定模式
 /// - `查@<QQ用户>` - 查询他人 std (via QQ mention)
 /// - `查@<QQ用户>,<模式>` - 查询他人指定模式 (via QQ mention)
+/// - `where qq=<QQ号>` - 查询QQ绑定的 osu! 用户 std
+/// - `where qq=<QQ号>,<模式>` - 查询QQ绑定的 osu! 用户指定模式
 /// - `绑定 <osu用户名>` - 绑定账号
 /// - `解绑` - 解绑账号
 pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Command> {
@@ -31,6 +33,18 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         }
         let mode = GameMode::from_mode_str(rest)?;
         return Some(Command::QuerySelf { mode });
+    }
+
+    // 查询他人 via QQ: where qq=<QQ号> [, 模式]
+    if let Some(rest) = msg.strip_prefix("where qq=") {
+        let parts: Vec<&str> = rest.split(',').collect();
+        let qq: i64 = parts[0].trim().parse().ok()?;
+        let mode = if parts.len() > 1 {
+            GameMode::from_mode_str(parts[1].trim())?
+        } else {
+            GameMode::Osu
+        };
+        return Some(Command::QueryMentionedUser { qq, mode });
     }
 
     // 查询他人: where <用户名> [, 模式]
@@ -668,6 +682,45 @@ mod tests {
     #[test]
     fn test_phyphen_not_matched() {
         assert!(parse_command("!r-test", None).is_none());
+    }
+
+    #[test]
+    fn test_where_qq_basic() {
+        let cmd = parse_command("where qq=1234567", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryMentionedUser {
+                qq: 1234567,
+                mode: GameMode::Osu,
+            }
+        );
+    }
+
+    #[test]
+    fn test_where_qq_with_mode() {
+        let cmd = parse_command("where qq=1234567,1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryMentionedUser {
+                qq: 1234567,
+                mode: GameMode::Taiko,
+            }
+        );
+    }
+
+    #[test]
+    fn test_where_qq_invalid_number() {
+        assert!(parse_command("where qq=abc", None).is_none());
+    }
+
+    #[test]
+    fn test_where_qq_empty() {
+        assert!(parse_command("where qq=", None).is_none());
+    }
+
+    #[test]
+    fn test_where_qq_invalid_mode() {
+        assert!(parse_command("where qq=123,99", None).is_none());
     }
 
     #[test]
