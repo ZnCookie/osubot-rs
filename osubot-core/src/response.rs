@@ -13,7 +13,7 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     let rank = stats.rank.to_string();
     let country_rank = stats.country_rank.to_string();
     let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64);
-    let acc = format_accuracy(stats.accuracy / 100.0); // stats.hit_accuracy is a percentage (e.g., 98.5), divide to get 0-1 fraction
+    let acc = format_accuracy((stats.accuracy / 100.0 * 10000.0).round() / 10000.0);
     let playcount = stats.playcount.to_string();
     let hits = format_number(stats.hits);
     let playtime = format_playtime(stats.playtime);
@@ -534,7 +534,7 @@ pub fn format_stats_with_change(
     let pp = trim_trailing_zeros(&format!("{:.2}", stats.pp));
     let rank = stats.rank.to_string();
     let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64); // 转成 m
-    let acc = format_accuracy(stats.accuracy / 100.0); // stats.hit_accuracy is a percentage (e.g., 98.5), divide to get 0-1 fraction
+    let acc = format_accuracy((stats.accuracy / 100.0 * 10000.0).round() / 10000.0);
     let playcount = stats.playcount.to_string();
     let hits = format_number(stats.hits);
     let playtime = format_playtime(stats.playtime);
