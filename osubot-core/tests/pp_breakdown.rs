@@ -288,7 +288,10 @@ fn std_no_mods_with_star_rating_calculates_breakdown() {
         beatmap_star_rating: Some(5.5),
     })
     .expect("should return breakdown");
-    assert!(pp.aim.unwrap() > 0.0, "aim should be calculated even without mods");
+    assert!(
+        pp.aim.unwrap() > 0.0,
+        "aim should be calculated even without mods"
+    );
     assert!(pp.speed.unwrap() > 0.0, "speed should be calculated");
     assert!(pp.total_pp > 0.0, "total_pp should be calculated");
 }
@@ -418,4 +421,110 @@ fn std_to_catch_convert_returns_star_rating() {
     assert_eq!(pp.aim, None, "catch has no aim");
     assert_eq!(pp.difficulty, None, "catch has no difficulty");
     assert!(pp.total_pp > 0.0, "catch should have total_pp");
+}
+
+// === Complex mod combinations ===
+
+#[test]
+fn std_with_hdhr_populates_breakdown() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+    mods.insert(rosu_mods::GameMod::HardRockOsu(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: None,
+    })
+    .expect("HDHR should return breakdown");
+    assert!(pp.aim.unwrap() > 0.0, "HDHR aim should be > 0");
+    assert!(pp.speed.unwrap() > 0.0, "HDHR speed should be > 0");
+    assert!(
+        pp.star_rating.unwrap() > 0.0,
+        "HDHR star_rating should be > 0"
+    );
+    assert!(pp.total_pp > 0.0, "HDHR total_pp should be > 0");
+}
+
+#[test]
+fn std_with_dt_populates_breakdown() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::DoubleTimeOsu(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: None,
+    })
+    .expect("DT should return breakdown");
+    assert!(pp.aim.unwrap() > 0.0, "DT aim should be > 0");
+    assert!(pp.speed.unwrap() > 0.0, "DT speed should be > 0");
+    assert!(
+        pp.star_rating.unwrap() > 0.0,
+        "DT star_rating should be > 0"
+    );
+    assert!(pp.total_pp > 0.0, "DT total_pp should be > 0");
+}
+
+#[test]
+fn std_to_taiko_with_hd_populates_breakdown() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::HiddenTaiko(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Taiko,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: None,
+    })
+    .expect("convert with HD should return breakdown");
+    assert!(
+        pp.difficulty.is_some(),
+        "taiko convert should have difficulty"
+    );
+    assert!(
+        pp.star_rating.unwrap() > 0.0,
+        "convert with HD should have star_rating"
+    );
+    assert!(pp.total_pp > 0.0, "convert with HD should have total_pp");
+}
+
+#[test]
+fn std_to_mania_with_hd_populates_breakdown() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::HiddenMania(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Mania,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: None,
+    })
+    .expect("mania convert with HD should return breakdown");
+    assert!(
+        pp.star_rating.unwrap() > 0.0,
+        "mania convert with HD should have star_rating"
+    );
+    assert!(
+        pp.total_pp > 0.0,
+        "mania convert with HD should have total_pp"
+    );
 }

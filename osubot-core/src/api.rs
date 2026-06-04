@@ -116,6 +116,12 @@ fn create_performance<'a>(
     needs_convert: bool,
     target_mode: rosu_pp::model::mode::GameMode,
 ) -> Option<rosu_pp::Performance<'a>> {
+    // 非转谱时必须提供 diff_attrs，否则 Performance::new 会 panic
+    debug_assert!(
+        needs_convert || diff_attrs.is_some(),
+        "create_performance: diff_attrs must be Some when needs_convert is false"
+    );
+
     if needs_convert {
         let perf = rosu_pp::Performance::new(map).mods(mods).lazer(is_lazer);
         perf.try_mode(target_mode).ok()
