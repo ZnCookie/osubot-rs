@@ -1,6 +1,10 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use rosu_mods::GameMods;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Format an integer with comma separators (e.g., 1234567 -> "1,234,567")
 pub fn format_number(value: i64) -> String {
     let is_negative = value < 0;
@@ -159,6 +163,8 @@ pub struct Score {
     #[serde(default)]
     pub pp_if_acc: Option<PpIfAcc>,
     pub rank: String,
+    #[serde(default = "default_true")]
+    pub passed: bool,
     #[serde(skip)]
     pub mods: GameMods,
     pub is_perfect: bool,

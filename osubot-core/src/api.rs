@@ -552,6 +552,10 @@ enum OsuApiMod {
     String(String),
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct OsuApiScore {
     #[serde(default)]
@@ -574,6 +578,8 @@ struct OsuApiScore {
     pp: Option<f64>,
     #[serde(default)]
     rank: String,
+    #[serde(default = "default_true")]
+    passed: bool,
     #[serde(default)]
     perfect: bool,
     #[serde(default, alias = "created_at")]
@@ -781,7 +787,12 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
-        rank: api.rank,
+        rank: if api.passed {
+            api.rank
+        } else {
+            "F".to_string()
+        },
+        passed: api.passed,
         mods: api_mods_to_game_mods(&api.mods, mode),
         is_perfect: api.perfect,
         created_at: api.ended_at,
@@ -1567,6 +1578,7 @@ mod tests {
             max_combo: 543,
             pp: Some(300.5),
             rank: "S".to_string(),
+            passed: true,
             perfect: false,
             ended_at: "2024-01-01T00:00:00Z".to_string(),
             is_lazer: false,

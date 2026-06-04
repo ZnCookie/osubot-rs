@@ -53,6 +53,7 @@ fn make_max_score(mode: GameMode) -> Score {
             if_fc: 9999.9,
         }),
         rank: "X".to_string(),
+        passed: true,
         mods: make_max_mods(),
         is_perfect: true,
         created_at: "2025-12-31T15:59:59Z".to_string(),
