@@ -32,6 +32,8 @@ pub struct PpCalcParams<'a> {
     pub miss_count: i64,
     pub is_lazer: bool,
     pub statistics: Option<&'a ScoreStatistics>,
+    /// Beatmap's original star rating from API, used by NF/CL fast path.
+    /// When non-convert + NF/CL-only, skips difficulty calculation and passes this through.
     pub beatmap_star_rating: Option<f64>,
 }
 
@@ -173,6 +175,11 @@ fn has_only_non_difficulty_mods(mods: &GameMods) -> bool {
     })
 }
 
+/// Calculate PP breakdown (aim/speed/acc/flashlight/difficulty) and star rating.
+///
+/// For non-convert + NF/CL-only maps, returns early with beatmap's original star rating.
+/// For converts, extracts star rating from `PerformanceAttributes::stars()`.
+/// Catch mode returns a minimal `PpBreakdown` with only `star_rating` and `total_pp`.
 pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     use rosu_pp::any::PerformanceAttributes;
     use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
@@ -291,6 +298,10 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     }
 }
 
+/// Calculate PP for various accuracy levels (95%~100%) and "if FC" scenario.
+///
+/// Pre-builds a base `Performance` once (doing `try_mode` for converts only once),
+/// then clones it for each accuracy/combo/miss combination.
 pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> Option<PpIfAcc> {
     use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
 
@@ -321,15 +332,19 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         None
     };
 
+    // Pre-build base Performance once; closures clone it and set per-call params.
+    // For converts this avoids repeated try_mode() calls (map re-conversion).
+    let base_perf = create_performance(
+        &map,
+        diff_attrs,
+        pp_mods,
+        params.is_lazer,
+        needs_convert,
+        map_mode,
+    );
+
     let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
-        let perf = match create_performance(
-            &map,
-            diff_attrs.clone(),
-            pp_mods.clone(),
-            params.is_lazer,
-            needs_convert,
-            map_mode,
-        ) {
+        let perf = match base_perf.clone() {
             Some(p) => p,
             None => return 0.0,
         };
@@ -341,14 +356,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
     };
 
     let calc_mania_fc = |counts: &ScoreStatistics, miss_override: u32| -> f64 {
-        let perf = match create_performance(
-            &map,
-            diff_attrs.clone(),
-            pp_mods.clone(),
-            params.is_lazer,
-            needs_convert,
-            map_mode,
-        ) {
+        let perf = match base_perf.clone() {
             Some(p) => p,
             None => return 0.0,
         };
