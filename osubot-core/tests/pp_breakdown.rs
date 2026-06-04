@@ -22,6 +22,7 @@ fn std_breakdown_populates_aim_speed_acc() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
+        beatmap_star_rating: None,
     })
     .expect("should return breakdown");
     assert!(pp.aim.unwrap() > 0.0, "aim should be > 0");
@@ -42,6 +43,7 @@ fn taiko_breakdown_has_difficulty_not_aim() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
+        beatmap_star_rating: None,
     })
     .expect("should return breakdown");
     assert_eq!(pp.aim, None, "taiko has no aim");
@@ -70,6 +72,7 @@ fn mania_breakdown_difficulty_only_and_no_aim() {
         miss_count: 2,
         is_lazer: true,
         statistics: Some(&stats),
+        beatmap_star_rating: None,
     })
     .expect("should return breakdown");
     assert_eq!(pp.aim, None, "mania has no aim");
@@ -90,8 +93,10 @@ fn catch_breakdown_is_none() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
+        beatmap_star_rating: None,
     });
-    assert!(result.is_none(), "catch has no breakdown");
+    let pp = result.expect("catch should return breakdown");
+    assert!(pp.star_rating.is_some(), "catch should have star_rating");
 }
 
 // === Bug A: mode conversion ===
@@ -115,6 +120,7 @@ fn std_to_mania_convert_produces_mania_breakdown() {
         miss_count: 2,
         is_lazer: true,
         statistics: Some(&stats),
+        beatmap_star_rating: None,
     })
     .expect("should return breakdown for convert");
     assert!(
@@ -138,6 +144,7 @@ fn std_to_taiko_convert_produces_taiko_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
+        beatmap_star_rating: None,
     })
     .expect("should return breakdown for convert");
     assert!(
@@ -160,8 +167,13 @@ fn std_to_catch_convert_produces_none() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
+        beatmap_star_rating: None,
     });
-    assert!(result.is_none(), "catch convert has no breakdown");
+    let pp = result.expect("catch convert should return breakdown");
+    assert!(
+        pp.star_rating.is_some(),
+        "catch convert should have star_rating"
+    );
 }
 
 // === Bug B: Mania acc_95~100 ===
@@ -186,6 +198,7 @@ fn mania_if_acc_fc_has_reasonable_values() {
             miss_count: 10,
             is_lazer: true,
             statistics: Some(&stats),
+            beatmap_star_rating: None,
         },
         1000,
     )
@@ -217,6 +230,7 @@ fn mania_acc_95_differs_from_acc_100() {
             miss_count: 10,
             is_lazer: true,
             statistics: Some(&stats),
+            beatmap_star_rating: None,
         },
         1000,
     )
@@ -247,6 +261,7 @@ fn mania_acc_95_on_convert_uses_accuracy_path() {
             miss_count: 2,
             is_lazer: true,
             statistics: Some(&stats),
+            beatmap_star_rating: None,
         },
         500,
     )
@@ -255,4 +270,131 @@ fn mania_acc_95_on_convert_uses_accuracy_path() {
         if_acc.acc_95, if_acc.acc_100,
         "acc_95 and acc_100 should differ for Mania convert"
     );
+}
+
+// === Star rating ===
+
+#[test]
+fn std_with_hd_populates_star_rating() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: Some(5.5),
+    })
+    .expect("should return breakdown");
+    assert!(pp.star_rating.is_some(), "star_rating should be populated");
+    assert!(pp.star_rating.unwrap() > 0.0, "star_rating should be > 0");
+}
+
+#[test]
+fn std_nf_only_returns_beatmap_star_rating() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::NoFailOsu(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: Some(5.5),
+    })
+    .expect("should return breakdown");
+    assert_eq!(
+        pp.star_rating,
+        Some(5.5),
+        "NF-only should return beatmap star_rating"
+    );
+    assert_eq!(
+        pp.total_pp, 0.0,
+        "NF-only fast path should have total_pp = 0.0"
+    );
+}
+
+#[test]
+fn std_cl_only_returns_beatmap_star_rating() {
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::ClassicOsu(Default::default()));
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods,
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: Some(5.5),
+    })
+    .expect("should return breakdown");
+    assert_eq!(
+        pp.star_rating,
+        Some(5.5),
+        "CL-only should return beatmap star_rating"
+    );
+    assert_eq!(
+        pp.total_pp, 0.0,
+        "CL-only fast path should have total_pp = 0.0"
+    );
+}
+
+#[test]
+fn std_to_taiko_convert_populates_star_rating() {
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Taiko,
+        mods: GameMods::new(),
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: None,
+    })
+    .expect("should return breakdown for convert");
+    assert!(
+        pp.star_rating.is_some(),
+        "convert should populate star_rating"
+    );
+    assert!(
+        pp.star_rating.unwrap() > 0.0,
+        "convert star_rating should be > 0"
+    );
+}
+
+#[test]
+fn std_to_catch_convert_returns_star_rating() {
+    let result = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Catch,
+        mods: GameMods::new(),
+        accuracy: 0.98,
+        max_combo: 500,
+        miss_count: 1,
+        is_lazer: false,
+        statistics: None,
+        beatmap_star_rating: None,
+    });
+    assert!(
+        result.is_some(),
+        "catch convert should return Some (minimal PpBreakdown)"
+    );
+    let pp = result.unwrap();
+    assert!(
+        pp.star_rating.is_some(),
+        "catch convert should have star_rating"
+    );
+    assert_eq!(pp.aim, None, "catch has no aim");
+    assert_eq!(pp.difficulty, None, "catch has no difficulty");
+    assert!(pp.total_pp > 0.0, "catch should have total_pp");
 }

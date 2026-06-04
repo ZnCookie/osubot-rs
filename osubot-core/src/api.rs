@@ -32,6 +32,7 @@ pub struct PpCalcParams<'a> {
     pub miss_count: i64,
     pub is_lazer: bool,
     pub statistics: Option<&'a ScoreStatistics>,
+    pub beatmap_star_rating: Option<f64>,
 }
 
 pub(crate) const API_VERSION: &str = "20260408";
@@ -154,11 +155,21 @@ fn apply_stats_and_calculate(
     perf.calculate()
 }
 
+/// 判断 mod 是否仅包含不影响难度的 mod（NF、CL）
+fn has_only_non_difficulty_mods(mods: &GameMods) -> bool {
+    use rosu_mods::GameModIntermode;
+    if mods.is_empty() {
+        return true;
+    }
+    mods.iter().all(|m| {
+        let intermode = m.intermode();
+        intermode == GameModIntermode::NoFail || intermode == GameModIntermode::Classic
+    })
+}
+
 pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     use rosu_pp::any::PerformanceAttributes;
     use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
-
-    let pp_mods = PpMods::from(params.mods);
 
     let map = match Beatmap::from_path(params.osu_path) {
         Ok(m) => m,
@@ -170,6 +181,27 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
 
     let map_mode = to_rosu_pp_game_mode(params.mode);
     let needs_convert = map.mode != map_mode;
+
+    // 非转谱 + 仅 NF/CL：跳过难度计算，使用传入的谱面原始星级
+    // NF 和 CL 不影响难度，rosu-pp 的 Difficulty::calculate() 会忽略它们
+    // total_pp 和 accuracy 设为 0.0：score.pp 已来自 API，此处仅用于提取 star_rating
+    // 必须在 pp_mods 消费 params.mods 之前检查
+    if !needs_convert
+        && params.beatmap_star_rating.is_some()
+        && has_only_non_difficulty_mods(&params.mods)
+    {
+        return Some(PpBreakdown {
+            aim: None,
+            speed: None,
+            accuracy: 0.0,
+            flashlight: None,
+            difficulty: None,
+            total_pp: 0.0,
+            star_rating: params.beatmap_star_rating,
+        });
+    }
+
+    let pp_mods = PpMods::from(params.mods);
 
     let diff_attrs = if !needs_convert {
         Some(
@@ -207,6 +239,10 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
 
     let total_pp = perf_attrs.pp();
 
+    // 从已计算的 PerformanceAttributes 中提取星级
+    // 对转谱和非转谱场景均有效，包含 mod 对难度的影响
+    let star_rating = Some(perf_attrs.stars());
+
     match perf_attrs {
         PerformanceAttributes::Osu(attrs) => Some(PpBreakdown {
             aim: Some(attrs.pp_aim),
@@ -215,6 +251,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
             flashlight: Some(attrs.pp_flashlight),
             difficulty: None,
             total_pp,
+            star_rating,
         }),
         PerformanceAttributes::Taiko(attrs) => Some(PpBreakdown {
             aim: None,
@@ -223,6 +260,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
             flashlight: None,
             difficulty: Some(attrs.pp_difficulty),
             total_pp,
+            star_rating,
         }),
         PerformanceAttributes::Mania(attrs) => Some(PpBreakdown {
             aim: None,
@@ -231,11 +269,19 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
             flashlight: None,
             difficulty: Some(attrs.pp_difficulty),
             total_pp,
+            star_rating,
         }),
-        PerformanceAttributes::Catch(_) => {
-            tracing::debug!("Catch performance computed; no breakdown available");
-            None
-        }
+        // Catch 模式：rosu-pp 的 CatchPerformanceAttributes 不含 PP 拆解字段，
+        // 但仍可通过 stars() 获取星级。返回最小化 PpBreakdown。
+        PerformanceAttributes::Catch(_) => Some(PpBreakdown {
+            aim: None,
+            speed: None,
+            accuracy: 0.0,
+            flashlight: None,
+            difficulty: None,
+            total_pp,
+            star_rating,
+        }),
     }
 }
 
@@ -367,34 +413,22 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
     let max_combo = score.max_combo;
     let beatmap_max_combo = score.beatmap_max_combo;
     let count_miss = score.statistics.count_miss;
-    let is_catch = mode == GameMode::Catch;
     let is_lazer = score.is_lazer;
     let statistics = score.statistics.clone();
+    let beatmap_star_rating = Some(score.star_rating);
 
     let (pp_breakdown, pp_if_acc) = tokio::task::spawn_blocking(move || {
-        // Catch 模式的 rosu-pp CatchPerformanceAttributes 不包含拆解字段
-        //（仅有 pp 和 difficulty），因此无法生成 PpBreakdown。
-        // 其他模式（Osu/Taiko/Mania）均可正常计算拆解。
-        let breakdown = if !is_catch {
-            calculate_pp_breakdown(PpCalcParams {
-                osu_path: &osu_path,
-                mode,
-                mods: mods_clone.clone(),
-                accuracy,
-                max_combo,
-                miss_count: count_miss,
-                is_lazer,
-                statistics: Some(&statistics),
-            })
-        } else {
-            None
-        };
-        if is_catch && breakdown.is_none() {
-            tracing::debug!(
-                beatmap_id = %osu_path.file_stem().unwrap_or_default().to_string_lossy(),
-                "Catch mode: PP breakdown not available (rosu-pp limitation)"
-            );
-        }
+        let breakdown = calculate_pp_breakdown(PpCalcParams {
+            osu_path: &osu_path,
+            mode,
+            mods: mods_clone.clone(),
+            accuracy,
+            max_combo,
+            miss_count: count_miss,
+            is_lazer,
+            statistics: Some(&statistics),
+            beatmap_star_rating,
+        });
         let if_acc = calculate_pp_if_acc(
             PpCalcParams {
                 osu_path: &osu_path,
@@ -405,6 +439,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
                 miss_count: count_miss,
                 is_lazer,
                 statistics: Some(&statistics),
+                beatmap_star_rating: None,
             },
             beatmap_max_combo,
         );
@@ -418,6 +453,13 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
 
     score.pp_breakdown = pp_breakdown;
     score.pp_if_acc = pp_if_acc;
+
+    // 从 pp_breakdown 中提取星级（所有模式，含 Catch）
+    if let Some(ref bd) = score.pp_breakdown {
+        if let Some(stars) = bd.star_rating {
+            score.star_rating = stars;
+        }
+    }
 
     if score.pp.is_none() {
         if let Some(ref bd) = score.pp_breakdown {

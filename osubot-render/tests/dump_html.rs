@@ -42,6 +42,7 @@ fn make_max_score(mode: GameMode) -> Score {
             flashlight: Some(9999.9),
             difficulty: Some(9999.9),
             total_pp: 9999.9,
+            star_rating: None,
         }),
         pp_if_acc: Some(PpIfAcc {
             acc_95: 9999.9,

@@ -883,6 +883,7 @@ mod tests {
             flashlight: Some(10.0),
             difficulty: None,
             total_pp: 327.0,
+            star_rating: None,
         });
         let data = ScoreCardData {
             score,
@@ -941,6 +942,7 @@ mod tests {
             flashlight: None,
             difficulty: Some(200.0),
             total_pp: 280.0,
+            star_rating: None,
         });
         let data = ScoreCardData {
             score,

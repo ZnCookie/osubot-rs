@@ -74,6 +74,8 @@ pub struct PpBreakdown {
     #[serde(default)]
     pub difficulty: Option<f64>,
     pub total_pp: f64,
+    #[serde(default)]
+    pub star_rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
