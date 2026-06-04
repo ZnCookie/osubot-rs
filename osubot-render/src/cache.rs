@@ -255,12 +255,24 @@ async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>,
                 let mut bytes = Vec::new();
                 let mut stream = resp.bytes_stream();
                 use futures_util::StreamExt;
+                let mut body_failed = false;
                 while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.map_err(CacheError::from)?;
-                    if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
-                        return Err(CacheError::TooLarge);
+                    match chunk {
+                        Ok(chunk) => {
+                            if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
+                                return Err(CacheError::TooLarge);
+                            }
+                            bytes.extend_from_slice(&chunk);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, url = %url, attempt, "body download failed, will retry");
+                            body_failed = true;
+                            break;
+                        }
                     }
-                    bytes.extend_from_slice(&chunk);
+                }
+                if body_failed {
+                    continue;
                 }
                 return Ok(bytes);
             }
