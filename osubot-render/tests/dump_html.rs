@@ -42,6 +42,7 @@ fn make_max_score(mode: GameMode) -> Score {
             flashlight: Some(9999.9),
             difficulty: Some(9999.9),
             total_pp: 9999.9,
+            star_rating: None,
         }),
         pp_if_acc: Some(PpIfAcc {
             acc_95: 9999.9,
@@ -52,6 +53,7 @@ fn make_max_score(mode: GameMode) -> Score {
             if_fc: 9999.9,
         }),
         rank: "X".to_string(),
+        passed: true,
         mods: make_max_mods(),
         is_perfect: true,
         created_at: "2025-12-31T15:59:59Z".to_string(),

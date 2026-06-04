@@ -11,6 +11,16 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+/// Convert osubot GameMode to rosu_pp GameMode (for DifficultyAttributes comparison / try_mode)
+fn to_rosu_pp_game_mode(mode: GameMode) -> rosu_pp::model::mode::GameMode {
+    match mode {
+        GameMode::Osu => rosu_pp::model::mode::GameMode::Osu,
+        GameMode::Taiko => rosu_pp::model::mode::GameMode::Taiko,
+        GameMode::Catch => rosu_pp::model::mode::GameMode::Catch,
+        GameMode::Mania => rosu_pp::model::mode::GameMode::Mania,
+    }
+}
+
 /// Parameters for PP calculation functions.
 /// `accuracy` is raw (0.0~1.0) — functions internally convert to percentage for rosu_pp.
 pub struct PpCalcParams<'a> {
@@ -22,6 +32,9 @@ pub struct PpCalcParams<'a> {
     pub miss_count: i64,
     pub is_lazer: bool,
     pub statistics: Option<&'a ScoreStatistics>,
+    /// Beatmap's original star rating from API, used by NF/CL fast path.
+    /// When non-convert + NF/CL-only, skips difficulty calculation and passes this through.
+    pub beatmap_star_rating: Option<f64>,
 }
 
 pub(crate) const API_VERSION: &str = "20260408";
@@ -94,11 +107,82 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     Ok(cache_path)
 }
 
+/// Create a `Performance` calculator, converting the map mode if needed.
+///
+/// Returns `None` if mode conversion fails via `try_mode`.
+fn create_performance<'a>(
+    map: &'a rosu_pp::Beatmap,
+    diff_attrs: Option<rosu_pp::any::DifficultyAttributes>,
+    mods: rosu_pp::GameMods,
+    is_lazer: bool,
+    needs_convert: bool,
+    target_mode: rosu_pp::model::mode::GameMode,
+) -> Option<rosu_pp::Performance<'a>> {
+    // 非转谱时必须提供 diff_attrs，否则 Performance::new 会 panic
+    debug_assert!(
+        needs_convert || diff_attrs.is_some(),
+        "create_performance: diff_attrs must be Some when needs_convert is false"
+    );
+
+    if needs_convert {
+        let perf = rosu_pp::Performance::new(map).mods(mods).lazer(is_lazer);
+        perf.try_mode(target_mode).ok()
+    } else {
+        Some(
+            rosu_pp::Performance::new(diff_attrs.unwrap())
+                .mods(mods)
+                .lazer(is_lazer),
+        )
+    }
+}
+
+/// Apply mode-appropriate stats to a `Performance` calculator and compute the result.
+///
+/// For Mania with statistics available, uses hit-count fields (`n_geki`, `n_katu`, etc.).
+/// For all other modes, uses combo + accuracy + misses.
+fn apply_stats_and_calculate(
+    perf: rosu_pp::Performance<'_>,
+    mode: GameMode,
+    statistics: Option<&ScoreStatistics>,
+    accuracy: f64,
+    max_combo: u32,
+    miss_count: u32,
+) -> rosu_pp::any::PerformanceAttributes {
+    let perf = if let (GameMode::Mania, Some(s)) = (mode, statistics) {
+        perf.n_geki(s.count_geki as u32)
+            .n300(s.count_300 as u32)
+            .n_katu(s.count_katu as u32)
+            .n100(s.count_100 as u32)
+            .n50(s.count_50 as u32)
+            .misses(miss_count)
+    } else {
+        perf.combo(max_combo)
+            .accuracy(accuracy * 100.0)
+            .misses(miss_count)
+    };
+    perf.calculate()
+}
+
+/// 判断 mod 是否仅包含不影响难度的 mod（NF、CL）
+fn has_only_non_difficulty_mods(mods: &GameMods) -> bool {
+    use rosu_mods::GameModIntermode;
+    if mods.is_empty() {
+        return false;
+    }
+    mods.iter().all(|m| {
+        let intermode = m.intermode();
+        intermode == GameModIntermode::NoFail || intermode == GameModIntermode::Classic
+    })
+}
+
+/// Calculate PP breakdown (aim/speed/acc/flashlight/difficulty) and star rating.
+///
+/// For non-convert + NF/CL-only maps, returns early with beatmap's original star rating.
+/// For converts, extracts star rating from `PerformanceAttributes::stars()`.
+/// Catch mode returns a minimal `PpBreakdown` with only `star_rating` and `total_pp`.
 pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     use rosu_pp::any::PerformanceAttributes;
-    use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods, Performance};
-
-    let pp_mods = PpMods::from(params.mods);
+    use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
 
     let map = match Beatmap::from_path(params.osu_path) {
         Ok(m) => m,
@@ -108,30 +192,69 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
         }
     };
 
-    let diff_attrs = Difficulty::new()
-        .mods(pp_mods.clone())
-        .lazer(params.is_lazer)
-        .calculate(&map);
+    let map_mode = to_rosu_pp_game_mode(params.mode);
+    let needs_convert = map.mode != map_mode;
 
-    let perf = Performance::new(diff_attrs)
-        .mods(pp_mods)
-        .lazer(params.is_lazer);
+    // 非转谱 + 仅 NF/CL：跳过难度计算，使用传入的谱面原始星级
+    // NF 和 CL 不影响难度，rosu-pp 的 Difficulty::calculate() 会忽略它们
+    // total_pp 和 accuracy 设为 0.0：score.pp 已来自 API，此处仅用于提取 star_rating
+    // 必须在 pp_mods 消费 params.mods 之前检查
+    if !needs_convert
+        && params.beatmap_star_rating.is_some()
+        && has_only_non_difficulty_mods(&params.mods)
+    {
+        return Some(PpBreakdown {
+            aim: None,
+            speed: None,
+            accuracy: 0.0,
+            flashlight: None,
+            difficulty: None,
+            total_pp: 0.0,
+            star_rating: params.beatmap_star_rating,
+        });
+    }
 
-    let perf = if let (GameMode::Mania, Some(s)) = (params.mode, params.statistics) {
-        perf.n_geki(s.count_geki as u32)
-            .n300(s.count_300 as u32)
-            .n_katu(s.count_katu as u32)
-            .n100(s.count_100 as u32)
-            .n50(s.count_50 as u32)
-            .misses(params.miss_count as u32)
+    let pp_mods = PpMods::from(params.mods);
+
+    let diff_attrs = if !needs_convert {
+        Some(
+            Difficulty::new()
+                .mods(pp_mods.clone())
+                .lazer(params.is_lazer)
+                .calculate(&map),
+        )
     } else {
-        perf.combo(params.max_combo as u32)
-            .accuracy(params.accuracy * 100.0)
-            .misses(params.miss_count as u32)
+        None
     };
 
-    let perf_attrs = perf.calculate();
+    let perf = match create_performance(
+        &map,
+        diff_attrs,
+        pp_mods,
+        params.is_lazer,
+        needs_convert,
+        map_mode,
+    ) {
+        Some(p) => p,
+        None => {
+            tracing::warn!(?params.mode, "try_mode failed; cannot convert");
+            return None;
+        }
+    };
+    let perf_attrs = apply_stats_and_calculate(
+        perf,
+        params.mode,
+        params.statistics,
+        params.accuracy,
+        params.max_combo as u32,
+        params.miss_count as u32,
+    );
+
     let total_pp = perf_attrs.pp();
+
+    // 从已计算的 PerformanceAttributes 中提取星级
+    // 对转谱和非转谱场景均有效，包含 mod 对难度的影响
+    let star_rating = Some(perf_attrs.stars());
 
     match perf_attrs {
         PerformanceAttributes::Osu(attrs) => Some(PpBreakdown {
@@ -141,6 +264,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
             flashlight: Some(attrs.pp_flashlight),
             difficulty: None,
             total_pp,
+            star_rating,
         }),
         PerformanceAttributes::Taiko(attrs) => Some(PpBreakdown {
             aim: None,
@@ -149,22 +273,37 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
             flashlight: None,
             difficulty: Some(attrs.pp_difficulty),
             total_pp,
+            star_rating,
         }),
         PerformanceAttributes::Mania(attrs) => Some(PpBreakdown {
             aim: None,
             speed: None,
-            // Mania 不区分 accuracy/strain PP（rosu-pp v4.0.1 无 pp_acc 字段）
             accuracy: 0.0,
             flashlight: None,
             difficulty: Some(attrs.pp_difficulty),
             total_pp,
+            star_rating,
         }),
-        _ => None,
+        // Catch 模式：rosu-pp 的 CatchPerformanceAttributes 不含 PP 拆解字段，
+        // 但仍可通过 stars() 获取星级。返回最小化 PpBreakdown。
+        PerformanceAttributes::Catch(_) => Some(PpBreakdown {
+            aim: None,
+            speed: None,
+            accuracy: 0.0,
+            flashlight: None,
+            difficulty: None,
+            total_pp,
+            star_rating,
+        }),
     }
 }
 
+/// Calculate PP for various accuracy levels (95%~100%) and "if FC" scenario.
+///
+/// Pre-builds a base `Performance` once (doing `try_mode` for converts only once),
+/// then clones it for each accuracy/combo/miss combination.
 pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> Option<PpIfAcc> {
-    use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods, Performance};
+    use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
 
     let pp_mods = PpMods::from(params.mods);
     let map = match Beatmap::from_path(params.osu_path) {
@@ -175,47 +314,90 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         }
     };
 
-    let diff_attrs = Difficulty::new()
-        .mods(pp_mods.clone())
-        .lazer(params.is_lazer)
-        .calculate(&map);
-    let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
-        let perf = Performance::new(diff_attrs.clone())
-            .mods(pp_mods.clone())
-            .combo(combo)
-            .accuracy(acc * 100.0)
-            .misses(misses)
-            .lazer(params.is_lazer)
-            .calculate();
-        perf.pp()
-    };
+    let map_mode = to_rosu_pp_game_mode(params.mode);
+    let needs_convert = map.mode != map_mode;
 
     let combo = params.max_combo as u32;
     let bm_combo = beatmap_max_combo as u32;
     let misses = params.miss_count as u32;
 
+    let diff_attrs = if !needs_convert {
+        Some(
+            Difficulty::new()
+                .mods(pp_mods.clone())
+                .lazer(params.is_lazer)
+                .calculate(&map),
+        )
+    } else {
+        None
+    };
+
+    // Pre-build base Performance once; closures clone it and set per-call params.
+    // For converts this avoids repeated try_mode() calls (map re-conversion).
+    let base_perf = create_performance(
+        &map,
+        diff_attrs,
+        pp_mods,
+        params.is_lazer,
+        needs_convert,
+        map_mode,
+    );
+
+    let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
+        let perf = match base_perf.clone() {
+            Some(p) => p,
+            None => return 0.0,
+        };
+        perf.combo(combo)
+            .accuracy(acc * 100.0)
+            .misses(misses)
+            .calculate()
+            .pp()
+    };
+
+    let calc_mania_fc = |counts: &ScoreStatistics, miss_override: u32| -> f64 {
+        let perf = match base_perf.clone() {
+            Some(p) => p,
+            None => return 0.0,
+        };
+        perf.n_geki(counts.count_geki as u32)
+            .n300(counts.count_300 as u32)
+            .n_katu(counts.count_katu as u32)
+            .n100(counts.count_100 as u32)
+            .n50(counts.count_50 as u32)
+            .misses(miss_override)
+            .calculate()
+            .pp()
+    };
+
     let if_fc = if let (GameMode::Mania, Some(s)) = (params.mode, params.statistics) {
-        let perf = Performance::new(diff_attrs.clone())
-            .mods(pp_mods.clone())
-            .n_geki(s.count_geki as u32)
-            .n300((s.count_300 + s.count_miss) as u32)
-            .n_katu(s.count_katu as u32)
-            .n100(s.count_100 as u32)
-            .n50(s.count_50 as u32)
-            .misses(0)
-            .lazer(params.is_lazer)
-            .calculate();
-        perf.pp()
+        let fc_counts = ScoreStatistics {
+            count_geki: s.count_geki,
+            count_300: s.count_300 + s.count_miss,
+            count_katu: s.count_katu,
+            count_100: s.count_100,
+            count_50: s.count_50,
+            count_miss: 0,
+        };
+        calc_mania_fc(&fc_counts, 0)
     } else {
         calc_pp(params.accuracy, bm_combo, 0)
     };
 
+    let calc_acc = |acc: f64| -> f64 {
+        if matches!(params.mode, GameMode::Mania) {
+            calc_pp(acc, combo, 0)
+        } else {
+            calc_pp(acc, combo, misses)
+        }
+    };
+
     Some(PpIfAcc {
-        acc_95: calc_pp(0.95, combo, misses),
-        acc_97: calc_pp(0.97, combo, misses),
-        acc_98: calc_pp(0.98, combo, misses),
-        acc_99: calc_pp(0.99, combo, misses),
-        acc_100: calc_pp(1.0, combo, misses),
+        acc_95: calc_acc(0.95),
+        acc_97: calc_acc(0.97),
+        acc_98: calc_acc(0.98),
+        acc_99: calc_acc(0.99),
+        acc_100: calc_acc(1.0),
         if_fc,
     })
 }
@@ -245,34 +427,22 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
     let max_combo = score.max_combo;
     let beatmap_max_combo = score.beatmap_max_combo;
     let count_miss = score.statistics.count_miss;
-    let is_catch = mode == GameMode::Catch;
     let is_lazer = score.is_lazer;
     let statistics = score.statistics.clone();
+    let beatmap_star_rating = Some(score.star_rating);
 
     let (pp_breakdown, pp_if_acc) = tokio::task::spawn_blocking(move || {
-        // Catch 模式的 rosu-pp CatchPerformanceAttributes 不包含拆解字段
-        //（仅有 pp 和 difficulty），因此无法生成 PpBreakdown。
-        // 其他模式（Osu/Taiko/Mania）均可正常计算拆解。
-        let breakdown = if !is_catch {
-            calculate_pp_breakdown(PpCalcParams {
-                osu_path: &osu_path,
-                mode,
-                mods: mods_clone.clone(),
-                accuracy,
-                max_combo,
-                miss_count: count_miss,
-                is_lazer,
-                statistics: Some(&statistics),
-            })
-        } else {
-            None
-        };
-        if is_catch && breakdown.is_none() {
-            tracing::debug!(
-                beatmap_id = %osu_path.file_stem().unwrap_or_default().to_string_lossy(),
-                "Catch mode: PP breakdown not available (rosu-pp limitation)"
-            );
-        }
+        let breakdown = calculate_pp_breakdown(PpCalcParams {
+            osu_path: &osu_path,
+            mode,
+            mods: mods_clone.clone(),
+            accuracy,
+            max_combo,
+            miss_count: count_miss,
+            is_lazer,
+            statistics: Some(&statistics),
+            beatmap_star_rating,
+        });
         let if_acc = calculate_pp_if_acc(
             PpCalcParams {
                 osu_path: &osu_path,
@@ -283,6 +453,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
                 miss_count: count_miss,
                 is_lazer,
                 statistics: Some(&statistics),
+                beatmap_star_rating: None,
             },
             beatmap_max_combo,
         );
@@ -296,6 +467,13 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
 
     score.pp_breakdown = pp_breakdown;
     score.pp_if_acc = pp_if_acc;
+
+    // 从 pp_breakdown 中提取星级（所有模式，含 Catch）
+    if let Some(ref bd) = score.pp_breakdown {
+        if let Some(stars) = bd.star_rating {
+            score.star_rating = stars;
+        }
+    }
 
     if score.pp.is_none() {
         if let Some(ref bd) = score.pp_breakdown {
@@ -374,6 +552,10 @@ enum OsuApiMod {
     String(String),
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct OsuApiScore {
     #[serde(default)]
@@ -396,6 +578,8 @@ struct OsuApiScore {
     pp: Option<f64>,
     #[serde(default)]
     rank: String,
+    #[serde(default = "default_true")]
+    passed: bool,
     #[serde(default)]
     perfect: bool,
     #[serde(default, alias = "created_at")]
@@ -603,7 +787,12 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
-        rank: api.rank,
+        rank: if api.passed {
+            api.rank
+        } else {
+            "F".to_string()
+        },
+        passed: api.passed,
         mods: api_mods_to_game_mods(&api.mods, mode),
         is_perfect: api.perfect,
         created_at: api.ended_at,
@@ -1389,6 +1578,7 @@ mod tests {
             max_combo: 543,
             pp: Some(300.5),
             rank: "S".to_string(),
+            passed: true,
             perfect: false,
             ended_at: "2024-01-01T00:00:00Z".to_string(),
             is_lazer: false,

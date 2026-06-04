@@ -19,6 +19,8 @@
 - `~<模式>` 或 `~,<模式>` — 查询自己指定模式数据，模式为 0~3（0=std, 1=taiko, 2=catch, 3=mania）
 - `where <用户名>` — 查询指定用户的 osu!std 数据
 - `where <用户名>,<模式>` — 查询指定用户的指定模式数据，模式为 0~3
+- `where qq=<QQ号>` — 查询该 QQ 号绑定的 osu! 用户数据
+- `where qq=<QQ号>,<模式>` — 查询该 QQ 号绑定用户的指定模式数据
 - `查@<QQ用户>` — 查询被 @ 用户的 osu!std 数据（需在群消息中 @）
 - `查@<QQ用户>,<模式>` — 查询被 @ 用户的指定模式数据
 
@@ -38,12 +40,18 @@
 - `今日高光,<模式>` — 查看指定模式的当日高光，模式为 0~3
 
 ### 分数查询
+
+格式：`!p`/`!r`/`!ps`/`!rs` [`<用户名>`] [`:<模式>`] [`#<N>`]
+
 - `!p` — 最近通过的成绩卡片（图片）
 - `!r` — 最近游玩的成绩卡片（图片）
-- `!p #N` — 第 N 条通过记录
 - `!ps` — 最近 10 条通过记录（文本摘要）
 - `!rs` — 最近 10 条游玩记录（文本摘要）
-- 支持用户名、@用户、模式后缀（`:0`~`:3`），如 `!p username:1`
+- `!p #N` — 第 N 条通过记录
+- `!p <用户名>` — 指定用户的最近通过
+- `!p :<模式>` — 指定模式（0=std, 1=taiko, 2=catch, 3=mania）
+- `!ps <用户名> :<模式> #<N>` — 完整组合
+- 支持 @用户 替代用户名，如 `!p @某人 :2`
 
 ### 个人主页卡片
 - `!profile` — 生成自己的 osu! 个人主页卡片（图片）
@@ -144,7 +152,7 @@ cargo run --release
 - **存储**: SQLite (rusqlite)，存储用户绑定、数据快照和游玩记录
 - **WebSocket**: tokio-tungstenite 连接 OneBot 11 正向 WebSocket
 - **API**: osu! API v2，OAuth client credentials 认证
-- **PP 计算**: rosu-pp v4，支持 PP 分解和准确率推测
+- **PP 计算**: rosu-pp v4，支持 PP 分解（aim/speed/acc/flashlight/difficulty）、准确率推测（95%~100% + IF FC）、转换谱面星级计算（osu! → taiko/catch/mania）、NF/CL 快速路径
 - **渲染**: Blitz + Vello CPU（HTML 转位图）、librsvg/cairo（SVG 光栅化）
 - **JPEG 质量**: 成绩卡片 90、个人主页 80、内嵌图片 85-90
 - **准确率显示**: floor 截断（与 osu!lazer 官方行为一致），尾随 0 自动去除

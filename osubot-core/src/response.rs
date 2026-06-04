@@ -653,6 +653,7 @@ mod tests {
             pp_breakdown: None,
             pp_if_acc: None,
             rank: "S".to_string(),
+            passed: true,
             mods,
             is_perfect,
             created_at: "2024-01-01T00:00:00Z".to_string(),

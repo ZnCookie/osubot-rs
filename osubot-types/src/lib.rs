@@ -1,6 +1,10 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use rosu_mods::GameMods;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Format an integer with comma separators (e.g., 1234567 -> "1,234,567")
 pub fn format_number(value: i64) -> String {
     let is_negative = value < 0;
@@ -62,20 +66,44 @@ impl std::fmt::Display for GameMode {
     }
 }
 
+/// PP 分解结果，包含各分项 PP 和谱面星级。
+///
+/// - `aim`/`speed`/`flashlight`：仅 Std 模式有值
+/// - `difficulty`：Taiko/Mania 模式有值（总 PP 的主要构成）
+/// - `accuracy`：Std/Taiko 有值，Mania/Catch 为 0.0
+/// - `total_pp`：总 PP 值（NF/CL fast path 时为 0.0，因为 `score.pp` 已来自 API）
+/// - `star_rating`：谱面星级
+///   - 普通路径：来自 `PerformanceAttributes::stars()`（含 mod 调整）
+///   - NF/CL fast path：使用 API 传入的原始星级（NF/CL 不影响难度）
+///   - 转谱场景：返回转换后模式的星级
+///   - `None`：PP 计算失败时
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PpBreakdown {
+    /// Std 模式的 Aim 分项 PP，其他模式为 `None`
     #[serde(default)]
     pub aim: Option<f64>,
+    /// Std 模式的 Speed 分项 PP，其他模式为 `None`
     #[serde(default)]
     pub speed: Option<f64>,
+    /// Accuracy 分项 PP（Std/Taiko 有值，Mania/Catch 为 0.0）
     pub accuracy: f64,
+    /// Std 模式的 Flashlight 分项 PP，其他模式为 `None`
     #[serde(default)]
     pub flashlight: Option<f64>,
+    /// Taiko/Mania 模式的 Difficulty 分项 PP，Std/Catch 为 `None`
     #[serde(default)]
     pub difficulty: Option<f64>,
+    /// 总 PP 值（NF/CL fast path 时为 0.0）
     pub total_pp: f64,
+    /// 谱面星级（含 mod 调整），`None` 表示未计算
+    #[serde(default)]
+    pub star_rating: Option<f64>,
 }
 
+/// 不同准确率下的 PP 预测值。
+///
+/// 用于展示"如果达到 X% 准确率能获得多少 PP"。
+/// Mania 模式下通过 hit counts 计算，其他模式通过 accuracy 直接计算。
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PpIfAcc {
     pub acc_95: f64,
@@ -83,6 +111,7 @@ pub struct PpIfAcc {
     pub acc_98: f64,
     pub acc_99: f64,
     pub acc_100: f64,
+    /// 如果 Full Combo 能获得的 PP
     pub if_fc: f64,
 }
 
@@ -134,6 +163,8 @@ pub struct Score {
     #[serde(default)]
     pub pp_if_acc: Option<PpIfAcc>,
     pub rank: String,
+    #[serde(default = "default_true")]
+    pub passed: bool,
     #[serde(skip)]
     pub mods: GameMods,
     pub is_perfect: bool,

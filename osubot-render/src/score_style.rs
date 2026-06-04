@@ -722,6 +722,7 @@ mod tests {
             pp_breakdown: None,
             pp_if_acc: None,
             rank: "S".to_string(),
+            passed: true,
             mods,
             is_perfect: false,
             created_at: "2025-05-27T14:30:22Z".to_string(),
@@ -883,6 +884,7 @@ mod tests {
             flashlight: Some(10.0),
             difficulty: None,
             total_pp: 327.0,
+            star_rating: None,
         });
         let data = ScoreCardData {
             score,
@@ -941,6 +943,7 @@ mod tests {
             flashlight: None,
             difficulty: Some(200.0),
             total_pp: 280.0,
+            star_rating: None,
         });
         let data = ScoreCardData {
             score,
@@ -1138,6 +1141,7 @@ mod tests {
                 pp_breakdown: None,
                 pp_if_acc: None,
                 rank: "A".to_string(),
+                passed: true,
                 mods,
                 is_perfect: false,
                 created_at: "2025-01-01T00:00:00Z".to_string(),
