@@ -1,0 +1,532 @@
+use crate::style::escape_html;
+use osubot_types::{format_accuracy, format_number, Score};
+
+const SCORE_LIST_CSS: &str = include_str!("../styles/score_list.css");
+
+pub struct ScoreListCardData {
+    pub score: Score,
+    pub mode: osubot_types::GameMode,
+    pub rank_class: String,
+    pub rank_display: String,
+    pub cover_data_uri: String,
+    pub relative_time: String,
+    pub acc_formatted: String,
+    pub pp_formatted: String,
+    pub mods_html: String,
+    pub passed: bool,
+}
+
+impl ScoreListCardData {
+    pub fn from_score(score: &Score, mode: osubot_types::GameMode, cover_data_uri: String) -> Self {
+        let rank_class = if !score.passed {
+            "rank-f"
+        } else {
+            match score.rank.as_str() {
+                "XH" | "SH" => "rank-s-silver",
+                "X" | "S" => "rank-s",
+                "A" => "rank-a",
+                "B" => "rank-b",
+                "C" => "rank-c",
+                "D" => "rank-d",
+                _ => "rank-f",
+            }
+        }
+        .to_string();
+
+        let rank_display = if !score.passed {
+            "F"
+        } else {
+            match score.rank.as_str() {
+                "XH" | "X" => "X",
+                "SH" | "S" => "S",
+                other => other,
+            }
+        }
+        .to_string();
+
+        let acc_formatted = format_accuracy(score.accuracy);
+
+        let pp_formatted = score
+            .pp
+            .map(|p| format!("{:.0}", p))
+            .unwrap_or_else(|| "--".to_string());
+
+        let mut mods_html = String::new();
+        if score.is_lazer {
+            mods_html.push_str(r#"<span class="mod-tag">Lazer</span>"#);
+        }
+        if !score.mods.is_empty() {
+            for m in &score.mods {
+                mods_html.push_str(&format!(
+                    r#"<span class="mod-tag">{}</span>"#,
+                    escape_html(m.acronym().as_str())
+                ));
+            }
+        }
+
+        let relative_time = format_relative_time(&score.created_at);
+
+        ScoreListCardData {
+            score: score.clone(),
+            mode,
+            rank_class,
+            rank_display,
+            cover_data_uri,
+            relative_time,
+            acc_formatted,
+            pp_formatted,
+            mods_html,
+            passed: score.passed,
+        }
+    }
+}
+
+fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
+    let mut html = String::with_capacity(1024);
+    html.push_str(r#"<div class="mini-card">"#);
+
+    // Cover strip
+    html.push_str(r#"<div class="cover-strip">"#);
+    if !data.cover_data_uri.is_empty() {
+        html.push_str(r#"<img src=""#);
+        html.push_str(&data.cover_data_uri);
+        html.push_str(r#"" />"#);
+    }
+
+    // Rank badge
+    html.push_str(&format!(
+        r#"<div class="rank {}">{}</div>"#,
+        data.rank_class,
+        escape_html(&data.rank_display)
+    ));
+
+    // Index number
+    html.push_str(&format!(r#"<span class="idx">#{}</span>"#, idx + 1));
+
+    // Star rating
+    html.push_str(&format!(
+        r#"<span class="star-in-cover">★ {:.2}</span>"#,
+        data.score.star_rating
+    ));
+
+    // Relative time
+    html.push_str(&format!(
+        r#"<span class="time-in-cover">{}</span>"#,
+        escape_html(&data.relative_time)
+    ));
+
+    html.push_str(r#"</div>"#); // end cover-strip
+
+    // Body
+    html.push_str(r#"<div class="body">"#);
+
+    // Title
+    html.push_str(r#"<div class="title">"#);
+    html.push_str(&escape_html(&data.score.title));
+    html.push_str(r#"</div>"#);
+
+    // Subtitle (artist + difficulty)
+    html.push_str(r#"<div class="sub"><span>"#);
+    html.push_str(&escape_html(&data.score.artist));
+    html.push_str(r#"</span><span class="diff">"#);
+    html.push_str(&escape_html(&data.score.version));
+    html.push_str(r#"</span></div>"#);
+
+    // Mods row
+    html.push_str(&format!(
+        r#"<div class="row"><div class="mods">{}</div></div>"#,
+        data.mods_html
+    ));
+
+    // Acc + PP row
+    let pp_class = if data.passed { "pp" } else { "pp pp-fail" };
+    html.push_str(&format!(
+        r#"<div class="row2"><span class="acc">{}</span><span class="{}">{}<span class="pp-unit">pp</span></span></div>"#,
+        data.acc_formatted,
+        pp_class,
+        data.pp_formatted
+    ));
+
+    html.push_str(r#"</div></div>"#); // end body, end mini-card
+    html
+}
+
+pub struct ScoreListHtmlParams<'a> {
+    pub cards: &'a [ScoreListCardData],
+    pub username: &'a str,
+    pub mode: osubot_types::GameMode,
+    pub is_pass: bool,
+    pub avatar_data_uri: &'a str,
+    pub hero_bg_data_uri: &'a str,
+    pub hue: u16,
+    pub sat: u16,
+    pub user_pp: f64,
+    pub user_global_rank: Option<i64>,
+    pub user_country_rank: Option<i64>,
+    pub country_code: &'a str,
+    pub pp_change: Option<f64>,
+    pub global_rank_change: Option<i64>,
+    pub country_rank_change: Option<i64>,
+}
+
+fn format_rank_change(change: Option<i64>) -> String {
+    match change {
+        Some(delta) if delta > 0 => format!(r#"<span class="rank-change up">+{}</span>"#, delta),
+        Some(delta) if delta < 0 => format!(r#"<span class="rank-change down">{}</span>"#, delta),
+        Some(_) => r#"<span class="rank-change zero">±0</span>"#.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn format_pp_change(change: Option<f64>) -> String {
+    match change {
+        Some(delta) if delta > 0.0 => {
+            let d = if delta.fract() == 0.0 {
+                format!("{}", delta as i64)
+            } else {
+                format!("{delta:.2}")
+            };
+            format!(r#"<span class="user-pp-change up">+{d}</span>"#)
+        }
+        Some(delta) if delta < 0.0 => {
+            let d = if delta.fract() == 0.0 {
+                format!("{}", delta as i64)
+            } else {
+                format!("{delta:.2}")
+            };
+            format!(r#"<span class="user-pp-change down">{d}</span>"#)
+        }
+        Some(_) => r#"<span class="user-pp-change zero">±0</span>"#.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn format_relative_time(created_at: &str) -> String {
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created_at) else {
+        return String::new();
+    };
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(dt);
+
+    let seconds = duration.num_seconds();
+    if seconds < 60 {
+        return "~1min".to_string();
+    }
+
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("~{}min", minutes);
+    }
+
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("~{}h", hours);
+    }
+
+    let days = hours / 24;
+    if days < 30 {
+        return format!("~{}d", days);
+    }
+
+    let months = days / 30;
+    if months < 12 {
+        return format!("~{}mo", months);
+    }
+
+    let years = months / 12;
+    format!("~{}y", years)
+}
+
+pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
+    let css = SCORE_LIST_CSS
+        .replace("{{SCORE_HUE}}", &params.hue.to_string())
+        .replace("{{SCORE_SAT}}", &params.sat.to_string());
+
+    let label = if params.is_pass {
+        "最近通过"
+    } else {
+        "最近游玩"
+    };
+    let mode_name = params.mode.name();
+    let count = params.cards.len();
+
+    let mut html = String::with_capacity(32768);
+    html.push_str(r#"<!DOCTYPE html><html><head><style>"#);
+    html.push_str(&css);
+    html.push_str(r#"</style></head><body><div class="score-list-card">"#);
+
+    // Hero section
+    html.push_str(r#"<div class="hero">"#);
+    if !params.hero_bg_data_uri.is_empty() {
+        html.push_str(&format!(
+            r#"<img class="hero-bg" src="{}" />"#,
+            params.hero_bg_data_uri
+        ));
+    }
+    html.push_str(r#"<div class="hero-overlay"></div><div class="hero-content">"#);
+
+    html.push_str(r#"<div class="hero-avatar"><img src=""#);
+    html.push_str(params.avatar_data_uri);
+    html.push_str(r#"" /></div>"#);
+
+    html.push_str(r#"<div class="hero-info"><div class="hero-name">"#);
+    html.push_str(&escape_html(params.username));
+    html.push_str(r#"</div>"#);
+
+    // Rank + PP row
+    html.push_str(r#"<div class="hero-rank-pp">"#);
+    if let Some(rank) = params.user_global_rank {
+        let change_html = format_rank_change(params.global_rank_change);
+        html.push_str(&format!(
+            r#"<div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">{}</span>{}<span class="rank-label">Global</span></div>"#,
+            format_number(rank),
+            change_html
+        ));
+    }
+    if let Some(rank) = params.user_country_rank {
+        let change_html = format_rank_change(params.country_rank_change);
+        html.push_str(&format!(
+            r#"<div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">{}</span>{}<span class="rank-label">{}</span></div>"#,
+            format_number(rank),
+            change_html,
+            escape_html(params.country_code)
+        ));
+    }
+    let pp_change_html = format_pp_change(params.pp_change);
+    html.push_str(&format!(
+        r#"<div class="user-pp-section"><span class="user-pp-val">{:.0}pp</span>{}</div>"#,
+        params.user_pp, pp_change_html
+    ));
+    html.push_str(r#"</div>"#);
+
+    // Meta row
+    html.push_str(r#"<div class="hero-meta"><span>"#);
+    html.push_str(label);
+    html.push_str(r#"</span><span class="dot">·</span><span>"#);
+    html.push_str(mode_name);
+    html.push_str(r#"</span><span class="dot">·</span><span>"#);
+    html.push_str(&format!("{} 条记录", count));
+    html.push_str(r#"</span></div></div></div></div>"#);
+
+    // Score list
+    html.push_str(r#"<div class="score-list">"#);
+    for (i, card) in params.cards.iter().enumerate() {
+        html.push_str(&render_mini_card(i, card));
+    }
+    html.push_str(r#"</div></div></body></html>"#);
+
+    html
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osubot_types::{Score, ScoreStatistics, ScoreUser};
+    use rosu_mods::GameMods;
+
+    fn make_test_score() -> Score {
+        let mut mods = GameMods::new();
+        mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+        Score {
+            score_id: 1,
+            beatmap_id: 100,
+            beatmapset_id: 200,
+            artist: "TestArtist".to_string(),
+            title: "TestTitle".to_string(),
+            version: "Expert".to_string(),
+            creator: "Mapper".to_string(),
+            star_rating: 6.50,
+            bpm: 180.0,
+            ar: 9.3,
+            od: 8.5,
+            cs: 4.0,
+            hp: 6.0,
+            length_seconds: 222,
+            score_value: 1234567,
+            accuracy: 0.985,
+            max_combo: 400,
+            beatmap_max_combo: 500,
+            pp: Some(456.0),
+            pp_breakdown: None,
+            pp_if_acc: None,
+            rank: "S".to_string(),
+            passed: true,
+            mods,
+            is_perfect: false,
+            created_at: "2025-05-27T14:30:22Z".to_string(),
+            is_lazer: false,
+            has_replay: true,
+            legacy_score_id: None,
+            statistics: ScoreStatistics {
+                count_geki: 0,
+                count_300: 856,
+                count_katu: 0,
+                count_100: 45,
+                count_50: 12,
+                count_miss: 2,
+            },
+            cover_url: "https://example.com/cover.jpg".to_string(),
+            user: ScoreUser {
+                avatar_url: "https://example.com/avatar.jpg".to_string(),
+                country_code: "CN".to_string(),
+                global_rank: Some(12345),
+                country_rank: Some(1000),
+                pp: 9876.5,
+            },
+            fav_count: None,
+            play_count: None,
+            status: "ranked".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_wrap_score_list_html_basic() {
+        let score = make_test_score();
+        let card = ScoreListCardData::from_score(
+            &score,
+            osubot_types::GameMode::Osu,
+            "data:image/jpeg;base64,cover".to_string(),
+        );
+        let params = ScoreListHtmlParams {
+            cards: &[card],
+            username: "TestUser",
+            mode: osubot_types::GameMode::Osu,
+            is_pass: true,
+            avatar_data_uri: "data:image/jpeg;base64,avatar",
+            hero_bg_data_uri: "data:image/jpeg;base64,bg",
+            hue: 200,
+            sat: 60,
+            user_pp: 9876.5,
+            user_global_rank: Some(12345),
+            user_country_rank: Some(1000),
+            country_code: "CN",
+            pp_change: Some(12.0),
+            global_rank_change: Some(-99),
+            country_rank_change: Some(50),
+        };
+        let html = wrap_score_list_html(&params);
+
+        assert!(html.contains("TestUser"));
+        assert!(html.contains("最近通过"));
+        assert!(html.contains("osu!"));
+        assert!(html.contains("1 条记录"));
+        assert!(html.contains("TestTitle"));
+        assert!(html.contains("TestArtist"));
+        assert!(html.contains("★ 6.50"));
+        assert!(html.contains("456"));
+        assert!(html.contains("98.5%"));
+        assert!(html.contains("mini-card"));
+        assert!(html.contains("rank-s"));
+        assert!(html.contains("HD"));
+    }
+
+    #[test]
+    fn test_wrap_score_list_html_xss() {
+        let mut score = make_test_score();
+        score.title = "<script>alert('xss')</script>".to_string();
+        score.artist = "Artist<img onerror=alert(1)>".to_string();
+        let card =
+            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        let params = ScoreListHtmlParams {
+            cards: &[card],
+            username: "<b>Bad</b>",
+            mode: osubot_types::GameMode::Osu,
+            is_pass: false,
+            avatar_data_uri: "",
+            hero_bg_data_uri: "",
+            hue: 200,
+            sat: 60,
+            user_pp: 5000.0,
+            user_global_rank: None,
+            user_country_rank: None,
+            country_code: "",
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+        };
+        let html = wrap_score_list_html(&params);
+
+        assert!(!html.contains("<script>"));
+        assert!(!html.contains("<img onerror"));
+        assert!(!html.contains("<b>Bad</b>"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&lt;b&gt;Bad&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn test_score_list_card_data_from_score() {
+        let score = make_test_score();
+        let card = ScoreListCardData::from_score(
+            &score,
+            osubot_types::GameMode::Osu,
+            "data:image/jpeg;base64,test".to_string(),
+        );
+
+        assert_eq!(card.rank_class, "rank-s");
+        assert_eq!(card.rank_display, "S");
+        assert_eq!(card.acc_formatted, "98.5%");
+        assert_eq!(card.pp_formatted, "456");
+        assert!(card.mods_html.contains("HD"));
+    }
+
+    #[test]
+    fn test_rank_display_xh() {
+        let mut score = make_test_score();
+        score.rank = "XH".to_string();
+        let card =
+            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        assert_eq!(card.rank_class, "rank-s-silver");
+        assert_eq!(card.rank_display, "X");
+    }
+
+    #[test]
+    fn test_empty_mods() {
+        let mut score = make_test_score();
+        score.mods = GameMods::new();
+        score.is_lazer = false;
+        let card =
+            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        assert!(card.mods_html.is_empty());
+    }
+
+    #[test]
+    fn test_recent_label() {
+        let score = make_test_score();
+        let card =
+            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        let params = ScoreListHtmlParams {
+            cards: &[card],
+            username: "User",
+            mode: osubot_types::GameMode::Osu,
+            is_pass: false,
+            avatar_data_uri: "",
+            hero_bg_data_uri: "",
+            hue: 200,
+            sat: 60,
+            user_pp: 5000.0,
+            user_global_rank: None,
+            user_country_rank: None,
+            country_code: "",
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+        };
+        let html = wrap_score_list_html(&params);
+        assert!(html.contains("最近游玩"));
+        assert!(!html.contains("最近通过"));
+    }
+
+    #[test]
+    fn test_format_relative_time_invalid() {
+        assert_eq!(format_relative_time("invalid"), "");
+        assert_eq!(format_relative_time(""), "");
+    }
+
+    #[test]
+    fn test_format_relative_time_recent() {
+        let now = chrono::Utc::now();
+        let ts = now.to_rfc3339();
+        let result = format_relative_time(&ts);
+        assert!(result == "~1min" || result.starts_with("~"));
+    }
+}

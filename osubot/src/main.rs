@@ -585,8 +585,128 @@ async fn handle_score_query(
                     }
                 }
             } else {
-                let response = format_scores(&scores, &dedup_username, params.mode, params.is_pass);
-                let _ = resp_tx.send(response).await;
+                // 尝试渲染成绩列表图片
+                let cover_results = futures_util::future::join_all(scores.iter().map(|s| async {
+                    if !s.cover_url.is_empty() {
+                        match osubot_render::cache::fetch_and_cache(
+                            &s.cover_url,
+                            osubot_render::cache::http_client(),
+                        )
+                        .await
+                        {
+                            Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    }
+                }))
+                .await;
+
+                let (hue, sat) = match cover_results.first() {
+                    Some(Some(img)) => osubot_render::extract_dominant_hue(img),
+                    _ => (200u16, 30u16),
+                };
+
+                let cover_images: Vec<image::DynamicImage> = cover_results
+                    .into_iter()
+                    .map(|opt| {
+                        opt.unwrap_or_else(|| {
+                            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                                240,
+                                136,
+                                image::Rgb([43, 41, 48]),
+                            ))
+                        })
+                    })
+                    .collect();
+
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel_clone = cancel.clone();
+                let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
+                let hero_cover_url = match api::fetch_user_profile(
+                    &ctx.rate_limiter,
+                    &ctx.oauth,
+                    user_id,
+                    params.mode,
+                )
+                .await
+                {
+                    Ok(profile) => profile.cover_url.unwrap_or_default(),
+                    Err(_) => String::new(),
+                };
+                let user_global_rank = if user_stats.rank > 0 {
+                    Some(user_stats.rank)
+                } else {
+                    None
+                };
+                let user_country_rank = if user_stats.country_rank > 0 {
+                    Some(user_stats.country_rank)
+                } else {
+                    None
+                };
+                let change = ctx
+                    .storage
+                    .calculate_change(user_id, params.mode, &user_stats)
+                    .ok()
+                    .flatten();
+                let pp_change = change.as_ref().and_then(|c| c.pp_change);
+                let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
+                let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+                let render_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
+                        scores: &scores,
+                        username: &dedup_username,
+                        mode: params.mode,
+                        is_pass: params.is_pass,
+                        avatar_url: &avatar_url,
+                        cover_images,
+                        hue,
+                        sat,
+                        user_pp: user_stats.pp,
+                        user_global_rank,
+                        user_country_rank,
+                        country_code: &user_stats.country_code,
+                        pp_change,
+                        global_rank_change,
+                        country_rank_change,
+                        hero_cover_url: &hero_cover_url,
+                        cancel_flag: Some(cancel_clone),
+                    }),
+                )
+                .await;
+
+                match render_result {
+                    Ok(Ok(jpeg_bytes)) => {
+                        tracing::info!("Score list card rendered, {} bytes", jpeg_bytes.len());
+                        let jpeg = Arc::new(jpeg_bytes);
+                        let write = ctx.write.clone();
+                        let group_id = msg.group_id;
+                        let resp_tx_img = resp_tx.clone();
+                        tokio::spawn(async move {
+                            if send_group_msg_with_image(&write, group_id, &jpeg)
+                                .await
+                                .is_err()
+                            {
+                                let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                            }
+                        });
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "render_score_list_card failed, falling back to text");
+                        let response =
+                            format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                        let _ = resp_tx.send(response).await;
+                    }
+                    Err(_) => {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        warn!("render_score_list_card timed out, falling back to text");
+                        let response =
+                            format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                        let _ = resp_tx.send(response).await;
+                    }
+                }
             }
         }
         Err(err_msg) => {

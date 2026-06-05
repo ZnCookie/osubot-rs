@@ -1502,6 +1502,13 @@ struct OsuProfileResponse {
     profile_hue: Option<u16>,
     username: String,
     avatar_url: String,
+    cover: Option<Cover>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Cover {
+    url: Option<String>,
+    custom_url: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1514,6 +1521,7 @@ pub struct UserProfile {
     pub profile_hue: u16,
     pub username: String,
     pub avatar_url: String,
+    pub cover_url: Option<String>,
 }
 
 /// 获取用户主页数据（用于 !profile 卡片渲染）
@@ -1553,11 +1561,14 @@ pub async fn fetch_user_profile(
 
             let data: OsuProfileResponse = resp.json().await.map_err(json_to_api_error)?;
 
+            let cover_url = data.cover.and_then(|c| c.custom_url.or(c.url));
+
             Ok(UserProfile {
                 html: data.page.html,
                 profile_hue: data.profile_hue.unwrap_or(333),
                 username: data.username,
                 avatar_url: data.avatar_url,
+                cover_url,
             })
         })
     })

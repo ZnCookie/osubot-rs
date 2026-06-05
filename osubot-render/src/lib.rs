@@ -2,6 +2,7 @@ pub mod cache;
 mod encode;
 mod error;
 mod render;
+pub mod score_list_style;
 pub mod score_style;
 mod style;
 
@@ -337,6 +338,152 @@ pub async fn render_profile_card(
 
     let jpeg = encode::encode_jpeg(pixels, w, h, 80).await?;
 
+    Ok(jpeg)
+}
+
+pub struct ScoreListCardParams<'a> {
+    pub scores: &'a [osubot_types::Score],
+    pub username: &'a str,
+    pub mode: osubot_types::GameMode,
+    pub is_pass: bool,
+    pub avatar_url: &'a str,
+    pub cover_images: Vec<image::DynamicImage>,
+    pub hue: u16,
+    pub sat: u16,
+    pub user_pp: f64,
+    pub user_global_rank: Option<i64>,
+    pub user_country_rank: Option<i64>,
+    pub country_code: &'a str,
+    pub pp_change: Option<f64>,
+    pub global_rank_change: Option<i64>,
+    pub country_rank_change: Option<i64>,
+    pub hero_cover_url: &'a str,
+    pub cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+pub async fn render_score_list_card(
+    params: ScoreListCardParams<'_>,
+) -> Result<Vec<u8>, RenderError> {
+    let ScoreListCardParams {
+        scores,
+        username,
+        mode,
+        is_pass,
+        avatar_url,
+        cover_images,
+        hue,
+        sat,
+        user_pp,
+        user_global_rank,
+        user_country_rank,
+        country_code,
+        pp_change,
+        global_rank_change,
+        country_rank_change,
+        hero_cover_url,
+        cancel_flag: external_cancel,
+    } = params;
+
+    // Download avatar
+    let client = cache::http_client();
+    let avatar_uri = if !avatar_url.is_empty() {
+        match cache::fetch_and_cache(avatar_url, client).await {
+            Ok((bytes, _, _)) => {
+                let img = image::load_from_memory(&bytes)
+                    .map_err(|e| RenderError::Render(format!("avatar decode: {e}")))?;
+                let resized = img.resize_exact(120, 120, imageops::FilterType::Lanczos3);
+                image_to_data_uri(&resized, 85)?
+            }
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    // Download hero banner (player profile cover)
+    let hero_bg_uri = if !hero_cover_url.is_empty() {
+        match cache::fetch_and_cache(hero_cover_url, client).await {
+            Ok((bytes, _, _)) => match image::load_from_memory(&bytes) {
+                Ok(img) => {
+                    let cropped = crop_and_resize(&img, 2560, 640);
+                    image_to_data_uri(&cropped, 80).unwrap_or_default()
+                }
+                Err(_) => String::new(),
+            },
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    // Process cover thumbnails
+    let cover_uris: Vec<String> = cover_images
+        .iter()
+        .map(|img| {
+            let thumb = crop_and_resize(img, 240, 136);
+            image_to_data_uri(&thumb, 85).unwrap_or_default()
+        })
+        .collect();
+
+    // Build card data
+    let cards: Vec<score_list_style::ScoreListCardData> = scores
+        .iter()
+        .enumerate()
+        .map(|(i, score)| {
+            let cover_uri = cover_uris.get(i).cloned().unwrap_or_default();
+            score_list_style::ScoreListCardData::from_score(score, mode, cover_uri)
+        })
+        .collect();
+
+    let html_params = score_list_style::ScoreListHtmlParams {
+        cards: &cards,
+        username,
+        mode,
+        is_pass,
+        avatar_data_uri: &avatar_uri,
+        hero_bg_data_uri: &hero_bg_uri,
+        hue,
+        sat,
+        user_pp,
+        user_global_rank,
+        user_country_rank,
+        country_code,
+        pp_change,
+        global_rank_change,
+        country_rank_change,
+    };
+    let html = score_list_style::wrap_score_list_html(&html_params);
+
+    // Estimate height: 240px hero + 12px padding top + cards * 100px + 48px padding bottom
+    let estimated_height = 640 + 12 + (scores.len() as u32 * 100) + 48;
+
+    let _permit = render_semaphore()
+        .acquire()
+        .await
+        .expect("render semaphore never closed");
+    let font_ctx = get_font_context();
+    let cancel =
+        external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let cancel_flag = cancel.clone();
+
+    let render_result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || {
+            render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
+        }),
+    )
+    .await;
+
+    let (pixels, w, h) = match render_result {
+        Ok(Ok(result)) => result?,
+        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
+        Err(_) => {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(RenderError::Render("render timed out after 60s".into()));
+        }
+    };
+
+    let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;
     Ok(jpeg)
 }
 
