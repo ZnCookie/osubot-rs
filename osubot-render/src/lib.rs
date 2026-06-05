@@ -17,6 +17,9 @@ pub use error::RenderError;
 
 pub const PROFILE_VIEWPORT_WIDTH: u32 = 1650;
 
+/// !ps / !rs 渲染超时（秒）。比单 score card 渲染慢：4 列网格 HTML 体积更大，blitz 布局耗时增加。
+pub const SCORE_LIST_RENDER_TIMEOUT_SECS: u64 = 60;
+
 static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
 
 fn get_font_context() -> &'static FontContext {
@@ -421,7 +424,7 @@ pub async fn render_score_list_card(
         .iter()
         .map(|img| {
             let thumb = crop_and_resize(img, 620, 220);
-            image_to_data_uri(&thumb, 85).unwrap_or_default()
+            image_to_data_uri(&thumb, 70).unwrap_or_default()
         })
         .collect();
 
@@ -431,7 +434,7 @@ pub async fn render_score_list_card(
         .enumerate()
         .map(|(i, score)| {
             let cover_uri = cover_uris.get(i).cloned().unwrap_or_default();
-            score_list_style::ScoreListCardData::from_score(score, mode, cover_uri)
+            score_list_style::ScoreListCardData::from_score(score, cover_uri)
         })
         .collect();
 
@@ -472,7 +475,7 @@ pub async fn render_score_list_card(
     let cancel_flag = cancel.clone();
 
     let render_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
         tokio::task::spawn_blocking(move || {
             render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
         }),
@@ -484,7 +487,9 @@ pub async fn render_score_list_card(
         Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
         Err(_) => {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            return Err(RenderError::Render("render timed out after 60s".into()));
+            return Err(RenderError::Render(format!(
+                "render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s"
+            )));
         }
     };
 

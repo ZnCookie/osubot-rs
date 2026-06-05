@@ -15,6 +15,7 @@ use osubot_core::{
     OauthTokenCache, RateLimiter,
 };
 use osubot_render::PROFILE_VIEWPORT_WIDTH;
+use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
 use osubot_render::{render_profile_card, render_score_card};
 use scheduler::Scheduler;
 use serde::Deserialize;
@@ -603,10 +604,8 @@ async fn handle_score_query(
                 }))
                 .await;
 
-                let (hue, sat) = match cover_results.first() {
-                    Some(Some(img)) => osubot_render::extract_dominant_hue(img),
-                    _ => (200u16, 30u16),
-                };
+                // 分数列表(!ps / !rs)固定主题色,不做动态色调提取。!p / !r 单 score card 仍走 extract_dominant_hue。
+                let (hue, sat) = (200u16, 30u16);
 
                 let cover_images: Vec<image::DynamicImage> = cover_results
                     .into_iter()
@@ -654,7 +653,7 @@ async fn handle_score_query(
                 let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
                 let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
                 let render_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(60),
+                    std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
                     osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
                         scores: &scores,
                         username: &dedup_username,

@@ -326,7 +326,7 @@ fn make_score_list_card_data() -> Vec<ScoreListCardData> {
     (0..20)
         .map(|i| {
             let score = make_varied_score(i);
-            ScoreListCardData::from_score(&score, GameMode::Osu, String::new())
+            ScoreListCardData::from_score(&score, String::new())
         })
         .collect()
 }

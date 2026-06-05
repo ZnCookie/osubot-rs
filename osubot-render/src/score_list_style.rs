@@ -5,7 +5,6 @@ const SCORE_LIST_CSS: &str = include_str!("../styles/score_list.css");
 
 pub struct ScoreListCardData {
     pub score: Score,
-    pub mode: osubot_types::GameMode,
     pub rank_class: String,
     pub rank_display: String,
     pub cover_data_uri: String,
@@ -17,7 +16,7 @@ pub struct ScoreListCardData {
 }
 
 impl ScoreListCardData {
-    pub fn from_score(score: &Score, mode: osubot_types::GameMode, cover_data_uri: String) -> Self {
+    pub fn from_score(score: &Score, cover_data_uri: String) -> Self {
         let rank_class = if !score.passed {
             "rank-f"
         } else {
@@ -68,7 +67,6 @@ impl ScoreListCardData {
 
         ScoreListCardData {
             score: score.clone(),
-            mode,
             rank_class,
             rank_display,
             cover_data_uri,
@@ -383,11 +381,8 @@ mod tests {
     #[test]
     fn test_wrap_score_list_html_basic() {
         let score = make_test_score();
-        let card = ScoreListCardData::from_score(
-            &score,
-            osubot_types::GameMode::Osu,
-            "data:image/jpeg;base64,cover".to_string(),
-        );
+        let card =
+            ScoreListCardData::from_score(&score, "data:image/jpeg;base64,cover".to_string());
         let params = ScoreListHtmlParams {
             cards: &[card],
             username: "TestUser",
@@ -426,8 +421,7 @@ mod tests {
         let mut score = make_test_score();
         score.title = "<script>alert('xss')</script>".to_string();
         score.artist = "Artist<img onerror=alert(1)>".to_string();
-        let card =
-            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        let card = ScoreListCardData::from_score(&score, String::new());
         let params = ScoreListHtmlParams {
             cards: &[card],
             username: "<b>Bad</b>",
@@ -457,11 +451,7 @@ mod tests {
     #[test]
     fn test_score_list_card_data_from_score() {
         let score = make_test_score();
-        let card = ScoreListCardData::from_score(
-            &score,
-            osubot_types::GameMode::Osu,
-            "data:image/jpeg;base64,test".to_string(),
-        );
+        let card = ScoreListCardData::from_score(&score, "data:image/jpeg;base64,test".to_string());
 
         assert_eq!(card.rank_class, "rank-s");
         assert_eq!(card.rank_display, "S");
@@ -474,8 +464,7 @@ mod tests {
     fn test_rank_display_xh() {
         let mut score = make_test_score();
         score.rank = "XH".to_string();
-        let card =
-            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        let card = ScoreListCardData::from_score(&score, String::new());
         assert_eq!(card.rank_class, "rank-s-silver");
         assert_eq!(card.rank_display, "X");
     }
@@ -485,16 +474,14 @@ mod tests {
         let mut score = make_test_score();
         score.mods = GameMods::new();
         score.is_lazer = false;
-        let card =
-            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        let card = ScoreListCardData::from_score(&score, String::new());
         assert!(card.mods_html.is_empty());
     }
 
     #[test]
     fn test_recent_label() {
         let score = make_test_score();
-        let card =
-            ScoreListCardData::from_score(&score, osubot_types::GameMode::Osu, String::new());
+        let card = ScoreListCardData::from_score(&score, String::new());
         let params = ScoreListHtmlParams {
             cards: &[card],
             username: "User",
@@ -551,11 +538,7 @@ mod tests {
     #[test]
     fn test_cover_strip_uses_background_image() {
         let score = make_test_score();
-        let card = ScoreListCardData::from_score(
-            &score,
-            osubot_types::GameMode::Osu,
-            "data:image/jpeg;base64,ABC".to_string(),
-        );
+        let card = ScoreListCardData::from_score(&score, "data:image/jpeg;base64,ABC".to_string());
         let params = ScoreListHtmlParams {
             cards: &[card],
             username: "U",
@@ -606,11 +589,7 @@ mod tests {
     #[test]
     fn test_hero_bg_uses_background_image() {
         let score = make_test_score();
-        let card = ScoreListCardData::from_score(
-            &score,
-            osubot_types::GameMode::Osu,
-            "data:image/jpeg;base64,ABC".to_string(),
-        );
+        let card = ScoreListCardData::from_score(&score, "data:image/jpeg;base64,ABC".to_string());
         let params = ScoreListHtmlParams {
             cards: &[card],
             username: "U",
@@ -648,11 +627,7 @@ mod tests {
     #[test]
     fn test_star_in_cover_shows_rating() {
         let score = make_test_score();
-        let card = ScoreListCardData::from_score(
-            &score,
-            osubot_types::GameMode::Osu,
-            "data:image/jpeg;base64,X".to_string(),
-        );
+        let card = ScoreListCardData::from_score(&score, "data:image/jpeg;base64,X".to_string());
         let params = ScoreListHtmlParams {
             cards: &[card],
             username: "U",
