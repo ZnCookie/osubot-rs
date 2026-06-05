@@ -256,7 +256,7 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
 
     // Hero section with background-image (more reliable in blitz than <img>)
     if params.hero_bg_data_uri.is_empty() {
-        html.push_str(r#"<div class="hero">"#);
+        html.push_str(r#"<div class="hero hero--empty">"#);
     } else {
         html.push_str(r#"<div class="hero" style="background-image: url(&quot;"#);
         html.push_str(params.hero_bg_data_uri);
@@ -567,19 +567,18 @@ mod tests {
         );
     }
 
-    /// The hero is sized to its content (avatar 120 + name + rank/pp + meta + padding)
-    /// rather than a fixed pixel height. A fixed 640px hero with content anchored to
-    /// `align-items: flex-end` would leave a large empty band above the user info and
-    /// push the rank/PP row right against the score-list grid below.
+    /// hero 高度通过 min-height 锁定到 640px,与 .hero 上的 2560×640 banner
+    /// 背景图 1:1 匹配;background-size: cover 退化为 100% 100%。无 banner 时
+    /// 加 .hero--empty 让高度回归内容(避免 640px 纯灰方块)。
     #[test]
-    fn test_hero_has_no_fixed_height() {
+    fn test_hero_min_height_matches_banner() {
         assert!(
-            !SCORE_LIST_CSS.contains("height: 640px"),
-            ".hero must not have a fixed height: 640px; it should size to its content"
+            SCORE_LIST_CSS.contains("min-height: 640px"),
+            ".hero must have min-height: 640px to match the 2560x640 banner image"
         );
         assert!(
-            SCORE_LIST_CSS.contains(".hero {") && SCORE_LIST_CSS.contains(".hero-content {"),
-            ".hero and .hero-content must exist"
+            SCORE_LIST_CSS.contains(".hero--empty"),
+            ".hero--empty class must exist for the no-banner fallback"
         );
     }
 

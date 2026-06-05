@@ -30,6 +30,15 @@
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
+  min-height: 640px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+/* 没设 profile cover 的用户:hero 退回内容高度,避免 640px 纯灰方块 */
+.hero--empty {
+  min-height: 0;
 }
 
 .hero-overlay {
@@ -236,7 +245,7 @@
   top: 10px;
   right: 16px;
   z-index: 1;
-  font-size: 34px;
+  font-size: 40px;
   font-weight: 900;
   color: #ffffff;
   text-shadow:
@@ -250,7 +259,7 @@
   bottom: 10px;
   left: 16px;
   z-index: 1;
-  font-size: 34px;
+  font-size: 40px;
   font-weight: 900;
   color: #ffe45a;
   text-shadow:
@@ -264,7 +273,7 @@
   bottom: 12px;
   right: 16px;
   z-index: 1;
-  font-size: 32px;
+  font-size: 40px;
   font-weight: 700;
   color: #ffffff;
   text-shadow:
@@ -323,7 +332,7 @@
   color: #ffdad0;
 }
 
-.mini-card .pp { font-size: 44px; font-weight: 600; color: #a8dcff; }
+.mini-card .pp { font-size: 48px; font-weight: 600; color: #a8dcff; }
 .mini-card .pp-unit { font-size: 24px; font-weight: 500; margin-left: 2px; }
 .mini-card .pp-fail { color: #938f99; }
 .mini-card .acc { font-size: 36px; color: #cac4d0; }

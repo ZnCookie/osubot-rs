@@ -457,13 +457,14 @@ pub async fn render_score_list_card(
     };
     let html = score_list_style::wrap_score_list_html(&html_params);
 
-    // Estimate height: 280px hero (avatar 120 + name/rank/meta + padding, no fixed height)
+    // Estimate height: 640px hero (matches the 2560x640 banner image; .hero has
+    // min-height: 640px so background-size: cover is effectively 100% 100%)
     // + 36px score-list padding + ceil(N/4) rows of 400px cards.
     // Card height = 220px cover strip + ~180px body. The render code uses
     // `max(computed_height, height)`, so this is a lower bound; the actual
     // layout height is used if it exceeds the estimate.
     let rows = (scores.len() as u32).div_ceil(4);
-    let estimated_height = 280 + 36 + rows * 400;
+    let estimated_height = 640 + 36 + rows * 400;
 
     let _permit = render_semaphore()
         .acquire()
