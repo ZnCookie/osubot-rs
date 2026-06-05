@@ -24,35 +24,27 @@
 /* ===== Hero Section ===== */
 .hero {
   position: relative;
-  height: 640px;
   overflow: hidden;
   z-index: 1;
-}
-
-.hero-bg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  filter: brightness(0.5);
-  transform: scale(1.15);
+  background-color: #2b2930;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .hero-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, rgba(43, 41, 48, 0.3) 0%, rgba(43, 41, 48, 0.3) 90%, var(--surface) 100%);
+  background: rgba(43, 41, 48, 0.5);
 }
 
 .hero-content {
   position: relative;
   z-index: 1;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 16px;
-  padding: 24px 32px;
-  height: 100%;
+  padding: 20px 32px;
 }
 
 .hero-avatar {
@@ -162,6 +154,7 @@
 .score-list {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-auto-rows: min-content;
   padding: 12px 24px 24px;
   gap: 12px;
   position: relative;
@@ -174,6 +167,8 @@
   border-radius: 16px;
   overflow: hidden;
   position: relative;
+  display: flex;
+  flex-direction: column;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -181,30 +176,51 @@
 /* ===== Cover Strip ===== */
 .mini-card .cover-strip {
   width: 100%;
-  height: 80px;
+  height: 220px;
   position: relative;
   overflow: hidden;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: #2b2930;
+  filter: brightness(0.7);
 }
 
-.mini-card .cover-strip img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  filter: brightness(0.7);
+.mini-card .cover-strip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.45) 0%,
+    rgba(0, 0, 0, 0) 30%,
+    rgba(0, 0, 0, 0) 60%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+  z-index: 0;
+  pointer-events: none;
 }
 
 .mini-card .cover-strip .rank {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
+  top: 10px;
+  left: 12px;
+  z-index: 1;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 44px;
   font-weight: 900;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  box-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.75);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 .rank-s { background: #ffcc22; color: #fff; }
@@ -217,39 +233,57 @@
 
 .mini-card .cover-strip .idx {
   position: absolute;
-  top: 8px;
-  right: 10px;
-  font-size: 16px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.8);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  top: 10px;
+  right: 16px;
+  z-index: 1;
+  font-size: 34px;
+  font-weight: 900;
+  color: #ffffff;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.75);
 }
 
 .mini-card .cover-strip .star-in-cover {
   position: absolute;
-  bottom: 6px;
-  left: 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #f0c0a0;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  bottom: 10px;
+  left: 16px;
+  z-index: 1;
+  font-size: 34px;
+  font-weight: 900;
+  color: #ffe45a;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.75);
 }
 
 .mini-card .cover-strip .time-in-cover {
   position: absolute;
-  bottom: 6px;
-  right: 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.8);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  bottom: 12px;
+  right: 16px;
+  z-index: 1;
+  font-size: 32px;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.75);
 }
 
 /* ===== Body ===== */
-.mini-card .body { padding: 10px 12px; }
+.mini-card .body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 20px;
+}
 .mini-card .title {
-  font-size: 16px;
-  font-weight: 500;
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -257,42 +291,40 @@
 }
 
 .mini-card .sub {
-  font-size: 12px;
+  font-size: 30px;
+  line-height: 1.3;
   color: var(--outline);
-  margin-top: 3px;
+  margin-top: 8px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.mini-card .sub .diff {
-  margin-left: 8px;
-  color: var(--primary-strong);
-}
-
 .mini-card .row {
   display: flex;
-  margin-top: 6px;
+  margin-top: 14px;
+  margin-bottom: 12px;
 }
 
 .mini-card .row2 {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-top: 4px;
+  margin-top: auto;
 }
 
-.mini-card .mods { display: flex; gap: 4px; min-height: 22px; }
+.mini-card .mods { display: flex; gap: 8px; min-height: 40px; }
 .mini-card .mod-tag {
-  font-size: 12px;
+  font-size: 28px;
   font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 6px;
+  padding: 5px 14px;
+  border-radius: 10px;
   background: rgba(92, 42, 26, 0.8);
   color: #ffdad0;
 }
 
-.mini-card .pp { font-size: 22px; font-weight: 600; color: #a8dcff; }
+.mini-card .pp { font-size: 44px; font-weight: 600; color: #a8dcff; }
+.mini-card .pp-unit { font-size: 24px; font-weight: 500; margin-left: 2px; }
 .mini-card .pp-fail { color: #938f99; }
-.mini-card .acc { font-size: 18px; color: #cac4d0; }
-</style></head><body><div class="score-list-card"><div class="hero"><div class="hero-overlay"></div><div class="hero-content"><div class="hero-avatar"><img src="" /></div><div class="hero-info"><div class="hero-name">ZnCookie</div><div class="hero-rank-pp"><div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">12,345</span><span class="rank-change down">-99</span><span class="rank-label">Global</span></div><div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">1,000</span><span class="rank-change up">+50</span><span class="rank-label">CN</span></div><div class="user-pp-section"><span class="user-pp-val">9876pp</span><span class="user-pp-change up">+12.50</span></div></div><div class="hero-meta"><span>最近游玩</span><span class="dot">·</span><span>osu!</span><span class="dot">·</span><span>20 条记录</span></div></div></div></div><div class="score-list"><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#1</span><span class="star-in-cover">★ 8.52</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Camellia - Exit This Earth&#x27;s Atomosphere</div><div class="sub"><span>Camellia</span><span class="diff">Cosmic</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">98.5%</span><span class="pp">456<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#2</span><span class="star-in-cover">★ 7.85</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">xi - Blue Zenith</div><div class="sub"><span>xi</span><span class="diff">FOUR DIMENSIONS</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">99.2%</span><span class="pp">389<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#3</span><span class="star-in-cover">★ 7.20</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">UNDEAD CORPORATION - Everything will freeze</div><div class="sub"><span>UNDEAD CORPORATION</span><span class="diff">Extra</span></div><div class="row"><div class="mods"><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">97.1%</span><span class="pp">312<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-f">F</div><span class="idx">#4</span><span class="star-in-cover">★ 6.88</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Halozy - Genryuu Kaiko</div><div class="sub"><span>Halozy</span><span class="diff">Lunatic</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">98.8%</span><span class="pp pp-fail">287<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#5</span><span class="star-in-cover">★ 6.50</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">t+pazolite - CENSORED!!</div><div class="sub"><span>t+pazolite</span><span class="diff">Crazy</span></div><div class="row"><div class="mods"></div></div><div class="row2"><span class="acc">95.3%</span><span class="pp">245<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#6</span><span class="star-in-cover">★ 6.12</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Foreground Eclipse - Truths, Ironies, The Secret Lyrics</div><div class="sub"><span>Foreground Eclipse</span><span class="diff">Extra</span></div><div class="row"><div class="mods"><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">98%</span><span class="pp">198<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#7</span><span class="star-in-cover">★ 5.80</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Nanahira - Bassline Yatteru w</div><div class="sub"><span>Nanahira</span><span class="diff">w</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">97.5%</span><span class="pp">185<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#8</span><span class="star-in-cover">★ 5.45</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">DragonForce - Through the Fire and Flames</div><div class="sub"><span>DragonForce</span><span class="diff">Expert</span></div><div class="row"><div class="mods"><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">99%</span><span class="pp">170<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-f">F</div><span class="idx">#9</span><span class="star-in-cover">★ 5.10</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">IOSYS - Cirno&#x27;s Perfect Math Class</div><div class="sub"><span>IOSYS</span><span class="diff">Lunatic</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">96.5%</span><span class="pp pp-fail">155<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#10</span><span class="star-in-cover">★ 4.80</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Demetori - Emotional Skyscraper</div><div class="sub"><span>Demetori</span><span class="diff">Lunatic</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span></div></div><div class="row2"><span class="acc">98.2%</span><span class="pp">140<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#11</span><span class="star-in-cover">★ 4.50</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">sasakure.UK - 終焉の栞</div><div class="sub"><span>sasakure.UK</span><span class="diff">Andante</span></div><div class="row"><div class="mods"><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">97.8%</span><span class="pp">130<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#12</span><span class="star-in-cover">★ 4.20</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">kors k - Insane Techniques</div><div class="sub"><span>kors k</span><span class="diff">Speed</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">99.5%</span><span class="pp">120<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#13</span><span class="star-in-cover">★ 3.90</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Getty vs. DJ DiA - Drop</div><div class="sub"><span>Getty vs. DJ DiA</span><span class="diff">Expert</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">96%</span><span class="pp">110<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#14</span><span class="star-in-cover">★ 3.60</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Rohi - Kakuzetsu Andante</div><div class="sub"><span>Rohi</span><span class="diff">Isolation</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">98.7%</span><span class="pp">100<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-f">F</div><span class="idx">#15</span><span class="star-in-cover">★ 3.30</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Function Phantom - Euclidean</div><div class="sub"><span>Function Phantom</span><span class="diff">Extra</span></div><div class="row"><div class="mods"></div></div><div class="row2"><span class="acc">97%</span><span class="pp pp-fail">90<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#16</span><span class="star-in-cover">★ 3.00</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">OISHII - ONIGIRI FREEWAY</div><div class="sub"><span>OISHII</span><span class="diff">SMILE</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">98.3%</span><span class="pp">80<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#17</span><span class="star-in-cover">★ 2.70</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Umeboshi Chazuke - ICHIBANBOSHI*ROCKET</div><div class="sub"><span>Umeboshi Chazuke</span><span class="diff">ROCKET</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">95.5%</span><span class="pp">72<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#18</span><span class="star-in-cover">★ 2.40</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">USAO - BroGamer</div><div class="sub"><span>USAO</span><span class="diff">GAMER</span></div><div class="row"><div class="mods"><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">99.1%</span><span class="pp">65<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#19</span><span class="star-in-cover">★ 2.10</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">lapix - Carry Me Away</div><div class="sub"><span>lapix</span><span class="diff">Lapix</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">96.8%</span><span class="pp">58<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-b">B</div><span class="idx">#20</span><span class="star-in-cover">★ 1.80</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">aran - COZMIC DRIVE</div><div class="sub"><span>aran</span><span class="diff">DRIVE</span></div><div class="row"><div class="mods"></div></div><div class="row2"><span class="acc">97.7%</span><span class="pp">50<span class="pp-unit">pp</span></span></div></div></div></div></div></body></html>
+.mini-card .acc { font-size: 36px; color: #cac4d0; }
+</style></head><body><div class="score-list-card"><div class="hero"><div class="hero-overlay"></div><div class="hero-content"><div class="hero-avatar"><img src="" /></div><div class="hero-info"><div class="hero-name">ZnCookie</div><div class="hero-rank-pp"><div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">12,345</span><span class="rank-change down">-99</span><span class="rank-label">Global</span></div><div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">1,000</span><span class="rank-change up">+50</span><span class="rank-label">CN</span></div><div class="user-pp-section"><span class="user-pp-val">9876pp</span><span class="user-pp-change up">+12.50</span></div></div><div class="hero-meta"><span>最近游玩</span><span class="dot">·</span><span>osu!</span><span class="dot">·</span><span>20 条记录</span></div></div></div></div><div class="score-list"><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#1</span><span class="star-in-cover">★ 8.5</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Camellia - Exit This Earth&#x27;s Atomosphere</div><div class="sub"><span>Camellia</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">98.5%</span><span class="pp">456<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#2</span><span class="star-in-cover">★ 7.8</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">xi - Blue Zenith</div><div class="sub"><span>xi</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">99.2%</span><span class="pp">389<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#3</span><span class="star-in-cover">★ 7.2</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">UNDEAD CORPORATION - Everything will freeze</div><div class="sub"><span>UNDEAD CORPORATION</span></div><div class="row"><div class="mods"><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">97.1%</span><span class="pp">312<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-f">F</div><span class="idx">#4</span><span class="star-in-cover">★ 6.9</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Halozy - Genryuu Kaiko</div><div class="sub"><span>Halozy</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">98.8%</span><span class="pp pp-fail">287<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#5</span><span class="star-in-cover">★ 6.5</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">t+pazolite - CENSORED!!</div><div class="sub"><span>t+pazolite</span></div><div class="row"><div class="mods"></div></div><div class="row2"><span class="acc">95.3%</span><span class="pp">245<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#6</span><span class="star-in-cover">★ 6.1</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Foreground Eclipse - Truths, Ironies, The Secret Lyrics</div><div class="sub"><span>Foreground Eclipse</span></div><div class="row"><div class="mods"><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">98%</span><span class="pp">198<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#7</span><span class="star-in-cover">★ 5.8</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Nanahira - Bassline Yatteru w</div><div class="sub"><span>Nanahira</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">97.5%</span><span class="pp">185<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#8</span><span class="star-in-cover">★ 5.5</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">DragonForce - Through the Fire and Flames</div><div class="sub"><span>DragonForce</span></div><div class="row"><div class="mods"><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">99%</span><span class="pp">170<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-f">F</div><span class="idx">#9</span><span class="star-in-cover">★ 5.1</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">IOSYS - Cirno&#x27;s Perfect Math Class</div><div class="sub"><span>IOSYS</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">96.5%</span><span class="pp pp-fail">155<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#10</span><span class="star-in-cover">★ 4.8</span><span class="time-in-cover">~1y</span></div><div class="body"><div class="title">Demetori - Emotional Skyscraper</div><div class="sub"><span>Demetori</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span></div></div><div class="row2"><span class="acc">98.2%</span><span class="pp">140<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#11</span><span class="star-in-cover">★ 4.5</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">sasakure.UK - 終焉の栞</div><div class="sub"><span>sasakure.UK</span></div><div class="row"><div class="mods"><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">97.8%</span><span class="pp">130<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#12</span><span class="star-in-cover">★ 4.2</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">kors k - Insane Techniques</div><div class="sub"><span>kors k</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">99.5%</span><span class="pp">120<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#13</span><span class="star-in-cover">★ 3.9</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Getty vs. DJ DiA - Drop</div><div class="sub"><span>Getty vs. DJ DiA</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">96%</span><span class="pp">110<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#14</span><span class="star-in-cover">★ 3.6</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Rohi - Kakuzetsu Andante</div><div class="sub"><span>Rohi</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">98.7%</span><span class="pp">100<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-f">F</div><span class="idx">#15</span><span class="star-in-cover">★ 3.3</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Function Phantom - Euclidean</div><div class="sub"><span>Function Phantom</span></div><div class="row"><div class="mods"></div></div><div class="row2"><span class="acc">97%</span><span class="pp pp-fail">90<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">X</div><span class="idx">#16</span><span class="star-in-cover">★ 3.0</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">OISHII - ONIGIRI FREEWAY</div><div class="sub"><span>OISHII</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">98.3%</span><span class="pp">80<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#17</span><span class="star-in-cover">★ 2.7</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">Umeboshi Chazuke - ICHIBANBOSHI*ROCKET</div><div class="sub"><span>Umeboshi Chazuke</span></div><div class="row"><div class="mods"><span class="mod-tag">DT</span><span class="mod-tag">HD</span></div></div><div class="row2"><span class="acc">95.5%</span><span class="pp">72<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-s">S</div><span class="idx">#18</span><span class="star-in-cover">★ 2.4</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">USAO - BroGamer</div><div class="sub"><span>USAO</span></div><div class="row"><div class="mods"><span class="mod-tag">HR</span></div></div><div class="row2"><span class="acc">99.1%</span><span class="pp">65<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-a">A</div><span class="idx">#19</span><span class="star-in-cover">★ 2.1</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">lapix - Carry Me Away</div><div class="sub"><span>lapix</span></div><div class="row"><div class="mods"><span class="mod-tag">Lazer</span><span class="mod-tag">DT</span></div></div><div class="row2"><span class="acc">96.8%</span><span class="pp">58<span class="pp-unit">pp</span></span></div></div></div><div class="mini-card"><div class="cover-strip"><div class="rank rank-b">B</div><span class="idx">#20</span><span class="star-in-cover">★ 1.8</span><span class="time-in-cover">~11mo</span></div><div class="body"><div class="title">aran - COZMIC DRIVE</div><div class="sub"><span>aran</span></div><div class="row"><div class="mods"></div></div><div class="row2"><span class="acc">97.7%</span><span class="pp">50<span class="pp-unit">pp</span></span></div></div></div></div></div></body></html>

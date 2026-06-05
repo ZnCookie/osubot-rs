@@ -85,12 +85,13 @@ fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
     let mut html = String::with_capacity(1024);
     html.push_str(r#"<div class="mini-card">"#);
 
-    // Cover strip
-    html.push_str(r#"<div class="cover-strip">"#);
-    if !data.cover_data_uri.is_empty() {
-        html.push_str(r#"<img src=""#);
+    // Cover strip with background-image (more reliable in blitz than <img>)
+    if data.cover_data_uri.is_empty() {
+        html.push_str(r#"<div class="cover-strip">"#);
+    } else {
+        html.push_str(r#"<div class="cover-strip" style="background-image: url(&quot;"#);
         html.push_str(&data.cover_data_uri);
-        html.push_str(r#"" />"#);
+        html.push_str(r#"&quot;);">"#);
     }
 
     // Rank badge
@@ -103,9 +104,10 @@ fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
     // Index number
     html.push_str(&format!(r#"<span class="idx">#{}</span>"#, idx + 1));
 
-    // Star rating
+    // Star rating only (difficulty name removed to keep cover strip clean
+    // and avoid horizontal overlap with .time-in-cover on long version strings).
     html.push_str(&format!(
-        r#"<span class="star-in-cover">★ {:.2}</span>"#,
+        r#"<span class="star-in-cover">★ {:.1}</span>"#,
         data.score.star_rating
     ));
 
@@ -125,11 +127,10 @@ fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
     html.push_str(&escape_html(&data.score.title));
     html.push_str(r#"</div>"#);
 
-    // Subtitle (artist + difficulty)
+    // Subtitle (artist only; mapper-defined difficulty name is shown in the
+    // cover strip alongside the star rating, so it would be redundant here)
     html.push_str(r#"<div class="sub"><span>"#);
     html.push_str(&escape_html(&data.score.artist));
-    html.push_str(r#"</span><span class="diff">"#);
-    html.push_str(&escape_html(&data.score.version));
     html.push_str(r#"</span></div>"#);
 
     // Mods row
@@ -255,13 +256,13 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     html.push_str(&css);
     html.push_str(r#"</style></head><body><div class="score-list-card">"#);
 
-    // Hero section
-    html.push_str(r#"<div class="hero">"#);
-    if !params.hero_bg_data_uri.is_empty() {
-        html.push_str(&format!(
-            r#"<img class="hero-bg" src="{}" />"#,
-            params.hero_bg_data_uri
-        ));
+    // Hero section with background-image (more reliable in blitz than <img>)
+    if params.hero_bg_data_uri.is_empty() {
+        html.push_str(r#"<div class="hero">"#);
+    } else {
+        html.push_str(r#"<div class="hero" style="background-image: url(&quot;"#);
+        html.push_str(params.hero_bg_data_uri);
+        html.push_str(r#"&quot;);">"#);
     }
     html.push_str(r#"<div class="hero-overlay"></div><div class="hero-content">"#);
 
@@ -412,7 +413,7 @@ mod tests {
         assert!(html.contains("1 条记录"));
         assert!(html.contains("TestTitle"));
         assert!(html.contains("TestArtist"));
-        assert!(html.contains("★ 6.50"));
+        assert!(html.contains("★ 6.5"));
         assert!(html.contains("456"));
         assert!(html.contains("98.5%"));
         assert!(html.contains("mini-card"));
@@ -528,5 +529,161 @@ mod tests {
         let ts = now.to_rfc3339();
         let result = format_relative_time(&ts);
         assert!(result == "~1min" || result.starts_with("~"));
+    }
+
+    /// blitz's CSS grid does not compute the intrinsic height of items when
+    /// the items have no explicit `height`. Without `grid-auto-rows: min-content`,
+    /// cards collapse to 0 height and the score list renders as a solid block.
+    /// See commit that added `grid-auto-rows` for context.
+    #[test]
+    fn test_score_list_grid_uses_min_content_rows() {
+        assert!(
+            SCORE_LIST_CSS.contains("grid-auto-rows: min-content"),
+            ".score-list must declare `grid-auto-rows: min-content` so blitz gives grid items their intrinsic height"
+        );
+    }
+
+    /// blitz 0.2.4 does not paint `<img>` elements whose `src` is a `data:`
+    /// URI when the image is inside a CSS grid item, even though the resource
+    /// is fetched and decoded successfully. The cover-strip therefore uses a
+    /// `background-image: url(data:...)` inline style on the strip div, with
+    /// `background-size: cover` to replicate the cropped thumbnail effect.
+    #[test]
+    fn test_cover_strip_uses_background_image() {
+        let score = make_test_score();
+        let card = ScoreListCardData::from_score(
+            &score,
+            osubot_types::GameMode::Osu,
+            "data:image/jpeg;base64,ABC".to_string(),
+        );
+        let params = ScoreListHtmlParams {
+            cards: &[card],
+            username: "U",
+            mode: osubot_types::GameMode::Osu,
+            is_pass: true,
+            avatar_data_uri: "",
+            hero_bg_data_uri: "",
+            hue: 200,
+            sat: 60,
+            user_pp: 0.0,
+            user_global_rank: None,
+            user_country_rank: None,
+            country_code: "",
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+        };
+        let html = wrap_score_list_html(&params);
+        assert!(
+            html.contains("background-image: url(&quot;data:image/jpeg;base64,ABC&quot;)"),
+            "cover-strip must inline the cover data URI as `background-image: url(...)` (blitz does not paint <img src=\"data:...\"> reliably inside CSS grid items)"
+        );
+        assert!(
+            !html.contains("<img src=\"data:image"),
+            "cover-strip must not contain an <img> tag with a data: URI (renders blank in blitz)"
+        );
+    }
+
+    /// The hero is sized to its content (avatar 120 + name + rank/pp + meta + padding)
+    /// rather than a fixed pixel height. A fixed 640px hero with content anchored to
+    /// `align-items: flex-end` would leave a large empty band above the user info and
+    /// push the rank/PP row right against the score-list grid below.
+    #[test]
+    fn test_hero_has_no_fixed_height() {
+        assert!(
+            !SCORE_LIST_CSS.contains("height: 640px"),
+            ".hero must not have a fixed height: 640px; it should size to its content"
+        );
+        assert!(
+            SCORE_LIST_CSS.contains(".hero {") && SCORE_LIST_CSS.contains(".hero-content {"),
+            ".hero and .hero-content must exist"
+        );
+    }
+
+    /// Same blitz `<img src="data:...">` rendering issue that affects the cover strip
+    /// also applies to the hero background banner. The hero `<div>` carries the data
+    /// URI via an inline `background-image: url(&quot;...&quot;)` style instead.
+    #[test]
+    fn test_hero_bg_uses_background_image() {
+        let score = make_test_score();
+        let card = ScoreListCardData::from_score(
+            &score,
+            osubot_types::GameMode::Osu,
+            "data:image/jpeg;base64,ABC".to_string(),
+        );
+        let params = ScoreListHtmlParams {
+            cards: &[card],
+            username: "U",
+            mode: osubot_types::GameMode::Osu,
+            is_pass: true,
+            avatar_data_uri: "",
+            hero_bg_data_uri: "data:image/jpeg;base64,HEROBG",
+            hue: 200,
+            sat: 60,
+            user_pp: 0.0,
+            user_global_rank: None,
+            user_country_rank: None,
+            country_code: "",
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+        };
+        let html = wrap_score_list_html(&params);
+        assert!(
+            html.contains(
+                r#"<div class="hero" style="background-image: url(&quot;data:image/jpeg;base64,HEROBG&quot;);">"#
+            ),
+            "hero must inline the bg data URI as `background-image: url(...)`"
+        );
+        assert!(
+            !html.contains(r#"<img class="hero-bg""#),
+            "hero must not contain a <img class=\"hero-bg\"> element (renders blank in blitz)"
+        );
+    }
+
+    /// The star rating overlay on the cover strip shows the numeric star rating
+    /// (1 decimal place) only — the mapper-defined difficulty name was removed
+    /// to keep the cover strip clean and prevent horizontal overlap with
+    /// `.time-in-cover` on long version strings.
+    #[test]
+    fn test_star_in_cover_shows_rating() {
+        let score = make_test_score();
+        let card = ScoreListCardData::from_score(
+            &score,
+            osubot_types::GameMode::Osu,
+            "data:image/jpeg;base64,X".to_string(),
+        );
+        let params = ScoreListHtmlParams {
+            cards: &[card],
+            username: "U",
+            mode: osubot_types::GameMode::Osu,
+            is_pass: true,
+            avatar_data_uri: "",
+            hero_bg_data_uri: "",
+            hue: 200,
+            sat: 60,
+            user_pp: 0.0,
+            user_global_rank: None,
+            user_country_rank: None,
+            country_code: "",
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+        };
+        let html = wrap_score_list_html(&params);
+        assert!(
+            html.contains(r#"<span class="star-in-cover">★ 6.5</span>"#),
+            "star-in-cover should show `★ <rating>` only; got HTML: {}",
+            html.split("star-in-cover")
+                .nth(1)
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
+        assert!(
+            !html.contains("6.50"),
+            "old `6.50` two-decimal format must be replaced"
+        );
     }
 }

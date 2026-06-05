@@ -613,8 +613,8 @@ async fn handle_score_query(
                     .map(|opt| {
                         opt.unwrap_or_else(|| {
                             image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-                                240,
-                                136,
+                                620,
+                                220,
                                 image::Rgb([43, 41, 48]),
                             ))
                         })

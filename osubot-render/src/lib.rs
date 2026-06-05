@@ -420,7 +420,7 @@ pub async fn render_score_list_card(
     let cover_uris: Vec<String> = cover_images
         .iter()
         .map(|img| {
-            let thumb = crop_and_resize(img, 240, 136);
+            let thumb = crop_and_resize(img, 620, 220);
             image_to_data_uri(&thumb, 85).unwrap_or_default()
         })
         .collect();
@@ -454,8 +454,13 @@ pub async fn render_score_list_card(
     };
     let html = score_list_style::wrap_score_list_html(&html_params);
 
-    // Estimate height: 240px hero + 12px padding top + cards * 100px + 48px padding bottom
-    let estimated_height = 640 + 12 + (scores.len() as u32 * 100) + 48;
+    // Estimate height: 280px hero (avatar 120 + name/rank/meta + padding, no fixed height)
+    // + 36px score-list padding + ceil(N/4) rows of 400px cards.
+    // Card height = 220px cover strip + ~180px body. The render code uses
+    // `max(computed_height, height)`, so this is a lower bound; the actual
+    // layout height is used if it exceeds the estimate.
+    let rows = (scores.len() as u32).div_ceil(4);
+    let estimated_height = 280 + 36 + rows * 400;
 
     let _permit = render_semaphore()
         .acquire()
