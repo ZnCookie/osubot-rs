@@ -1423,13 +1423,6 @@ async fn backfill_score_details(
                 if score.beatmapset_id == 0 {
                     score.beatmapset_id = bm.beatmapset_id;
                 }
-                tracing::debug!(
-                    beatmap_id = score.beatmap_id,
-                    ar = bm.ar,
-                    od = bm.od,
-                    star_rating = bm.difficulty_rating,
-                    "Backfilled beatmap data"
-                );
             }
             Err(e) => {
                 tracing::warn!(
@@ -1452,11 +1445,6 @@ async fn backfill_score_details(
                 score.creator = bs.creator;
                 if score.cover_url.is_empty() {
                     score.cover_url = fullsize_cover_url(bs.covers.as_ref()).unwrap_or_default();
-                    tracing::debug!(
-                        covers_raw = ?bs.covers,
-                        resolved_cover = %score.cover_url,
-                        "Backfilled beatmapset cover"
-                    );
                 }
                 if score.fav_count.is_none() {
                     score.fav_count = Some(bs.favourite_count).filter(|&v| v > 0);
@@ -1464,12 +1452,6 @@ async fn backfill_score_details(
                 if score.play_count.is_none() {
                     score.play_count = Some(bs.play_count).filter(|&v| v > 0);
                 }
-                tracing::debug!(
-                    beatmapset_id = score.beatmapset_id,
-                    artist = %score.artist,
-                    title = %score.title,
-                    "Backfilled beatmapset metadata"
-                );
             }
             Err(e) => {
                 tracing::warn!(
