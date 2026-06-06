@@ -1497,7 +1497,6 @@ pub async fn get_user_beatmap_score(
             "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=1",
             beatmap_id, user_id,
         );
-        // 重试时不带 mode 参数（与 yumu-bot 一致）
         if let Some(mod_list) = mods {
             for m in mod_list {
                 primary.push_str("&mods[]=");
@@ -1524,7 +1523,6 @@ pub async fn get_user_beatmap_score(
                 .await?;
 
             if resp.status() == 404 {
-                // retry with legacy_only=1, no mode
                 tracing::debug!(
                     beatmap_id,
                     user_id,
@@ -1532,19 +1530,23 @@ pub async fn get_user_beatmap_score(
                     "Beatmap score 404, retrying with legacy_only=1"
                 );
                 let access_token = oauth.get_token().await?;
-                let resp = client
+                let retry_resp = client
                     .get(&url_retry)
                     .header("Authorization", format!("Bearer {}", access_token))
                     .header("x-api-version", API_VERSION)
                     .send()
                     .await?;
 
-                if resp.status() == 404 {
+                if retry_resp.status() == 404 {
                     return Err(ApiError::NotFound);
                 }
-                classify_http_error(&resp)?;
+                classify_http_error(&retry_resp)?;
 
-                let raw: BeatmapUserScore = resp.json().await.map_err(json_to_api_error)?;
+                let body = retry_resp.text().await.map_err(|e| ApiError::Http(e))?;
+                let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
+                    tracing::error!(error = %e, body, "BeatmapScore retry parse failed");
+                    ApiError::InvalidResponse
+                })?;
                 let api_score = raw.score.ok_or(ApiError::NotFound)?;
                 let mut score = api_score_to_score(api_score, mode);
                 backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
@@ -1553,7 +1555,11 @@ pub async fn get_user_beatmap_score(
 
             classify_http_error(&resp)?;
 
-            let raw: BeatmapUserScore = resp.json().await.map_err(json_to_api_error)?;
+            let body = resp.text().await.map_err(|e| ApiError::Http(e))?;
+            let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
+                tracing::error!(error = %e, body, "BeatmapScore parse failed");
+                ApiError::InvalidResponse
+            })?;
             let api_score = raw.score.ok_or(ApiError::NotFound)?;
             let mut score = api_score_to_score(api_score, mode);
             backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
