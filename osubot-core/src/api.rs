@@ -1400,6 +1400,45 @@ async fn backfill_score_details(
         }
     }
 
+    // 回填 beatmapset 元数据（SoloScore 格式中不包含）
+    if (score.artist.is_empty() || score.title.is_empty() || score.cover_url.is_empty())
+        && score.beatmapset_id > 0
+    {
+        match fetch_beatmapset(rate_limiter, oauth, score.beatmapset_id).await {
+            Ok(bs) => {
+                score.artist = bs.artist;
+                score.title = bs.title;
+                score.creator = bs.creator;
+                if score.cover_url.is_empty() {
+                    score.cover_url = bs
+                        .covers
+                        .as_ref()
+                        .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                }
+                if score.fav_count.is_none() {
+                    score.fav_count = Some(bs.favourite_count).filter(|&v| v > 0);
+                }
+                if score.play_count.is_none() {
+                    score.play_count = Some(bs.play_count).filter(|&v| v > 0);
+                }
+                tracing::debug!(
+                    beatmapset_id = score.beatmapset_id,
+                    artist = %score.artist,
+                    title = %score.title,
+                    "Backfilled beatmapset metadata"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    beatmapset_id = score.beatmapset_id,
+                    "Failed to backfill beatmapset metadata"
+                );
+            }
+        }
+    }
+
     // 回填 lazer 分数值
     if score.score_value == 0 && score.score_id > 0 {
         match fetch_score_detail(rate_limiter, oauth, mode_str, score.score_id).await {
@@ -1787,6 +1826,41 @@ async fn fetch_beatmap(
 ) -> Result<OsuApiBeatmap, ApiError> {
     let client = http_client();
     let url = format!("https://osu.ppy.sh/api/v2/beatmaps/{}", beatmap_id);
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+
+            resp.json().await.map_err(json_to_api_error)
+        })
+    })
+    .await
+}
+
+/// 通过 beatmapset ID 获取谱面集信息（用于 artist/title/creator 回填）
+async fn fetch_beatmapset(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    beatmapset_id: i64,
+) -> Result<OsuApiBeatmapset, ApiError> {
+    let client = http_client();
+    let url = format!("https://osu.ppy.sh/api/v2/beatmapsets/{}", beatmapset_id,);
 
     rate_limiter
         .acquire()
