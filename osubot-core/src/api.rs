@@ -1416,6 +1416,9 @@ async fn backfill_score_details(
                 if score.status.is_empty() {
                     score.status = bm.status;
                 }
+                if score.beatmapset_id == 0 {
+                    score.beatmapset_id = bm.beatmapset_id;
+                }
                 tracing::debug!(
                     beatmap_id = score.beatmap_id,
                     ar = bm.ar,
