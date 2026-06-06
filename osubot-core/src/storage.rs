@@ -422,6 +422,7 @@ impl Storage {
                     playtime: row.get(7)?,
                     rank_change: None,
                     country_rank_change: None,
+                    cover_url: None,
                 }))
             } else {
                 Ok(None)
@@ -464,6 +465,7 @@ impl Storage {
                         playtime: row.get(8)?,
                         rank_change: None,
                         country_rank_change: None,
+                        cover_url: None,
                     },
                 ))
             })?;

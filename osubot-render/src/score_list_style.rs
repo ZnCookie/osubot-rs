@@ -157,8 +157,6 @@ pub struct ScoreListHtmlParams<'a> {
     pub is_pass: bool,
     pub avatar_data_uri: &'a str,
     pub hero_bg_data_uri: &'a str,
-    pub hue: u16,
-    pub sat: u16,
     pub user_pp: f64,
     pub user_global_rank: Option<i64>,
     pub user_country_rank: Option<i64>,
@@ -168,48 +166,17 @@ pub struct ScoreListHtmlParams<'a> {
     pub country_rank_change: Option<i64>,
 }
 
-fn format_rank_change(change: Option<i64>) -> String {
-    match change {
-        Some(delta) if delta > 0 => format!(r#"<span class="rank-change up">+{}</span>"#, delta),
-        Some(delta) if delta < 0 => format!(r#"<span class="rank-change down">{}</span>"#, delta),
-        Some(_) => r#"<span class="rank-change zero">±0</span>"#.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn format_pp_change(change: Option<f64>) -> String {
-    match change {
-        Some(delta) if delta > 0.0 => {
-            let d = if delta.fract() == 0.0 {
-                format!("{}", delta as i64)
-            } else {
-                format!("{delta:.2}")
-            };
-            format!(r#"<span class="user-pp-change up">+{d}</span>"#)
-        }
-        Some(delta) if delta < 0.0 => {
-            let d = if delta.fract() == 0.0 {
-                format!("{}", delta as i64)
-            } else {
-                format!("{delta:.2}")
-            };
-            format!(r#"<span class="user-pp-change down">{d}</span>"#)
-        }
-        Some(_) => r#"<span class="user-pp-change zero">±0</span>"#.to_string(),
-        _ => String::new(),
-    }
-}
-
 fn format_relative_time(created_at: &str) -> String {
     let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created_at) else {
         return String::new();
     };
     let now = chrono::Utc::now();
     let duration = now.signed_duration_since(dt);
+    let seconds = duration.num_seconds().max(0);
 
-    let seconds = duration.num_seconds();
     if seconds < 60 {
-        return "~1min".to_string();
+        // < 1 min 不显示时间(避免 ~1min 这种近似值)
+        return String::new();
     }
 
     let minutes = seconds / 60;
@@ -237,9 +204,7 @@ fn format_relative_time(created_at: &str) -> String {
 }
 
 pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
-    let css = SCORE_LIST_CSS
-        .replace("{{SCORE_HUE}}", &params.hue.to_string())
-        .replace("{{SCORE_SAT}}", &params.sat.to_string());
+    let css = SCORE_LIST_CSS.to_string();
 
     let label = if params.is_pass {
         "最近通过"
@@ -275,7 +240,7 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     // Rank + PP row
     html.push_str(r#"<div class="hero-rank-pp">"#);
     if let Some(rank) = params.user_global_rank {
-        let change_html = format_rank_change(params.global_rank_change);
+        let change_html = crate::style::format_rank_change_html(params.global_rank_change);
         html.push_str(&format!(
             r#"<div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">{}</span>{}<span class="rank-label">Global</span></div>"#,
             format_number(rank),
@@ -283,7 +248,7 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
         ));
     }
     if let Some(rank) = params.user_country_rank {
-        let change_html = format_rank_change(params.country_rank_change);
+        let change_html = crate::style::format_rank_change_html(params.country_rank_change);
         html.push_str(&format!(
             r#"<div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">{}</span>{}<span class="rank-label">{}</span></div>"#,
             format_number(rank),
@@ -291,7 +256,7 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
             escape_html(params.country_code)
         ));
     }
-    let pp_change_html = format_pp_change(params.pp_change);
+    let pp_change_html = crate::style::format_pp_change_html(params.pp_change);
     html.push_str(&format!(
         r#"<div class="user-pp-section"><span class="user-pp-val">{:.0}pp</span>{}</div>"#,
         params.user_pp, pp_change_html
@@ -390,8 +355,6 @@ mod tests {
             is_pass: true,
             avatar_data_uri: "data:image/jpeg;base64,avatar",
             hero_bg_data_uri: "data:image/jpeg;base64,bg",
-            hue: 200,
-            sat: 60,
             user_pp: 9876.5,
             user_global_rank: Some(12345),
             user_country_rank: Some(1000),
@@ -429,8 +392,6 @@ mod tests {
             is_pass: false,
             avatar_data_uri: "",
             hero_bg_data_uri: "",
-            hue: 200,
-            sat: 60,
             user_pp: 5000.0,
             user_global_rank: None,
             user_country_rank: None,
@@ -489,8 +450,6 @@ mod tests {
             is_pass: false,
             avatar_data_uri: "",
             hero_bg_data_uri: "",
-            hue: 200,
-            sat: 60,
             user_pp: 5000.0,
             user_global_rank: None,
             user_country_rank: None,
@@ -515,7 +474,75 @@ mod tests {
         let now = chrono::Utc::now();
         let ts = now.to_rfc3339();
         let result = format_relative_time(&ts);
-        assert!(result == "~1min" || result.starts_with("~"));
+        assert!(result == "~1min" || result.is_empty() || result.starts_with("~"));
+    }
+
+    /// 边界:<60s 视为"刚刚",留空(避免与 ~1min 语义冲突)
+    #[test]
+    fn test_format_relative_time_under_one_minute() {
+        let now = chrono::Utc::now();
+        let ts = (now - chrono::Duration::seconds(30)).to_rfc3339();
+        assert_eq!(format_relative_time(&ts), "");
+    }
+
+    /// 边界:60s 应进入 minutes 分支
+    #[test]
+    fn test_format_relative_time_one_minute() {
+        let now = chrono::Utc::now();
+        let ts = (now - chrono::Duration::seconds(60)).to_rfc3339();
+        let result = format_relative_time(&ts);
+        assert!(
+            result == "~1min" || result.is_empty(),
+            "60s ago should be ~1min or empty (boundary race), got {result}"
+        );
+    }
+
+    /// 边界:59min 应进入 hours 分支,~1h
+    #[test]
+    fn test_format_relative_time_59_minutes() {
+        let now = chrono::Utc::now();
+        let ts = (now - chrono::Duration::minutes(59)).to_rfc3339();
+        let result = format_relative_time(&ts);
+        assert!(
+            result.starts_with("~") && (result.ends_with("h") || result.ends_with("min")),
+            "59min ago should be ~1h or ~59min, got {result}"
+        );
+    }
+
+    /// 边界:24h 应进入 days 分支
+    #[test]
+    fn test_format_relative_time_24_hours() {
+        let now = chrono::Utc::now();
+        let ts = (now - chrono::Duration::hours(24)).to_rfc3339();
+        let result = format_relative_time(&ts);
+        assert!(
+            result.starts_with("~") && (result.ends_with("d") || result.ends_with("h")),
+            "24h ago should be ~1d or ~24h, got {result}"
+        );
+    }
+
+    /// 边界:30d 应进入 months 分支
+    #[test]
+    fn test_format_relative_time_30_days() {
+        let now = chrono::Utc::now();
+        let ts = (now - chrono::Duration::days(30)).to_rfc3339();
+        let result = format_relative_time(&ts);
+        assert!(
+            result.starts_with("~") && (result.ends_with("mo") || result.ends_with("d")),
+            "30d ago should be ~1mo or ~30d, got {result}"
+        );
+    }
+
+    /// 边界:365d 应进入 years 分支
+    #[test]
+    fn test_format_relative_time_365_days() {
+        let now = chrono::Utc::now();
+        let ts = (now - chrono::Duration::days(365)).to_rfc3339();
+        let result = format_relative_time(&ts);
+        assert!(
+            result.starts_with("~") && (result.ends_with("y") || result.ends_with("mo")),
+            "365d ago should be ~1y or ~12mo, got {result}"
+        );
     }
 
     /// blitz's CSS grid does not compute the intrinsic height of items when
@@ -546,8 +573,6 @@ mod tests {
             is_pass: true,
             avatar_data_uri: "",
             hero_bg_data_uri: "",
-            hue: 200,
-            sat: 60,
             user_pp: 0.0,
             user_global_rank: None,
             user_country_rank: None,
@@ -596,8 +621,6 @@ mod tests {
             is_pass: true,
             avatar_data_uri: "",
             hero_bg_data_uri: "data:image/jpeg;base64,HEROBG",
-            hue: 200,
-            sat: 60,
             user_pp: 0.0,
             user_global_rank: None,
             user_country_rank: None,
@@ -634,8 +657,6 @@ mod tests {
             is_pass: true,
             avatar_data_uri: "",
             hero_bg_data_uri: "",
-            hue: 200,
-            sat: 60,
             user_pp: 0.0,
             user_global_rank: None,
             user_country_rank: None,

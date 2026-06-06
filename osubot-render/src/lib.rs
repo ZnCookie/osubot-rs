@@ -350,9 +350,7 @@ pub struct ScoreListCardParams<'a> {
     pub mode: osubot_types::GameMode,
     pub is_pass: bool,
     pub avatar_url: &'a str,
-    pub cover_images: Vec<image::DynamicImage>,
-    pub hue: u16,
-    pub sat: u16,
+    pub cover_images: Vec<Option<image::DynamicImage>>,
     pub user_pp: f64,
     pub user_global_rank: Option<i64>,
     pub user_country_rank: Option<i64>,
@@ -361,7 +359,6 @@ pub struct ScoreListCardParams<'a> {
     pub global_rank_change: Option<i64>,
     pub country_rank_change: Option<i64>,
     pub hero_cover_url: &'a str,
-    pub cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 pub async fn render_score_list_card(
@@ -374,8 +371,6 @@ pub async fn render_score_list_card(
         is_pass,
         avatar_url,
         cover_images,
-        hue,
-        sat,
         user_pp,
         user_global_rank,
         user_country_rank,
@@ -384,7 +379,6 @@ pub async fn render_score_list_card(
         global_rank_change,
         country_rank_change,
         hero_cover_url,
-        cancel_flag: external_cancel,
     } = params;
 
     // Download avatar
@@ -422,9 +416,12 @@ pub async fn render_score_list_card(
     // Process cover thumbnails
     let cover_uris: Vec<String> = cover_images
         .iter()
-        .map(|img| {
-            let thumb = crop_and_resize(img, 620, 220);
-            image_to_data_uri(&thumb, 70).unwrap_or_default()
+        .map(|opt| match opt {
+            Some(img) => {
+                let thumb = crop_and_resize(img, 620, 220);
+                image_to_data_uri(&thumb, 70).unwrap_or_default()
+            }
+            None => String::new(),
         })
         .collect();
 
@@ -445,8 +442,6 @@ pub async fn render_score_list_card(
         is_pass,
         avatar_data_uri: &avatar_uri,
         hero_bg_data_uri: &hero_bg_uri,
-        hue,
-        sat,
         user_pp,
         user_global_rank,
         user_country_rank,
@@ -471,27 +466,17 @@ pub async fn render_score_list_card(
         .await
         .expect("render semaphore never closed");
     let font_ctx = get_font_context();
-    let cancel =
-        external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    let cancel_flag = cancel.clone();
 
-    let render_result = tokio::time::timeout(
-        std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
-        tokio::task::spawn_blocking(move || {
-            render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
-        }),
-    )
+    let render_result = tokio::task::spawn_blocking(move || {
+        let cancel_flag = std::sync::atomic::AtomicBool::new(false);
+        render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
+    })
     .await;
 
     let (pixels, w, h) = match render_result {
-        Ok(Ok(result)) => result?,
-        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
-        Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            return Err(RenderError::Render(format!(
-                "render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s"
-            )));
-        }
+        Ok(Ok(rendered)) => rendered,
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(RenderError::Render(extract_panic_message(e))),
     };
 
     let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;

@@ -605,35 +605,11 @@ async fn handle_score_query(
                 .await;
 
                 // 分数列表(!ps / !rs)固定主题色,不做动态色调提取。!p / !r 单 score card 仍走 extract_dominant_hue。
-                let (hue, sat) = (200u16, 30u16);
 
-                let cover_images: Vec<image::DynamicImage> = cover_results
-                    .into_iter()
-                    .map(|opt| {
-                        opt.unwrap_or_else(|| {
-                            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-                                620,
-                                220,
-                                image::Rgb([43, 41, 48]),
-                            ))
-                        })
-                    })
-                    .collect();
+                let cover_images: Vec<Option<image::DynamicImage>> = cover_results;
 
-                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let cancel_clone = cancel.clone();
                 let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
-                let hero_cover_url = match api::fetch_user_profile(
-                    &ctx.rate_limiter,
-                    &ctx.oauth,
-                    user_id,
-                    params.mode,
-                )
-                .await
-                {
-                    Ok(profile) => profile.cover_url.unwrap_or_default(),
-                    Err(_) => String::new(),
-                };
+                let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
                 let user_global_rank = if user_stats.rank > 0 {
                     Some(user_stats.rank)
                 } else {
@@ -661,8 +637,6 @@ async fn handle_score_query(
                         is_pass: params.is_pass,
                         avatar_url: &avatar_url,
                         cover_images,
-                        hue,
-                        sat,
                         user_pp: user_stats.pp,
                         user_global_rank,
                         user_country_rank,
@@ -671,7 +645,6 @@ async fn handle_score_query(
                         global_rank_change,
                         country_rank_change,
                         hero_cover_url: &hero_cover_url,
-                        cancel_flag: Some(cancel_clone),
                     }),
                 )
                 .await;
@@ -699,7 +672,6 @@ async fn handle_score_query(
                         let _ = resp_tx.send(response).await;
                     }
                     Err(_) => {
-                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         warn!("render_score_list_card timed out, falling back to text");
                         let response =
                             format_scores(&scores, &dedup_username, params.mode, params.is_pass);

@@ -898,6 +898,15 @@ struct OsuApiV2User {
     username: String,
     country_code: Option<String>, // e.g., "CN", "US", "JP"
     statistics: Option<OsuStatistics>,
+    cover: Option<OsuUserCover>,
+}
+
+/// osu! API v2 user cover sub-object
+/// 实际响应字段名: `custom_url` 和 `url`(API 把 "封面图" 拆成"自定义"和"默认")
+#[derive(Debug, serde::Deserialize)]
+struct OsuUserCover {
+    custom_url: Option<String>,
+    url: Option<String>,
 }
 
 /// osu! API v2 statistics sub-object
@@ -1190,6 +1199,7 @@ async fn fetch_user_stats_internal(
                 playtime: stats.playtime.unwrap_or(0),
                 rank_change: None,
                 country_rank_change: None,
+                cover_url: data.cover.and_then(|c| c.custom_url.or(c.url)),
             })
         })
     })

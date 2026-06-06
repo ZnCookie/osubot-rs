@@ -17,6 +17,7 @@ pub struct UserStats {
     pub playtime: i64,
     pub rank_change: Option<i64>,
     pub country_rank_change: Option<i64>,
+    pub cover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

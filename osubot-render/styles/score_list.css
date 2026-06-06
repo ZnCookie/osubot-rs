@@ -1,10 +1,4 @@
 :root {
-  --score-hue: {{SCORE_HUE}};
-  --score-sat: {{SCORE_SAT}}%;
-  --primary: hsl(var(--score-hue), var(--score-sat), 75%);
-  --primary-strong: hsl(var(--score-hue), var(--score-sat), 60%);
-  --primary-container: hsl(var(--score-hue), var(--score-sat), 30%);
-  --on-primary-container: hsl(var(--score-hue), 30%, 90%);
   --surface: #2b2930;
   --on-surface: #e6e1e5;
   --outline: #938f99;
