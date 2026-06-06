@@ -1876,6 +1876,7 @@ mod tests {
                 count_miss: 1,
                 ok: 0,
             },
+            ruleset_id: 0,
             user: None,
         }
     }
