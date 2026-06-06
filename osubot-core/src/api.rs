@@ -668,6 +668,10 @@ struct OsuApiScore {
     #[serde(default)]
     legacy_score_id: Option<i64>,
     #[serde(default)]
+    beatmap_id: i64,
+    #[serde(default)]
+    beatmapset_id: i64,
+    #[serde(default)]
     beatmap: Option<OsuApiBeatmap>,
     #[serde(default)]
     beatmapset: Option<OsuApiBeatmapset>,
@@ -895,8 +899,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
 
     Score {
         score_id: api.id,
-        beatmap_id: bmap.map_or(0, |b| b.id),
-        beatmapset_id: bmap.map_or(0, |b| b.beatmapset_id),
+        beatmap_id: bmap.map_or(api.beatmap_id, |b| b.id),
+        beatmapset_id: bmap.map_or(api.beatmapset_id, |b| b.beatmapset_id),
         artist,
         title,
         version: bmap.map_or(String::new(), |b| b.version.clone()),
