@@ -1415,6 +1415,11 @@ async fn backfill_score_details(
                         .as_ref()
                         .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
                         .unwrap_or_default();
+                    tracing::debug!(
+                        covers_raw = ?bs.covers,
+                        resolved_cover = %score.cover_url,
+                        "Backfilled beatmapset cover"
+                    );
                 }
                 if score.fav_count.is_none() {
                     score.fav_count = Some(bs.favourite_count).filter(|&v| v > 0);
