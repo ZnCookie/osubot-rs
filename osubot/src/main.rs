@@ -851,7 +851,10 @@ async fn handle_beatmap_score_query(
             Err(e) => {
                 let err_msg = match e {
                     ApiError::NotFound => "未找到该成绩".to_string(),
-                    _ => "获取成绩失败，请稍后再试".to_string(),
+                    e => {
+                        warn!(error = ?e, "get_score_by_id failed");
+                        "获取成绩失败，请稍后再试".to_string()
+                    }
                 };
                 let _ = resp_tx.send(err_msg).await;
                 return;
@@ -902,7 +905,10 @@ async fn handle_beatmap_score_query(
             Err(e) => {
                 let err_msg = match e {
                     ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
-                    _ => "获取成绩失败，请稍后再试".to_string(),
+                    e => {
+                        warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                        "获取成绩失败，请稍后再试".to_string()
+                    }
                 };
                 let _ = resp_tx.send(err_msg).await;
                 return;
@@ -935,7 +941,15 @@ async fn handle_beatmap_score_query(
                             "该玩家在此谱面上没有成绩".to_string()
                         }
                     }
-                    _ => "获取成绩失败，请稍后再试".to_string(),
+                    e => {
+                        warn!(
+                            error = ?e,
+                            beatmap_id = resolved_bid,
+                            ?mods,
+                            "get_user_beatmap_score failed"
+                        );
+                        "获取成绩失败，请稍后再试".to_string()
+                    }
                 };
                 let _ = resp_tx.send(err_msg).await;
                 return;
