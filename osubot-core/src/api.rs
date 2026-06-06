@@ -608,6 +608,18 @@ struct OsuApiBeatmapset {
     play_count: i64,
 }
 
+/// /beatmaps/{bid}/scores/users/{uid} 返回的包装结构
+#[derive(Debug, serde::Deserialize)]
+struct BeatmapUserScore {
+    score: OsuApiScore,
+}
+
+/// /beatmaps/{bid}/scores/users/{uid}/all 返回的包装结构
+#[derive(Debug, serde::Deserialize)]
+struct BeatmapScoresResponse {
+    scores: Vec<OsuApiScore>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
 enum OsuApiMod {
@@ -663,6 +675,8 @@ struct OsuApiScore {
     statistics: OsuApiScoreStatistics,
     #[serde(default)]
     user: Option<serde_json::Value>,
+    #[serde(default)]
+    ruleset_id: i64, // 0=osu, 1=taiko, 2=catch, 3=mania
 }
 
 /// lazer: perfect/great/ok/meh/miss, legacy: count_geki/count_300/count_katu/count_100/count_50/count_miss
@@ -697,6 +711,17 @@ struct OsuApiScoreUserStatistics {
     global_rank: Option<i64>,
     country_rank: Option<i64>,
     pp: Option<f64>,
+}
+
+impl OsuApiScore {
+    fn extra_mode(&self) -> GameMode {
+        match self.ruleset_id {
+            1 => GameMode::Taiko,
+            2 => GameMode::Catch,
+            3 => GameMode::Mania,
+            _ => GameMode::Osu,
+        }
+    }
 }
 
 /// Convert osu! API v2 mod objects into rosu_mods::GameMods with full settings.
@@ -1443,6 +1468,147 @@ pub async fn get_user_recent(
                 .await;
 
             Ok(scores)
+        })
+    })
+    .await
+}
+
+/// 获取用户在指定谱面的最佳成绩（支持 mod 过滤）
+pub async fn get_user_beatmap_score(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<OauthTokenCache>,
+    beatmap_id: i64,
+    user_id: i64,
+    mode: GameMode,
+    mods: &Option<Vec<String>>,
+) -> Result<Score, ApiError> {
+    let client = http_client();
+    let mut url = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=0",
+        beatmap_id, user_id,
+    );
+    if mode != GameMode::Osu {
+        url.push_str(&format!("&mode={}", mode.api_value()));
+    }
+    if let Some(mod_list) = mods {
+        for m in mod_list {
+            url.push_str("&mods[]=");
+            url.push_str(m);
+        }
+    }
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+
+            let raw: BeatmapUserScore = resp.json().await.map_err(json_to_api_error)?;
+            let mut score = api_score_to_score(raw.score, mode);
+            backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
+            Ok(score)
+        })
+    })
+    .await
+}
+
+/// 获取用户在指定谱面的所有成绩（!ss 使用）
+pub async fn get_user_beatmap_scores_all(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<OauthTokenCache>,
+    beatmap_id: i64,
+    user_id: i64,
+    mode: GameMode,
+) -> Result<Vec<Score>, ApiError> {
+    let client = http_client();
+    let mut url = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0",
+        beatmap_id, user_id,
+    );
+    if mode != GameMode::Osu {
+        url.push_str(&format!("&mode={}", mode.api_value()));
+    }
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+
+            let raw: BeatmapScoresResponse = resp.json().await.map_err(json_to_api_error)?;
+            let mut scores: Vec<Score> = raw
+                .scores
+                .into_iter()
+                .map(|s| api_score_to_score(s, mode))
+                .collect();
+            let mode_str = mode.api_value().to_string();
+            for score in &mut scores {
+                backfill_score_details(rate_limiter, oauth, score, &mode_str).await;
+            }
+            Ok(scores)
+        })
+    })
+    .await
+}
+
+/// 通过 score ID 获取单条成绩详情
+pub async fn get_score_by_id(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<OauthTokenCache>,
+    score_id: u64,
+) -> Result<Score, ApiError> {
+    let client = http_client();
+    let url = format!("https://osu.ppy.sh/api/v2/scores/{}", score_id,);
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+
+            let raw: OsuApiScore = resp.json().await.map_err(json_to_api_error)?;
+            let mode = raw.extra_mode();
+            let mut score = api_score_to_score(raw, mode);
+            backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
+            Ok(score)
         })
     })
     .await
