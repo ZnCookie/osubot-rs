@@ -667,7 +667,8 @@ struct OsuApiScore {
     has_replay: bool,
     #[serde(default)]
     legacy_score_id: Option<i64>,
-    beatmap: OsuApiBeatmap,
+    #[serde(default)]
+    beatmap: Option<OsuApiBeatmap>,
     #[serde(default)]
     beatmapset: Option<OsuApiBeatmapset>,
     #[serde(default)]
@@ -829,7 +830,7 @@ fn fullsize_cover_url(covers: Option<&serde_json::Value>) -> Option<String> {
 }
 
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
-    let beatmap = api.beatmap;
+    let bmap = api.beatmap.as_ref();
 
     let cover_url = api
         .beatmapset
@@ -894,23 +895,23 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
 
     Score {
         score_id: api.id,
-        beatmap_id: beatmap.id,
-        beatmapset_id: beatmap.beatmapset_id,
+        beatmap_id: bmap.map_or(0, |b| b.id),
+        beatmapset_id: bmap.map_or(0, |b| b.beatmapset_id),
         artist,
         title,
-        version: beatmap.version,
+        version: bmap.map_or(String::new(), |b| b.version.clone()),
         creator,
-        star_rating: beatmap.difficulty_rating,
-        bpm: beatmap.bpm,
-        ar: beatmap.ar,
-        od: beatmap.od,
-        cs: beatmap.cs,
-        hp: beatmap.hp,
-        length_seconds: beatmap.total_length,
+        star_rating: bmap.map_or(0.0, |b| b.difficulty_rating),
+        bpm: bmap.map_or(0.0, |b| b.bpm),
+        ar: bmap.map_or(0.0, |b| b.ar),
+        od: bmap.map_or(0.0, |b| b.od),
+        cs: bmap.map_or(0.0, |b| b.cs),
+        hp: bmap.map_or(0.0, |b| b.hp),
+        length_seconds: bmap.map_or(0, |b| b.total_length),
         score_value,
         accuracy: api.accuracy,
         max_combo: api.max_combo,
-        beatmap_max_combo: beatmap.max_combo,
+        beatmap_max_combo: bmap.map_or(0, |b| b.max_combo),
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
@@ -958,7 +959,7 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         user,
         fav_count,
         play_count,
-        status: beatmap.status,
+        status: bmap.map_or(String::new(), |b| b.status.clone()),
     }
 }
 
@@ -2041,7 +2042,7 @@ mod tests {
             build_id: None,
             has_replay: true,
             legacy_score_id: None,
-            beatmap: OsuApiBeatmap {
+            beatmap: Some(OsuApiBeatmap {
                 id: 2001,
                 beatmapset_id: 3001,
                 version: "Insane".to_string(),
@@ -2056,7 +2057,7 @@ mod tests {
                 passcount: 100,
                 playcount: 500,
                 status: "ranked".to_string(),
-            },
+            }),
             beatmapset: Some(OsuApiBeatmapset {
                 artist: "TestArtist".to_string(),
                 title: "TestTitle".to_string(),
