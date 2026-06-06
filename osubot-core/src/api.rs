@@ -611,7 +611,7 @@ struct OsuApiBeatmapset {
 /// /beatmaps/{bid}/scores/users/{uid} 返回的包装结构
 #[derive(Debug, serde::Deserialize)]
 struct BeatmapUserScore {
-    score: OsuApiScore,
+    score: Option<OsuApiScore>,
 }
 
 /// /beatmaps/{bid}/scores/users/{uid}/all 返回的包装结构
@@ -1474,6 +1474,8 @@ pub async fn get_user_recent(
 }
 
 /// 获取用户在指定谱面的最佳成绩（支持 mod 过滤）
+/// 仿 yumu-bot retryOn404: 先用 legacy_only=0 带 mode 请求，
+/// 404 则用 legacy_only=1 不带 mode 重试。
 pub async fn get_user_beatmap_score(
     rate_limiter: &Arc<RateLimiter>,
     oauth: &Arc<OauthTokenCache>,
@@ -1483,19 +1485,29 @@ pub async fn get_user_beatmap_score(
     mods: &Option<Vec<String>>,
 ) -> Result<Score, ApiError> {
     let client = http_client();
-    let mut url = format!(
-        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=0",
-        beatmap_id, user_id,
-    );
-    if mode != GameMode::Osu {
-        url.push_str(&format!("&mode={}", mode.api_value()));
-    }
-    if let Some(mod_list) = mods {
-        for m in mod_list {
-            url.push_str("&mods[]=");
-            url.push_str(m);
+    let (url_primary, url_retry) = {
+        let mut primary = format!(
+            "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=0",
+            beatmap_id, user_id,
+        );
+        if mode != GameMode::Osu {
+            primary.push_str(&format!("&mode={}", mode.api_value()));
         }
-    }
+        let mut retry = format!(
+            "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=1",
+            beatmap_id, user_id,
+        );
+        // 重试时不带 mode 参数（与 yumu-bot 一致）
+        if let Some(mod_list) = mods {
+            for m in mod_list {
+                primary.push_str("&mods[]=");
+                primary.push_str(m);
+                retry.push_str("&mods[]=");
+                retry.push_str(m);
+            }
+        }
+        (primary, retry)
+    };
 
     rate_limiter
         .acquire()
@@ -1505,19 +1517,45 @@ pub async fn get_user_beatmap_score(
         retry_on_401(oauth, 5, || async {
             let access_token = oauth.get_token().await?;
             let resp = client
-                .get(&url)
+                .get(&url_primary)
                 .header("Authorization", format!("Bearer {}", access_token))
                 .header("x-api-version", API_VERSION)
                 .send()
                 .await?;
 
             if resp.status() == 404 {
-                return Err(ApiError::NotFound);
+                // retry with legacy_only=1, no mode
+                tracing::debug!(
+                    beatmap_id,
+                    user_id,
+                    ?mode,
+                    "Beatmap score 404, retrying with legacy_only=1"
+                );
+                let access_token = oauth.get_token().await?;
+                let resp = client
+                    .get(&url_retry)
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .header("x-api-version", API_VERSION)
+                    .send()
+                    .await?;
+
+                if resp.status() == 404 {
+                    return Err(ApiError::NotFound);
+                }
+                classify_http_error(&resp)?;
+
+                let raw: BeatmapUserScore = resp.json().await.map_err(json_to_api_error)?;
+                let api_score = raw.score.ok_or(ApiError::NotFound)?;
+                let mut score = api_score_to_score(api_score, mode);
+                backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
+                return Ok(score);
             }
+
             classify_http_error(&resp)?;
 
             let raw: BeatmapUserScore = resp.json().await.map_err(json_to_api_error)?;
-            let mut score = api_score_to_score(raw.score, mode);
+            let api_score = raw.score.ok_or(ApiError::NotFound)?;
+            let mut score = api_score_to_score(api_score, mode);
             backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
             Ok(score)
         })
@@ -1526,6 +1564,8 @@ pub async fn get_user_beatmap_score(
 }
 
 /// 获取用户在指定谱面的所有成绩（!ss 使用）
+/// 仿 yumu-bot retryOn404: 先用 legacy_only=0 带 mode 请求，
+/// 404 则用 legacy_only=1 不带 mode 重试。
 pub async fn get_user_beatmap_scores_all(
     rate_limiter: &Arc<RateLimiter>,
     oauth: &Arc<OauthTokenCache>,
@@ -1534,13 +1574,21 @@ pub async fn get_user_beatmap_scores_all(
     mode: GameMode,
 ) -> Result<Vec<Score>, ApiError> {
     let client = http_client();
-    let mut url = format!(
-        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0",
+    let url_primary = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0{}",
+        beatmap_id,
+        user_id,
+        if mode != GameMode::Osu {
+            format!("&mode={}", mode.api_value())
+        } else {
+            String::new()
+        },
+    );
+    let url_retry = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=1",
         beatmap_id, user_id,
     );
-    if mode != GameMode::Osu {
-        url.push_str(&format!("&mode={}", mode.api_value()));
-    }
+    // 重试时不带 mode 参数（与 yumu-bot 一致）
 
     rate_limiter
         .acquire()
@@ -1550,14 +1598,45 @@ pub async fn get_user_beatmap_scores_all(
         retry_on_401(oauth, 5, || async {
             let access_token = oauth.get_token().await?;
             let resp = client
-                .get(&url)
+                .get(&url_primary)
                 .header("Authorization", format!("Bearer {}", access_token))
                 .header("x-api-version", API_VERSION)
                 .send()
                 .await?;
+
             if resp.status() == 404 {
-                return Err(ApiError::NotFound);
+                tracing::debug!(
+                    beatmap_id,
+                    user_id,
+                    ?mode,
+                    "Beatmap scores all 404, retrying with legacy_only=1"
+                );
+                let access_token = oauth.get_token().await?;
+                let resp = client
+                    .get(&url_retry)
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .header("x-api-version", API_VERSION)
+                    .send()
+                    .await?;
+
+                if resp.status() == 404 {
+                    return Err(ApiError::NotFound);
+                }
+                classify_http_error(&resp)?;
+
+                let raw: BeatmapScoresResponse = resp.json().await.map_err(json_to_api_error)?;
+                let mut scores: Vec<Score> = raw
+                    .scores
+                    .into_iter()
+                    .map(|s| api_score_to_score(s, mode))
+                    .collect();
+                let mode_str = mode.api_value().to_string();
+                for score in &mut scores {
+                    backfill_score_details(rate_limiter, oauth, score, &mode_str).await;
+                }
+                return Ok(scores);
             }
+
             classify_http_error(&resp)?;
 
             let raw: BeatmapScoresResponse = resp.json().await.map_err(json_to_api_error)?;
