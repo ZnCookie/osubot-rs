@@ -668,7 +668,8 @@ struct OsuApiScore {
     #[serde(default)]
     legacy_score_id: Option<i64>,
     beatmap: OsuApiBeatmap,
-    beatmapset: OsuApiBeatmapset,
+    #[serde(default)]
+    beatmapset: Option<OsuApiBeatmapset>,
     #[serde(default)]
     mods: Vec<OsuApiMod>,
     #[serde(default)]
@@ -817,13 +818,39 @@ pub fn apply_mod_adjustment_to_stats(
 
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
     let beatmap = api.beatmap;
-    let beatmapset = api.beatmapset;
 
-    let cover_url = beatmapset
-        .covers
+    let cover_url = api
+        .beatmapset
         .as_ref()
-        .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
+        .and_then(|bs| {
+            bs.covers
+                .as_ref()
+                .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
+        })
         .unwrap_or_default();
+    let artist = api
+        .beatmapset
+        .as_ref()
+        .map(|bs| bs.artist.clone())
+        .unwrap_or_default();
+    let title = api
+        .beatmapset
+        .as_ref()
+        .map(|bs| bs.title.clone())
+        .unwrap_or_default();
+    let creator = api
+        .beatmapset
+        .as_ref()
+        .map(|bs| bs.creator.clone())
+        .unwrap_or_default();
+    let fav_count = api
+        .beatmapset
+        .as_ref()
+        .and_then(|bs| Some(bs.favourite_count).filter(|&v| v > 0));
+    let play_count = api
+        .beatmapset
+        .as_ref()
+        .and_then(|bs| Some(bs.play_count).filter(|&v| v > 0));
 
     let score_value = if api.score > 0 {
         api.score
@@ -861,10 +888,10 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         score_id: api.id,
         beatmap_id: beatmap.id,
         beatmapset_id: beatmap.beatmapset_id,
-        artist: beatmapset.artist,
-        title: beatmapset.title,
+        artist,
+        title,
         version: beatmap.version,
-        creator: beatmapset.creator,
+        creator,
         star_rating: beatmap.difficulty_rating,
         bpm: beatmap.bpm,
         ar: beatmap.ar,
@@ -921,8 +948,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         },
         cover_url,
         user,
-        fav_count: Some(beatmapset.favourite_count).filter(|&v| v > 0),
-        play_count: Some(beatmapset.play_count).filter(|&v| v > 0),
+        fav_count,
+        play_count,
         status: beatmap.status,
     }
 }
@@ -1542,7 +1569,7 @@ pub async fn get_user_beatmap_score(
                 }
                 classify_http_error(&retry_resp)?;
 
-                let body = retry_resp.text().await.map_err(|e| ApiError::Http(e))?;
+                let body = retry_resp.text().await.map_err(ApiError::Http)?;
                 let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
                     tracing::error!(error = %e, body, "BeatmapScore retry parse failed");
                     ApiError::InvalidResponse
@@ -1555,7 +1582,7 @@ pub async fn get_user_beatmap_score(
 
             classify_http_error(&resp)?;
 
-            let body = resp.text().await.map_err(|e| ApiError::Http(e))?;
+            let body = resp.text().await.map_err(ApiError::Http)?;
             let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
                 tracing::error!(error = %e, body, "BeatmapScore parse failed");
                 ApiError::InvalidResponse
@@ -1940,14 +1967,14 @@ mod tests {
                 playcount: 500,
                 status: "ranked".to_string(),
             },
-            beatmapset: OsuApiBeatmapset {
+            beatmapset: Some(OsuApiBeatmapset {
                 artist: "TestArtist".to_string(),
                 title: "TestTitle".to_string(),
                 creator: "Mapper".to_string(),
                 covers: None,
                 favourite_count: 100,
                 play_count: 5000,
-            },
+            }),
             mods: vec![
                 OsuApiMod::String("HD".to_string()),
                 OsuApiMod::String("DT".to_string()),
@@ -2040,7 +2067,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_nested_user_data() {
         let mut api = make_full_score();
-        api.beatmapset.covers = Some(serde_json::json!({
+        api.beatmapset.as_mut().unwrap().covers = Some(serde_json::json!({
             "cover": "https://example.com/cover.jpg"
         }));
         api.user = Some(serde_json::json!({
