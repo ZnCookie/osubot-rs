@@ -2074,6 +2074,8 @@ mod tests {
             build_id: None,
             has_replay: true,
             legacy_score_id: None,
+            beatmap_id: 0,
+            beatmapset_id: 0,
             beatmap: Some(OsuApiBeatmap {
                 id: 2001,
                 beatmapset_id: 3001,
