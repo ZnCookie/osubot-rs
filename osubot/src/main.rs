@@ -355,7 +355,7 @@ async fn handle_score_query(
         .await;
 
     match score_result {
-        Ok(scores) => {
+        Ok(mut scores) => {
             if scores.is_empty() {
                 let empty_msg = if include_fails {
                     "最近没有游玩记录（包括失败）"
@@ -468,7 +468,7 @@ async fn handle_score_query(
 
                 // 计算 PP 分解和 if-acc（单张成绩卡片需要）
                 let mut score = score.clone();
-                osubot_core::enrich_score_with_pp(&mut score, params.mode).await;
+                osubot_core::enrich_score_with_pp(&mut score, params.mode, true).await;
 
                 // 计算 mod 调整后的 AR/OD/CS/HP
                 let (ar_eff, od_eff, cs_eff, hp_eff) = {
@@ -586,6 +586,20 @@ async fn handle_score_query(
                     }
                 }
             } else {
+                // Local PP re-computation for failed scores (api returns pp=null).
+                // Only !rs (include_fails=true) has failed scores; !ps always
+                // short-circuits because params.is_pass=true. Serial by design
+                // (Arc::make_mut + iter_mut prevents concurrent &mut borrows).
+                if !params.is_pass {
+                    let mode = params.mode;
+                    let scores_mut = Arc::make_mut(&mut scores);
+                    for score in scores_mut.iter_mut() {
+                        if score.pp.is_none() && score.beatmap_id > 0 {
+                            osubot_core::enrich_score_with_pp(score, mode, false).await;
+                        }
+                    }
+                }
+
                 // 尝试渲染成绩列表图片
                 let cover_results = futures_util::future::join_all(scores.iter().map(|s| async {
                     if !s.cover_url.is_empty() {
