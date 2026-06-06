@@ -588,15 +588,29 @@ async fn handle_score_query(
             } else {
                 // Local PP re-computation for failed scores (api returns pp=null).
                 // Only !rs (include_fails=true) has failed scores; !ps always
-                // short-circuits because params.is_pass=true. Serial by design
-                // (Arc::make_mut + iter_mut prevents concurrent &mut borrows).
+                // short-circuits because params.is_pass=true.
+                //
+                // Concurrent: clone the entries that need enrichment, run them
+                // through `join_all`, then write back by index. The cover-download
+                // loop further down uses the same pattern.
                 if !params.is_pass {
                     let mode = params.mode;
+                    let to_enrich: Vec<(usize, Score)> = scores
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
+                        .map(|(i, s)| (i, s.clone()))
+                        .collect();
+                    let enriched: Vec<(usize, Score)> = futures_util::future::join_all(
+                        to_enrich.into_iter().map(|(i, mut s)| async move {
+                            osubot_core::enrich_score_with_pp(&mut s, mode, false).await;
+                            (i, s)
+                        }),
+                    )
+                    .await;
                     let scores_mut = Arc::make_mut(&mut scores);
-                    for score in scores_mut.iter_mut() {
-                        if score.pp.is_none() && score.beatmap_id > 0 {
-                            osubot_core::enrich_score_with_pp(score, mode, false).await;
-                        }
+                    for (i, new_s) in enriched {
+                        scores_mut[i] = new_s;
                     }
                 }
 

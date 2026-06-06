@@ -628,3 +628,117 @@ fn failed_score_nf_cl_only_does_not_take_fast_path() {
         pp.total_pp
     );
 }
+
+// === Mania failed-score behavior ===
+
+#[test]
+fn failed_score_mania_uses_passed_objects() {
+    let stats = ScoreStatistics {
+        count_geki: 50,
+        count_300: 200,
+        count_katu: 10,
+        count_100: 5,
+        count_50: 0,
+        count_miss: 3,
+    };
+    let pp_passed = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Mania,
+        mods: GameMods::new(),
+        accuracy: 0.95,
+        max_combo: 268,
+        miss_count: 3,
+        is_lazer: true,
+        statistics: Some(&stats),
+        beatmap_star_rating: None,
+        passed: true,
+    })
+    .expect("passed Mania score should return breakdown");
+    let pp_failed = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Mania,
+        mods: GameMods::new(),
+        accuracy: 0.95,
+        max_combo: 268,
+        miss_count: 3,
+        is_lazer: true,
+        statistics: Some(&stats),
+        beatmap_star_rating: None,
+        passed: false,
+    })
+    .expect("failed Mania score should return breakdown");
+    assert!(
+        pp_failed.total_pp < pp_passed.total_pp,
+        "failed Mania PP ({}) should be < passed Mania PP ({})",
+        pp_failed.total_pp,
+        pp_passed.total_pp
+    );
+    assert!(
+        pp_failed.total_pp > 0.0,
+        "failed Mania score with statistics should still produce non-zero PP (got {})",
+        pp_failed.total_pp
+    );
+}
+
+// === calculate_pp_if_acc passed-field behavior ===
+
+#[test]
+fn if_acc_ignores_passed_field_and_assumes_full_play() {
+    // A failed score (e.g. !r on a 1k-combo map, broken at combo 500)
+    // should produce the same if-acc values as a hypothetical full play,
+    // because the projection is "what if I'd played through?".
+    let stats = ScoreStatistics {
+        count_geki: 0,
+        count_300: 200,
+        count_katu: 0,
+        count_100: 10,
+        count_50: 0,
+        count_miss: 5,
+    };
+    let pp_if_acc_passed = calculate_pp_if_acc(
+        PpCalcParams {
+            osu_path: &resource("2785319.osu"),
+            mode: GameMode::Osu,
+            mods: GameMods::new(),
+            accuracy: 0.97,
+            max_combo: 500,
+            miss_count: 5,
+            is_lazer: false,
+            statistics: Some(&stats),
+            beatmap_star_rating: None,
+            passed: true,
+        },
+        1000,
+    )
+    .expect("if-acc should compute for passed=true");
+    let pp_if_acc_failed = calculate_pp_if_acc(
+        PpCalcParams {
+            osu_path: &resource("2785319.osu"),
+            mode: GameMode::Osu,
+            mods: GameMods::new(),
+            accuracy: 0.97,
+            max_combo: 500,
+            miss_count: 5,
+            is_lazer: false,
+            statistics: Some(&stats),
+            beatmap_star_rating: None,
+            passed: false,
+        },
+        1000,
+    )
+    .expect("if-acc should compute for passed=false");
+    // Intentional: passed is ignored in this function, so both calls
+    // produce identical projections.
+    assert_eq!(
+        pp_if_acc_passed.acc_100, pp_if_acc_failed.acc_100,
+        "if-acc 100% should not depend on the passed flag"
+    );
+    assert_eq!(
+        pp_if_acc_passed.acc_95, pp_if_acc_failed.acc_95,
+        "if-acc 95% should not depend on the passed flag"
+    );
+    assert_eq!(
+        pp_if_acc_passed.if_fc, pp_if_acc_failed.if_fc,
+        "if-FC should not depend on the passed flag"
+    );
+}

@@ -155,6 +155,15 @@ fn create_performance<'a>(
 ///
 /// When `statistics` is `None`, falls back to `combo + accuracy + misses`
 /// (used by mode converts and call sites that don't pass hit counts).
+///
+/// **Edge case:** if all `count_*` fields are zero, `total_hits = 0` and
+/// `passed_objects(0)` yields a zero-PP result. `calculate_pp_breakdown` still
+/// returns `Some(PpBreakdown { total_pp: 0.0, .. })`; the actual `None`
+/// materializes one frame up in `enrich_score_with_pp` (the
+/// `if bd.total_pp > 0.0` guard at the bottom of that function), which leaves
+/// `score.pp` unset. This is the correct behavior for a score with no hits,
+/// not a bug — a future reviewer who hits this should accept the `None` rather
+/// than try to "fix" it.
 fn apply_stats_and_calculate(
     perf: rosu_pp::Performance<'_>,
     mode: GameMode,
@@ -166,12 +175,21 @@ fn apply_stats_and_calculate(
 ) -> rosu_pp::any::PerformanceAttributes {
     let perf = match statistics {
         Some(s) => {
-            let total_hits = (s.count_geki
-                + s.count_300
-                + s.count_katu
-                + s.count_100
-                + s.count_50
-                + s.count_miss) as u32;
+            let total_hits = u32::try_from(
+                s.count_geki + s.count_300 + s.count_katu + s.count_100 + s.count_50 + s.count_miss,
+            )
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    count_geki = s.count_geki,
+                    count_300 = s.count_300,
+                    count_katu = s.count_katu,
+                    count_100 = s.count_100,
+                    count_50 = s.count_50,
+                    count_miss = s.count_miss,
+                    "ScoreStatistics hit counts overflow u32; passing 0 to passed_objects"
+                );
+                0
+            });
             let mut perf = perf
                 .n300(s.count_300 as u32)
                 .n100(s.count_100 as u32)
@@ -335,6 +353,15 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
 ///
 /// Pre-builds a base `Performance` once (doing `try_mode` for converts only once),
 /// then clones it for each accuracy/combo/miss combination.
+///
+/// **Note:** the `params.passed` field is **intentionally ignored** here. The
+/// "if FC" and "if acc N%" projections are always computed as if the play
+/// were full-length, because the whole point of the projection is to answer
+/// "what would my PP be at a higher accuracy / without misses?". Applying
+/// `passed_objects` would contradict that intent. The only signal taken from
+/// the actual play is `params.miss_count` (used as-is for the `acc N%` row)
+/// and `params.statistics` (used for the Mania "if FC" recompute). Callers
+/// that want failed-score-corrected if-acc must compute PP themselves.
 pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> Option<PpIfAcc> {
     use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
 
