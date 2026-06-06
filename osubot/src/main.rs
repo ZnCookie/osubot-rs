@@ -4,7 +4,10 @@ mod last_beatmap_cache;
 mod scheduler;
 
 use config::Config;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::join_all, SinkExt, StreamExt};
+use last_beatmap_cache::LastBeatmapCache;
+use osubot_core::apply_mod_adjustment_to_stats;
+use osubot_core::enrich_score_with_pp;
 use osubot_core::{
     api::{self, ApiError},
     dedup::RequestDedup,
@@ -15,20 +18,20 @@ use osubot_core::{
     types::{format_play_datetime, Command, GameMode, Score, UserStats},
     OauthTokenCache, RateLimiter,
 };
+use osubot_render::cache as render_cache;
 use osubot_render::PROFILE_VIEWPORT_WIDTH;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
-use osubot_render::{render_profile_card, render_score_card};
+use osubot_render::{render_profile_card, render_score_card, render_score_list_card};
 use scheduler::Scheduler;
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, OnceLock,
     },
     time::Duration,
 };
-use last_beatmap_cache::LastBeatmapCache;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
@@ -799,6 +802,377 @@ async fn handle_score_query(
     }
 }
 
+async fn handle_beatmap_score_query(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    cmd: &Command,
+) {
+    let (mode, username, qq, beatmap_id, score_id, mods, _limit, is_all) = match cmd {
+        Command::ScoreOnBeatmap {
+            mode,
+            username,
+            qq,
+            beatmap_id,
+            score_id,
+            mods,
+            limit,
+            is_all,
+        } => (
+            *mode,
+            username.as_deref(),
+            *qq,
+            *beatmap_id,
+            *score_id,
+            mods.clone(),
+            *limit,
+            *is_all,
+        ),
+        _ => return,
+    };
+
+    let resolved_bid = match beatmap_id {
+        Some(bid) => bid,
+        None => match ctx.last_beatmap.get(msg.group_id) {
+            Some(bid) => bid,
+            None => {
+                let _ = resp_tx
+                    .send("请提供谱面 ID 或先查询一张图".to_string())
+                    .await;
+                return;
+            }
+        },
+    };
+
+    if let Some(sid) = score_id {
+        info!(score_id = sid, "ScoreOnBeatmap by score_id");
+        let mut score = match api::get_score_by_id(&ctx.rate_limiter, &ctx.oauth, sid).await {
+            Ok(s) => s,
+            Err(e) => {
+                let err_msg = match e {
+                    ApiError::NotFound => "未找到该成绩".to_string(),
+                    _ => "获取成绩失败，请稍后再试".to_string(),
+                };
+                let _ = resp_tx.send(err_msg).await;
+                return;
+            }
+        };
+        ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+        enrich_score_with_pp(&mut score, mode, true).await;
+
+        let label = format!("score#{}", sid);
+        let text = format_score(&score, &label, mode, None, true);
+        let _ = resp_tx.send(text).await;
+        return;
+    }
+
+    info!(
+        beatmap_id = resolved_bid,
+        mode = ?mode,
+        mods = ?mods,
+        "ScoreOnBeatmap"
+    );
+    ctx.last_beatmap.set(msg.group_id, resolved_bid);
+
+    let (_user_id, username_str, user_stats) = match resolve_score_user(
+        ctx,
+        msg,
+        &username.map(|s| s.to_string()),
+        &qq,
+        mode,
+        resp_tx,
+    )
+    .await
+    {
+        Some(result) => result,
+        None => return,
+    };
+
+    if is_all {
+        let scores = match api::get_user_beatmap_scores_all(
+            &ctx.rate_limiter,
+            &ctx.oauth,
+            resolved_bid as i64,
+            _user_id,
+            mode,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let err_msg = match e {
+                    ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                    _ => "获取成绩失败，请稍后再试".to_string(),
+                };
+                let _ = resp_tx.send(err_msg).await;
+                return;
+            }
+        };
+        if scores.is_empty() {
+            let _ = resp_tx.send("该玩家在此谱面上没有成绩".to_string()).await;
+            return;
+        }
+        render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
+            .await;
+    } else {
+        let score = match api::get_user_beatmap_score(
+            &ctx.rate_limiter,
+            &ctx.oauth,
+            resolved_bid as i64,
+            _user_id,
+            mode,
+            &mods,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let err_msg = match e {
+                    ApiError::NotFound => {
+                        if mods.is_some() {
+                            "未找到符合该 mod 条件的成绩".to_string()
+                        } else {
+                            "该玩家在此谱面上没有成绩".to_string()
+                        }
+                    }
+                    _ => "获取成绩失败，请稍后再试".to_string(),
+                };
+                let _ = resp_tx.send(err_msg).await;
+                return;
+            }
+        };
+        let mut score = score;
+        ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+        enrich_score_with_pp(&mut score, mode, true).await;
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+    }
+}
+
+async fn render_and_send_single_score(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    score: &Score,
+    mode: GameMode,
+    user_stats: &UserStats,
+) {
+    let ur_value = if mode == GameMode::Osu && score.score_id > 0 && score.has_replay {
+        let rl = ctx.rate_limiter.clone();
+        let oa = ctx.oauth.clone();
+        let ur_params = osubot_core::ur::ScoreUrParams {
+            score_id: score.score_id,
+            legacy_score_id: score.legacy_score_id,
+            beatmap_id: score.beatmap_id,
+            mode,
+            mods: score.mods.clone(),
+        };
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
+        )
+        .await
+        {
+            Ok(Some(ur)) => Some(ur),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let (ar_eff, od_eff, cs_eff, hp_eff) = {
+        let (a, o, c, h) = apply_mod_adjustment_to_stats(
+            mode,
+            score.ar,
+            score.od,
+            score.cs,
+            score.hp,
+            &score.mods,
+        );
+        let same = (a - score.ar).abs() < 0.01
+            && (o - score.od).abs() < 0.01
+            && (c - score.cs).abs() < 0.01
+            && (h - score.hp).abs() < 0.01;
+        if same {
+            (None, None, None, None)
+        } else {
+            (Some(a), Some(o), Some(c), Some(h))
+        }
+    };
+
+    let cover_image: Option<image::DynamicImage> = if !score.cover_url.is_empty() {
+        match render_cache::fetch_and_cache(&score.cover_url, render_cache::http_client()).await {
+            Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    let play_time = format_play_datetime(&score.created_at);
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel_flag.clone();
+
+    let render_result = tokio::time::timeout(
+        Duration::from_secs(RENDER_TIMEOUT_SECS),
+        render_score_card(osubot_render::ScoreCardParams {
+            score,
+            username: &user_stats.username,
+            mode,
+            user_pp: user_stats.pp,
+            user_global_rank: Some(user_stats.rank),
+            user_country_rank: Some(user_stats.country_rank),
+            country_code: &user_stats.country_code,
+            avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
+            play_time: &play_time,
+            fav_count: score.fav_count,
+            play_count: score.play_count,
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+            ranked_status: &score.status,
+            ur_value,
+            ar_eff,
+            od_eff,
+            cs_eff,
+            hp_eff,
+            cover_image,
+            cancel_flag: Some(cancel_clone),
+        }),
+    )
+    .await;
+
+    match render_result {
+        Ok(Ok(jpeg_bytes)) => {
+            let write = ctx.write.clone();
+            let group_id = msg.group_id;
+            let resp_tx_img = resp_tx.clone();
+            tokio::spawn(async move {
+                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                    .await
+                    .is_err()
+                {
+                    let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                }
+            });
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "render_score_card failed, falling back to text");
+            let text = format_score(score, &user_stats.username, mode, None, true);
+            let _ = resp_tx.send(text).await;
+        }
+        Err(_) => {
+            cancel_flag.store(true, Ordering::Relaxed);
+            warn!("render_score_card timed out, falling back to text");
+            let text = format_score(score, &user_stats.username, mode, None, true);
+            let _ = resp_tx.send(text).await;
+        }
+    }
+}
+
+async fn render_and_send_score_list(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    scores: &[Score],
+    user_stats: &UserStats,
+    username: &str,
+    mode: GameMode,
+) {
+    let results = join_all(scores.iter().enumerate().map(|(i, s)| {
+        let cover_url = s.cover_url.clone();
+        let needs_enrich = s.pp.is_none() && s.beatmap_id > 0;
+        let score_clone = if needs_enrich { Some(s.clone()) } else { None };
+        async move {
+            let enriched = if let Some(mut sc) = score_clone {
+                enrich_score_with_pp(&mut sc, mode, false).await;
+                Some(sc)
+            } else {
+                None
+            };
+            let cover = if !cover_url.is_empty() {
+                match render_cache::fetch_and_cache(&cover_url, render_cache::http_client()).await {
+                    Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            (i, enriched, cover)
+        }
+    }))
+    .await;
+
+    let scores_vec: Vec<Score> = scores.to_vec();
+    let mut scores_mut = scores_vec;
+    let mut cover_images: Vec<Option<image::DynamicImage>> = vec![None; scores_mut.len()];
+    for (i, enriched, cover) in results {
+        if let Some(new_s) = enriched {
+            scores_mut[i] = new_s;
+        }
+        cover_images[i] = cover;
+    }
+
+    let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
+    let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
+    let user_global_rank = if user_stats.rank > 0 {
+        Some(user_stats.rank)
+    } else {
+        None
+    };
+    let user_country_rank = if user_stats.country_rank > 0 {
+        Some(user_stats.country_rank)
+    } else {
+        None
+    };
+
+    let render_result = tokio::time::timeout(
+        Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
+        render_score_list_card(osubot_render::ScoreListCardParams {
+            scores: &scores_mut,
+            username,
+            mode,
+            is_pass: true,
+            avatar_url: &avatar_url,
+            cover_images,
+            user_pp: user_stats.pp,
+            user_global_rank,
+            user_country_rank,
+            country_code: &user_stats.country_code,
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+            hero_cover_url: &hero_cover_url,
+        }),
+    )
+    .await;
+
+    match render_result {
+        Ok(Ok(jpeg_bytes)) => {
+            let write = ctx.write.clone();
+            let group_id = msg.group_id;
+            let resp_tx_img = resp_tx.clone();
+            tokio::spawn(async move {
+                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                    .await
+                    .is_err()
+                {
+                    let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                }
+            });
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "render_score_list_card failed, falling back to text");
+            let text = format_scores(&scores_mut, username, mode, true);
+            let _ = resp_tx.send(text).await;
+        }
+        Err(_) => {
+            warn!("render_score_list_card timed out, falling back to text");
+            let text = format_scores(&scores_mut, username, mode, true);
+            let _ = resp_tx.send(text).await;
+        }
+    }
+}
+
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
 async fn handle_command(
@@ -1419,6 +1793,14 @@ async fn handle_command(
                     let _ = resp_tx.send(msg).await;
                 }
             }
+        }
+        Command::ScoreOnBeatmap { .. } => {
+            info!(
+                user_id = msg.user_id,
+                group_id = msg.group_id,
+                "ScoreOnBeatmap command"
+            );
+            handle_beatmap_score_query(&ctx, &msg, &resp_tx, &cmd).await;
         }
         Command::Pass {
             mode,
