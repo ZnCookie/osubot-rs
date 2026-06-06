@@ -1,5 +1,6 @@
 mod config;
 mod constants;
+mod last_beatmap_cache;
 mod scheduler;
 
 use config::Config;
@@ -27,6 +28,7 @@ use std::{
     },
     time::Duration,
 };
+use last_beatmap_cache::LastBeatmapCache;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
@@ -173,6 +175,7 @@ struct BotContext {
     groups_config: Arc<config::GroupsConfig>,
     write: Arc<Mutex<WriteSink>>,
     onebot_api: Arc<OneBotApi>,
+    last_beatmap: LastBeatmapCache,
 }
 
 type ProfileDedup = RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String>;
@@ -1924,6 +1927,7 @@ async fn main() {
                             groups_config: groups_config_arc.clone(),
                             write: write.clone(),
                             onebot_api: onebot_api.clone(),
+                            last_beatmap: last_beatmap_cache::LastBeatmapCache::new(),
                         };
                         let irc_nickname = irc_nickname.clone();
                         tokio::spawn(async move {
