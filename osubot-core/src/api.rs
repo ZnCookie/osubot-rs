@@ -816,17 +816,25 @@ pub fn apply_mod_adjustment_to_stats(
     )
 }
 
+/// 从 covers JSON 提取 fullsize 背景图 URL（仿 yumu-bot: list → fullsize）
+fn fullsize_cover_url(covers: Option<&serde_json::Value>) -> Option<String> {
+    let covers = covers?;
+    if let Some(list_url) = covers.get("list").and_then(|v| v.as_str()) {
+        return Some(list_url.replace("@2x", "").replace("list", "fullsize"));
+    }
+    covers
+        .get("cover")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
     let beatmap = api.beatmap;
 
     let cover_url = api
         .beatmapset
         .as_ref()
-        .and_then(|bs| {
-            bs.covers
-                .as_ref()
-                .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
-        })
+        .and_then(|bs| fullsize_cover_url(bs.covers.as_ref()))
         .unwrap_or_default();
     let artist = api
         .beatmapset
@@ -1410,11 +1418,7 @@ async fn backfill_score_details(
                 score.title = bs.title;
                 score.creator = bs.creator;
                 if score.cover_url.is_empty() {
-                    score.cover_url = bs
-                        .covers
-                        .as_ref()
-                        .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
-                        .unwrap_or_default();
+                    score.cover_url = fullsize_cover_url(bs.covers.as_ref()).unwrap_or_default();
                     tracing::debug!(
                         covers_raw = ?bs.covers,
                         resolved_cover = %score.cover_url,
