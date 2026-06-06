@@ -136,8 +136,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     // Negative lookahead: command letter must NOT be followed by another letter/digit/underscore/hyphen.
     // This prevents !pv, !profile, !rabc from matching while allowing !p, !p v, !p:3, !p#5.
     for (prefix, is_pass, default_limit) in [
-        ("!ps", true, 10u32),
-        ("!rs", false, 10u32),
+        ("!ps", true, 20u32),
+        ("!rs", false, 20u32),
         ("!p", true, 1u32),
         ("!r", false, 1u32),
     ] {
@@ -354,7 +354,7 @@ mod tests {
                 mode: GameMode::Osu,
                 username: None,
                 qq: None,
-                limit: 10,
+                limit: 20,
                 is_summary: true,
             }
         );
@@ -586,7 +586,7 @@ mod tests {
                 mode: GameMode::Osu,
                 username: None,
                 qq: None,
-                limit: 10,
+                limit: 20,
                 is_summary: true,
             })
         );
@@ -740,7 +740,7 @@ mod tests {
                 mode: GameMode::Osu,
                 username: None,
                 qq: None,
-                limit: 10,
+                limit: 20,
                 is_summary: true,
             }
         );

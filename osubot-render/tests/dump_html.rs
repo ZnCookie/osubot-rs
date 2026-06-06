@@ -1,3 +1,6 @@
+use osubot_render::score_list_style::{
+    wrap_score_list_html, ScoreListCardData, ScoreListHtmlParams,
+};
 use osubot_render::score_style::{wrap_score_html, ScoreCardData};
 use osubot_types::{GameMode, PpBreakdown, PpIfAcc, Score, ScoreStatistics, ScoreUser};
 use rosu_mods::GameMod;
@@ -150,4 +153,241 @@ fn dump_html_catch() {
 #[ignore = "run with --ignored to dump HTML for visual inspection"]
 fn dump_html_mania() {
     do_dump(GameMode::Mania);
+}
+
+fn make_varied_score(idx: usize) -> Score {
+    let ranks = [
+        "X", "S", "A", "B", "S", "X", "A", "S", "B", "A", "S", "X", "A", "S", "B", "X", "A", "S",
+        "A", "B",
+    ];
+    let titles = [
+        "Camellia - Exit This Earth's Atomosphere",
+        "xi - Blue Zenith",
+        "UNDEAD CORPORATION - Everything will freeze",
+        "Halozy - Genryuu Kaiko",
+        "t+pazolite - CENSORED!!",
+        "Foreground Eclipse - Truths, Ironies, The Secret Lyrics",
+        "Nanahira - Bassline Yatteru w",
+        "DragonForce - Through the Fire and Flames",
+        "IOSYS - Cirno's Perfect Math Class",
+        "Demetori - Emotional Skyscraper",
+        "sasakure.UK - 終焉の栞",
+        "kors k - Insane Techniques",
+        "Getty vs. DJ DiA - Drop",
+        "Rohi - Kakuzetsu Andante",
+        "Function Phantom - Euclidean",
+        "OISHII - ONIGIRI FREEWAY",
+        "Umeboshi Chazuke - ICHIBANBOSHI*ROCKET",
+        "USAO - BroGamer",
+        "lapix - Carry Me Away",
+        "aran - COZMIC DRIVE",
+    ];
+    let artists = [
+        "Camellia",
+        "xi",
+        "UNDEAD CORPORATION",
+        "Halozy",
+        "t+pazolite",
+        "Foreground Eclipse",
+        "Nanahira",
+        "DragonForce",
+        "IOSYS",
+        "Demetori",
+        "sasakure.UK",
+        "kors k",
+        "Getty vs. DJ DiA",
+        "Rohi",
+        "Function Phantom",
+        "OISHII",
+        "Umeboshi Chazuke",
+        "USAO",
+        "lapix",
+        "aran",
+    ];
+    let versions = [
+        "Cosmic",
+        "FOUR DIMENSIONS",
+        "Extra",
+        "Lunatic",
+        "Crazy",
+        "Extra",
+        "w",
+        "Expert",
+        "Lunatic",
+        "Lunatic",
+        "Andante",
+        "Speed",
+        "Expert",
+        "Isolation",
+        "Extra",
+        "SMILE",
+        "ROCKET",
+        "GAMER",
+        "Lapix",
+        "DRIVE",
+    ];
+
+    let pp_values = [
+        456.0, 389.0, 312.0, 287.0, 245.0, 198.0, 185.0, 170.0, 155.0, 140.0, 130.0, 120.0, 110.0,
+        100.0, 90.0, 80.0, 72.0, 65.0, 58.0, 50.0,
+    ];
+    let star_ratings = [
+        8.52, 7.85, 7.20, 6.88, 6.50, 6.12, 5.80, 5.45, 5.10, 4.80, 4.50, 4.20, 3.90, 3.60, 3.30,
+        3.00, 2.70, 2.40, 2.10, 1.80,
+    ];
+    let acc_values = [
+        0.985, 0.992, 0.971, 0.988, 0.953, 0.980, 0.975, 0.990, 0.965, 0.982, 0.978, 0.995, 0.960,
+        0.987, 0.970, 0.983, 0.955, 0.991, 0.968, 0.977,
+    ];
+    let score_values = [
+        1234567, 987654, 876543, 765432, 654321, 543210, 432109, 321098, 210987, 100000, 999999,
+        888888, 777777, 666666, 555555, 444444, 333333, 222222, 111111, 99999,
+    ];
+
+    let mut mods = rosu_mods::GameMods::new();
+    match idx % 5 {
+        0 => {
+            mods.insert(GameMod::HiddenOsu(Default::default()));
+        }
+        1 => {
+            mods.insert(GameMod::HiddenOsu(Default::default()));
+            mods.insert(GameMod::DoubleTimeOsu(Default::default()));
+        }
+        2 => {
+            mods.insert(GameMod::HardRockOsu(Default::default()));
+        }
+        3 => {
+            mods.insert(GameMod::DoubleTimeOsu(Default::default()));
+        }
+        _ => {}
+    }
+
+    Score {
+        score_id: idx as i64 + 1,
+        beatmap_id: idx as i64 + 1000,
+        beatmapset_id: idx as i64 + 100,
+        artist: artists[idx].to_string(),
+        title: titles[idx].to_string(),
+        version: versions[idx].to_string(),
+        creator: format!("Mapper{}", idx),
+        star_rating: star_ratings[idx],
+        bpm: 180.0 + idx as f64 * 5.0,
+        ar: 9.3,
+        od: 8.5,
+        cs: 4.0,
+        hp: 6.0,
+        length_seconds: 120 + idx as i64 * 15,
+        score_value: score_values[idx],
+        accuracy: acc_values[idx],
+        max_combo: 500 + idx as i64 * 30,
+        beatmap_max_combo: 600 + idx as i64 * 30,
+        pp: Some(pp_values[idx]),
+        pp_breakdown: None,
+        pp_if_acc: None,
+        rank: ranks[idx].to_string(),
+        passed: !matches!(idx, 3 | 8 | 14),
+        mods,
+        is_perfect: idx.is_multiple_of(4),
+        created_at: format!(
+            "2025-06-{:02}T{:02}:{:02}:00Z",
+            (idx % 28) + 1,
+            idx % 24,
+            idx * 3 % 60
+        ),
+        is_lazer: idx.is_multiple_of(3),
+        has_replay: true,
+        legacy_score_id: None,
+        statistics: ScoreStatistics {
+            count_geki: 0,
+            count_300: 800 + idx as i64 * 5,
+            count_katu: 0,
+            count_100: 50 - idx as i64,
+            count_50: 5,
+            count_miss: idx as i64 % 7,
+        },
+        cover_url: format!(
+            "https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg",
+            idx + 1000
+        ),
+        user: ScoreUser {
+            avatar_url: "https://a.ppy.sh/1".to_string(),
+            country_code: "CN".to_string(),
+            global_rank: Some(12345),
+            country_rank: Some(1000),
+            pp: 9876.5,
+        },
+        fav_count: Some(1000 + idx as i64 * 100),
+        play_count: Some(50000 + idx as i64 * 1000),
+        status: "ranked".to_string(),
+    }
+}
+
+fn make_score_list_card_data() -> Vec<ScoreListCardData> {
+    (0..20)
+        .map(|i| {
+            let score = make_varied_score(i);
+            ScoreListCardData::from_score(&score, String::new())
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "run with --ignored to dump HTML for visual inspection"]
+fn dump_score_list_html() {
+    let cards = make_score_list_card_data();
+    let params = ScoreListHtmlParams {
+        cards: &cards,
+        username: "ZnCookie",
+        mode: GameMode::Osu,
+        is_pass: false,
+        avatar_data_uri: "",
+        hero_bg_data_uri: "",
+        user_pp: 9876.5,
+        user_global_rank: Some(12345),
+        user_country_rank: Some(1000),
+        country_code: "CN",
+        pp_change: Some(12.5),
+        global_rank_change: Some(-99),
+        country_rank_change: Some(50),
+    };
+    let html = wrap_score_list_html(&params);
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dump");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("score-list.html"), &html).unwrap();
+    assert!(!html.is_empty());
+}
+
+#[test]
+fn test_wrap_score_list_html_basic() {
+    let cards = make_score_list_card_data();
+    let params = ScoreListHtmlParams {
+        cards: &cards,
+        username: "ZnCookie",
+        mode: GameMode::Osu,
+        is_pass: false,
+        avatar_data_uri: "",
+        hero_bg_data_uri: "",
+        user_pp: 9876.5,
+        user_global_rank: Some(12345),
+        user_country_rank: Some(1000),
+        country_code: "CN",
+        pp_change: Some(12.5),
+        global_rank_change: Some(-99),
+        country_rank_change: Some(50),
+    };
+    let html = wrap_score_list_html(&params);
+
+    // 验证新布局元素
+    assert!(html.contains(r#"class="mini-card""#));
+    assert!(html.contains(r#"class="cover-strip""#));
+    assert!(html.contains(r#"class="star-in-cover""#));
+    assert!(html.contains(r#"class="time-in-cover""#));
+    assert!(html.contains(r#"class="row2""#));
+
+    // 验证 acc/pp 行内容
+    assert!(html.contains(r#"class="acc""#));
+    assert!(html.contains(r#"class="pp""#));
+
+    // 验证移除的元素
+    assert!(!html.contains("mini-score"));
 }

@@ -34,14 +34,6 @@ pub struct ScoreCardData {
 const BPM_ICON: &str = "♫";
 const LENGTH_ICON: &str = "◷";
 
-fn format_pp_delta(delta: f64) -> String {
-    if delta.fract() == 0.0 {
-        format!("{}", delta as i64)
-    } else {
-        format!("{delta:.2}")
-    }
-}
-
 fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> String {
     let base_pct = (base / 10.0 * 100.0).min(100.0);
     let (track_html, val_str) = match eff {
@@ -223,39 +215,9 @@ fn render_middle_row(data: &ScoreCardData) -> String {
         .map(format_number)
         .unwrap_or_else(|| "-".to_string());
 
-    let pp_change_html = match data.pp_change {
-        Some(delta) if delta > 0.0 => {
-            let d = format_pp_delta(delta);
-            format!(r#"<span class="user-pp-change up">+{d}</span>"#)
-        }
-        Some(delta) if delta < 0.0 => {
-            let d = format_pp_delta(delta);
-            format!(r#"<span class="user-pp-change down">{d}</span>"#)
-        }
-        Some(_) => r#"<span class="user-pp-change zero">±0</span>"#.to_string(),
-        _ => String::new(),
-    };
-
-    let global_rank_change_html = match data.global_rank_change {
-        Some(delta) if delta > 0 => {
-            format!(r#"<span class="rank-change up">+{delta}</span>"#)
-        }
-        Some(delta) if delta < 0 => {
-            format!(r#"<span class="rank-change down">{delta}</span>"#)
-        }
-        Some(0) => r#"<span class="rank-change zero">±0</span>"#.to_string(),
-        _ => String::new(),
-    };
-    let country_rank_change_html = match data.country_rank_change {
-        Some(delta) if delta > 0 => {
-            format!(r#"<span class="rank-change up">+{delta}</span>"#)
-        }
-        Some(delta) if delta < 0 => {
-            format!(r#"<span class="rank-change down">{delta}</span>"#)
-        }
-        Some(0) => r#"<span class="rank-change zero">±0</span>"#.to_string(),
-        _ => String::new(),
-    };
+    let pp_change_html = crate::style::format_pp_change_html(data.pp_change);
+    let global_rank_change_html = crate::style::format_rank_change_html(data.global_rank_change);
+    let country_rank_change_html = crate::style::format_rank_change_html(data.country_rank_change);
 
     let pp_val_display = format!("{:.0}", data.user_pp);
     let user_pp_change_section = if data.pp_change.is_some() {

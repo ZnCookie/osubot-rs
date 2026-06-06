@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 osubot-types = { path = "../osubot-types" }
+chrono = "0.4"
 rosu-mods = "0.4"
 blitz = "0.2"
 anyrender = "0.6"

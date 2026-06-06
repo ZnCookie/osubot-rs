@@ -53,6 +53,47 @@ pub fn wrap_osu_profile_html(
     )
 }
 
+/// 格式化 pp 变化量的小数位(整数去掉小数点,小数保留 2 位)
+pub fn format_pp_delta(delta: f64) -> String {
+    if delta.fract() == 0.0 {
+        format!("{}", delta as i64)
+    } else {
+        format!("{delta:.2}")
+    }
+}
+
+/// 渲染 pp 变化 HTML(已带 `user-pp-change` 类和 up/down/zero 颜色)
+/// `None` → 空字符串
+pub fn format_pp_change_html(change: Option<f64>) -> String {
+    match change {
+        Some(delta) if delta > 0.0 => {
+            format!(
+                r#"<span class="user-pp-change up">+{}</span>"#,
+                format_pp_delta(delta)
+            )
+        }
+        Some(delta) if delta < 0.0 => {
+            format!(
+                r#"<span class="user-pp-change down">{}</span>"#,
+                format_pp_delta(delta)
+            )
+        }
+        Some(_) => r#"<span class="user-pp-change zero">±0</span>"#.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 渲染 rank 变化 HTML(已带 `rank-change` 类和 up/down/zero 颜色)
+/// `None` → 空字符串
+pub fn format_rank_change_html(change: Option<i64>) -> String {
+    match change {
+        Some(delta) if delta > 0 => format!(r#"<span class="rank-change up">+{}</span>"#, delta),
+        Some(delta) if delta < 0 => format!(r#"<span class="rank-change down">{}</span>"#, delta),
+        Some(_) => r#"<span class="rank-change zero">±0</span>"#.to_string(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

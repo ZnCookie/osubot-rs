@@ -35,6 +35,11 @@ pub struct PpCalcParams<'a> {
     /// Beatmap's original star rating from API, used by NF/CL fast path.
     /// When non-convert + NF/CL-only, skips difficulty calculation and passes this through.
     pub beatmap_star_rating: Option<f64>,
+    /// Whether the score was passed. Used to apply `passed_objects` for
+    /// failed/in-progress plays (rosu-pp 4.0.1 explicit API for partial
+    /// play, conceptually similar to yumu-bot's combined
+    /// `state.n300=0` + `setHitResultPriority(true)` approach).
+    pub passed: bool,
 }
 
 pub(crate) const API_VERSION: &str = "20260408";
@@ -138,8 +143,27 @@ fn create_performance<'a>(
 
 /// Apply mode-appropriate stats to a `Performance` calculator and compute the result.
 ///
-/// For Mania with statistics available, uses hit-count fields (`n_geki`, `n_katu`, etc.).
-/// For all other modes, uses combo + accuracy + misses.
+/// For all modes with `statistics` available, uses
+/// `.n300(), .n100(), .n50(), .misses()`. For Mania, additionally uses
+/// `.n_geki(), .n_katu()`. These are not called for non-Mania modes because
+/// `.n_katu()` explicitly sets `tiny_droplet_misses` for Catch in rosu-pp 4.0.1,
+/// which would silently shift Catch PP when `count_katu=0`.
+///
+/// For failed scores (`passed=false`) with `statistics` available,
+/// also calls `passed_objects(total_hits)` to truncate strain / difficulty
+/// calculation to the actual objects hit.
+///
+/// When `statistics` is `None`, falls back to `combo + accuracy + misses`
+/// (used by mode converts and call sites that don't pass hit counts).
+///
+/// **Edge case:** if all `count_*` fields are zero, `total_hits = 0` and
+/// `passed_objects(0)` yields a zero-PP result. `calculate_pp_breakdown` still
+/// returns `Some(PpBreakdown { total_pp: 0.0, .. })`; the actual `None`
+/// materializes one frame up in `enrich_score_with_pp` (the
+/// `if bd.total_pp > 0.0` guard at the bottom of that function), which leaves
+/// `score.pp` unset. This is the correct behavior for a score with no hits,
+/// not a bug — a future reviewer who hits this should accept the `None` rather
+/// than try to "fix" it.
 fn apply_stats_and_calculate(
     perf: rosu_pp::Performance<'_>,
     mode: GameMode,
@@ -147,18 +171,43 @@ fn apply_stats_and_calculate(
     accuracy: f64,
     max_combo: u32,
     miss_count: u32,
+    passed: bool,
 ) -> rosu_pp::any::PerformanceAttributes {
-    let perf = if let (GameMode::Mania, Some(s)) = (mode, statistics) {
-        perf.n_geki(s.count_geki as u32)
-            .n300(s.count_300 as u32)
-            .n_katu(s.count_katu as u32)
-            .n100(s.count_100 as u32)
-            .n50(s.count_50 as u32)
-            .misses(miss_count)
-    } else {
-        perf.combo(max_combo)
+    let perf = match statistics {
+        Some(s) => {
+            let total_hits = u32::try_from(
+                s.count_geki + s.count_300 + s.count_katu + s.count_100 + s.count_50 + s.count_miss,
+            )
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    count_geki = s.count_geki,
+                    count_300 = s.count_300,
+                    count_katu = s.count_katu,
+                    count_100 = s.count_100,
+                    count_50 = s.count_50,
+                    count_miss = s.count_miss,
+                    "ScoreStatistics hit counts overflow u32; passing 0 to passed_objects"
+                );
+                0
+            });
+            let mut perf = perf
+                .n300(s.count_300 as u32)
+                .n100(s.count_100 as u32)
+                .n50(s.count_50 as u32)
+                .misses(miss_count);
+            if mode == GameMode::Mania {
+                perf = perf.n_geki(s.count_geki as u32).n_katu(s.count_katu as u32);
+            }
+            if !passed {
+                perf.passed_objects(total_hits)
+            } else {
+                perf
+            }
+        }
+        None => perf
+            .combo(max_combo)
             .accuracy(accuracy * 100.0)
-            .misses(miss_count)
+            .misses(miss_count),
     };
     perf.calculate()
 }
@@ -202,6 +251,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     if !needs_convert
         && params.beatmap_star_rating.is_some()
         && has_only_non_difficulty_mods(&params.mods)
+        && params.passed
     {
         return Some(PpBreakdown {
             aim: None,
@@ -248,6 +298,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
         params.accuracy,
         params.max_combo as u32,
         params.miss_count as u32,
+        params.passed,
     );
 
     let total_pp = perf_attrs.pp();
@@ -302,6 +353,15 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
 ///
 /// Pre-builds a base `Performance` once (doing `try_mode` for converts only once),
 /// then clones it for each accuracy/combo/miss combination.
+///
+/// **Note:** the `params.passed` field is **intentionally ignored** here. The
+/// "if FC" and "if acc N%" projections are always computed as if the play
+/// were full-length, because the whole point of the projection is to answer
+/// "what would my PP be at a higher accuracy / without misses?". Applying
+/// `passed_objects` would contradict that intent. The only signal taken from
+/// the actual play is `params.miss_count` (used as-is for the `acc N%` row)
+/// and `params.statistics` (used for the Mania "if FC" recompute). Callers
+/// that want failed-score-corrected if-acc must compute PP themselves.
 pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> Option<PpIfAcc> {
     use rosu_pp::{Beatmap, Difficulty, GameMods as PpMods};
 
@@ -405,7 +465,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
 /// Enrich a score with PP breakdown and if-acc values.
 /// Downloads the .osu file if needed, calculates PP decomposition,
 /// and sets the `pp_breakdown` and `pp_if_acc` fields on the score.
-pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
+pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_acc: bool) {
     if score.beatmap_id <= 0 {
         return;
     }
@@ -430,6 +490,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
     let is_lazer = score.is_lazer;
     let statistics = score.statistics.clone();
     let beatmap_star_rating = Some(score.star_rating);
+    let passed = score.passed;
 
     let (pp_breakdown, pp_if_acc) = tokio::task::spawn_blocking(move || {
         let breakdown = calculate_pp_breakdown(PpCalcParams {
@@ -442,21 +503,27 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode) {
             is_lazer,
             statistics: Some(&statistics),
             beatmap_star_rating,
+            passed,
         });
-        let if_acc = calculate_pp_if_acc(
-            PpCalcParams {
-                osu_path: &osu_path,
-                mode,
-                mods: mods_clone,
-                accuracy,
-                max_combo,
-                miss_count: count_miss,
-                is_lazer,
-                statistics: Some(&statistics),
-                beatmap_star_rating: None,
-            },
-            beatmap_max_combo,
-        );
+        let if_acc = if compute_if_acc {
+            calculate_pp_if_acc(
+                PpCalcParams {
+                    osu_path: &osu_path,
+                    mode,
+                    mods: mods_clone,
+                    accuracy,
+                    max_combo,
+                    miss_count: count_miss,
+                    is_lazer,
+                    statistics: Some(&statistics),
+                    beatmap_star_rating: None,
+                    passed,
+                },
+                beatmap_max_combo,
+            )
+        } else {
+            None
+        };
         (breakdown, if_acc)
     })
     .await
@@ -898,6 +965,15 @@ struct OsuApiV2User {
     username: String,
     country_code: Option<String>, // e.g., "CN", "US", "JP"
     statistics: Option<OsuStatistics>,
+    cover: Option<OsuUserCover>,
+}
+
+/// osu! API v2 user cover sub-object
+/// 实际响应字段名: `custom_url` 和 `url`(API 把 "封面图" 拆成"自定义"和"默认")
+#[derive(Debug, serde::Deserialize)]
+struct OsuUserCover {
+    custom_url: Option<String>,
+    url: Option<String>,
 }
 
 /// osu! API v2 statistics sub-object
@@ -1190,6 +1266,7 @@ async fn fetch_user_stats_internal(
                 playtime: stats.playtime.unwrap_or(0),
                 rank_change: None,
                 country_rank_change: None,
+                cover_url: data.cover.and_then(|c| c.custom_url.or(c.url)),
             })
         })
     })
@@ -1502,6 +1579,13 @@ struct OsuProfileResponse {
     profile_hue: Option<u16>,
     username: String,
     avatar_url: String,
+    cover: Option<Cover>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Cover {
+    url: Option<String>,
+    custom_url: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1514,6 +1598,7 @@ pub struct UserProfile {
     pub profile_hue: u16,
     pub username: String,
     pub avatar_url: String,
+    pub cover_url: Option<String>,
 }
 
 /// 获取用户主页数据（用于 !profile 卡片渲染）
@@ -1553,11 +1638,14 @@ pub async fn fetch_user_profile(
 
             let data: OsuProfileResponse = resp.json().await.map_err(json_to_api_error)?;
 
+            let cover_url = data.cover.and_then(|c| c.custom_url.or(c.url));
+
             Ok(UserProfile {
                 html: data.page.html,
                 profile_hue: data.profile_hue.unwrap_or(333),
                 username: data.username,
                 avatar_url: data.avatar_url,
+                cover_url,
             })
         })
     })

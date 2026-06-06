@@ -2,6 +2,7 @@ pub mod cache;
 mod encode;
 mod error;
 mod render;
+pub mod score_list_style;
 pub mod score_style;
 mod style;
 
@@ -15,6 +16,9 @@ pub use cache::{cleanup_expired, ensure_cache_dir};
 pub use error::RenderError;
 
 pub const PROFILE_VIEWPORT_WIDTH: u32 = 1650;
+
+/// !ps / !rs 渲染超时（秒）。比单 score card 渲染慢：4 列网格 HTML 体积更大，blitz 布局耗时增加。
+pub const SCORE_LIST_RENDER_TIMEOUT_SECS: u64 = 60;
 
 static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
 
@@ -337,6 +341,145 @@ pub async fn render_profile_card(
 
     let jpeg = encode::encode_jpeg(pixels, w, h, 80).await?;
 
+    Ok(jpeg)
+}
+
+pub struct ScoreListCardParams<'a> {
+    pub scores: &'a [osubot_types::Score],
+    pub username: &'a str,
+    pub mode: osubot_types::GameMode,
+    pub is_pass: bool,
+    pub avatar_url: &'a str,
+    pub cover_images: Vec<Option<image::DynamicImage>>,
+    pub user_pp: f64,
+    pub user_global_rank: Option<i64>,
+    pub user_country_rank: Option<i64>,
+    pub country_code: &'a str,
+    pub pp_change: Option<f64>,
+    pub global_rank_change: Option<i64>,
+    pub country_rank_change: Option<i64>,
+    pub hero_cover_url: &'a str,
+}
+
+pub async fn render_score_list_card(
+    params: ScoreListCardParams<'_>,
+) -> Result<Vec<u8>, RenderError> {
+    let ScoreListCardParams {
+        scores,
+        username,
+        mode,
+        is_pass,
+        avatar_url,
+        cover_images,
+        user_pp,
+        user_global_rank,
+        user_country_rank,
+        country_code,
+        pp_change,
+        global_rank_change,
+        country_rank_change,
+        hero_cover_url,
+    } = params;
+
+    // Download avatar and hero banner in parallel
+    let client = cache::http_client();
+    let (avatar_uri, hero_bg_uri) = {
+        let (avatar_result, hero_result) = tokio::join!(
+            async {
+                if avatar_url.is_empty() {
+                    return Ok(String::new());
+                }
+                let (bytes, _, _) = cache::fetch_and_cache(avatar_url, client)
+                    .await
+                    .map_err(|e| RenderError::Render(format!("avatar: {e}")))?;
+                let img = image::load_from_memory(&bytes)
+                    .map_err(|e| RenderError::Render(format!("avatar decode: {e}")))?;
+                let resized = img.resize_exact(120, 120, imageops::FilterType::Lanczos3);
+                image_to_data_uri(&resized, 85)
+            },
+            async {
+                if hero_cover_url.is_empty() {
+                    return Ok(String::new());
+                }
+                let (bytes, _, _) = cache::fetch_and_cache(hero_cover_url, client)
+                    .await
+                    .map_err(|e| RenderError::Render(format!("hero: {e}")))?;
+                let img = image::load_from_memory(&bytes)
+                    .map_err(|_| RenderError::Render("hero banner decode".into()))?;
+                let cropped = crop_and_resize(&img, 2560, 640);
+                Ok(image_to_data_uri(&cropped, 80).unwrap_or_default())
+            },
+        );
+        (avatar_result?, hero_result?)
+    };
+
+    // Process cover thumbnails
+    let cover_uris: Vec<String> = cover_images
+        .iter()
+        .map(|opt| match opt {
+            Some(img) => {
+                let thumb = crop_and_resize(img, 620, 220);
+                image_to_data_uri(&thumb, 70).unwrap_or_default()
+            }
+            None => String::new(),
+        })
+        .collect();
+
+    // Build card data
+    let cards: Vec<score_list_style::ScoreListCardData> = scores
+        .iter()
+        .enumerate()
+        .map(|(i, score)| {
+            let cover_uri = cover_uris.get(i).cloned().unwrap_or_default();
+            score_list_style::ScoreListCardData::from_score(score, cover_uri)
+        })
+        .collect();
+
+    let html_params = score_list_style::ScoreListHtmlParams {
+        cards: &cards,
+        username,
+        mode,
+        is_pass,
+        avatar_data_uri: &avatar_uri,
+        hero_bg_data_uri: &hero_bg_uri,
+        user_pp,
+        user_global_rank,
+        user_country_rank,
+        country_code,
+        pp_change,
+        global_rank_change,
+        country_rank_change,
+    };
+    let html = score_list_style::wrap_score_list_html(&html_params);
+
+    // Estimate height: 640px hero (matches the 2560x640 banner image; .hero has
+    // min-height: 640px so background-size: cover is effectively 100% 100%)
+    // + 36px score-list padding + ceil(N/4) rows of 400px cards.
+    // Card height = 220px cover strip + ~180px body. The render code uses
+    // `max(computed_height, height)`, so this is a lower bound; the actual
+    // layout height is used if it exceeds the estimate.
+    let rows = (scores.len() as u32).div_ceil(4);
+    let estimated_height = 640 + 36 + rows * 400;
+
+    let _permit = render_semaphore()
+        .acquire()
+        .await
+        .expect("render semaphore never closed");
+    let font_ctx = get_font_context();
+
+    let render_result = tokio::task::spawn_blocking(move || {
+        let cancel_flag = std::sync::atomic::AtomicBool::new(false);
+        render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
+    })
+    .await;
+
+    let (pixels, w, h) = match render_result {
+        Ok(Ok(rendered)) => rendered,
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(RenderError::Render(extract_panic_message(e))),
+    };
+
+    let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;
     Ok(jpeg)
 }
 
