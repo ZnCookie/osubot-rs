@@ -381,36 +381,36 @@ pub async fn render_score_list_card(
         hero_cover_url,
     } = params;
 
-    // Download avatar
+    // Download avatar and hero banner in parallel
     let client = cache::http_client();
-    let avatar_uri = if !avatar_url.is_empty() {
-        match cache::fetch_and_cache(avatar_url, client).await {
-            Ok((bytes, _, _)) => {
+    let (avatar_uri, hero_bg_uri) = {
+        let (avatar_result, hero_result) = tokio::join!(
+            async {
+                if avatar_url.is_empty() {
+                    return Ok(String::new());
+                }
+                let (bytes, _, _) = cache::fetch_and_cache(avatar_url, client)
+                    .await
+                    .map_err(|e| RenderError::Render(format!("avatar: {e}")))?;
                 let img = image::load_from_memory(&bytes)
                     .map_err(|e| RenderError::Render(format!("avatar decode: {e}")))?;
                 let resized = img.resize_exact(120, 120, imageops::FilterType::Lanczos3);
-                image_to_data_uri(&resized, 85)?
-            }
-            Err(_) => String::new(),
-        }
-    } else {
-        String::new()
-    };
-
-    // Download hero banner (player profile cover)
-    let hero_bg_uri = if !hero_cover_url.is_empty() {
-        match cache::fetch_and_cache(hero_cover_url, client).await {
-            Ok((bytes, _, _)) => match image::load_from_memory(&bytes) {
-                Ok(img) => {
-                    let cropped = crop_and_resize(&img, 2560, 640);
-                    image_to_data_uri(&cropped, 80).unwrap_or_default()
-                }
-                Err(_) => String::new(),
+                image_to_data_uri(&resized, 85)
             },
-            Err(_) => String::new(),
-        }
-    } else {
-        String::new()
+            async {
+                if hero_cover_url.is_empty() {
+                    return Ok(String::new());
+                }
+                let (bytes, _, _) = cache::fetch_and_cache(hero_cover_url, client)
+                    .await
+                    .map_err(|e| RenderError::Render(format!("hero: {e}")))?;
+                let img = image::load_from_memory(&bytes)
+                    .map_err(|_| RenderError::Render("hero banner decode".into()))?;
+                let cropped = crop_and_resize(&img, 2560, 640);
+                Ok(image_to_data_uri(&cropped, 80).unwrap_or_default())
+            },
+        );
+        (avatar_result?, hero_result?)
     };
 
     // Process cover thumbnails

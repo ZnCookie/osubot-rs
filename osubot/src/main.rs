@@ -284,75 +284,160 @@ async fn handle_score_query(
     params: ScoreQueryParams<'_>,
 ) {
     tracing::debug!("handle_score_query: starting");
-    let (user_id, resolved_username, user_stats) = match resolve_score_user(
-        ctx,
-        msg,
-        params.username,
-        params.qq,
-        params.mode,
-        resp_tx,
-    )
-    .await
-    {
-        Some(u) => {
-            tracing::debug!(
-                "resolve_score_user: resolved user_id={}, username={}",
-                u.0,
-                u.1
-            );
-            u
-        }
-        None => {
-            tracing::warn!("resolve_score_user: returned None");
-            return;
-        }
-    };
-    ctx.scheduler.trigger_update(user_id, params.mode);
-    let include_fails = !params.is_pass;
-    let dedup_key = (user_id, params.is_pass, params.limit, params.mode);
-    let dedup_username = resolved_username.clone();
-    let dedup_rate_limiter = ctx.rate_limiter.clone();
-    let dedup_oauth = ctx.oauth.clone();
-    let dedup_mode = params.mode;
-    let dedup_user_id = user_id;
 
-    tracing::debug!(
-        "Fetching scores for user_id={}, mode={:?}, limit={}",
-        user_id,
-        params.mode,
-        params.limit
-    );
-    let score_result: Result<Arc<Vec<Score>>, String> = score_dedup()
-        .run_or_wait(dedup_key, move || {
-            let dedup_rate_limiter = dedup_rate_limiter.clone();
-            let dedup_oauth = dedup_oauth.clone();
-            async move {
-                api::get_user_recent(
-                    &dedup_rate_limiter,
-                    &dedup_oauth,
-                    dedup_user_id,
-                    dedup_mode,
-                    include_fails,
-                    params.limit,
-                )
-                .await
-                .map(Arc::new)
-                .map_err(|e| {
-                    warn!(user_id = dedup_user_id, mode = ?dedup_mode, error = ?e, "Score query failed");
-                    match e {
-                        ApiError::NotFound => "未找到该用户".to_string(),
-                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => format!("请求过于频繁，请 {} 秒后再试", secs),
-                        ApiError::RateLimitedWithRetryAfter(None) => "请求过于频繁，请稍后再试".to_string(),
-                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
-                        e => {
-                            tracing::error!(error = ?e, "Score query error details");
-                            "获取数据失败，请稍后再试".to_string()
-                        }
-                    }
-                })
+    // For self/bound users (no explicit username/qq), resolve user_id from DB
+    // and parallelize the two API calls. For username/QQ lookups, use the
+    // existing sequential resolve_score_user flow.
+    let is_self = params.username.is_none() && params.qq.is_none();
+    let include_fails = !params.is_pass;
+    let (user_id, resolved_username, user_stats, score_result) = if is_self {
+        let (uid, name) = match ctx.storage.get_binding(msg.user_id) {
+            Ok(Some((uid, name))) => (uid, name),
+            Ok(None) => {
+                let _ = resp_tx
+                    .send("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string())
+                    .await;
+                return;
             }
-        })
-        .await;
+            Err(_) => {
+                let _ = resp_tx.send("数据库错误".to_string()).await;
+                return;
+            }
+        };
+
+        tracing::debug!(
+            "handle_score_query: bound user, user_id={}, username={}",
+            uid,
+            name
+        );
+        ctx.scheduler.trigger_update(uid, params.mode);
+
+        let limit = params.limit;
+        let mode = params.mode;
+        let is_pass = params.is_pass;
+        let rate_limiter = ctx.rate_limiter.clone();
+        let oauth = ctx.oauth.clone();
+        let rl2 = rate_limiter.clone();
+        let oa2 = oauth.clone();
+
+        let (stats_result, scores) = tokio::join!(
+            api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, uid, mode),
+            score_dedup().run_or_wait((uid, is_pass, limit, mode), move || {
+                let rate_limiter = rl2.clone();
+                let oauth = oa2.clone();
+                async move {
+                    api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, limit)
+                        .await
+                        .map(Arc::new)
+                        .map_err(|e| {
+                            warn!(user_id = uid, mode = ?mode, error = ?e, "Score query failed");
+                            match e {
+                                ApiError::NotFound => "未找到该用户".to_string(),
+                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                                    format!("请求过于频繁，请 {} 秒后再试", secs)
+                                }
+                                ApiError::RateLimitedWithRetryAfter(None) => {
+                                    "请求过于频繁，请稍后再试".to_string()
+                                }
+                                ApiError::ClientRateLimited => {
+                                    "本地请求限流，请稍后再试".to_string()
+                                }
+                                e => {
+                                    tracing::error!(error = ?e, "Score query error details");
+                                    "获取数据失败，请稍后再试".to_string()
+                                }
+                            }
+                        })
+                }
+            }),
+        );
+
+        let user_stats = match stats_result {
+            Ok(stats) => {
+                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                stats
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, user_id = uid, "resolve: API lookup failed for bound user");
+                let _ = resp_tx
+                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .await;
+                return;
+            }
+        };
+
+        (uid, name, user_stats, scores)
+    } else {
+        let (uid, name, user_stats) =
+            match resolve_score_user(ctx, msg, params.username, params.qq, params.mode, resp_tx)
+                .await
+            {
+                Some(u) => {
+                    tracing::debug!(
+                        "resolve_score_user: resolved user_id={}, username={}",
+                        u.0,
+                        u.1
+                    );
+                    u
+                }
+                None => {
+                    tracing::warn!("resolve_score_user: returned None");
+                    return;
+                }
+            };
+
+        ctx.scheduler.trigger_update(uid, params.mode);
+        let dedup_key = (uid, params.is_pass, params.limit, params.mode);
+        let dedup_rate_limiter = ctx.rate_limiter.clone();
+        let dedup_oauth = ctx.oauth.clone();
+        let dedup_mode = params.mode;
+
+        tracing::debug!(
+            "Fetching scores for user_id={}, mode={:?}, limit={}",
+            uid,
+            params.mode,
+            params.limit
+        );
+        let scores: Result<Arc<Vec<Score>>, String> = score_dedup()
+            .run_or_wait(dedup_key, move || {
+                let dedup_rate_limiter = dedup_rate_limiter.clone();
+                let dedup_oauth = dedup_oauth.clone();
+                async move {
+                    api::get_user_recent(
+                        &dedup_rate_limiter,
+                        &dedup_oauth,
+                        uid,
+                        dedup_mode,
+                        include_fails,
+                        params.limit,
+                    )
+                    .await
+                    .map(Arc::new)
+                    .map_err(|e| {
+                        warn!(user_id = uid, mode = ?dedup_mode, error = ?e, "Score query failed");
+                        match e {
+                            ApiError::NotFound => "未找到该用户".to_string(),
+                            ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+                                format!("请求过于频繁，请 {} 秒后再试", secs)
+                            }
+                            ApiError::RateLimitedWithRetryAfter(None) => {
+                                "请求过于频繁，请稍后再试".to_string()
+                            }
+                            ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
+                            e => {
+                                tracing::error!(error = ?e, "Score query error details");
+                                "获取数据失败，请稍后再试".to_string()
+                            }
+                        }
+                    })
+                }
+            })
+            .await;
+
+        (uid, name, user_stats, scores)
+    };
+
+    let dedup_username = resolved_username.clone();
 
     match score_result {
         Ok(mut scores) => {
@@ -586,55 +671,52 @@ async fn handle_score_query(
                     }
                 }
             } else {
-                // Local PP re-computation: the osu! API may return pp=null for
-                // several reasons — failed/in-progress scores, loved/pending
-                // beatmaps, or mod combinations the API PP system doesn't
-                // handle.  We re-compute locally via rosu-pp for every score
-                // that is missing PP.
-                //
-                // Concurrent: clone the entries that need enrichment, run them
-                // through `join_all`, then write back by index. The cover-download
-                // loop further down uses the same pattern.
+                // Local PP re-computation + cover download: the osu! API
+                // may return pp=null for failed scores, loved/pending
+                // beatmaps, or unsupported mod combos.  Re-compute locally
+                // and download covers in one pass so network I/O overlaps.
                 let mode = params.mode;
-                let to_enrich: Vec<(usize, Score)> = scores
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
-                    .map(|(i, s)| (i, s.clone()))
-                    .collect();
-                let enriched: Vec<(usize, Score)> = futures_util::future::join_all(
-                    to_enrich.into_iter().map(|(i, mut s)| async move {
-                        osubot_core::enrich_score_with_pp(&mut s, mode, false).await;
-                        (i, s)
-                    }),
-                )
-                .await;
+                let results =
+                    futures_util::future::join_all(scores.iter().enumerate().map(|(i, s)| {
+                        let cover_url = s.cover_url.clone();
+                        let needs_enrich = s.pp.is_none() && s.beatmap_id > 0;
+                        let score_clone = if needs_enrich { Some(s.clone()) } else { None };
+                        async move {
+                            let enriched = if let Some(mut sc) = score_clone {
+                                osubot_core::enrich_score_with_pp(&mut sc, mode, false).await;
+                                Some(sc)
+                            } else {
+                                None
+                            };
+                            let cover = if !cover_url.is_empty() {
+                                match osubot_render::cache::fetch_and_cache(
+                                    &cover_url,
+                                    osubot_render::cache::http_client(),
+                                )
+                                .await
+                                {
+                                    Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                                    Err(_) => None,
+                                }
+                            } else {
+                                None
+                            };
+                            (i, enriched, cover)
+                        }
+                    }))
+                    .await;
+
                 let scores_mut = Arc::make_mut(&mut scores);
-                for (i, new_s) in enriched {
-                    scores_mut[i] = new_s;
+                let mut cover_images: Vec<Option<image::DynamicImage>> =
+                    vec![None; scores_mut.len()];
+                for (i, enriched, cover) in results {
+                    if let Some(new_s) = enriched {
+                        scores_mut[i] = new_s;
+                    }
+                    cover_images[i] = cover;
                 }
 
-                // 尝试渲染成绩列表图片
-                let cover_results = futures_util::future::join_all(scores.iter().map(|s| async {
-                    if !s.cover_url.is_empty() {
-                        match osubot_render::cache::fetch_and_cache(
-                            &s.cover_url,
-                            osubot_render::cache::http_client(),
-                        )
-                        .await
-                        {
-                            Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                            Err(_) => None,
-                        }
-                    } else {
-                        None
-                    }
-                }))
-                .await;
-
                 // 分数列表(!ps / !rs)固定主题色,不做动态色调提取。!p / !r 单 score card 仍走 extract_dominant_hue。
-
-                let cover_images: Vec<Option<image::DynamicImage>> = cover_results;
 
                 let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
                 let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
