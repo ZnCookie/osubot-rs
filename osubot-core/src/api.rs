@@ -1669,7 +1669,6 @@ pub async fn get_user_beatmap_scores_all(
         "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=1",
         beatmap_id, user_id,
     );
-    // 重试时不带 mode 参数（与 yumu-bot 一致）
 
     rate_limiter
         .acquire()
@@ -1693,19 +1692,23 @@ pub async fn get_user_beatmap_scores_all(
                     "Beatmap scores all 404, retrying with legacy_only=1"
                 );
                 let access_token = oauth.get_token().await?;
-                let resp = client
+                let retry_resp = client
                     .get(&url_retry)
                     .header("Authorization", format!("Bearer {}", access_token))
                     .header("x-api-version", API_VERSION)
                     .send()
                     .await?;
 
-                if resp.status() == 404 {
+                if retry_resp.status() == 404 {
                     return Err(ApiError::NotFound);
                 }
-                classify_http_error(&resp)?;
+                classify_http_error(&retry_resp)?;
 
-                let raw: BeatmapScoresResponse = resp.json().await.map_err(json_to_api_error)?;
+                let body = retry_resp.text().await.map_err(ApiError::Http)?;
+                let raw: BeatmapScoresResponse = serde_json::from_str(&body).map_err(|e| {
+                    tracing::error!(error = %e, body, "BeatmapScoresAll retry parse failed");
+                    ApiError::InvalidResponse
+                })?;
                 let mut scores: Vec<Score> = raw
                     .scores
                     .into_iter()
@@ -1720,7 +1723,11 @@ pub async fn get_user_beatmap_scores_all(
 
             classify_http_error(&resp)?;
 
-            let raw: BeatmapScoresResponse = resp.json().await.map_err(json_to_api_error)?;
+            let body = resp.text().await.map_err(ApiError::Http)?;
+            let raw: BeatmapScoresResponse = serde_json::from_str(&body).map_err(|e| {
+                tracing::error!(error = %e, body, "BeatmapScoresAll parse failed");
+                ApiError::InvalidResponse
+            })?;
             let mut scores: Vec<Score> = raw
                 .scores
                 .into_iter()
