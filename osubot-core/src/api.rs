@@ -1378,8 +1378,12 @@ async fn backfill_score_details(
     score: &mut Score,
     mode_str: &str,
 ) {
-    // 回填谱面 od/hp/max_combo
-    if ((score.od == 0.0 && score.hp == 0.0) || score.beatmap_max_combo == 0)
+    // 回填谱面数据（SoloScore 格式中可能不包含嵌套 beatmap）
+    if (score.ar == 0.0
+        || score.od == 0.0
+        || score.star_rating == 0.0
+        || score.beatmap_max_combo == 0
+        || score.status.is_empty())
         && score.beatmap_id > 0
     {
         match fetch_beatmap(rate_limiter, oauth, score.beatmap_id).await {
@@ -1388,22 +1392,43 @@ async fn backfill_score_details(
                     score.od = bm.od;
                     score.hp = bm.hp;
                 }
+                if score.ar == 0.0 {
+                    score.ar = bm.ar;
+                }
+                if score.cs == 0.0 {
+                    score.cs = bm.cs;
+                }
+                if score.star_rating == 0.0 {
+                    score.star_rating = bm.difficulty_rating;
+                }
+                if score.bpm == 0.0 {
+                    score.bpm = bm.bpm;
+                }
+                if score.length_seconds == 0 {
+                    score.length_seconds = bm.total_length;
+                }
                 if score.beatmap_max_combo == 0 {
                     score.beatmap_max_combo = bm.max_combo;
                 }
+                if score.version.is_empty() {
+                    score.version = bm.version;
+                }
+                if score.status.is_empty() {
+                    score.status = bm.status;
+                }
                 tracing::debug!(
                     beatmap_id = score.beatmap_id,
+                    ar = bm.ar,
                     od = bm.od,
-                    hp = bm.hp,
-                    max_combo = bm.max_combo,
-                    "Backfilled beatmap stats"
+                    star_rating = bm.difficulty_rating,
+                    "Backfilled beatmap data"
                 );
             }
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
                     beatmap_id = score.beatmap_id,
-                    "Failed to backfill beatmap stats"
+                    "Failed to backfill beatmap data"
                 );
             }
         }
