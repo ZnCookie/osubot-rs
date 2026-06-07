@@ -492,8 +492,17 @@ async fn handle_score_query(
                     return;
                 }
                 let score = &scores[index];
-                render_and_send_single_score(ctx, msg, resp_tx, score, params.mode, &user_stats)
-                    .await;
+                render_and_send_single_score(
+                    ctx,
+                    msg,
+                    resp_tx,
+                    score,
+                    params.mode,
+                    &user_stats,
+                    Some(index),
+                    params.is_pass,
+                )
+                .await;
             } else {
                 // Local PP re-computation + cover download: the osu! API
                 // may return pp=null for failed scores, loved/pending
@@ -706,7 +715,8 @@ async fn handle_beatmap_score_query(
                 return;
             }
         };
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
+            .await;
         return;
     }
 
@@ -840,7 +850,8 @@ async fn handle_beatmap_score_query(
             }
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
+            .await;
     } else {
         let n = limit as usize;
         let key = (_user_id, resolved_bid as i64, mode, Some(limit));
@@ -885,10 +896,21 @@ async fn handle_beatmap_score_query(
         }
         let score = scores.into_iter().nth(n - 1).expect("len checked above");
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+        render_and_send_single_score(
+            ctx,
+            msg,
+            resp_tx,
+            &score,
+            mode,
+            &user_stats,
+            Some(n - 1),
+            true,
+        )
+        .await;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_and_send_single_score(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -896,6 +918,8 @@ async fn render_and_send_single_score(
     score: &Score,
     mode: GameMode,
     user_stats: &UserStats,
+    position: Option<usize>,
+    is_pass: bool,
 ) {
     let mut score = score.clone();
     enrich_score_with_pp(&mut score, mode, true).await;
@@ -1040,13 +1064,13 @@ async fn render_and_send_single_score(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "render_score_card failed, falling back to text");
-            let text = format_score(&score, &user_stats.username, mode, None, true);
+            let text = format_score(&score, &user_stats.username, mode, position, is_pass);
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             cancel_flag.store(true, Ordering::Relaxed);
             warn!("render_score_card timed out, falling back to text");
-            let text = format_score(&score, &user_stats.username, mode, None, true);
+            let text = format_score(&score, &user_stats.username, mode, position, is_pass);
             let _ = resp_tx.send(text).await;
         }
     }
