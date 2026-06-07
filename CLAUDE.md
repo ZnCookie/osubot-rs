@@ -29,11 +29,11 @@ osubot-core    osubot-render  ← 两者无依赖关系，均只依赖 osubot-ty
     └─── osubot ───┘          ← 二进制入口（WebSocket 循环、命令调度、后台调度器）
 ```
 
-**osubot-core 关键模块**：`api.rs`（osu! API + OAuth 缓存 + 401 重试 + mod 完整解析（通过 rosu_mods::GameMods 保留 DT 倍率、DA 等 lazer 模组设置）+ PP 本地 fallback）、`storage.rs`（SQLite 用户绑定/快照/游玩记录）、`commands.rs`（中英文命令解析，`!ps`/`!rs` 优先于 `!p`/`!r` 避免前缀冲突）、`dedup.rs`（信号量去重，相同请求只执行一次）、`rate_limiter.rs`（令牌桶 60 突发/1 每秒）、`ur.rs`（回放解析 + 误差排序贪心 note-key 匹配 + UR 计算 + replay 时序偏移修正）
+**osubot-core 关键模块**：`api.rs`（osu! API + OAuth 缓存 + 401 重试 + mod 完整解析（通过 rosu_mods::GameMods 保留 DT 倍率、DA 等 lazer 模组设置）+ PP 本地 fallback + 谱面成绩查询与 SoloScore 回填）、`storage.rs`（SQLite 用户绑定/快照/游玩记录）、`commands.rs`（中英文命令解析，`!ps`/`!rs` 优先于 `!p`/`!r` 避免前缀冲突，`!s`/`!ss` 谱面成绩命令支持多词用户名、@QQ、mod 过滤、limit 分页）、`response.rs`（PP/准确率/排名变化等文本格式化）、`highlight.rs`（今日高光业务逻辑）、`cache.rs`（replay/beatmap 文件缓存与定期清理）、`irc.rs`（IRC 客户端 + 指数退避自动重连）、`dedup.rs`（请求去重，相同请求只执行一次）、`rate_limiter.rs`（令牌桶 60 突发/1 每秒）、`ur.rs`（回放解析 + 误差排序贪心 note-key 匹配 + UR 计算 + replay 时序偏移修正）
 
-**osubot-render**：信号量限制并发 1 个渲染任务。流程：下载缓存图片 → 提取封面主色调 → 生成内联 CSS 和 data URI 的 HTML → blitz 布局 → Vello CPU 光栅化（超高内容分块渲染）→ JPEG 编码。图片缓存在 `~/.cache/osubot/resources/`，SHA256 命名。
+**osubot-render**：信号量限制并发 1 个渲染任务。流程：下载缓存图片 → 提取封面主色调 → 生成内联 CSS 和 data URI 的 HTML → blitz 布局 → Vello CPU 光栅化（超高内容分块渲染）→ JPEG 编码。下载的封面/头像等图片缓存在 `~/.cache/osubot/resources/`；replay/`.osu` 谱面文件分别缓存在 `~/.cache/osubot/{replays,beatmaps}/`，均按 SHA256 命名；这三类缓存由调度器按 `cache_retention_days`（默认 7 天）定期清理。
 
-**osubot（二进制）**：`main.rs` 拥有 WebSocket 循环和命令调度，每条消息 spawn 独立 tokio 任务，通过 `mpsc::channel(1)` 返回响应。`scheduler.rs` 按用户活跃度（4h~48h）轮询更新，命令处理时通过 `trigger_update` 刷新数据。
+**osubot（二进制）**：`main.rs` 拥有 WebSocket 循环和命令调度，每条消息 spawn 独立 tokio 任务，通过 `mpsc::channel(1)` 返回响应。`scheduler.rs` 按用户活跃度（4h~48h）轮询更新，命令处理时通过 `trigger_update` 刷新数据。`last_beatmap_cache.rs` 维护群内最近查询的谱面缓存（6h TTL），`!s` 不传谱面 ID 时自动使用。
 
 ## 关键模式
 
