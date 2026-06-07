@@ -185,6 +185,20 @@ struct BotContext {
     upstream_chain: Arc<UpstreamChain>,
 }
 
+fn api_error_msg(e: &ApiError) -> String {
+    match e {
+        ApiError::NotFound => "未找到该用户".to_string(),
+        ApiError::MissingApiKey => "API Key 未配置".to_string(),
+        ApiError::OAuthError => "OAuth 认证失败".to_string(),
+        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+            format!("查询繁忙，请 {} 秒后再试", secs)
+        }
+        ApiError::RateLimitedWithRetryAfter(None) => "查询繁忙，请稍后再试".to_string(),
+        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
+        _ => "查询失败，请稍后重试".to_string(),
+    }
+}
+
 impl BotContext {
     async fn resolve_binding(&self, qq: i64) -> Option<(i64, String)> {
         match self.storage.get_binding(qq) {
@@ -196,6 +210,41 @@ impl BotContext {
                 Some(binding)
             }
             Err(_) => None,
+        }
+    }
+
+    async fn fetch_stats_and_reply(
+        &self,
+        qq: i64,
+        user_id: i64,
+        username: &str,
+        mode: GameMode,
+        resp_tx: &mpsc::Sender<String>,
+        log_label: &str,
+    ) {
+        self.scheduler.trigger_update(user_id, mode);
+        match api::fetch_user_stats_by_user_id(&self.rate_limiter, &self.oauth, user_id, mode).await
+        {
+            Ok(stats) => {
+                if stats.username != username {
+                    self.storage
+                        .update_binding_username(qq, &stats.username)
+                        .ok();
+                }
+                self.storage.set_user_id(&stats.username, user_id).ok();
+                let change = self
+                    .storage
+                    .calculate_change(user_id, mode, &stats)
+                    .ok()
+                    .flatten();
+                info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{log_label} success");
+                let response = format_stats_with_change(&stats, &change, mode);
+                let _ = resp_tx.send(response).await;
+            }
+            Err(e) => {
+                warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{log_label} failed");
+                let _ = resp_tx.send(api_error_msg(&e)).await;
+            }
         }
     }
 }
@@ -1255,103 +1304,29 @@ async fn handle_command(
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
             match ctx.storage.get_binding(msg.user_id) {
-                Ok(Some((user_id, current_username))) => {
-                    // Trigger update for the queried mode (bypassing cooldown)
-                    ctx.scheduler.trigger_update(user_id, mode);
-                    match api::fetch_user_stats_by_user_id(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
+                Ok(Some((user_id, username))) => {
+                    ctx.fetch_stats_and_reply(
+                        msg.user_id,
                         user_id,
+                        &username,
                         mode,
+                        &resp_tx,
+                        "QuerySelf",
                     )
-                    .await
-                    {
-                        Ok(stats) => {
-                            // Username change detection
-                            if stats.username != current_username {
-                                ctx.storage
-                                    .update_binding_username(msg.user_id, &stats.username)
-                                    .ok();
-                            }
-                            ctx.storage.set_user_id(&stats.username, user_id).ok();
-                            // Get change from storage (compares with 24h ago snapshot)
-                            let change = ctx
-                                .storage
-                                .calculate_change(user_id, mode, &stats)
-                                .ok()
-                                .flatten();
-                            info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
-                            let response = format_stats_with_change(&stats, &change, mode);
-                            let _ = resp_tx.send(response).await;
-                        }
-                        Err(e) => {
-                            warn!(user_id = user_id, mode = ?mode, error = ?e, "QuerySelf failed");
-                            let err_msg = match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
-                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                    format!("查询繁忙，请 {} 秒后再试", secs)
-                                }
-                                ApiError::RateLimitedWithRetryAfter(None) => {
-                                    "查询繁忙，请稍后再试".to_string()
-                                }
-                                ApiError::ClientRateLimited => {
-                                    "本地请求限流，请稍后再试".to_string()
-                                }
-                                _ => "查询失败，请稍后重试".to_string(),
-                            };
-                            let _ = resp_tx.send(err_msg).await;
-                        }
-                    }
+                    .await;
                 }
                 Ok(None) => {
                     if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id).await {
                         info!(user_id = msg.user_id, osu_id = user_id, username = %username, "QuerySelf auto-bound via upstream");
-                        ctx.scheduler.trigger_update(user_id, mode);
-                        match api::fetch_user_stats_by_user_id(
-                            &ctx.rate_limiter,
-                            &ctx.oauth,
+                        ctx.fetch_stats_and_reply(
+                            msg.user_id,
                             user_id,
+                            &username,
                             mode,
+                            &resp_tx,
+                            "QuerySelf (auto-bound)",
                         )
-                        .await
-                        {
-                            Ok(stats) => {
-                                if stats.username != username {
-                                    ctx.storage
-                                        .update_binding_username(msg.user_id, &stats.username)
-                                        .ok();
-                                }
-                                ctx.storage.set_user_id(&stats.username, user_id).ok();
-                                let change = ctx
-                                    .storage
-                                    .calculate_change(user_id, mode, &stats)
-                                    .ok()
-                                    .flatten();
-                                let response = format_stats_with_change(&stats, &change, mode);
-                                let _ = resp_tx.send(response).await;
-                            }
-                            Err(e) => {
-                                warn!(user_id = user_id, mode = ?mode, error = ?e, "QuerySelf auto-bind failed");
-                                let err_msg = match e {
-                                    ApiError::NotFound => "未找到该用户".to_string(),
-                                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                        format!("查询繁忙，请 {} 秒后再试", secs)
-                                    }
-                                    ApiError::RateLimitedWithRetryAfter(None) => {
-                                        "查询繁忙，请稍后再试".to_string()
-                                    }
-                                    ApiError::ClientRateLimited => {
-                                        "本地请求限流，请稍后再试".to_string()
-                                    }
-                                    _ => "查询失败，请稍后重试".to_string(),
-                                };
-                                let _ = resp_tx.send(err_msg).await;
-                            }
-                        }
+                        .await;
                     } else {
                         info!(user_id = msg.user_id, "QuerySelf but no binding");
                         let _ = resp_tx
@@ -1392,120 +1367,36 @@ async fn handle_command(
                 }
                 Err(e) => {
                     warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
-                    let err_msg = match e {
-                        ApiError::NotFound => "未找到该用户".to_string(),
-                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                            format!("查询繁忙，请 {} 秒后再试", secs)
-                        }
-                        ApiError::RateLimitedWithRetryAfter(None) => {
-                            "查询繁忙，请稍后再试".to_string()
-                        }
-                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
-                        _ => "查询失败，请稍后重试".to_string(),
-                    };
-                    let _ = resp_tx.send(err_msg).await;
+                    let _ = resp_tx.send(api_error_msg(&e)).await;
                 }
             }
         }
         Command::QueryMentionedUser { qq, mode } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
             match ctx.storage.get_binding(qq) {
-                Ok(Some((user_id, current_username))) => {
-                    ctx.scheduler.trigger_update(user_id, mode);
-                    match api::fetch_user_stats_by_user_id(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
+                Ok(Some((user_id, username))) => {
+                    ctx.fetch_stats_and_reply(
+                        qq,
                         user_id,
+                        &username,
                         mode,
+                        &resp_tx,
+                        "QueryMentionedUser",
                     )
-                    .await
-                    {
-                        Ok(stats) => {
-                            if stats.username != current_username {
-                                ctx.storage
-                                    .update_binding_username(qq, &stats.username)
-                                    .ok();
-                            }
-                            ctx.storage.set_user_id(&stats.username, user_id).ok();
-                            let change = ctx
-                                .storage
-                                .calculate_change(user_id, mode, &stats)
-                                .ok()
-                                .flatten();
-                            info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
-                            let response = format_stats_with_change(&stats, &change, mode);
-                            let _ = resp_tx.send(response).await;
-                        }
-                        Err(e) => {
-                            warn!(user_id = user_id, mode = ?mode, error = ?e, "QueryMentionedUser failed");
-                            let err_msg = match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
-                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                    format!("查询繁忙，请 {} 秒后再试", secs)
-                                }
-                                ApiError::RateLimitedWithRetryAfter(None) => {
-                                    "查询繁忙，请稍后重试".to_string()
-                                }
-                                ApiError::ClientRateLimited => {
-                                    "本地请求限流，请稍后再试".to_string()
-                                }
-                                _ => "查询失败，请稍后重试".to_string(),
-                            };
-                            let _ = resp_tx.send(err_msg).await;
-                        }
-                    }
+                    .await;
                 }
                 Ok(None) => {
                     if let Some((user_id, username)) = ctx.resolve_binding(qq).await {
                         info!(qq = qq, osu_id = user_id, username = %username, "QueryMentionedUser auto-bound via upstream");
-                        ctx.scheduler.trigger_update(user_id, mode);
-                        match api::fetch_user_stats_by_user_id(
-                            &ctx.rate_limiter,
-                            &ctx.oauth,
+                        ctx.fetch_stats_and_reply(
+                            qq,
                             user_id,
+                            &username,
                             mode,
+                            &resp_tx,
+                            "QueryMentionedUser (auto-bound)",
                         )
-                        .await
-                        {
-                            Ok(stats) => {
-                                if stats.username != username {
-                                    ctx.storage
-                                        .update_binding_username(qq, &stats.username)
-                                        .ok();
-                                }
-                                ctx.storage.set_user_id(&stats.username, user_id).ok();
-                                let change = ctx
-                                    .storage
-                                    .calculate_change(user_id, mode, &stats)
-                                    .ok()
-                                    .flatten();
-                                let response = format_stats_with_change(&stats, &change, mode);
-                                let _ = resp_tx.send(response).await;
-                            }
-                            Err(e) => {
-                                warn!(user_id = user_id, mode = ?mode, error = ?e, "QueryMentionedUser auto-bind failed");
-                                let err_msg = match e {
-                                    ApiError::NotFound => "未找到该用户".to_string(),
-                                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                        format!("查询繁忙，请 {} 秒后再试", secs)
-                                    }
-                                    ApiError::RateLimitedWithRetryAfter(None) => {
-                                        "查询繁忙，请稍后再试".to_string()
-                                    }
-                                    ApiError::ClientRateLimited => {
-                                        "本地请求限流，请稍后再试".to_string()
-                                    }
-                                    _ => "查询失败，请稍后重试".to_string(),
-                                };
-                                let _ = resp_tx.send(err_msg).await;
-                            }
-                        }
+                        .await;
                     } else {
                         info!(qq = qq, "QueryMentionedUser but no binding");
                         let _ = resp_tx
