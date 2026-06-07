@@ -50,7 +50,19 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     // 查询他人: where <用户名> [, 模式]
     if let Some(rest) = msg.strip_prefix("where ") {
         let parts: Vec<&str> = rest.split(',').collect();
-        let username = parts[0].trim().to_string();
+        let first = parts[0].trim();
+        // where @<QQ> — 按 QQ 查询
+        if let Some(at) = first.strip_prefix('@') {
+            if let Ok(qq) = at.parse::<i64>() {
+                let mode = if parts.len() > 1 {
+                    GameMode::from_mode_str(parts[1].trim())?
+                } else {
+                    GameMode::Osu
+                };
+                return Some(Command::QueryMentionedUser { qq, mode });
+            }
+        }
+        let username = first.to_string();
         let mode = if parts.len() > 1 {
             GameMode::from_mode_str(parts[1].trim())?
         } else {
@@ -125,6 +137,14 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             });
         }
         // !profile <username>
+        if let Some(at) = rest.strip_prefix('@') {
+            if let Ok(parsed) = at.parse::<i64>() {
+                return Some(Command::ProfileCard {
+                    username: None,
+                    qq: Some(parsed),
+                });
+            }
+        }
         return Some(Command::ProfileCard {
             username: Some(rest.to_string()),
             qq: None,
@@ -285,6 +305,12 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 } else {
                     (None, None)
                 }
+            } else if let Some(at) = username_part.strip_prefix('@') {
+                if let Ok(parsed) = at.parse::<i64>() {
+                    (None, Some(parsed))
+                } else {
+                    (Some(username_part.to_string()), None)
+                }
             } else {
                 (Some(username_part.to_string()), None)
             };
@@ -371,6 +397,30 @@ mod tests {
             cmd,
             Command::ProfileCard {
                 username: Some("ZnCookie".to_string()),
+                qq: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_qq_in_text() {
+        let cmd = parse_command("!profile @123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: Some(123456),
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_qq_in_text_non_numeric_username() {
+        let cmd = parse_command("!profile @ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: Some("@ZnCookie".to_string()),
                 qq: None,
             }
         );
@@ -475,6 +525,36 @@ mod tests {
                 mode: GameMode::Osu,
                 username: None,
                 qq: Some(123456),
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_qq_in_text() {
+        let cmd = parse_command("!p @123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: Some(123456),
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_qq_in_text_non_numeric_username() {
+        let cmd = parse_command("!p @ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("@ZnCookie".to_string()),
+                qq: None,
                 limit: 1,
                 is_summary: false,
             }
@@ -827,6 +907,42 @@ mod tests {
     #[test]
     fn test_where_qq_invalid_mode() {
         assert!(parse_command("where qq=123,99", None).is_none());
+    }
+
+    #[test]
+    fn test_where_qq_in_text() {
+        let cmd = parse_command("where @1234567", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryMentionedUser {
+                qq: 1234567,
+                mode: GameMode::Osu,
+            }
+        );
+    }
+
+    #[test]
+    fn test_where_qq_in_text_with_mode() {
+        let cmd = parse_command("where @1234567,1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryMentionedUser {
+                qq: 1234567,
+                mode: GameMode::Taiko,
+            }
+        );
+    }
+
+    #[test]
+    fn test_where_qq_in_text_non_numeric_falls_back() {
+        let cmd = parse_command("where @ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryUser {
+                username: "@ZnCookie".to_string(),
+                mode: GameMode::Osu,
+            }
+        );
     }
 
     #[test]
