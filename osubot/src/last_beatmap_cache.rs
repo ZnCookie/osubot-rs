@@ -20,7 +20,7 @@ impl LastBeatmapCache {
     pub fn get(&self, group_id: i64) -> Option<u32> {
         let map = self.inner.lock().ok()?;
         map.get(&group_id).and_then(|(bid, time)| {
-            if time.elapsed() < Duration::from_secs(86400) {
+            if time.elapsed() < Duration::from_secs(21600) {
                 Some(*bid)
             } else {
                 None

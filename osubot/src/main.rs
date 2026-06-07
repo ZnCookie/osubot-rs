@@ -456,6 +456,8 @@ async fn handle_score_query(
                 let _ = resp_tx.send(empty_msg.to_string()).await;
                 return;
             }
+            ctx.last_beatmap
+                .set(msg.group_id, scores[0].beatmap_id as u32);
             if params.is_single {
                 let index = (params.limit - 1) as usize;
                 if index >= scores.len() {
