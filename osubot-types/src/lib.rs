@@ -130,6 +130,10 @@ pub struct ScoreUser {
     pub avatar_url: String,
     pub country_code: String,
     #[serde(default)]
+    pub user_id: Option<i64>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
     pub global_rank: Option<i64>,
     #[serde(default)]
     pub country_rank: Option<i64>,

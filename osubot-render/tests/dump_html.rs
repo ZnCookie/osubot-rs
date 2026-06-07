@@ -82,6 +82,8 @@ fn make_max_score(mode: GameMode) -> Score {
         user: ScoreUser {
             avatar_url: "https://a.ppy.sh/1".to_string(),
             country_code: "JP".to_string(),
+            user_id: None,
+            username: None,
             global_rank: Some(999999),
             country_rank: Some(999999),
             pp: 99999.9,
@@ -312,6 +314,8 @@ fn make_varied_score(idx: usize) -> Score {
         user: ScoreUser {
             avatar_url: "https://a.ppy.sh/1".to_string(),
             country_code: "CN".to_string(),
+            user_id: None,
+            username: None,
             global_rank: Some(12345),
             country_rank: Some(1000),
             pp: 9876.5,

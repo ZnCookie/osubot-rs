@@ -853,8 +853,28 @@ async fn handle_beatmap_score_query(
         enrich_score_with_pp(&mut score, mode, true).await;
 
         let label = format!("score#{}", sid);
-        let text = format_score(&score, &label, mode, None, true);
-        let _ = resp_tx.send(text).await;
+        let username = score
+            .user
+            .username
+            .clone()
+            .unwrap_or_else(|| label.clone());
+        let user_stats = UserStats {
+            user_id: score.user.user_id.unwrap_or(0),
+            username,
+            pp: score.user.pp,
+            rank: score.user.global_rank.unwrap_or(0),
+            country_rank: score.user.country_rank.unwrap_or(0),
+            country_code: score.user.country_code.clone(),
+            ranked_score: 0,
+            accuracy: 0.0,
+            playcount: 0,
+            hits: 0,
+            playtime: 0,
+            rank_change: None,
+            country_rank_change: None,
+            cover_url: None,
+        };
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
         return;
     }
 

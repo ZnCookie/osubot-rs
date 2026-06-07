@@ -333,6 +333,8 @@ mod tests {
             user: ScoreUser {
                 avatar_url: "https://example.com/avatar.jpg".to_string(),
                 country_code: "CN".to_string(),
+                user_id: None,
+                username: None,
                 global_rank: Some(12345),
                 country_rank: Some(1000),
                 pp: 9876.5,

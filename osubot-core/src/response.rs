@@ -672,6 +672,8 @@ mod tests {
             user: ScoreUser {
                 avatar_url: String::new(),
                 country_code: String::new(),
+                user_id: None,
+                username: None,
                 global_rank: None,
                 country_rank: None,
                 pp: 0.0,

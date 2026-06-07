@@ -703,6 +703,8 @@ mod tests {
             user: osubot_types::ScoreUser {
                 avatar_url: "https://example.com/avatar.jpg".to_string(),
                 country_code: "CN".to_string(),
+                user_id: None,
+                username: None,
                 global_rank: Some(999999),
                 country_rank: Some(999999),
                 pp: 9876.5,
@@ -1122,6 +1124,8 @@ mod tests {
                 user: ScoreUser {
                     avatar_url: String::new(),
                     country_code: "CN".to_string(),
+                    user_id: None,
+                    username: None,
                     global_rank: Some(999999),
                     country_rank: Some(999999),
                     pp: 5000.0,
