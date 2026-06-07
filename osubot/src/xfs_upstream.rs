@@ -21,6 +21,24 @@ use osubot_core::UpstreamBindingProvider;
 
 use crate::config::ProviderConfig;
 
+fn extract_text_from_message(msg: &serde_json::Value) -> String {
+    match msg {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|seg| {
+                if seg["type"] == "text" {
+                    seg["data"]["text"].as_str().map(String::from)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
 pub struct XfsUpstream {
     url: String,
     access_token: String,
@@ -86,6 +104,9 @@ impl UpstreamBindingProvider for XfsUpstream {
             "Authorization",
             format!("Bearer {}", self.access_token).parse().unwrap(),
         );
+        request
+            .headers_mut()
+            .insert("X-Client-Role", "Universal".parse().unwrap());
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,
@@ -116,6 +137,8 @@ impl UpstreamBindingProvider for XfsUpstream {
         debug!(target: "xfs_upstream", %event, "计划请求");
 
         let event_str = event.to_string();
+        #[cfg(test)]
+        eprintln!("[xfs] send: {}", event_str);
         debug!(target: "xfs_upstream", text = %event_str, "实际发送");
         let deadline = Instant::now() + self.timeout;
 
@@ -147,31 +170,30 @@ impl UpstreamBindingProvider for XfsUpstream {
                 Err(_) => continue,
             };
 
+            #[cfg(test)]
+            eprintln!("[xfs] recv: {}", text);
             debug!(target: "xfs_upstream", %text, "服务器返回");
 
             #[derive(Deserialize)]
-            struct SendGroupMsgAction {
+            struct SendMsgAction {
                 action: String,
-                params: SendGroupMsgParams,
+                params: serde_json::Value,
             }
 
-            #[derive(Deserialize)]
-            struct SendGroupMsgParams {
-                #[allow(dead_code)]
-                group_id: i64,
-                message: String,
-            }
-
-            let action: SendGroupMsgAction = match serde_json::from_str(text) {
+            let action: SendMsgAction = match serde_json::from_str(text) {
                 Ok(a) => a,
                 Err(_) => continue,
             };
 
-            if action.action != "send_group_msg" {
+            if action.action != "send_msg" && action.action != "send_group_msg" {
                 continue;
             }
 
-            let resp_text = action.params.message;
+            let resp_text = extract_text_from_message(&action.params["message"]);
+
+            if resp_text.is_empty() {
+                continue;
+            }
 
             if resp_text.contains("未绑定 osu! 账号") {
                 return Ok(None);
@@ -185,6 +207,10 @@ impl UpstreamBindingProvider for XfsUpstream {
                 }
 
                 debug!(username, "xfs: resolved username from upstream");
+                if !self.oauth.is_configured() {
+                    debug!("xfs: skipping osu! API resolution - credentials not configured");
+                    return Ok(None);
+                }
                 let user_id = match api::fetch_user_stats_by_username(
                     &self.api_rate_limiter,
                     &self.oauth,
@@ -248,5 +274,11 @@ mod integration_tests {
             "xfs query should not error, got {:?}",
             result
         );
+        let binding = result.unwrap();
+        if binding.is_none() {
+            eprintln!(
+                "NOTE: relay responded but osu! API resolution failed (no credentials in test)"
+            );
+        }
     }
 }

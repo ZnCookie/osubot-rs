@@ -1088,6 +1088,10 @@ impl OauthTokenCache {
         }
     }
 
+    pub fn is_configured(&self) -> bool {
+        !self.client_id.is_empty() && !self.client_secret.is_empty()
+    }
+
     pub async fn invalidate(&self) {
         let _guard = self.refresh_lock.lock().await;
         let mut guard = self.cache.lock().await;
