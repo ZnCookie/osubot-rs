@@ -105,7 +105,7 @@ fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
     // Star rating only (difficulty name removed to keep cover strip clean
     // and avoid horizontal overlap with .time-in-cover on long version strings).
     html.push_str(&format!(
-        r#"<span class="star-in-cover">★ {:.1}</span>"#,
+        r#"<span class="star-in-cover">★ {:.2}</span>"#,
         data.score.star_rating
     ));
 
@@ -669,7 +669,7 @@ mod tests {
         };
         let html = wrap_score_list_html(&params);
         assert!(
-            html.contains(r#"<span class="star-in-cover">★ 6.5</span>"#),
+            html.contains(r#"<span class="star-in-cover">★ 6.50</span>"#),
             "star-in-cover should show `★ <rating>` only; got HTML: {}",
             html.split("star-in-cover")
                 .nth(1)
@@ -677,10 +677,6 @@ mod tests {
                 .chars()
                 .take(200)
                 .collect::<String>()
-        );
-        assert!(
-            !html.contains("6.50"),
-            "old `6.50` two-decimal format must be replaced"
         );
     }
 }
