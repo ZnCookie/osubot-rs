@@ -195,6 +195,27 @@ fn score_dedup() -> &'static ScoreDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
+type ScoreByIdDedup = RequestDedup<(i64, GameMode), Score, String>;
+
+fn score_by_id_dedup() -> &'static ScoreByIdDedup {
+    static DEDUP: OnceLock<ScoreByIdDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
+type BeatmapScoreDedup = RequestDedup<(i64, i64, GameMode, Option<Vec<String>>), Score, String>;
+
+fn beatmap_score_dedup() -> &'static BeatmapScoreDedup {
+    static DEDUP: OnceLock<BeatmapScoreDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
+type BeatmapScoresDedup = RequestDedup<(i64, i64, GameMode, Option<u32>), Vec<Score>, String>;
+
+fn beatmap_scores_dedup() -> &'static BeatmapScoresDedup {
+    static DEDUP: OnceLock<BeatmapScoresDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
 async fn resolve_score_user(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -203,10 +224,10 @@ async fn resolve_score_user(
     mode: GameMode,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<(i64, String, UserStats)> {
-    tracing::debug!("resolve_score_user: starting");
+    tracing::trace!("resolve_score_user: starting");
     if let Some(ref name) = username {
         // Look up by username
-        tracing::debug!("resolve_score_user: looking up by username '{}'", name);
+        tracing::trace!("resolve_score_user: looking up by username '{}'", name);
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
                 ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
@@ -289,7 +310,7 @@ async fn handle_score_query(
     resp_tx: &mpsc::Sender<String>,
     params: ScoreQueryParams<'_>,
 ) {
-    tracing::debug!("handle_score_query: starting");
+    tracing::trace!("handle_score_query: starting");
 
     // For self/bound users (no explicit username/qq), resolve user_id from DB
     // and parallelize the two API calls. For username/QQ lookups, use the
@@ -311,7 +332,7 @@ async fn handle_score_query(
             }
         };
 
-        tracing::debug!(
+        tracing::trace!(
             "handle_score_query: bound user, user_id={}, username={}",
             uid,
             name
@@ -379,7 +400,7 @@ async fn handle_score_query(
                 .await
             {
                 Some(u) => {
-                    tracing::debug!(
+                    tracing::trace!(
                         "resolve_score_user: resolved user_id={}, username={}",
                         u.0,
                         u.1
@@ -398,7 +419,7 @@ async fn handle_score_query(
         let dedup_oauth = ctx.oauth.clone();
         let dedup_mode = params.mode;
 
-        tracing::debug!(
+        tracing::trace!(
             "Fetching scores for user_id={}, mode={:?}, limit={}",
             uid,
             params.mode,
@@ -470,214 +491,18 @@ async fn handle_score_query(
                         .await;
                     return;
                 }
-                let position = Some(index);
                 let score = &scores[index];
-
-                // Try rendering score card image (with overall timeout)
-                let play_time = format_play_datetime(&score.created_at);
-                let user_global_rank = if user_stats.rank > 0 {
-                    Some(user_stats.rank)
-                } else {
-                    None
-                };
-                let user_country_rank = if user_stats.country_rank > 0 {
-                    Some(user_stats.country_rank)
-                } else {
-                    None
-                };
-                let change = ctx
-                    .storage
-                    .calculate_change(user_id, params.mode, &user_stats)
-                    .ok()
-                    .flatten();
-
-                let pp_change = change.as_ref().and_then(|c| c.pp_change);
-                let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
-                let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
-                tracing::debug!(
-                    "Starting score card render for {} (pp={}, rank={:?}, country_rank={:?}, pp_change={:?})",
-                    dedup_username,
-                    user_stats.pp,
-                    user_global_rank,
-                    user_country_rank,
-                    pp_change
-                );
-                // 计算 UR（异步，10秒超时，失败不影响渲染）
-                // osu! 模式、有效 score_id 且有 replay 时尝试（rosu_replay 支持 stable 与 lazer）
-                tracing::debug!(score_id = score.score_id, mode = ?params.mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
-                let ur_result = if params.mode == GameMode::Osu
-                    && score.score_id > 0
-                    && score.has_replay
-                {
-                    let rl = ctx.rate_limiter.clone();
-                    let oa = ctx.oauth.clone();
-                    let mods = score.mods.clone();
-                    let ur = tokio::time::timeout(
-                        std::time::Duration::from_secs(UR_TIMEOUT_SECS),
-                        osubot_core::ur::calculate_score_ur(
-                            &rl,
-                            &oa,
-                            osubot_core::ur::ScoreUrParams {
-                                score_id: score.score_id,
-                                legacy_score_id: score.legacy_score_id,
-                                beatmap_id: score.beatmap_id,
-                                mode: params.mode,
-                                mods: mods.clone(),
-                            },
-                        ),
-                    )
-                    .await;
-                    match ur {
-                        Ok(Some(ur_val)) => {
-                            tracing::debug!(
-                                score_id = score.score_id,
-                                total_ur = ur_val,
-                                "UR calculation succeeded"
-                            );
-                            Some(ur_val)
-                        }
-                        Ok(None) => {
-                            tracing::warn!(
-                                score_id = score.score_id,
-                                "UR calculation returned None"
-                            );
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!(score_id = score.score_id, "UR calculation timed out");
-                            None
-                        }
-                    }
-                } else {
-                    tracing::debug!(
-                        score_id = score.score_id,
-                        mode = ?params.mode,
-                        is_lazer = score.is_lazer,
-                        has_replay = score.has_replay,
-                        "Skipping UR calculation"
-                    );
-                    None
-                };
-
-                // 计算 PP 分解和 if-acc（单张成绩卡片需要）
-                let mut score = score.clone();
-                osubot_core::enrich_score_with_pp(&mut score, params.mode, true).await;
-
-                // 计算 mod 调整后的 AR/OD/CS/HP
-                let (ar_eff, od_eff, cs_eff, hp_eff) = {
-                    let (a, o, c, h) = osubot_core::apply_mod_adjustment_to_stats(
-                        params.mode,
-                        score.ar,
-                        score.od,
-                        score.cs,
-                        score.hp,
-                        &score.mods,
-                    );
-                    let same = (a - score.ar).abs() < 0.01
-                        && (o - score.od).abs() < 0.01
-                        && (c - score.cs).abs() < 0.01
-                        && (h - score.hp).abs() < 0.01;
-                    if same {
-                        (None, None, None, None)
-                    } else {
-                        (Some(a), Some(o), Some(c), Some(h))
-                    }
-                };
-
-                let cover_image: Option<image::DynamicImage> = if !score.cover_url.is_empty() {
-                    match osubot_render::cache::fetch_and_cache(
-                        &score.cover_url,
-                        osubot_render::cache::http_client(),
-                    )
-                    .await
-                    {
-                        Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                        Err(_) => None,
-                    }
-                } else {
-                    None
-                };
-
-                let ur_value = ur_result;
-
-                // 30s outer timeout for score card rendering.
-                // The cancel flag is shared with render_score_card; if this
-                // timeout fires, it sets the flag so the blocking render
-                // detects it at loop boundaries and aborts early.
-                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let cancel_clone = cancel.clone();
-                let render_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(RENDER_TIMEOUT_SECS),
-                    render_score_card(osubot_render::ScoreCardParams {
-                        score: &score,
-                        username: &dedup_username,
-                        mode: params.mode,
-                        user_pp: user_stats.pp,
-                        user_global_rank,
-                        user_country_rank,
-                        country_code: &user_stats.country_code,
-                        avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
-                        play_time: &play_time,
-                        fav_count: score.fav_count,
-                        play_count: score.play_count,
-                        pp_change,
-                        global_rank_change,
-                        country_rank_change,
-                        ranked_status: &score.status,
-                        ur_value,
-                        ar_eff,
-                        od_eff,
-                        cs_eff,
-                        hp_eff,
-                        cover_image,
-                        cancel_flag: Some(cancel_clone),
-                    }),
+                render_and_send_single_score(
+                    ctx,
+                    msg,
+                    resp_tx,
+                    score,
+                    params.mode,
+                    &user_stats,
+                    Some(index),
+                    params.is_pass,
                 )
                 .await;
-
-                match render_result {
-                    Ok(Ok(jpeg_bytes)) => {
-                        tracing::info!(
-                            "Score card rendered successfully, {} bytes",
-                            jpeg_bytes.len()
-                        );
-                        let jpeg = Arc::new(jpeg_bytes);
-                        let write = ctx.write.clone();
-                        let group_id = msg.group_id;
-                        let resp_tx_img = resp_tx.clone();
-                        tokio::spawn(async move {
-                            if send_group_msg_with_image(&write, group_id, &jpeg)
-                                .await
-                                .is_err()
-                            {
-                                let _ = resp_tx_img.send("图片发送失败".to_string()).await;
-                            }
-                        });
-                    }
-                    Ok(Err(e)) => {
-                        warn!(error = %e, "render_score_card failed, falling back to text");
-                        let response = format_score(
-                            &score,
-                            &dedup_username,
-                            params.mode,
-                            position,
-                            params.is_pass,
-                        );
-                        let _ = resp_tx.send(response).await;
-                    }
-                    Err(_) => {
-                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                        warn!("render_score_card timed out after 30s, falling back to text");
-                        let response = format_score(
-                            &score,
-                            &dedup_username,
-                            params.mode,
-                            position,
-                            params.is_pass,
-                        );
-                        let _ = resp_tx.send(response).await;
-                    }
-                }
             } else {
                 // Local PP re-computation + cover download: the osu! API
                 // may return pp=null for failed scores, loved/pending
@@ -835,26 +660,63 @@ async fn handle_beatmap_score_query(
 
     if let Some(sid) = score_id {
         info!(score_id = sid, "ScoreOnBeatmap by score_id");
-        let mut score = match api::get_score_by_id(&ctx.rate_limiter, &ctx.oauth, sid).await {
+        let dedup_rate_limiter = ctx.rate_limiter.clone();
+        let dedup_oauth = ctx.oauth.clone();
+        let sid_key = sid as i64;
+        let score_result = score_by_id_dedup()
+            .run_or_wait((sid_key, mode), move || {
+                let rate_limiter = dedup_rate_limiter.clone();
+                let oauth = dedup_oauth.clone();
+                async move {
+                    api::get_score_by_id(&rate_limiter, &oauth, sid)
+                        .await
+                        .map_err(|e| match e {
+                            ApiError::NotFound => "未找到该成绩".to_string(),
+                            e => {
+                                warn!(error = ?e, "get_score_by_id failed");
+                                "获取成绩失败，请稍后再试".to_string()
+                            }
+                        })
+                }
+            })
+            .await;
+        let score = match score_result {
             Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => "未找到该成绩".to_string(),
-                    e => {
-                        warn!(error = ?e, "get_score_by_id failed");
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        enrich_score_with_pp(&mut score, mode, true).await;
 
-        let label = format!("score#{}", sid);
-        let text = format_score(&score, &label, mode, None, true);
-        let _ = resp_tx.send(text).await;
+        let user_id = score.user.user_id.unwrap_or(0);
+        if user_id == 0 {
+            let _ = resp_tx.send("无法获取该玩家信息".to_string()).await;
+            return;
+        }
+        let user_stats = match api::fetch_user_stats_by_user_id(
+            &ctx.rate_limiter,
+            &ctx.oauth,
+            user_id,
+            mode,
+        )
+        .await
+        {
+            Ok(stats) => {
+                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                ctx.scheduler.trigger_update(user_id, mode);
+                stats
+            }
+            Err(e) => {
+                warn!(user_id = user_id, error = ?e, "fetch_user_stats_by_user_id failed for score_id query");
+                let _ = resp_tx
+                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .await;
+                return;
+            }
+        };
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
+            .await;
         return;
     }
 
@@ -895,27 +757,40 @@ async fn handle_beatmap_score_query(
         None => return,
     };
 
+    ctx.scheduler.trigger_update(_user_id, mode);
+
     if is_all {
         let api_limit = if limit > 1 { Some(limit) } else { None };
-        let scores = match api::get_user_beatmap_scores_all(
-            &ctx.rate_limiter,
-            &ctx.oauth,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            api_limit,
-        )
-        .await
-        {
+        let key = (_user_id, resolved_bid as i64, mode, api_limit);
+        let dedup_rall = ctx.rate_limiter.clone();
+        let dedup_oall = ctx.oauth.clone();
+        let scores_result = beatmap_scores_dedup()
+            .run_or_wait(key, move || {
+                let rate_limiter = dedup_rall.clone();
+                let oauth = dedup_oall.clone();
+                async move {
+                    api::get_user_beatmap_scores_all(
+                        &rate_limiter,
+                        &oauth,
+                        resolved_bid as i64,
+                        _user_id,
+                        mode,
+                        api_limit,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                        e => {
+                            warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                            "获取成绩失败，请稍后再试".to_string()
+                        }
+                    })
+                }
+            })
+            .await;
+        let scores = match scores_result {
             Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
-                    e => {
-                        warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
@@ -927,65 +802,88 @@ async fn handle_beatmap_score_query(
         render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
             .await;
     } else if limit == 1 {
-        let score = match api::get_user_beatmap_score(
-            &ctx.rate_limiter,
-            &ctx.oauth,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            &mods,
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => {
-                        if mods.is_some() {
-                            "未找到符合该 mod 条件的成绩".to_string()
-                        } else {
-                            "该玩家在此谱面上没有成绩".to_string()
+        let key = (_user_id, resolved_bid as i64, mode, mods.clone());
+        let dedup_rscore = ctx.rate_limiter.clone();
+        let dedup_oscore = ctx.oauth.clone();
+        let dedup_mods = mods.clone();
+        let score_result = beatmap_score_dedup()
+            .run_or_wait(key, move || {
+                let rate_limiter = dedup_rscore.clone();
+                let oauth = dedup_oscore.clone();
+                let mods = dedup_mods.clone();
+                async move {
+                    api::get_user_beatmap_score(
+                        &rate_limiter,
+                        &oauth,
+                        resolved_bid as i64,
+                        _user_id,
+                        mode,
+                        &mods,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => {
+                            if mods.is_some() {
+                                "未找到符合该 mod 条件的成绩".to_string()
+                            } else {
+                                "该玩家在此谱面上没有成绩".to_string()
+                            }
                         }
-                    }
-                    e => {
-                        warn!(
-                            error = ?e,
-                            beatmap_id = resolved_bid,
-                            ?mods,
-                            "get_user_beatmap_score failed"
-                        );
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+                        e => {
+                            warn!(
+                                error = ?e,
+                                beatmap_id = resolved_bid,
+                                ?mods,
+                                "get_user_beatmap_score failed"
+                            );
+                            "获取成绩失败，请稍后再试".to_string()
+                        }
+                    })
+                }
+            })
+            .await;
+        let score = match score_result {
+            Ok(s) => s,
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
         };
-        let mut score = score;
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        enrich_score_with_pp(&mut score, mode, true).await;
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
+            .await;
     } else {
         let n = limit as usize;
-        let scores = match api::get_user_beatmap_scores_all(
-            &ctx.rate_limiter,
-            &ctx.oauth,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            Some(limit),
-        )
-        .await
-        {
+        let key = (_user_id, resolved_bid as i64, mode, Some(limit));
+        let dedup_rscores = ctx.rate_limiter.clone();
+        let dedup_oscores = ctx.oauth.clone();
+        let scores_result = beatmap_scores_dedup()
+            .run_or_wait(key, move || {
+                let rate_limiter = dedup_rscores.clone();
+                let oauth = dedup_oscores.clone();
+                async move {
+                    api::get_user_beatmap_scores_all(
+                        &rate_limiter,
+                        &oauth,
+                        resolved_bid as i64,
+                        _user_id,
+                        mode,
+                        Some(limit),
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                        e => {
+                            warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                            "获取成绩失败，请稍后再试".to_string()
+                        }
+                    })
+                }
+            })
+            .await;
+        let scores = match scores_result {
             Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
-                    e => {
-                        warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
@@ -996,13 +894,23 @@ async fn handle_beatmap_score_query(
                 .await;
             return;
         }
-        let mut score = scores.into_iter().nth(n - 1).expect("len checked above");
+        let score = scores.into_iter().nth(n - 1).expect("len checked above");
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        enrich_score_with_pp(&mut score, mode, true).await;
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+        render_and_send_single_score(
+            ctx,
+            msg,
+            resp_tx,
+            &score,
+            mode,
+            &user_stats,
+            Some(n - 1),
+            true,
+        )
+        .await;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_and_send_single_score(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -1010,8 +918,14 @@ async fn render_and_send_single_score(
     score: &Score,
     mode: GameMode,
     user_stats: &UserStats,
+    position: Option<usize>,
+    is_pass: bool,
 ) {
+    let mut score = score.clone();
+    enrich_score_with_pp(&mut score, mode, true).await;
+
     let ur_value = if mode == GameMode::Osu && score.score_id > 0 && score.has_replay {
+        tracing::trace!(score_id = score.score_id, mode = ?mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
         let rl = ctx.rate_limiter.clone();
         let oa = ctx.oauth.clone();
         let ur_params = osubot_core::ur::ScoreUrParams {
@@ -1022,15 +936,36 @@ async fn render_and_send_single_score(
             mods: score.mods.clone(),
         };
         match tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(UR_TIMEOUT_SECS),
             osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
         )
         .await
         {
-            Ok(Some(ur)) => Some(ur),
-            _ => None,
+            Ok(Some(ur_val)) => {
+                tracing::debug!(
+                    score_id = score.score_id,
+                    total_ur = ur_val,
+                    "UR calculation succeeded"
+                );
+                Some(ur_val)
+            }
+            Ok(None) => {
+                tracing::warn!(score_id = score.score_id, "UR calculation returned None");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(score_id = score.score_id, "UR calculation timed out");
+                None
+            }
         }
     } else {
+        tracing::trace!(
+            score_id = score.score_id,
+            mode = ?mode,
+            is_lazer = score.is_lazer,
+            has_replay = score.has_replay,
+            "Skipping UR calculation"
+        );
         None
     };
 
@@ -1067,23 +1002,40 @@ async fn render_and_send_single_score(
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel_flag.clone();
 
+    let change = ctx
+        .storage
+        .calculate_change(user_stats.user_id, mode, user_stats)
+        .ok()
+        .flatten();
+    let pp_change = change.as_ref().and_then(|c| c.pp_change);
+    let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
+    let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+
     let render_result = tokio::time::timeout(
         Duration::from_secs(RENDER_TIMEOUT_SECS),
         render_score_card(osubot_render::ScoreCardParams {
-            score,
+            score: &score,
             username: &user_stats.username,
             mode,
             user_pp: user_stats.pp,
-            user_global_rank: Some(user_stats.rank),
-            user_country_rank: Some(user_stats.country_rank),
+            user_global_rank: if user_stats.rank > 0 {
+                Some(user_stats.rank)
+            } else {
+                None
+            },
+            user_country_rank: if user_stats.country_rank > 0 {
+                Some(user_stats.country_rank)
+            } else {
+                None
+            },
             country_code: &user_stats.country_code,
             avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
             play_time: &play_time,
             fav_count: score.fav_count,
             play_count: score.play_count,
-            pp_change: None,
-            global_rank_change: None,
-            country_rank_change: None,
+            pp_change,
+            global_rank_change,
+            country_rank_change,
             ranked_status: &score.status,
             ur_value,
             ar_eff,
@@ -1112,13 +1064,13 @@ async fn render_and_send_single_score(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "render_score_card failed, falling back to text");
-            let text = format_score(score, &user_stats.username, mode, None, true);
+            let text = format_score(&score, &user_stats.username, mode, position, is_pass);
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             cancel_flag.store(true, Ordering::Relaxed);
             warn!("render_score_card timed out, falling back to text");
-            let text = format_score(score, &user_stats.username, mode, None, true);
+            let text = format_score(&score, &user_stats.username, mode, position, is_pass);
             let _ = resp_tx.send(text).await;
         }
     }
@@ -2142,7 +2094,7 @@ async fn handle_irc_message(
 #[tokio::main]
 async fn main() {
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("osubot=debug,osubot_core=debug,info"));
+        .unwrap_or_else(|_| EnvFilter::new("osubot=info,osubot_core=info,info"));
 
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(env_filter)

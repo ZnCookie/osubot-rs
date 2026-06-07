@@ -707,6 +707,10 @@ struct OsuApiScoreStatistics {
 
 #[derive(Debug, serde::Deserialize)]
 struct OsuApiScoreUser {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    username: Option<String>,
     avatar_url: Option<String>,
     country_code: Option<String>,
     statistics: Option<OsuApiScoreUserStatistics>,
@@ -884,6 +888,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
             Some(ScoreUser {
                 avatar_url: u.avatar_url.unwrap_or_default(),
                 country_code: u.country_code.unwrap_or_default(),
+                user_id: u.id,
+                username: u.username,
                 global_rank: u.statistics.as_ref().and_then(|s| s.global_rank),
                 country_rank: u.statistics.as_ref().and_then(|s| s.country_rank),
                 pp: u.statistics.as_ref().and_then(|s| s.pp).unwrap_or(0.0),
@@ -892,6 +898,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         .unwrap_or(ScoreUser {
             avatar_url: String::new(),
             country_code: String::new(),
+            user_id: None,
+            username: None,
             global_rank: None,
             country_rank: None,
             pp: 0.0,
@@ -1445,14 +1453,14 @@ async fn backfill_score_details(
         match fetch_score_detail(rate_limiter, oauth, mode_str, score.score_id).await {
             Ok(Some(val)) => {
                 score.score_value = val;
-                tracing::debug!(
+                tracing::trace!(
                     score_id = score.score_id,
                     score_value = val,
                     "Backfilled score value from detail endpoint"
                 );
             }
             Ok(None) => {
-                tracing::debug!(
+                tracing::trace!(
                     score_id = score.score_id,
                     "Score detail endpoint returned no value"
                 );
@@ -1820,7 +1828,7 @@ async fn fetch_score_detail(
 ) -> Result<Option<i64>, ApiError> {
     let client = http_client();
     let url = format!("https://osu.ppy.sh/api/v2/scores/{}/{}", ruleset, score_id);
-    tracing::debug!(url = %url, "Fetching score detail");
+    tracing::trace!(url = %url, "Fetching score detail");
 
     rate_limiter
         .acquire()
@@ -2193,6 +2201,8 @@ mod tests {
             "cover": "https://example.com/cover.jpg"
         }));
         api.user = Some(serde_json::json!({
+            "id": 1001,
+            "username": "TestPlayer",
             "avatar_url": "https://example.com/avatar.png",
             "country_code": "CN",
             "statistics": {
@@ -2205,6 +2215,8 @@ mod tests {
         assert_eq!(score.cover_url, "https://example.com/cover.jpg");
         assert_eq!(score.user.avatar_url, "https://example.com/avatar.png");
         assert_eq!(score.user.country_code, "CN");
+        assert_eq!(score.user.user_id, Some(1001));
+        assert_eq!(score.user.username.as_deref(), Some("TestPlayer"));
         assert_eq!(score.user.global_rank, Some(1234));
         assert_eq!(score.user.country_rank, Some(56));
         assert!((score.user.pp - 9876.5).abs() < 0.0001);
