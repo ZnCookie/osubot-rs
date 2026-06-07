@@ -2357,6 +2357,8 @@ async fn main() {
             }
         });
 
+        let last_beatmap = last_beatmap_cache::LastBeatmapCache::new();
+
         // Message loop
         loop {
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2404,7 +2406,7 @@ async fn main() {
                             groups_config: groups_config_arc.clone(),
                             write: write.clone(),
                             onebot_api: onebot_api.clone(),
-                            last_beatmap: last_beatmap_cache::LastBeatmapCache::new(),
+                            last_beatmap: last_beatmap.clone(),
                         };
                         let irc_nickname = irc_nickname.clone();
                         tokio::spawn(async move {
