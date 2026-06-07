@@ -833,19 +833,6 @@ async fn handle_beatmap_score_query(
         _ => return,
     };
 
-    let resolved_bid = match beatmap_id {
-        Some(bid) => bid,
-        None => match ctx.last_beatmap.get(msg.group_id) {
-            Some(bid) => bid,
-            None => {
-                let _ = resp_tx
-                    .send("请提供谱面 ID 或先查询一张图".to_string())
-                    .await;
-                return;
-            }
-        },
-    };
-
     if let Some(sid) = score_id {
         info!(score_id = sid, "ScoreOnBeatmap by score_id");
         let mut score = match api::get_score_by_id(&ctx.rate_limiter, &ctx.oauth, sid).await {
@@ -870,6 +857,19 @@ async fn handle_beatmap_score_query(
         let _ = resp_tx.send(text).await;
         return;
     }
+
+    let resolved_bid = match beatmap_id {
+        Some(bid) => bid,
+        None => match ctx.last_beatmap.get(msg.group_id) {
+            Some(bid) => bid,
+            None => {
+                let _ = resp_tx
+                    .send("请提供谱面 ID 或先查询一张图".to_string())
+                    .await;
+                return;
+            }
+        },
+    };
 
     info!(
         beatmap_id = resolved_bid,
