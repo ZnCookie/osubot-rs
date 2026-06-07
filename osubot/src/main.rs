@@ -1090,6 +1090,15 @@ async fn render_and_send_single_score(
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel_flag.clone();
 
+    let change = ctx
+        .storage
+        .calculate_change(user_stats.user_id, mode, user_stats)
+        .ok()
+        .flatten();
+    let pp_change = change.as_ref().and_then(|c| c.pp_change);
+    let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
+    let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+
     let render_result = tokio::time::timeout(
         Duration::from_secs(RENDER_TIMEOUT_SECS),
         render_score_card(osubot_render::ScoreCardParams {
@@ -1104,9 +1113,9 @@ async fn render_and_send_single_score(
             play_time: &play_time,
             fav_count: score.fav_count,
             play_count: score.play_count,
-            pp_change: None,
-            global_rank_change: None,
-            country_rank_change: None,
+            pp_change,
+            global_rank_change,
+            country_rank_change,
             ranked_status: &score.status,
             ur_value,
             ar_eff,
