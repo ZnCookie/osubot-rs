@@ -195,6 +195,27 @@ fn score_dedup() -> &'static ScoreDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
+type ScoreByIdDedup = RequestDedup<(i64, GameMode), Score, String>;
+
+fn score_by_id_dedup() -> &'static ScoreByIdDedup {
+    static DEDUP: OnceLock<ScoreByIdDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
+type BeatmapScoreDedup = RequestDedup<(i64, i64, GameMode, Option<Vec<String>>), Score, String>;
+
+fn beatmap_score_dedup() -> &'static BeatmapScoreDedup {
+    static DEDUP: OnceLock<BeatmapScoreDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
+type BeatmapScoresDedup = RequestDedup<(i64, i64, GameMode, Option<u32>), Vec<Score>, String>;
+
+fn beatmap_scores_dedup() -> &'static BeatmapScoresDedup {
+    static DEDUP: OnceLock<BeatmapScoresDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
 async fn resolve_score_user(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -835,16 +856,29 @@ async fn handle_beatmap_score_query(
 
     if let Some(sid) = score_id {
         info!(score_id = sid, "ScoreOnBeatmap by score_id");
-        let mut score = match api::get_score_by_id(&ctx.rate_limiter, &ctx.oauth, sid).await {
+        let dedup_rate_limiter = ctx.rate_limiter.clone();
+        let dedup_oauth = ctx.oauth.clone();
+        let sid_key = sid as i64;
+        let score_result = score_by_id_dedup()
+            .run_or_wait((sid_key, mode), move || {
+                let rate_limiter = dedup_rate_limiter.clone();
+                let oauth = dedup_oauth.clone();
+                async move {
+                    api::get_score_by_id(&rate_limiter, &oauth, sid)
+                        .await
+                        .map_err(|e| match e {
+                            ApiError::NotFound => "未找到该成绩".to_string(),
+                            e => {
+                                warn!(error = ?e, "get_score_by_id failed");
+                                "获取成绩失败，请稍后再试".to_string()
+                            }
+                        })
+                }
+            })
+            .await;
+        let mut score = match score_result {
             Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => "未找到该成绩".to_string(),
-                    e => {
-                        warn!(error = ?e, "get_score_by_id failed");
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
@@ -867,6 +901,7 @@ async fn handle_beatmap_score_query(
         {
             Ok(stats) => {
                 ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                ctx.scheduler.trigger_update(user_id, mode);
                 stats
             }
             Err(e) => {
@@ -918,27 +953,40 @@ async fn handle_beatmap_score_query(
         None => return,
     };
 
+    ctx.scheduler.trigger_update(_user_id, mode);
+
     if is_all {
         let api_limit = if limit > 1 { Some(limit) } else { None };
-        let scores = match api::get_user_beatmap_scores_all(
-            &ctx.rate_limiter,
-            &ctx.oauth,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            api_limit,
-        )
-        .await
-        {
+        let key = (_user_id, resolved_bid as i64, mode, api_limit);
+        let dedup_rall = ctx.rate_limiter.clone();
+        let dedup_oall = ctx.oauth.clone();
+        let scores_result = beatmap_scores_dedup()
+            .run_or_wait(key, move || {
+                let rate_limiter = dedup_rall.clone();
+                let oauth = dedup_oall.clone();
+                async move {
+                    api::get_user_beatmap_scores_all(
+                        &rate_limiter,
+                        &oauth,
+                        resolved_bid as i64,
+                        _user_id,
+                        mode,
+                        api_limit,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                        e => {
+                            warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                            "获取成绩失败，请稍后再试".to_string()
+                        }
+                    })
+                }
+            })
+            .await;
+        let scores = match scores_result {
             Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
-                    e => {
-                        warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
@@ -950,65 +998,88 @@ async fn handle_beatmap_score_query(
         render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
             .await;
     } else if limit == 1 {
-        let score = match api::get_user_beatmap_score(
-            &ctx.rate_limiter,
-            &ctx.oauth,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            &mods,
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => {
-                        if mods.is_some() {
-                            "未找到符合该 mod 条件的成绩".to_string()
-                        } else {
-                            "该玩家在此谱面上没有成绩".to_string()
+        let key = (_user_id, resolved_bid as i64, mode, mods.clone());
+        let dedup_rscore = ctx.rate_limiter.clone();
+        let dedup_oscore = ctx.oauth.clone();
+        let dedup_mods = mods.clone();
+        let score_result = beatmap_score_dedup()
+            .run_or_wait(key, move || {
+                let rate_limiter = dedup_rscore.clone();
+                let oauth = dedup_oscore.clone();
+                let mods = dedup_mods.clone();
+                async move {
+                    api::get_user_beatmap_score(
+                        &rate_limiter,
+                        &oauth,
+                        resolved_bid as i64,
+                        _user_id,
+                        mode,
+                        &mods,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => {
+                            if mods.is_some() {
+                                "未找到符合该 mod 条件的成绩".to_string()
+                            } else {
+                                "该玩家在此谱面上没有成绩".to_string()
+                            }
                         }
-                    }
-                    e => {
-                        warn!(
-                            error = ?e,
-                            beatmap_id = resolved_bid,
-                            ?mods,
-                            "get_user_beatmap_score failed"
-                        );
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+                        e => {
+                            warn!(
+                                error = ?e,
+                                beatmap_id = resolved_bid,
+                                ?mods,
+                                "get_user_beatmap_score failed"
+                            );
+                            "获取成绩失败，请稍后再试".to_string()
+                        }
+                    })
+                }
+            })
+            .await;
+        let mut score = match score_result {
+            Ok(s) => s,
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
         };
-        let mut score = score;
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
         enrich_score_with_pp(&mut score, mode, true).await;
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
     } else {
         let n = limit as usize;
-        let scores = match api::get_user_beatmap_scores_all(
-            &ctx.rate_limiter,
-            &ctx.oauth,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            Some(limit),
-        )
-        .await
-        {
+        let key = (_user_id, resolved_bid as i64, mode, Some(limit));
+        let dedup_rscores = ctx.rate_limiter.clone();
+        let dedup_oscores = ctx.oauth.clone();
+        let scores_result = beatmap_scores_dedup()
+            .run_or_wait(key, move || {
+                let rate_limiter = dedup_rscores.clone();
+                let oauth = dedup_oscores.clone();
+                async move {
+                    api::get_user_beatmap_scores_all(
+                        &rate_limiter,
+                        &oauth,
+                        resolved_bid as i64,
+                        _user_id,
+                        mode,
+                        Some(limit),
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                        e => {
+                            warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                            "获取成绩失败，请稍后再试".to_string()
+                        }
+                    })
+                }
+            })
+            .await;
+        let scores = match scores_result {
             Ok(s) => s,
-            Err(e) => {
-                let err_msg = match e {
-                    ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
-                    e => {
-                        warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                        "获取成绩失败，请稍后再试".to_string()
-                    }
-                };
+            Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
@@ -1106,8 +1177,16 @@ async fn render_and_send_single_score(
             username: &user_stats.username,
             mode,
             user_pp: user_stats.pp,
-            user_global_rank: Some(user_stats.rank),
-            user_country_rank: Some(user_stats.country_rank),
+            user_global_rank: if user_stats.rank > 0 {
+                Some(user_stats.rank)
+            } else {
+                None
+            },
+            user_country_rank: if user_stats.country_rank > 0 {
+                Some(user_stats.country_rank)
+            } else {
+                None
+            },
             country_code: &user_stats.country_code,
             avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
             play_time: &play_time,
