@@ -39,7 +39,7 @@ path = "osubot.db"
 # [groups.default]
 # 命令开关（可选，默认全部开启）
 # query = true              # ~、where、查
-# score = true              # !p、!ps、!r、!rs
+# score = true              # !p、!ps、!r、!rs、!s、!ss
 # profile = true            # !profile
 # highlight = true          # 今日高光
 # bind = true               # 绑定、解绑
