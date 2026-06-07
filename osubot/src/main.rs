@@ -808,7 +808,7 @@ async fn handle_beatmap_score_query(
     resp_tx: &mpsc::Sender<String>,
     cmd: &Command,
 ) {
-    let (mode, username, qq, beatmap_id, score_id, mods, _limit, is_all) = match cmd {
+    let (mode, username, qq, beatmap_id, score_id, mods, limit, is_all) = match cmd {
         Command::ScoreOnBeatmap {
             mode,
             username,
@@ -873,6 +873,8 @@ async fn handle_beatmap_score_query(
         beatmap_id = resolved_bid,
         mode = ?mode,
         mods = ?mods,
+        limit,
+        is_all,
         "ScoreOnBeatmap"
     );
     ctx.last_beatmap.set(msg.group_id, resolved_bid);
@@ -892,12 +894,14 @@ async fn handle_beatmap_score_query(
     };
 
     if is_all {
+        let api_limit = if limit > 1 { Some(limit) } else { None };
         let scores = match api::get_user_beatmap_scores_all(
             &ctx.rate_limiter,
             &ctx.oauth,
             resolved_bid as i64,
             _user_id,
             mode,
+            api_limit,
         )
         .await
         {
@@ -920,7 +924,7 @@ async fn handle_beatmap_score_query(
         }
         render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
             .await;
-    } else {
+    } else if limit == 1 {
         let score = match api::get_user_beatmap_score(
             &ctx.rate_limiter,
             &ctx.oauth,
@@ -956,6 +960,41 @@ async fn handle_beatmap_score_query(
             }
         };
         let mut score = score;
+        ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+        enrich_score_with_pp(&mut score, mode, true).await;
+        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
+    } else {
+        let n = limit as usize;
+        let scores = match api::get_user_beatmap_scores_all(
+            &ctx.rate_limiter,
+            &ctx.oauth,
+            resolved_bid as i64,
+            _user_id,
+            mode,
+            Some(limit),
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let err_msg = match e {
+                    ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                    e => {
+                        warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                        "获取成绩失败，请稍后再试".to_string()
+                    }
+                };
+                let _ = resp_tx.send(err_msg).await;
+                return;
+            }
+        };
+        if scores.len() < n {
+            let _ = resp_tx
+                .send(format!("没有第{}条成绩，仅有{}条", n, scores.len()))
+                .await;
+            return;
+        }
+        let mut score = scores.into_iter().nth(n - 1).expect("len checked above");
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
         enrich_score_with_pp(&mut score, mode, true).await;
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;

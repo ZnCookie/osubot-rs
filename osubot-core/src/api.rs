@@ -1660,6 +1660,8 @@ pub async fn get_user_beatmap_score(
 }
 
 /// 获取用户在指定谱面的所有成绩（!ss 使用）
+/// `limit`：若 Some(N)，URL 追加 `&limit=N`，由 API 端截断；客户端仍以
+/// API 返回的顺序取前 N（API 失败时仍能按 N 截断作为兜底）。
 /// 仿 yumu-bot retryOn404: 先用 legacy_only=0 带 mode 请求，
 /// 404 则用 legacy_only=1 不带 mode 重试。
 pub async fn get_user_beatmap_scores_all(
@@ -1668,18 +1670,19 @@ pub async fn get_user_beatmap_scores_all(
     beatmap_id: i64,
     user_id: i64,
     mode: GameMode,
+    limit: Option<u32>,
 ) -> Result<Vec<Score>, ApiError> {
     let client = http_client();
-    let url_primary = format!(
-        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0{}",
-        beatmap_id,
-        user_id,
-        if mode != GameMode::Osu {
-            format!("&mode={}", mode.api_value())
-        } else {
-            String::new()
-        },
+    let mut url_primary = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0",
+        beatmap_id, user_id,
     );
+    if mode != GameMode::Osu {
+        url_primary.push_str(&format!("&mode={}", mode.api_value()));
+    }
+    if let Some(n) = limit {
+        url_primary.push_str(&format!("&limit={}", n));
+    }
     let url_retry = format!(
         "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=1",
         beatmap_id, user_id,
@@ -1733,6 +1736,9 @@ pub async fn get_user_beatmap_scores_all(
                 for score in &mut scores {
                     backfill_score_details(rate_limiter, oauth, score, &mode_str).await;
                 }
+                if let Some(n) = limit {
+                    scores.truncate(n as usize);
+                }
                 return Ok(scores);
             }
 
@@ -1751,6 +1757,9 @@ pub async fn get_user_beatmap_scores_all(
             let mode_str = mode.api_value().to_string();
             for score in &mut scores {
                 backfill_score_details(rate_limiter, oauth, score, &mode_str).await;
+            }
+            if let Some(n) = limit {
+                scores.truncate(n as usize);
             }
             Ok(scores)
         })
