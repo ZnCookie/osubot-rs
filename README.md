@@ -226,7 +226,7 @@ osubot-rs/
 | 不活跃 | 48 小时以上无活动 | 48 小时 |
 | 用户不存在 | API 返回 NotFound | 24 小时 |
 
-调度器通过 osu! API 的 `/users/{id}/scores/recent` 接口获取玩家最近游玩记录，写入数据库。每次调度都保存一份数据快照，不依赖"变化"判断。群内手动查询会触发 `trigger_update`（1 小时冷却），确保交互后及时刷新数据。
+调度器通过 osu! API 的 `/users/{id}/scores/recent` 接口获取玩家最近游玩记录，写入数据库。仅在 rank 或 playcount 与前一个快照不同时保存数据快照，避免了无变化时的冗余写入。群内手动查询会触发 `trigger_update`（1 小时冷却），确保交互后及时刷新数据。
 
 ### 排名变化
 
