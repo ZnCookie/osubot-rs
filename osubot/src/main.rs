@@ -1475,16 +1475,21 @@ async fn handle_command(
                         match ctx.storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
                                 let _ = resp_tx
-                                    .send(
-                                        "你已有进行中的绑定请求，请等待当前验证码过期后再试"
-                                            .to_string(),
-                                    )
+                                    .send(format!(
+                                        "[CQ:at,qq={}] 你已有进行中的绑定请求，请等待当前验证码过期后再试",
+                                        msg.user_id
+                                    ))
                                     .await;
                                 return;
                             }
                             Err(_) => {
                                 error!(user_id = msg.user_id, "Failed to check pending bind");
-                                let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                let _ = resp_tx
+                                    .send(format!(
+                                        "[CQ:at,qq={}] 绑定失败，请稍后重试",
+                                        msg.user_id
+                                    ))
+                                    .await;
                                 return;
                             }
                             _ => {}
@@ -1504,7 +1509,12 @@ async fn handle_command(
                             }
                             Err(_) => {
                                 error!(user_id = msg.user_id, "Failed to create pending bind");
-                                let _ = resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                let _ = resp_tx
+                                    .send(format!(
+                                        "[CQ:at,qq={}] 绑定失败，请稍后重试",
+                                        msg.user_id
+                                    ))
+                                    .await;
                             }
                         }
                     } else {
@@ -1530,19 +1540,28 @@ async fn handle_command(
                                     Ok(Err(bound_qq)) => {
                                         info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
                                         let _ = resp_tx
-                                            .send("该 osu! 用户已绑定其他QQ".to_string())
+                                            .send(format!(
+                                                "[CQ:at,qq={}] 该 osu! 用户已绑定其他QQ",
+                                                msg.user_id
+                                            ))
                                             .await;
                                     }
                                     Err(_) => {
                                         error!(user_id = msg.user_id, username = %username, "Bind failed");
-                                        let _ =
-                                            resp_tx.send("绑定失败，请稍后重试".to_string()).await;
+                                        let _ = resp_tx
+                                            .send(format!(
+                                                "[CQ:at,qq={}] 绑定失败，请稍后重试",
+                                                msg.user_id
+                                            ))
+                                            .await;
                                     }
                                 }
                             }
                             Ok(None) => {
                                 info!(username = %username, "Bind but user not found");
-                                let _ = resp_tx.send("未找到该 osu! 用户".to_string()).await;
+                                let _ = resp_tx
+                                    .send(format!("[CQ:at,qq={}] 未找到该 osu! 用户", msg.user_id))
+                                    .await;
                             }
                             Err(e) => {
                                 warn!(username = %username, error = ?e, "Bind - user info check failed");
@@ -1561,14 +1580,18 @@ async fn handle_command(
                                     }
                                     _ => "查询失败，请稍后重试".to_string(),
                                 };
-                                let _ = resp_tx.send(err_msg).await;
+                                let _ = resp_tx
+                                    .send(format!("[CQ:at,qq={}] {}", msg.user_id, err_msg))
+                                    .await;
                             }
                         }
                     }
                 }
                 Err(_) => {
                     error!(user_id = msg.user_id, "Bind database error");
-                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                    let _ = resp_tx
+                        .send(format!("[CQ:at,qq={}] 数据库错误", msg.user_id))
+                        .await;
                 }
             }
         }
@@ -1592,7 +1615,9 @@ async fn handle_command(
                         }
                         Err(_) => {
                             error!(user_id = msg.user_id, "Unbind failed");
-                            let _ = resp_tx.send("解绑失败，请稍后重试".to_string()).await;
+                            let _ = resp_tx
+                                .send(format!("[CQ:at,qq={}] 解绑失败，请稍后重试", msg.user_id))
+                                .await;
                         }
                     }
                 }
@@ -1611,17 +1636,26 @@ async fn handle_command(
                         }
                         Ok(None) => {
                             info!(user_id = msg.user_id, "Unbind but no binding");
-                            let _ = resp_tx.send("你还没有绑定任何 osu! 用户".to_string()).await;
+                            let _ = resp_tx
+                                .send(format!(
+                                    "[CQ:at,qq={}] 你还没有绑定任何 osu! 用户",
+                                    msg.user_id
+                                ))
+                                .await;
                         }
                         Err(_) => {
                             error!(user_id = msg.user_id, "Unbind database error");
-                            let _ = resp_tx.send("数据库错误".to_string()).await;
+                            let _ = resp_tx
+                                .send(format!("[CQ:at,qq={}] 数据库错误", msg.user_id))
+                                .await;
                         }
                     }
                 }
                 Err(_) => {
                     error!(user_id = msg.user_id, "Unbind pending check error");
-                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                    let _ = resp_tx
+                        .send(format!("[CQ:at,qq={}] 数据库错误", msg.user_id))
+                        .await;
                 }
             }
         }
@@ -2044,8 +2078,11 @@ async fn handle_irc_message(
 
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
         storage.remove_pending_bind(code).ok();
-        let msg = "绑定失败（绑定的不是本人）";
-        send_group_msg(&write, pending.group_id, msg).await;
+        let msg = format!(
+            "[CQ:at,qq={}] 绑定失败（绑定的不是本人）",
+            pending.qq_user_id
+        );
+        send_group_msg(&write, pending.group_id, &msg).await;
         return;
     }
 
@@ -2069,21 +2106,24 @@ async fn handle_irc_message(
                 }
                 Ok(Err(_)) => {
                     storage.remove_pending_bind(code).ok();
-                    let msg = "绑定失败（该 osu! 用户已绑定其他 QQ）";
-                    send_group_msg(&write, pending.group_id, msg).await;
+                    let msg = format!(
+                        "[CQ:at,qq={}] 绑定失败（该 osu! 用户已绑定其他 QQ）",
+                        pending.qq_user_id
+                    );
+                    send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Err(_) => {
                     storage.remove_pending_bind(code).ok();
-                    let msg = "绑定失败，请稍后重试";
-                    send_group_msg(&write, pending.group_id, msg).await;
+                    let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
+                    send_group_msg(&write, pending.group_id, &msg).await;
                 }
             }
         }
         Ok(None) => {
             storage.remove_pending_bind(code).ok();
             warn!("User {} not found during IRC bind", pending.target_username);
-            let msg = "绑定失败（用户不存在）";
-            send_group_msg(&write, pending.group_id, msg).await;
+            let msg = format!("[CQ:at,qq={}] 绑定失败（用户不存在）", pending.qq_user_id);
+            send_group_msg(&write, pending.group_id, &msg).await;
         }
         Err(e) => {
             storage.remove_pending_bind(code).ok();
@@ -2091,8 +2131,8 @@ async fn handle_irc_message(
                 "Failed to fetch user info for {} during IRC bind: {e}",
                 pending.target_username
             );
-            let msg = "绑定失败，请稍后重试";
-            send_group_msg(&write, pending.group_id, msg).await;
+            let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
+            send_group_msg(&write, pending.group_id, &msg).await;
         }
     }
 }
