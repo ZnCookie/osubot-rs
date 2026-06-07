@@ -852,23 +852,30 @@ async fn handle_beatmap_score_query(
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
         enrich_score_with_pp(&mut score, mode, true).await;
 
-        let label = format!("score#{}", sid);
-        let username = score.user.username.clone().unwrap_or_else(|| label.clone());
-        let user_stats = UserStats {
-            user_id: score.user.user_id.unwrap_or(0),
-            username,
-            pp: score.user.pp,
-            rank: score.user.global_rank.unwrap_or(0),
-            country_rank: score.user.country_rank.unwrap_or(0),
-            country_code: score.user.country_code.clone(),
-            ranked_score: 0,
-            accuracy: 0.0,
-            playcount: 0,
-            hits: 0,
-            playtime: 0,
-            rank_change: None,
-            country_rank_change: None,
-            cover_url: None,
+        let user_id = score.user.user_id.unwrap_or(0);
+        if user_id == 0 {
+            let _ = resp_tx.send("无法获取该玩家信息".to_string()).await;
+            return;
+        }
+        let user_stats = match api::fetch_user_stats_by_user_id(
+            &ctx.rate_limiter,
+            &ctx.oauth,
+            user_id,
+            mode,
+        )
+        .await
+        {
+            Ok(stats) => {
+                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                stats
+            }
+            Err(e) => {
+                warn!(user_id = user_id, error = ?e, "fetch_user_stats_by_user_id failed for score_id query");
+                let _ = resp_tx
+                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .await;
+                return;
+            }
         };
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
         return;
