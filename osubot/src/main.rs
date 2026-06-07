@@ -185,6 +185,21 @@ struct BotContext {
     upstream_chain: Arc<UpstreamChain>,
 }
 
+impl BotContext {
+    async fn resolve_binding(&self, qq: i64) -> Option<(i64, String)> {
+        match self.storage.get_binding(qq) {
+            Ok(Some(binding)) => Some(binding),
+            Ok(None) => {
+                let binding = self.upstream_chain.try_query(qq).await?;
+                let _ = self.storage.set_user_id(&binding.1, binding.0);
+                let _ = self.storage.bind(qq, binding.0, &binding.1);
+                Some(binding)
+            }
+            Err(_) => None,
+        }
+    }
+}
+
 type ProfileDedup = RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String>;
 
 fn profile_dedup() -> &'static ProfileDedup {
@@ -258,44 +273,22 @@ async fn resolve_score_user(
         }
     } else {
         let (user_id, _stored_name, error_msg) = if let Some(mentioned_qq) = qq {
-            match ctx.storage.get_binding(*mentioned_qq) {
-                Ok(Some((user_id, name))) => (user_id, name, None),
-                Ok(None) => {
-                    if let Some((user_id, username)) =
-                        ctx.upstream_chain.try_query(*mentioned_qq).await
-                    {
-                        let _ = ctx.storage.set_user_id(&username, user_id);
-                        let _ = ctx.storage.bind(*mentioned_qq, user_id, &username);
-                        (user_id, username, None)
-                    } else {
-                        (
-                            0,
-                            String::new(),
-                            Some("该用户还没有绑定 osu! 账号".to_string()),
-                        )
-                    }
-                }
-                Err(_) => (0, String::new(), Some("数据库错误".to_string())),
+            match ctx.resolve_binding(*mentioned_qq).await {
+                Some((user_id, name)) => (user_id, name, None),
+                None => (
+                    0,
+                    String::new(),
+                    Some("该用户还没有绑定 osu! 账号".to_string()),
+                ),
             }
         } else {
-            match ctx.storage.get_binding(msg.user_id) {
-                Ok(Some((user_id, name))) => (user_id, name, None),
-                Ok(None) => {
-                    if let Some((user_id, username)) =
-                        ctx.upstream_chain.try_query(msg.user_id).await
-                    {
-                        let _ = ctx.storage.set_user_id(&username, user_id);
-                        let _ = ctx.storage.bind(msg.user_id, user_id, &username);
-                        (user_id, username, None)
-                    } else {
-                        (
-                            0,
-                            String::new(),
-                            Some("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string()),
-                        )
-                    }
-                }
-                Err(_) => (0, String::new(), Some("数据库错误".to_string())),
+            match ctx.resolve_binding(msg.user_id).await {
+                Some((user_id, name)) => (user_id, name, None),
+                None => (
+                    0,
+                    String::new(),
+                    Some("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string()),
+                ),
             }
         };
         if let Some(err) = error_msg {
@@ -342,22 +335,12 @@ async fn handle_score_query(
     let is_self = params.username.is_none() && params.qq.is_none();
     let include_fails = !params.is_pass;
     let (user_id, resolved_username, user_stats, score_result) = if is_self {
-        let (uid, name) = match ctx.storage.get_binding(msg.user_id) {
-            Ok(Some((uid, name))) => (uid, name),
-            Ok(None) => {
-                if let Some((user_id, username)) = ctx.upstream_chain.try_query(msg.user_id).await {
-                    let _ = ctx.storage.set_user_id(&username, user_id);
-                    let _ = ctx.storage.bind(msg.user_id, user_id, &username);
-                    (user_id, username)
-                } else {
-                    let _ = resp_tx
-                        .send("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string())
-                        .await;
-                    return;
-                }
-            }
-            Err(_) => {
-                let _ = resp_tx.send("数据库错误".to_string()).await;
+        let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
+            Some(binding) => binding,
+            None => {
+                let _ = resp_tx
+                    .send("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string())
+                    .await;
                 return;
             }
         };
@@ -1323,12 +1306,8 @@ async fn handle_command(
                     }
                 }
                 Ok(None) => {
-                    if let Some((user_id, username)) =
-                        ctx.upstream_chain.try_query(msg.user_id).await
-                    {
+                    if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id).await {
                         info!(user_id = msg.user_id, osu_id = user_id, username = %username, "QuerySelf auto-bound via upstream");
-                        let _ = ctx.storage.set_user_id(&username, user_id);
-                        let _ = ctx.storage.bind(msg.user_id, user_id, &username);
                         ctx.scheduler.trigger_update(user_id, mode);
                         match api::fetch_user_stats_by_user_id(
                             &ctx.rate_limiter,
@@ -1481,10 +1460,8 @@ async fn handle_command(
                     }
                 }
                 Ok(None) => {
-                    if let Some((user_id, username)) = ctx.upstream_chain.try_query(qq).await {
+                    if let Some((user_id, username)) = ctx.resolve_binding(qq).await {
                         info!(qq = qq, osu_id = user_id, username = %username, "QueryMentionedUser auto-bound via upstream");
-                        let _ = ctx.storage.set_user_id(&username, user_id);
-                        let _ = ctx.storage.bind(qq, user_id, &username);
                         ctx.scheduler.trigger_update(user_id, mode);
                         match api::fetch_user_stats_by_user_id(
                             &ctx.rate_limiter,
@@ -1856,12 +1833,9 @@ async fn handle_command(
                                 user_id
                             }
                             Ok(None) => {
-                                if let Some((uid, uname)) =
-                                    ctx.upstream_chain.try_query(mentioned_qq).await
+                                if let Some((uid, uname)) = ctx.resolve_binding(mentioned_qq).await
                                 {
                                     info!(qq = mentioned_qq, osu_id = uid, username = %uname, "ProfileCard mention auto-bound");
-                                    let _ = ctx.storage.set_user_id(&uname, uid);
-                                    let _ = ctx.storage.bind(mentioned_qq, uid, &uname);
                                     uid
                                 } else {
                                     info!(qq = mentioned_qq, "ProfileCard mention but no binding");
@@ -1883,12 +1857,8 @@ async fn handle_command(
                                 user_id
                             }
                             Ok(None) => {
-                                if let Some((uid, uname)) =
-                                    ctx.upstream_chain.try_query(msg.user_id).await
-                                {
+                                if let Some((uid, uname)) = ctx.resolve_binding(msg.user_id).await {
                                     info!(user_id = msg.user_id, osu_id = uid, username = %uname, "ProfileCard self auto-bound");
-                                    let _ = ctx.storage.set_user_id(&uname, uid);
-                                    let _ = ctx.storage.bind(msg.user_id, uid, &uname);
                                     uid
                                 } else {
                                     let _ = resp_tx
