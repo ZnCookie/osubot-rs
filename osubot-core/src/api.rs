@@ -1390,46 +1390,23 @@ async fn backfill_score_details(
         || score.status.is_empty())
         && score.beatmap_id > 0
     {
-        match fetch_beatmap(rate_limiter, oauth, score.beatmap_id).await {
-            Ok(bm) => {
-                if score.od == 0.0 && score.hp == 0.0 {
-                    score.od = bm.od;
-                    score.hp = bm.hp;
-                }
-                if score.ar == 0.0 {
-                    score.ar = bm.ar;
-                }
-                if score.cs == 0.0 {
-                    score.cs = bm.cs;
-                }
-                if score.star_rating == 0.0 {
-                    score.star_rating = bm.difficulty_rating;
-                }
-                if score.bpm == 0.0 {
-                    score.bpm = bm.bpm;
-                }
-                if score.length_seconds == 0 {
-                    score.length_seconds = bm.total_length;
-                }
-                if score.beatmap_max_combo == 0 {
-                    score.beatmap_max_combo = bm.max_combo;
-                }
-                if score.version.is_empty() {
-                    score.version = bm.version;
-                }
-                if score.status.is_empty() {
-                    score.status = bm.status;
-                }
-                if score.beatmapset_id == 0 {
-                    score.beatmapset_id = bm.beatmapset_id;
-                }
+        if let Ok(bm) = fetch_beatmap(rate_limiter, oauth, score.beatmap_id).await {
+            score.ar = bm.ar;
+            score.od = bm.od;
+            score.cs = bm.cs;
+            score.hp = bm.hp;
+            score.star_rating = bm.difficulty_rating;
+            score.bpm = bm.bpm;
+            score.length_seconds = bm.total_length;
+            score.beatmap_max_combo = bm.max_combo;
+            if score.version.is_empty() {
+                score.version = bm.version;
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    beatmap_id = score.beatmap_id,
-                    "Failed to backfill beatmap data"
-                );
+            if score.status.is_empty() {
+                score.status = bm.status;
+            }
+            if score.beatmapset_id == 0 {
+                score.beatmapset_id = bm.beatmapset_id;
             }
         }
     }
@@ -1727,17 +1704,31 @@ pub async fn get_user_beatmap_scores_all(
                     tracing::error!(error = %e, body, "BeatmapScoresAll retry parse failed");
                     ApiError::InvalidResponse
                 })?;
-                let mut scores: Vec<Score> = raw
+                let scores_raw: Vec<Score> = raw
                     .scores
                     .into_iter()
                     .map(|s| api_score_to_score(s, mode))
                     .collect();
                 let mode_str = mode.api_value().to_string();
-                for score in &mut scores {
-                    backfill_score_details(rate_limiter, oauth, score, &mode_str).await;
-                }
+
+                let scores: Vec<Score> = stream::iter(scores_raw)
+                    .map(|mut score| {
+                        let rl = rate_limiter.clone();
+                        let oa = oauth.clone();
+                        let ruleset = mode_str.clone();
+                        async move {
+                            backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                            score
+                        }
+                    })
+                    .buffered(5)
+                    .collect()
+                    .await;
+
                 if let Some(n) = limit {
-                    scores.truncate(n as usize);
+                    let mut limited = scores;
+                    limited.truncate(n as usize);
+                    return Ok(limited);
                 }
                 return Ok(scores);
             }
@@ -1749,19 +1740,34 @@ pub async fn get_user_beatmap_scores_all(
                 tracing::error!(error = %e, body, "BeatmapScoresAll parse failed");
                 ApiError::InvalidResponse
             })?;
-            let mut scores: Vec<Score> = raw
+            let scores_raw: Vec<Score> = raw
                 .scores
                 .into_iter()
                 .map(|s| api_score_to_score(s, mode))
                 .collect();
             let mode_str = mode.api_value().to_string();
-            for score in &mut scores {
-                backfill_score_details(rate_limiter, oauth, score, &mode_str).await;
-            }
+
+            let scores: Vec<Score> = stream::iter(scores_raw)
+                .map(|mut score| {
+                    let rl = rate_limiter.clone();
+                    let oa = oauth.clone();
+                    let ruleset = mode_str.clone();
+                    async move {
+                        backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                        score
+                    }
+                })
+                .buffered(5)
+                .collect()
+                .await;
+
             if let Some(n) = limit {
-                scores.truncate(n as usize);
+                let mut limited = scores;
+                limited.truncate(n as usize);
+                Ok(limited)
+            } else {
+                Ok(scores)
             }
-            Ok(scores)
         })
     })
     .await
@@ -2278,6 +2284,66 @@ mod tests {
         api.legacy_total_score = None;
         let score = api_score_to_score(api, GameMode::Osu);
         assert!(!score.is_lazer);
+    }
+
+    #[test]
+    fn test_api_score_to_score_solo_score_no_beatmap() {
+        let mut api = make_full_score();
+        api.beatmap = None;
+        api.beatmapset = None;
+        api.beatmap_id = 9999;
+        api.beatmapset_id = 8888;
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert_eq!(score.beatmap_id, 9999);
+        assert_eq!(score.beatmapset_id, 8888);
+        assert!(score.artist.is_empty());
+        assert!(score.title.is_empty());
+        assert!(score.version.is_empty());
+        assert!((score.ar - 0.0).abs() < 0.0001);
+        assert!((score.od - 0.0).abs() < 0.0001);
+        assert_eq!(score.beatmap_max_combo, 0);
+        assert!(score.status.is_empty());
+        assert!(score.cover_url.is_empty());
+    }
+
+    #[test]
+    fn test_api_score_to_score_solo_score_beatmap_id_zero() {
+        let mut api = make_full_score();
+        api.beatmap = None;
+        api.beatmapset = None;
+        api.beatmap_id = 0;
+        api.beatmapset_id = 0;
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert_eq!(score.beatmap_id, 0);
+        assert_eq!(score.beatmapset_id, 0);
+    }
+
+    #[test]
+    fn test_api_score_to_score_solo_score_covers_fullsize() {
+        let mut api = make_full_score();
+        api.beatmap = None;
+        api.beatmapset = Some(OsuApiBeatmapset {
+            artist: "Artist".to_string(),
+            title: "Title".to_string(),
+            creator: "Creator".to_string(),
+            covers: Some(serde_json::json!({
+                "cover": "https://a.ppy.sh/thumb/1.jpg",
+                "cover@2x": "https://a.ppy.sh/thumb@2x/1.jpg",
+                "card": "https://a.ppy.sh/card/1.jpg",
+                "card@2x": "https://a.ppy.sh/card@2x/1.jpg",
+                "list": "https://assets.ppy.sh/beatmaps/1/covers/list.jpg",
+                "list@2x": "https://assets.ppy.sh/beatmaps/1/covers/list@2x.jpg",
+                "slimcover": "https://a.ppy.sh/slim/1.jpg",
+                "slimcover@2x": "https://a.ppy.sh/slim@2x/1.jpg",
+            })),
+            favourite_count: 0,
+            play_count: 0,
+        });
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert_eq!(
+            score.cover_url,
+            "https://assets.ppy.sh/beatmaps/1/covers/fullsize.jpg"
+        );
     }
 
     #[test]

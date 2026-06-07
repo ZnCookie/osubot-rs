@@ -156,8 +156,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     // Beatmap score command: !s, !ss
     // Format: !s [<username>|@QQ] <beatmap_id|score_id> [:<mode>] [+<mods>] [#<N>]
     // Format: !ss [<username>|@QQ] <beatmap_id> [:<mode>]
-    let s_cmds: Vec<(&str, bool)> = vec![("!ss", true), ("!s", false)];
-    for (prefix, is_all) in s_cmds {
+    let s_cmds: &[(&str, bool)] = &[("!ss", true), ("!s", false)];
+    for &(prefix, is_all) in s_cmds {
         if let Some(rest) = msg.strip_prefix(prefix) {
             if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
                 continue;
@@ -214,6 +214,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 let mut sid: Option<u64> = None;
                 let mut uname: Option<String> = None;
                 let mut qq_id: Option<i64> = None;
+                let mut name_parts: Vec<&str> = Vec::new();
+                let mut hit_numeric = false;
 
                 for token in tokens {
                     if let Some(at) = token.strip_prefix('@') {
@@ -225,14 +227,20 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                         continue;
                     }
                     if let Ok(num) = token.parse::<u64>() {
+                        hit_numeric = true;
                         if num >= 10_000_000 {
                             sid = Some(num);
                         } else if num <= 9_999_999 && bid.is_none() {
                             bid = Some(num as u32);
                         }
-                    } else if uname.is_none() {
-                        uname = Some(token.to_string());
+                    } else if !hit_numeric {
+                        name_parts.push(token);
+                    } else {
+                        return None;
                     }
+                }
+                if !name_parts.is_empty() {
+                    uname = Some(name_parts.join(" "));
                 }
                 (bid, sid, uname, qq_id)
             };
@@ -1092,5 +1100,64 @@ mod tests {
     #[test]
     fn test_score_on_beatmap_at_non_numeric_returns_none() {
         assert!(parse_command("!s @ZnCookie 123456", None).is_none());
+    }
+
+    #[test]
+    fn test_score_on_beatmap_multi_word_username() {
+        let cmd = parse_command("!s My Name 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: Some("My Name".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_multi_word_username_with_mode() {
+        let cmd = parse_command("!s Zhang San 123456 :2 #3 +HD", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Catch,
+                username: Some("Zhang San".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: Some(vec!["HD".to_string()]),
+                limit: 3,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_single_word_username_still_works() {
+        let cmd = parse_command("!s ZnCookie 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_username_after_numeric_is_error() {
+        assert!(parse_command("!s 123456 TrailingName", None).is_none());
     }
 }

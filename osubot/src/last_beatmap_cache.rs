@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 群最近查询的谱面缓存，24 小时 TTL
+/// 群最近查询的谱面缓存，6 小时 TTL
 #[derive(Clone)]
 pub struct LastBeatmapCache {
     inner: Arc<Mutex<HashMap<i64, (u32, Instant)>>>,
