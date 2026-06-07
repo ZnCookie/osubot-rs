@@ -53,6 +53,16 @@ pub enum Command {
         username: Option<String>,
         qq: Option<i64>,
     },
+    ScoreOnBeatmap {
+        mode: GameMode,
+        username: Option<String>,
+        qq: Option<i64>,
+        beatmap_id: Option<u32>,
+        score_id: Option<u64>,
+        mods: Option<Vec<String>>,
+        limit: u32,
+        is_all: bool,
+    },
     Pass {
         mode: GameMode,
         username: Option<String>,
@@ -77,6 +87,7 @@ impl Command {
             | Command::QueryMentionedUser { .. } => CommandGroup::Query,
             Command::Pass { .. } | Command::Recent { .. } => CommandGroup::Score,
             Command::ProfileCard { .. } => CommandGroup::Profile,
+            Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
             Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
         }

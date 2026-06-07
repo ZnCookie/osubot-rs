@@ -608,6 +608,18 @@ struct OsuApiBeatmapset {
     play_count: i64,
 }
 
+/// /beatmaps/{bid}/scores/users/{uid} 返回的包装结构
+#[derive(Debug, serde::Deserialize)]
+struct BeatmapUserScore {
+    score: Option<OsuApiScore>,
+}
+
+/// /beatmaps/{bid}/scores/users/{uid}/all 返回的包装结构
+#[derive(Debug, serde::Deserialize)]
+struct BeatmapScoresResponse {
+    scores: Vec<OsuApiScore>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
 enum OsuApiMod {
@@ -655,14 +667,22 @@ struct OsuApiScore {
     has_replay: bool,
     #[serde(default)]
     legacy_score_id: Option<i64>,
-    beatmap: OsuApiBeatmap,
-    beatmapset: OsuApiBeatmapset,
+    #[serde(default)]
+    beatmap_id: i64,
+    #[serde(default)]
+    beatmapset_id: i64,
+    #[serde(default)]
+    beatmap: Option<OsuApiBeatmap>,
+    #[serde(default)]
+    beatmapset: Option<OsuApiBeatmapset>,
     #[serde(default)]
     mods: Vec<OsuApiMod>,
     #[serde(default)]
     statistics: OsuApiScoreStatistics,
     #[serde(default)]
     user: Option<serde_json::Value>,
+    #[serde(default)]
+    ruleset_id: i64, // 0=osu, 1=taiko, 2=catch, 3=mania
 }
 
 /// lazer: perfect/great/ok/meh/miss, legacy: count_geki/count_300/count_katu/count_100/count_50/count_miss
@@ -697,6 +717,17 @@ struct OsuApiScoreUserStatistics {
     global_rank: Option<i64>,
     country_rank: Option<i64>,
     pp: Option<f64>,
+}
+
+impl OsuApiScore {
+    fn extra_mode(&self) -> GameMode {
+        match self.ruleset_id {
+            1 => GameMode::Taiko,
+            2 => GameMode::Catch,
+            3 => GameMode::Mania,
+            _ => GameMode::Osu,
+        }
+    }
 }
 
 /// Convert osu! API v2 mod objects into rosu_mods::GameMods with full settings.
@@ -790,15 +821,49 @@ pub fn apply_mod_adjustment_to_stats(
     )
 }
 
-fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
-    let beatmap = api.beatmap;
-    let beatmapset = api.beatmapset;
+/// 从 covers JSON 提取 fullsize 背景图 URL（仿 yumu-bot: list → fullsize）
+fn fullsize_cover_url(covers: Option<&serde_json::Value>) -> Option<String> {
+    let covers = covers?;
+    if let Some(list_url) = covers.get("list").and_then(|v| v.as_str()) {
+        return Some(list_url.replace("@2x", "").replace("list", "fullsize"));
+    }
+    covers
+        .get("cover")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
 
-    let cover_url = beatmapset
-        .covers
+fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
+    let bmap = api.beatmap.as_ref();
+
+    let cover_url = api
+        .beatmapset
         .as_ref()
-        .and_then(|v| v.get("cover")?.as_str().map(|s| s.to_string()))
+        .and_then(|bs| fullsize_cover_url(bs.covers.as_ref()))
         .unwrap_or_default();
+    let artist = api
+        .beatmapset
+        .as_ref()
+        .map(|bs| bs.artist.clone())
+        .unwrap_or_default();
+    let title = api
+        .beatmapset
+        .as_ref()
+        .map(|bs| bs.title.clone())
+        .unwrap_or_default();
+    let creator = api
+        .beatmapset
+        .as_ref()
+        .map(|bs| bs.creator.clone())
+        .unwrap_or_default();
+    let fav_count = api
+        .beatmapset
+        .as_ref()
+        .and_then(|bs| Some(bs.favourite_count).filter(|&v| v > 0));
+    let play_count = api
+        .beatmapset
+        .as_ref()
+        .and_then(|bs| Some(bs.play_count).filter(|&v| v > 0));
 
     let score_value = if api.score > 0 {
         api.score
@@ -834,23 +899,23 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
 
     Score {
         score_id: api.id,
-        beatmap_id: beatmap.id,
-        beatmapset_id: beatmap.beatmapset_id,
-        artist: beatmapset.artist,
-        title: beatmapset.title,
-        version: beatmap.version,
-        creator: beatmapset.creator,
-        star_rating: beatmap.difficulty_rating,
-        bpm: beatmap.bpm,
-        ar: beatmap.ar,
-        od: beatmap.od,
-        cs: beatmap.cs,
-        hp: beatmap.hp,
-        length_seconds: beatmap.total_length,
+        beatmap_id: bmap.map_or(api.beatmap_id, |b| b.id),
+        beatmapset_id: bmap.map_or(api.beatmapset_id, |b| b.beatmapset_id),
+        artist,
+        title,
+        version: bmap.map_or(String::new(), |b| b.version.clone()),
+        creator,
+        star_rating: bmap.map_or(0.0, |b| b.difficulty_rating),
+        bpm: bmap.map_or(0.0, |b| b.bpm),
+        ar: bmap.map_or(0.0, |b| b.ar),
+        od: bmap.map_or(0.0, |b| b.od),
+        cs: bmap.map_or(0.0, |b| b.cs),
+        hp: bmap.map_or(0.0, |b| b.hp),
+        length_seconds: bmap.map_or(0, |b| b.total_length),
         score_value,
         accuracy: api.accuracy,
         max_combo: api.max_combo,
-        beatmap_max_combo: beatmap.max_combo,
+        beatmap_max_combo: bmap.map_or(0, |b| b.max_combo),
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
@@ -896,9 +961,9 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         },
         cover_url,
         user,
-        fav_count: Some(beatmapset.favourite_count).filter(|&v| v > 0),
-        play_count: Some(beatmapset.play_count).filter(|&v| v > 0),
-        status: beatmap.status,
+        fav_count,
+        play_count,
+        status: bmap.map_or(String::new(), |b| b.status.clone()),
     }
 }
 
@@ -1317,32 +1382,59 @@ async fn backfill_score_details(
     score: &mut Score,
     mode_str: &str,
 ) {
-    // 回填谱面 od/hp/max_combo
-    if ((score.od == 0.0 && score.hp == 0.0) || score.beatmap_max_combo == 0)
+    // 回填谱面数据（SoloScore 格式中可能不包含嵌套 beatmap）
+    if (score.ar == 0.0
+        || score.od == 0.0
+        || score.star_rating == 0.0
+        || score.beatmap_max_combo == 0
+        || score.status.is_empty())
         && score.beatmap_id > 0
     {
-        match fetch_beatmap(rate_limiter, oauth, score.beatmap_id).await {
-            Ok(bm) => {
-                if score.od == 0.0 && score.hp == 0.0 {
-                    score.od = bm.od;
-                    score.hp = bm.hp;
+        if let Ok(bm) = fetch_beatmap(rate_limiter, oauth, score.beatmap_id).await {
+            score.ar = bm.ar;
+            score.od = bm.od;
+            score.cs = bm.cs;
+            score.hp = bm.hp;
+            score.star_rating = bm.difficulty_rating;
+            score.bpm = bm.bpm;
+            score.length_seconds = bm.total_length;
+            score.beatmap_max_combo = bm.max_combo;
+            if score.version.is_empty() {
+                score.version = bm.version;
+            }
+            if score.status.is_empty() {
+                score.status = bm.status;
+            }
+            if score.beatmapset_id == 0 {
+                score.beatmapset_id = bm.beatmapset_id;
+            }
+        }
+    }
+
+    // 回填 beatmapset 元数据（SoloScore 格式中不包含）
+    if (score.artist.is_empty() || score.title.is_empty() || score.cover_url.is_empty())
+        && score.beatmapset_id > 0
+    {
+        match fetch_beatmapset(rate_limiter, oauth, score.beatmapset_id).await {
+            Ok(bs) => {
+                score.artist = bs.artist;
+                score.title = bs.title;
+                score.creator = bs.creator;
+                if score.cover_url.is_empty() {
+                    score.cover_url = fullsize_cover_url(bs.covers.as_ref()).unwrap_or_default();
                 }
-                if score.beatmap_max_combo == 0 {
-                    score.beatmap_max_combo = bm.max_combo;
+                if score.fav_count.is_none() {
+                    score.fav_count = Some(bs.favourite_count).filter(|&v| v > 0);
                 }
-                tracing::debug!(
-                    beatmap_id = score.beatmap_id,
-                    od = bm.od,
-                    hp = bm.hp,
-                    max_combo = bm.max_combo,
-                    "Backfilled beatmap stats"
-                );
+                if score.play_count.is_none() {
+                    score.play_count = Some(bs.play_count).filter(|&v| v > 0);
+                }
             }
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
-                    beatmap_id = score.beatmap_id,
-                    "Failed to backfill beatmap stats"
+                    beatmapset_id = score.beatmapset_id,
+                    "Failed to backfill beatmapset metadata"
                 );
             }
         }
@@ -1448,6 +1540,277 @@ pub async fn get_user_recent(
     .await
 }
 
+/// 获取用户在指定谱面的最佳成绩（支持 mod 过滤）
+/// 仿 yumu-bot retryOn404: 先用 legacy_only=0 带 mode 请求，
+/// 404 则用 legacy_only=1 不带 mode 重试。
+pub async fn get_user_beatmap_score(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<OauthTokenCache>,
+    beatmap_id: i64,
+    user_id: i64,
+    mode: GameMode,
+    mods: &Option<Vec<String>>,
+) -> Result<Score, ApiError> {
+    let client = http_client();
+    let (url_primary, url_retry) = {
+        let mut primary = format!(
+            "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=0",
+            beatmap_id, user_id,
+        );
+        if mode != GameMode::Osu {
+            primary.push_str(&format!("&mode={}", mode.api_value()));
+        }
+        let mut retry = format!(
+            "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}?legacy_only=1",
+            beatmap_id, user_id,
+        );
+        if let Some(mod_list) = mods {
+            for m in mod_list {
+                primary.push_str("&mods[]=");
+                primary.push_str(m);
+                retry.push_str("&mods[]=");
+                retry.push_str(m);
+            }
+        }
+        (primary, retry)
+    };
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+            let resp = client
+                .get(&url_primary)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                tracing::debug!(
+                    beatmap_id,
+                    user_id,
+                    ?mode,
+                    "Beatmap score 404, retrying with legacy_only=1"
+                );
+                let access_token = oauth.get_token().await?;
+                let retry_resp = client
+                    .get(&url_retry)
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .header("x-api-version", API_VERSION)
+                    .send()
+                    .await?;
+
+                if retry_resp.status() == 404 {
+                    return Err(ApiError::NotFound);
+                }
+                classify_http_error(&retry_resp)?;
+
+                let body = retry_resp.text().await.map_err(ApiError::Http)?;
+                let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
+                    tracing::error!(error = %e, body, "BeatmapScore retry parse failed");
+                    ApiError::InvalidResponse
+                })?;
+                let api_score = raw.score.ok_or(ApiError::NotFound)?;
+                let mut score = api_score_to_score(api_score, mode);
+                backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
+                return Ok(score);
+            }
+
+            classify_http_error(&resp)?;
+
+            let body = resp.text().await.map_err(ApiError::Http)?;
+            let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
+                tracing::error!(error = %e, body, "BeatmapScore parse failed");
+                ApiError::InvalidResponse
+            })?;
+            let api_score = raw.score.ok_or(ApiError::NotFound)?;
+            let mut score = api_score_to_score(api_score, mode);
+            backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
+            Ok(score)
+        })
+    })
+    .await
+}
+
+/// 获取用户在指定谱面的所有成绩（!ss 使用）
+/// `limit`：若 Some(N)，URL 追加 `&limit=N`，由 API 端截断；客户端仍以
+/// API 返回的顺序取前 N（API 失败时仍能按 N 截断作为兜底）。
+/// 仿 yumu-bot retryOn404: 先用 legacy_only=0 带 mode 请求，
+/// 404 则用 legacy_only=1 不带 mode 重试。
+pub async fn get_user_beatmap_scores_all(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<OauthTokenCache>,
+    beatmap_id: i64,
+    user_id: i64,
+    mode: GameMode,
+    limit: Option<u32>,
+) -> Result<Vec<Score>, ApiError> {
+    let client = http_client();
+    let mut url_primary = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0",
+        beatmap_id, user_id,
+    );
+    if mode != GameMode::Osu {
+        url_primary.push_str(&format!("&mode={}", mode.api_value()));
+    }
+    if let Some(n) = limit {
+        url_primary.push_str(&format!("&limit={}", n));
+    }
+    let url_retry = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=1",
+        beatmap_id, user_id,
+    );
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+            let resp = client
+                .get(&url_primary)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                tracing::debug!(
+                    beatmap_id,
+                    user_id,
+                    ?mode,
+                    "Beatmap scores all 404, retrying with legacy_only=1"
+                );
+                let access_token = oauth.get_token().await?;
+                let retry_resp = client
+                    .get(&url_retry)
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .header("x-api-version", API_VERSION)
+                    .send()
+                    .await?;
+
+                if retry_resp.status() == 404 {
+                    return Err(ApiError::NotFound);
+                }
+                classify_http_error(&retry_resp)?;
+
+                let body = retry_resp.text().await.map_err(ApiError::Http)?;
+                let raw: BeatmapScoresResponse = serde_json::from_str(&body).map_err(|e| {
+                    tracing::error!(error = %e, body, "BeatmapScoresAll retry parse failed");
+                    ApiError::InvalidResponse
+                })?;
+                let scores_raw: Vec<Score> = raw
+                    .scores
+                    .into_iter()
+                    .map(|s| api_score_to_score(s, mode))
+                    .collect();
+                let mode_str = mode.api_value().to_string();
+
+                let scores: Vec<Score> = stream::iter(scores_raw)
+                    .map(|mut score| {
+                        let rl = rate_limiter.clone();
+                        let oa = oauth.clone();
+                        let ruleset = mode_str.clone();
+                        async move {
+                            backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                            score
+                        }
+                    })
+                    .buffered(5)
+                    .collect()
+                    .await;
+
+                if let Some(n) = limit {
+                    let mut limited = scores;
+                    limited.truncate(n as usize);
+                    return Ok(limited);
+                }
+                return Ok(scores);
+            }
+
+            classify_http_error(&resp)?;
+
+            let body = resp.text().await.map_err(ApiError::Http)?;
+            let raw: BeatmapScoresResponse = serde_json::from_str(&body).map_err(|e| {
+                tracing::error!(error = %e, body, "BeatmapScoresAll parse failed");
+                ApiError::InvalidResponse
+            })?;
+            let scores_raw: Vec<Score> = raw
+                .scores
+                .into_iter()
+                .map(|s| api_score_to_score(s, mode))
+                .collect();
+            let mode_str = mode.api_value().to_string();
+
+            let scores: Vec<Score> = stream::iter(scores_raw)
+                .map(|mut score| {
+                    let rl = rate_limiter.clone();
+                    let oa = oauth.clone();
+                    let ruleset = mode_str.clone();
+                    async move {
+                        backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                        score
+                    }
+                })
+                .buffered(5)
+                .collect()
+                .await;
+
+            if let Some(n) = limit {
+                let mut limited = scores;
+                limited.truncate(n as usize);
+                Ok(limited)
+            } else {
+                Ok(scores)
+            }
+        })
+    })
+    .await
+}
+
+/// 通过 score ID 获取单条成绩详情
+pub async fn get_score_by_id(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<OauthTokenCache>,
+    score_id: u64,
+) -> Result<Score, ApiError> {
+    let client = http_client();
+    let url = format!("https://osu.ppy.sh/api/v2/scores/{}", score_id,);
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+
+            let raw: OsuApiScore = resp.json().await.map_err(json_to_api_error)?;
+            let mode = raw.extra_mode();
+            let mut score = api_score_to_score(raw, mode);
+            backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
+            Ok(score)
+        })
+    })
+    .await
+}
+
 /// 通过 score ID 获取单条成绩详情（用于 lazer 分数值回填）
 async fn fetch_score_detail(
     rate_limiter: &RateLimiter,
@@ -1509,6 +1872,41 @@ async fn fetch_beatmap(
 ) -> Result<OsuApiBeatmap, ApiError> {
     let client = http_client();
     let url = format!("https://osu.ppy.sh/api/v2/beatmaps/{}", beatmap_id);
+
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(2, || {
+        retry_on_401(oauth, 5, || async {
+            let access_token = oauth.get_token().await?;
+
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("x-api-version", API_VERSION)
+                .send()
+                .await?;
+
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+
+            resp.json().await.map_err(json_to_api_error)
+        })
+    })
+    .await
+}
+
+/// 通过 beatmapset ID 获取谱面集信息（用于 artist/title/creator 回填）
+async fn fetch_beatmapset(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    beatmapset_id: i64,
+) -> Result<OsuApiBeatmapset, ApiError> {
+    let client = http_client();
+    let url = format!("https://osu.ppy.sh/api/v2/beatmapsets/{}", beatmapset_id,);
 
     rate_limiter
         .acquire()
@@ -1673,7 +2071,9 @@ mod tests {
             build_id: None,
             has_replay: true,
             legacy_score_id: None,
-            beatmap: OsuApiBeatmap {
+            beatmap_id: 0,
+            beatmapset_id: 0,
+            beatmap: Some(OsuApiBeatmap {
                 id: 2001,
                 beatmapset_id: 3001,
                 version: "Insane".to_string(),
@@ -1688,15 +2088,15 @@ mod tests {
                 passcount: 100,
                 playcount: 500,
                 status: "ranked".to_string(),
-            },
-            beatmapset: OsuApiBeatmapset {
+            }),
+            beatmapset: Some(OsuApiBeatmapset {
                 artist: "TestArtist".to_string(),
                 title: "TestTitle".to_string(),
                 creator: "Mapper".to_string(),
                 covers: None,
                 favourite_count: 100,
                 play_count: 5000,
-            },
+            }),
             mods: vec![
                 OsuApiMod::String("HD".to_string()),
                 OsuApiMod::String("DT".to_string()),
@@ -1710,6 +2110,7 @@ mod tests {
                 count_miss: 1,
                 ok: 0,
             },
+            ruleset_id: 0,
             user: None,
         }
     }
@@ -1788,7 +2189,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_nested_user_data() {
         let mut api = make_full_score();
-        api.beatmapset.covers = Some(serde_json::json!({
+        api.beatmapset.as_mut().unwrap().covers = Some(serde_json::json!({
             "cover": "https://example.com/cover.jpg"
         }));
         api.user = Some(serde_json::json!({
@@ -1883,6 +2284,66 @@ mod tests {
         api.legacy_total_score = None;
         let score = api_score_to_score(api, GameMode::Osu);
         assert!(!score.is_lazer);
+    }
+
+    #[test]
+    fn test_api_score_to_score_solo_score_no_beatmap() {
+        let mut api = make_full_score();
+        api.beatmap = None;
+        api.beatmapset = None;
+        api.beatmap_id = 9999;
+        api.beatmapset_id = 8888;
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert_eq!(score.beatmap_id, 9999);
+        assert_eq!(score.beatmapset_id, 8888);
+        assert!(score.artist.is_empty());
+        assert!(score.title.is_empty());
+        assert!(score.version.is_empty());
+        assert!((score.ar - 0.0).abs() < 0.0001);
+        assert!((score.od - 0.0).abs() < 0.0001);
+        assert_eq!(score.beatmap_max_combo, 0);
+        assert!(score.status.is_empty());
+        assert!(score.cover_url.is_empty());
+    }
+
+    #[test]
+    fn test_api_score_to_score_solo_score_beatmap_id_zero() {
+        let mut api = make_full_score();
+        api.beatmap = None;
+        api.beatmapset = None;
+        api.beatmap_id = 0;
+        api.beatmapset_id = 0;
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert_eq!(score.beatmap_id, 0);
+        assert_eq!(score.beatmapset_id, 0);
+    }
+
+    #[test]
+    fn test_api_score_to_score_solo_score_covers_fullsize() {
+        let mut api = make_full_score();
+        api.beatmap = None;
+        api.beatmapset = Some(OsuApiBeatmapset {
+            artist: "Artist".to_string(),
+            title: "Title".to_string(),
+            creator: "Creator".to_string(),
+            covers: Some(serde_json::json!({
+                "cover": "https://a.ppy.sh/thumb/1.jpg",
+                "cover@2x": "https://a.ppy.sh/thumb@2x/1.jpg",
+                "card": "https://a.ppy.sh/card/1.jpg",
+                "card@2x": "https://a.ppy.sh/card@2x/1.jpg",
+                "list": "https://assets.ppy.sh/beatmaps/1/covers/list.jpg",
+                "list@2x": "https://assets.ppy.sh/beatmaps/1/covers/list@2x.jpg",
+                "slimcover": "https://a.ppy.sh/slim/1.jpg",
+                "slimcover@2x": "https://a.ppy.sh/slim@2x/1.jpg",
+            })),
+            favourite_count: 0,
+            play_count: 0,
+        });
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert_eq!(
+            score.cover_url,
+            "https://assets.ppy.sh/beatmaps/1/covers/fullsize.jpg"
+        );
     }
 
     #[test]

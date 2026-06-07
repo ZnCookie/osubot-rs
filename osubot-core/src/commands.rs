@@ -50,7 +50,20 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     // 查询他人: where <用户名> [, 模式]
     if let Some(rest) = msg.strip_prefix("where ") {
         let parts: Vec<&str> = rest.split(',').collect();
-        let username = parts[0].trim().to_string();
+        let first = parts[0].trim();
+        // where @<QQ> — 按 QQ 查询
+        if let Some(at) = first.strip_prefix('@') {
+            if let Ok(qq) = at.parse::<i64>() {
+                let mode = if parts.len() > 1 {
+                    GameMode::from_mode_str(parts[1].trim())?
+                } else {
+                    GameMode::Osu
+                };
+                return Some(Command::QueryMentionedUser { qq, mode });
+            }
+            return None;
+        }
+        let username = first.to_string();
         let mode = if parts.len() > 1 {
             GameMode::from_mode_str(parts[1].trim())?
         } else {
@@ -125,10 +138,138 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             });
         }
         // !profile <username>
+        if let Some(at) = rest.strip_prefix('@') {
+            if let Ok(parsed) = at.parse::<i64>() {
+                return Some(Command::ProfileCard {
+                    username: None,
+                    qq: Some(parsed),
+                });
+            }
+            return None;
+        }
         return Some(Command::ProfileCard {
             username: Some(rest.to_string()),
             qq: None,
         });
+    }
+
+    // Beatmap score command: !s, !ss
+    // Format: !s [<username>|@QQ] <beatmap_id|score_id> [:<mode>] [+<mods>] [#<N>]
+    // Format: !ss [<username>|@QQ] <beatmap_id> [:<mode>]
+    let s_cmds: &[(&str, bool)] = &[("!ss", true), ("!s", false)];
+    for &(prefix, is_all) in s_cmds {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let rest = rest.trim();
+            // Parse +mods suffix
+            let (rest, mods) = if let Some(plus_pos) = rest.rfind('+') {
+                let mod_str = &rest[plus_pos + 1..];
+                if mod_str.len() >= 2 && mod_str.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let parsed: Vec<String> = mod_str
+                        .chars()
+                        .collect::<Vec<_>>()
+                        .chunks(2)
+                        .map(|chunk| chunk.iter().collect::<String>().to_uppercase())
+                        .collect();
+                    (rest[..plus_pos].trim(), Some(parsed))
+                } else {
+                    (rest, None)
+                }
+            } else {
+                (rest, None)
+            };
+            // Parse #N suffix
+            let (rest, limit) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                match num_str.parse::<u32>() {
+                    Ok(n) if n >= 1 => (rest[..hash_pos].trim(), n.min(100)),
+                    Ok(_) => (rest[..hash_pos].trim(), 1),
+                    _ => (rest[..hash_pos].trim(), 1),
+                }
+            } else {
+                (rest, 1)
+            };
+            // Parse :mode suffix
+            let (username_part, mode) = if let Some(colon_pos) = rest.rfind(':') {
+                let mode_str = &rest[colon_pos + 1..];
+                if mode_str.is_empty() {
+                    (rest[..colon_pos].trim(), GameMode::Osu)
+                } else {
+                    match GameMode::from_mode_str(mode_str) {
+                        Some(mode) => (rest[..colon_pos].trim(), mode),
+                        None => return None,
+                    }
+                }
+            } else {
+                (rest, GameMode::Osu)
+            };
+            // Parse beatmap_id / score_id / username from remaining
+            let (beatmap_id, score_id, username, qq) = if username_part.is_empty() {
+                (None, None, None, mentioned_user_id)
+            } else {
+                let tokens: Vec<&str> = username_part.split_whitespace().collect();
+                let mut bid: Option<u32> = None;
+                let mut sid: Option<u64> = None;
+                let mut uname: Option<String> = None;
+                let mut qq_id: Option<i64> = None;
+                let mut name_parts: Vec<&str> = Vec::new();
+                let mut hit_numeric = false;
+
+                for token in tokens {
+                    if let Some(at) = token.strip_prefix('@') {
+                        if let Ok(parsed) = at.parse::<i64>() {
+                            qq_id = Some(parsed);
+                        } else {
+                            return None;
+                        }
+                        continue;
+                    }
+                    if let Ok(num) = token.parse::<u64>() {
+                        hit_numeric = true;
+                        if num >= 10_000_000 {
+                            sid = Some(num);
+                        } else if num <= 9_999_999 && bid.is_none() {
+                            bid = Some(num as u32);
+                        }
+                    } else if !hit_numeric {
+                        name_parts.push(token);
+                    } else {
+                        return None;
+                    }
+                }
+                if !name_parts.is_empty() {
+                    uname = Some(name_parts.join(" "));
+                }
+                (bid, sid, uname, qq_id)
+            };
+            // 互斥：不能同时提供用户名和 @QQ
+            if username.is_some() && qq.is_some() {
+                return None;
+            }
+            // If no user and no mention, resolve as self
+            let (username, qq) = if username.is_none() && qq.is_none() {
+                if let Some(qq_val) = mentioned_user_id {
+                    (None, Some(qq_val))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (username, qq)
+            };
+
+            return Some(Command::ScoreOnBeatmap {
+                mode,
+                username,
+                qq,
+                beatmap_id,
+                score_id,
+                mods,
+                limit,
+                is_all,
+            });
+        }
     }
 
     // Pass/Recent score commands: !p, !r, !ps, !rs
@@ -178,6 +319,12 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                     (None, Some(qq))
                 } else {
                     (None, None)
+                }
+            } else if let Some(at) = username_part.strip_prefix('@') {
+                if let Ok(parsed) = at.parse::<i64>() {
+                    (None, Some(parsed))
+                } else {
+                    return None;
                 }
             } else {
                 (Some(username_part.to_string()), None)
@@ -268,6 +415,23 @@ mod tests {
                 qq: None,
             }
         );
+    }
+
+    #[test]
+    fn test_profile_qq_in_text() {
+        let cmd = parse_command("!profile @123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ProfileCard {
+                username: None,
+                qq: Some(123456),
+            }
+        );
+    }
+
+    #[test]
+    fn test_profile_qq_in_text_non_numeric_returns_none() {
+        assert!(parse_command("!profile @ZnCookie", None).is_none());
     }
 
     #[test]
@@ -373,6 +537,26 @@ mod tests {
                 is_summary: false,
             }
         );
+    }
+
+    #[test]
+    fn test_pass_qq_in_text() {
+        let cmd = parse_command("!p @123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: Some(123456),
+                limit: 1,
+                is_summary: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_qq_in_text_non_numeric_returns_none() {
+        assert!(parse_command("!p @ZnCookie", None).is_none());
     }
 
     #[test]
@@ -724,6 +908,35 @@ mod tests {
     }
 
     #[test]
+    fn test_where_qq_in_text() {
+        let cmd = parse_command("where @1234567", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryMentionedUser {
+                qq: 1234567,
+                mode: GameMode::Osu,
+            }
+        );
+    }
+
+    #[test]
+    fn test_where_qq_in_text_with_mode() {
+        let cmd = parse_command("where @1234567,1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::QueryMentionedUser {
+                qq: 1234567,
+                mode: GameMode::Taiko,
+            }
+        );
+    }
+
+    #[test]
+    fn test_where_qq_in_text_non_numeric_returns_none() {
+        assert!(parse_command("where @ZnCookie", None).is_none());
+    }
+
+    #[test]
     fn test_profile_not_matched_as_p() {
         // !profile should match ProfileCard, not Pass
         let cmd = parse_command("!profile", None).unwrap();
@@ -744,5 +957,207 @@ mod tests {
                 is_summary: true,
             }
         );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_basic() {
+        let cmd = parse_command("!s 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_with_mods() {
+        let cmd = parse_command("!s 123456 +HDDT", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: Some(vec!["HD".to_string(), "DT".to_string()]),
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_with_mode_and_username() {
+        let cmd = parse_command("!s ZnCookie 123456 :2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_score_id() {
+        let cmd = parse_command("!s 12345678901", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: None,
+                score_id: Some(12345678901),
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_all() {
+        let cmd = parse_command("!ss 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_no_conflict_with_ps() {
+        let cmd = parse_command("!ps", None).unwrap();
+        assert!(matches!(cmd, Command::Pass { .. }));
+    }
+
+    #[test]
+    fn test_score_on_beatmap_with_limit() {
+        let cmd = parse_command("!s 123456 #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 5,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_qq_in_text() {
+        let cmd = parse_command("!s @123456 789012", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: Some(123456),
+                beatmap_id: Some(789012),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_username_and_qq_mutually_exclusive() {
+        assert!(parse_command("!s ZnCookie @999 123", None).is_none());
+        assert!(parse_command("!s @999 ZnCookie 123", None).is_none());
+    }
+
+    #[test]
+    fn test_score_on_beatmap_at_non_numeric_returns_none() {
+        assert!(parse_command("!s @ZnCookie 123456", None).is_none());
+    }
+
+    #[test]
+    fn test_score_on_beatmap_multi_word_username() {
+        let cmd = parse_command("!s My Name 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: Some("My Name".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_multi_word_username_with_mode() {
+        let cmd = parse_command("!s Zhang San 123456 :2 #3 +HD", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Catch,
+                username: Some("Zhang San".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: Some(vec!["HD".to_string()]),
+                limit: 3,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_single_word_username_still_works() {
+        let cmd = parse_command("!s ZnCookie 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                mods: None,
+                limit: 1,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_username_after_numeric_is_error() {
+        assert!(parse_command("!s 123456 TrailingName", None).is_none());
     }
 }
