@@ -853,11 +853,7 @@ async fn handle_beatmap_score_query(
         enrich_score_with_pp(&mut score, mode, true).await;
 
         let label = format!("score#{}", sid);
-        let username = score
-            .user
-            .username
-            .clone()
-            .unwrap_or_else(|| label.clone());
+        let username = score.user.username.clone().unwrap_or_else(|| label.clone());
         let user_stats = UserStats {
             user_id: score.user.user_id.unwrap_or(0),
             username,
