@@ -491,214 +491,9 @@ async fn handle_score_query(
                         .await;
                     return;
                 }
-                let position = Some(index);
                 let score = &scores[index];
-
-                // Try rendering score card image (with overall timeout)
-                let play_time = format_play_datetime(&score.created_at);
-                let user_global_rank = if user_stats.rank > 0 {
-                    Some(user_stats.rank)
-                } else {
-                    None
-                };
-                let user_country_rank = if user_stats.country_rank > 0 {
-                    Some(user_stats.country_rank)
-                } else {
-                    None
-                };
-                let change = ctx
-                    .storage
-                    .calculate_change(user_id, params.mode, &user_stats)
-                    .ok()
-                    .flatten();
-
-                let pp_change = change.as_ref().and_then(|c| c.pp_change);
-                let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
-                let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
-                tracing::trace!(
-                    "Starting score card render for {} (pp={}, rank={:?}, country_rank={:?}, pp_change={:?})",
-                    dedup_username,
-                    user_stats.pp,
-                    user_global_rank,
-                    user_country_rank,
-                    pp_change
-                );
-                // 计算 UR（异步，10秒超时，失败不影响渲染）
-                // osu! 模式、有效 score_id 且有 replay 时尝试（rosu_replay 支持 stable 与 lazer）
-                tracing::trace!(score_id = score.score_id, mode = ?params.mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
-                let ur_result = if params.mode == GameMode::Osu
-                    && score.score_id > 0
-                    && score.has_replay
-                {
-                    let rl = ctx.rate_limiter.clone();
-                    let oa = ctx.oauth.clone();
-                    let mods = score.mods.clone();
-                    let ur = tokio::time::timeout(
-                        std::time::Duration::from_secs(UR_TIMEOUT_SECS),
-                        osubot_core::ur::calculate_score_ur(
-                            &rl,
-                            &oa,
-                            osubot_core::ur::ScoreUrParams {
-                                score_id: score.score_id,
-                                legacy_score_id: score.legacy_score_id,
-                                beatmap_id: score.beatmap_id,
-                                mode: params.mode,
-                                mods: mods.clone(),
-                            },
-                        ),
-                    )
+                render_and_send_single_score(ctx, msg, resp_tx, score, params.mode, &user_stats)
                     .await;
-                    match ur {
-                        Ok(Some(ur_val)) => {
-                            tracing::debug!(
-                                score_id = score.score_id,
-                                total_ur = ur_val,
-                                "UR calculation succeeded"
-                            );
-                            Some(ur_val)
-                        }
-                        Ok(None) => {
-                            tracing::warn!(
-                                score_id = score.score_id,
-                                "UR calculation returned None"
-                            );
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!(score_id = score.score_id, "UR calculation timed out");
-                            None
-                        }
-                    }
-                } else {
-                    tracing::trace!(
-                        score_id = score.score_id,
-                        mode = ?params.mode,
-                        is_lazer = score.is_lazer,
-                        has_replay = score.has_replay,
-                        "Skipping UR calculation"
-                    );
-                    None
-                };
-
-                // 计算 PP 分解和 if-acc（单张成绩卡片需要）
-                let mut score = score.clone();
-                osubot_core::enrich_score_with_pp(&mut score, params.mode, true).await;
-
-                // 计算 mod 调整后的 AR/OD/CS/HP
-                let (ar_eff, od_eff, cs_eff, hp_eff) = {
-                    let (a, o, c, h) = osubot_core::apply_mod_adjustment_to_stats(
-                        params.mode,
-                        score.ar,
-                        score.od,
-                        score.cs,
-                        score.hp,
-                        &score.mods,
-                    );
-                    let same = (a - score.ar).abs() < 0.01
-                        && (o - score.od).abs() < 0.01
-                        && (c - score.cs).abs() < 0.01
-                        && (h - score.hp).abs() < 0.01;
-                    if same {
-                        (None, None, None, None)
-                    } else {
-                        (Some(a), Some(o), Some(c), Some(h))
-                    }
-                };
-
-                let cover_image: Option<image::DynamicImage> = if !score.cover_url.is_empty() {
-                    match osubot_render::cache::fetch_and_cache(
-                        &score.cover_url,
-                        osubot_render::cache::http_client(),
-                    )
-                    .await
-                    {
-                        Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                        Err(_) => None,
-                    }
-                } else {
-                    None
-                };
-
-                let ur_value = ur_result;
-
-                // 30s outer timeout for score card rendering.
-                // The cancel flag is shared with render_score_card; if this
-                // timeout fires, it sets the flag so the blocking render
-                // detects it at loop boundaries and aborts early.
-                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let cancel_clone = cancel.clone();
-                let render_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(RENDER_TIMEOUT_SECS),
-                    render_score_card(osubot_render::ScoreCardParams {
-                        score: &score,
-                        username: &dedup_username,
-                        mode: params.mode,
-                        user_pp: user_stats.pp,
-                        user_global_rank,
-                        user_country_rank,
-                        country_code: &user_stats.country_code,
-                        avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
-                        play_time: &play_time,
-                        fav_count: score.fav_count,
-                        play_count: score.play_count,
-                        pp_change,
-                        global_rank_change,
-                        country_rank_change,
-                        ranked_status: &score.status,
-                        ur_value,
-                        ar_eff,
-                        od_eff,
-                        cs_eff,
-                        hp_eff,
-                        cover_image,
-                        cancel_flag: Some(cancel_clone),
-                    }),
-                )
-                .await;
-
-                match render_result {
-                    Ok(Ok(jpeg_bytes)) => {
-                        tracing::info!(
-                            "Score card rendered successfully, {} bytes",
-                            jpeg_bytes.len()
-                        );
-                        let jpeg = Arc::new(jpeg_bytes);
-                        let write = ctx.write.clone();
-                        let group_id = msg.group_id;
-                        let resp_tx_img = resp_tx.clone();
-                        tokio::spawn(async move {
-                            if send_group_msg_with_image(&write, group_id, &jpeg)
-                                .await
-                                .is_err()
-                            {
-                                let _ = resp_tx_img.send("图片发送失败".to_string()).await;
-                            }
-                        });
-                    }
-                    Ok(Err(e)) => {
-                        warn!(error = %e, "render_score_card failed, falling back to text");
-                        let response = format_score(
-                            &score,
-                            &dedup_username,
-                            params.mode,
-                            position,
-                            params.is_pass,
-                        );
-                        let _ = resp_tx.send(response).await;
-                    }
-                    Err(_) => {
-                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                        warn!("render_score_card timed out after 30s, falling back to text");
-                        let response = format_score(
-                            &score,
-                            &dedup_username,
-                            params.mode,
-                            position,
-                            params.is_pass,
-                        );
-                        let _ = resp_tx.send(response).await;
-                    }
-                }
             } else {
                 // Local PP re-computation + cover download: the osu! API
                 // may return pp=null for failed scores, loved/pending
@@ -876,7 +671,7 @@ async fn handle_beatmap_score_query(
                 }
             })
             .await;
-        let mut score = match score_result {
+        let score = match score_result {
             Ok(s) => s,
             Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
@@ -884,7 +679,6 @@ async fn handle_beatmap_score_query(
             }
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        enrich_score_with_pp(&mut score, mode, true).await;
 
         let user_id = score.user.user_id.unwrap_or(0);
         if user_id == 0 {
@@ -1038,7 +832,7 @@ async fn handle_beatmap_score_query(
                 }
             })
             .await;
-        let mut score = match score_result {
+        let score = match score_result {
             Ok(s) => s,
             Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
@@ -1046,7 +840,6 @@ async fn handle_beatmap_score_query(
             }
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        enrich_score_with_pp(&mut score, mode, true).await;
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
     } else {
         let n = limit as usize;
@@ -1090,9 +883,8 @@ async fn handle_beatmap_score_query(
                 .await;
             return;
         }
-        let mut score = scores.into_iter().nth(n - 1).expect("len checked above");
+        let score = scores.into_iter().nth(n - 1).expect("len checked above");
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        enrich_score_with_pp(&mut score, mode, true).await;
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats).await;
     }
 }
@@ -1105,7 +897,11 @@ async fn render_and_send_single_score(
     mode: GameMode,
     user_stats: &UserStats,
 ) {
+    let mut score = score.clone();
+    enrich_score_with_pp(&mut score, mode, true).await;
+
     let ur_value = if mode == GameMode::Osu && score.score_id > 0 && score.has_replay {
+        tracing::trace!(score_id = score.score_id, mode = ?mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
         let rl = ctx.rate_limiter.clone();
         let oa = ctx.oauth.clone();
         let ur_params = osubot_core::ur::ScoreUrParams {
@@ -1116,15 +912,36 @@ async fn render_and_send_single_score(
             mods: score.mods.clone(),
         };
         match tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(UR_TIMEOUT_SECS),
             osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
         )
         .await
         {
-            Ok(Some(ur)) => Some(ur),
-            _ => None,
+            Ok(Some(ur_val)) => {
+                tracing::debug!(
+                    score_id = score.score_id,
+                    total_ur = ur_val,
+                    "UR calculation succeeded"
+                );
+                Some(ur_val)
+            }
+            Ok(None) => {
+                tracing::warn!(score_id = score.score_id, "UR calculation returned None");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(score_id = score.score_id, "UR calculation timed out");
+                None
+            }
         }
     } else {
+        tracing::trace!(
+            score_id = score.score_id,
+            mode = ?mode,
+            is_lazer = score.is_lazer,
+            has_replay = score.has_replay,
+            "Skipping UR calculation"
+        );
         None
     };
 
@@ -1173,7 +990,7 @@ async fn render_and_send_single_score(
     let render_result = tokio::time::timeout(
         Duration::from_secs(RENDER_TIMEOUT_SECS),
         render_score_card(osubot_render::ScoreCardParams {
-            score,
+            score: &score,
             username: &user_stats.username,
             mode,
             user_pp: user_stats.pp,
@@ -1223,13 +1040,13 @@ async fn render_and_send_single_score(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "render_score_card failed, falling back to text");
-            let text = format_score(score, &user_stats.username, mode, None, true);
+            let text = format_score(&score, &user_stats.username, mode, None, true);
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             cancel_flag.store(true, Ordering::Relaxed);
             warn!("render_score_card timed out, falling back to text");
-            let text = format_score(score, &user_stats.username, mode, None, true);
+            let text = format_score(&score, &user_stats.username, mode, None, true);
             let _ = resp_tx.send(text).await;
         }
     }
