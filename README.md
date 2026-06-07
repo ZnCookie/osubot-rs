@@ -7,6 +7,7 @@
 - 查询自己/他人的 osu! 数据（pp、排名、国家排名、准确率、游玩次数等）
 - 支持 4 种模式：std、taiko、catch、mania
 - 绑定 osu! 账号支持 IRC 鉴权，防止冒名绑定
+- 上游自动绑定：未绑定时自动向其他 osu! bot 查询，无需手动操作
 - 后台定时更新，活跃玩家更新更频繁
 - 今日高光：显示群内用户当日最飞升、最肝、最长游戏时间
 - 个人主页卡片：生成 osu! 个人主页渲染图片（!profile）
@@ -35,6 +36,18 @@
 3. 验证通过后绑定成功，验证码 2 分钟有效，同一 QQ 同时只能有一个待验证请求
 
 未启用 IRC 鉴权时（默认），绑定为直接绑定，无需验证。
+
+### 上游自动绑定
+
+配置 `[upstream]` 后，当用户使用 `~`、`where @QQ`、`!p` 等需要绑定的命令时，若本地未绑定，bot 会自动向上游服务器查询并完成绑定（无需用户手动操作）。查询失败时静默回退到手动绑定提示。
+
+```toml
+[upstream]
+enabled = true
+
+[[upstream.providers]]
+type = "xfs"
+```
 
 ### 高光
 - `今日高光` — 查看当日最飞升、最肝、最长游戏时间（默认 osu!std）
@@ -184,6 +197,7 @@ osubot-rs/
 │       ├── config.rs   # TOML 配置加载
 │       ├── constants.rs # 超时常量定义
 │       ├── last_beatmap_cache.rs # 群谱面查询缓存
+│       ├── xfs_upstream.rs # 消防栓上游绑定查询
 │       └── scheduler.rs # 后台定时更新调度器
 ├── osubot-core/        # 核心库
 │   └── src/
@@ -195,7 +209,8 @@ osubot-rs/
 │       ├── ur.rs        # 回放解析 + UR 计算
 │       ├── dedup.rs     # 请求去重
 │       ├── rate_limiter.rs # 令牌桶限流
-│       ├── cache.rs     # replay/beatmap 文件缓存
+│       ├── upstream.rs    # 上游绑定抽象层
+│       ├── cache.rs       # replay/beatmap 文件缓存
 │       ├── irc.rs       # IRC 连接与消息监听
 │       └── types.rs     # 数据类型定义
 ├── osubot-render/      # 渲染引擎（个人主页 + 分数卡片 + 成绩列表）
@@ -234,7 +249,7 @@ osubot-rs/
 
 ### 请求去重与限流
 
-并发的相同请求（如多人同时查询同一用户）通过 `RequestDedup` 只执行一次 API 调用。所有 osu! API 请求经过令牌桶限流（60 突发/1 每秒），防止触发 API 速率限制。
+并发的相同请求（如多人同时查询同一用户）通过 `RequestDedup` 只执行一次 API 调用。所有 osu! API 请求经过令牌桶限流（60 突发/1 每秒），防止触发 API 速率限制。上游绑定查询也经过独立令牌桶限流（默认 10/分钟），防止频繁连接上游服务器。
 
 ## 许可
 

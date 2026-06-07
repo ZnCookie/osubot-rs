@@ -47,3 +47,18 @@ path = "osubot.db"
 # [groups.123456789]
 # 特定群的覆盖配置（可选，节名 = 群号）
 # highlight = false         # 该群禁用今日高光
+
+# [upstream]
+# 上游自动绑定（可选，不配置则不启用）
+# 当本地未绑定 QQ→osu! 时，自动向上游 bot 查询并完成绑定。
+# enabled = true
+#
+# [[upstream.providers]]
+# type = "xfs"              # 消防栓（hydrant）bot
+# 以下均为可选，xfs 有内置默认值
+# url = "wss://public-service.b11p.com/"
+# access_token = "bleatingsheep.org"
+# self_id = 100000000       # 不配则随机
+# timeout_secs = 10
+# rate_per_minute = 10      # 每分钟查询上限
+# burst = 20                # 突发排队上限

@@ -23,18 +23,24 @@ impl Default for RateLimiter {
 
 impl RateLimiter {
     pub fn new() -> Self {
-        let state = Arc::new(Mutex::new(State { tokens: 60.0 }));
+        Self::with_config(60, 60)
+    }
+
+    pub fn with_config(burst: u32, per_minute: u32) -> Self {
+        let burst_f = burst as f64;
+        let state = Arc::new(Mutex::new(State { tokens: burst_f }));
         let notify = Arc::new(Notify::new());
 
         let state_clone = state.clone();
         let notify_clone = notify.clone();
         let handle = tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(200));
+            let increment = per_minute as f64 / 300.0;
             loop {
                 interval.tick().await;
                 let mut s = state_clone.lock().await;
                 let old_whole = s.tokens.floor() as u32;
-                s.tokens = (s.tokens + 0.2).min(60.0);
+                s.tokens = (s.tokens + increment).min(burst_f);
                 let new_whole = s.tokens.floor() as u32;
                 if new_whole > old_whole {
                     drop(s);
@@ -45,12 +51,10 @@ impl RateLimiter {
             }
         });
 
-        let abort = handle.abort_handle();
-
         Self {
             state,
             notify,
-            _refill: abort,
+            _refill: handle.abort_handle(),
         }
     }
 
