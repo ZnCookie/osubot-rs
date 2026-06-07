@@ -1453,14 +1453,14 @@ async fn backfill_score_details(
         match fetch_score_detail(rate_limiter, oauth, mode_str, score.score_id).await {
             Ok(Some(val)) => {
                 score.score_value = val;
-                tracing::debug!(
+                tracing::trace!(
                     score_id = score.score_id,
                     score_value = val,
                     "Backfilled score value from detail endpoint"
                 );
             }
             Ok(None) => {
-                tracing::debug!(
+                tracing::trace!(
                     score_id = score.score_id,
                     "Score detail endpoint returned no value"
                 );
@@ -1828,7 +1828,7 @@ async fn fetch_score_detail(
 ) -> Result<Option<i64>, ApiError> {
     let client = http_client();
     let url = format!("https://osu.ppy.sh/api/v2/scores/{}/{}", ruleset, score_id);
-    tracing::debug!(url = %url, "Fetching score detail");
+    tracing::trace!(url = %url, "Fetching score detail");
 
     rate_limiter
         .acquire()

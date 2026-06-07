@@ -139,7 +139,7 @@ fn parse_replay_key_times(osr_bytes: &[u8]) -> Option<(Vec<f64>, f64)> {
 
     let replay = Replay::from_bytes(osr_bytes).ok()?;
 
-    tracing::debug!(
+    tracing::trace!(
         replay_data_len = replay.replay_data.len(),
         mode = ?replay.mode,
         mods = replay.mods.value(),
@@ -153,7 +153,7 @@ fn parse_replay_key_times(osr_bytes: &[u8]) -> Option<(Vec<f64>, f64)> {
     let result = extract_key_times_and_offset(&replay.replay_data);
 
     if let Some((ref key_times, time_offset)) = result {
-        tracing::debug!(
+        tracing::trace!(
             key_times_count = key_times.len(),
             time_offset,
             "Key times extracted from replay"
@@ -288,7 +288,7 @@ fn match_hits(
         results[ni] = (hit_times[ni], hit_result, Some(key_times[ki]));
     }
 
-    tracing::debug!(
+    tracing::trace!(
         notes = hit_times.len(),
         keys = key_times.len(),
         pairs = total_pairs,
@@ -333,7 +333,7 @@ pub async fn calculate_score_ur(
         mods,
     } = params;
     if mode != GameMode::Osu {
-        tracing::debug!(mode = ?mode, "Skipping UR/PP calculation: not osu! mode");
+        tracing::trace!(mode = ?mode, "Skipping UR/PP calculation: not osu! mode");
         return None;
     }
 

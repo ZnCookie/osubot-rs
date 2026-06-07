@@ -203,10 +203,10 @@ async fn resolve_score_user(
     mode: GameMode,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<(i64, String, UserStats)> {
-    tracing::debug!("resolve_score_user: starting");
+    tracing::trace!("resolve_score_user: starting");
     if let Some(ref name) = username {
         // Look up by username
-        tracing::debug!("resolve_score_user: looking up by username '{}'", name);
+        tracing::trace!("resolve_score_user: looking up by username '{}'", name);
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
                 ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
@@ -289,7 +289,7 @@ async fn handle_score_query(
     resp_tx: &mpsc::Sender<String>,
     params: ScoreQueryParams<'_>,
 ) {
-    tracing::debug!("handle_score_query: starting");
+    tracing::trace!("handle_score_query: starting");
 
     // For self/bound users (no explicit username/qq), resolve user_id from DB
     // and parallelize the two API calls. For username/QQ lookups, use the
@@ -311,7 +311,7 @@ async fn handle_score_query(
             }
         };
 
-        tracing::debug!(
+        tracing::trace!(
             "handle_score_query: bound user, user_id={}, username={}",
             uid,
             name
@@ -379,7 +379,7 @@ async fn handle_score_query(
                 .await
             {
                 Some(u) => {
-                    tracing::debug!(
+                    tracing::trace!(
                         "resolve_score_user: resolved user_id={}, username={}",
                         u.0,
                         u.1
@@ -398,7 +398,7 @@ async fn handle_score_query(
         let dedup_oauth = ctx.oauth.clone();
         let dedup_mode = params.mode;
 
-        tracing::debug!(
+        tracing::trace!(
             "Fetching scores for user_id={}, mode={:?}, limit={}",
             uid,
             params.mode,
@@ -494,7 +494,7 @@ async fn handle_score_query(
                 let pp_change = change.as_ref().and_then(|c| c.pp_change);
                 let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
                 let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
-                tracing::debug!(
+                tracing::trace!(
                     "Starting score card render for {} (pp={}, rank={:?}, country_rank={:?}, pp_change={:?})",
                     dedup_username,
                     user_stats.pp,
@@ -504,7 +504,7 @@ async fn handle_score_query(
                 );
                 // 计算 UR（异步，10秒超时，失败不影响渲染）
                 // osu! 模式、有效 score_id 且有 replay 时尝试（rosu_replay 支持 stable 与 lazer）
-                tracing::debug!(score_id = score.score_id, mode = ?params.mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
+                tracing::trace!(score_id = score.score_id, mode = ?params.mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
                 let ur_result = if params.mode == GameMode::Osu
                     && score.score_id > 0
                     && score.has_replay
@@ -549,7 +549,7 @@ async fn handle_score_query(
                         }
                     }
                 } else {
-                    tracing::debug!(
+                    tracing::trace!(
                         score_id = score.score_id,
                         mode = ?params.mode,
                         is_lazer = score.is_lazer,
@@ -2174,7 +2174,7 @@ async fn handle_irc_message(
 #[tokio::main]
 async fn main() {
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("osubot=debug,osubot_core=debug,info"));
+        .unwrap_or_else(|_| EnvFilter::new("osubot=info,osubot_core=info,info"));
 
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(env_filter)
