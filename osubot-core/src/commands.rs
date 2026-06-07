@@ -219,7 +219,6 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                     if let Some(at) = token.strip_prefix('@') {
                         if let Ok(parsed) = at.parse::<i64>() {
                             qq_id = Some(parsed);
-                            uname = None;
                         } else {
                             return None;
                         }
@@ -231,12 +230,16 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                         } else if num <= 9_999_999 && bid.is_none() {
                             bid = Some(num as u32);
                         }
-                    } else if uname.is_none() && qq_id.is_none() {
+                    } else if uname.is_none() {
                         uname = Some(token.to_string());
                     }
                 }
                 (bid, sid, uname, qq_id)
             };
+            // 互斥：不能同时提供用户名和 @QQ
+            if username.is_some() && qq.is_some() {
+                return None;
+            }
             // If no user and no mention, resolve as self
             let (username, qq) = if username.is_none() && qq.is_none() {
                 if let Some(qq_val) = mentioned_user_id {
@@ -1081,39 +1084,9 @@ mod tests {
     }
 
     #[test]
-    fn test_score_on_beatmap_qq_overrides_username() {
-        let cmd = parse_command("!s ZnCookie @999 123", None).unwrap();
-        assert_eq!(
-            cmd,
-            Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
-                username: None,
-                qq: Some(999),
-                beatmap_id: Some(123),
-                score_id: None,
-                mods: None,
-                limit: 1,
-                is_all: false,
-            }
-        );
-    }
-
-    #[test]
-    fn test_score_on_beatmap_username_blocks_when_qq_first() {
-        let cmd = parse_command("!s @999 ZnCookie 123", None).unwrap();
-        assert_eq!(
-            cmd,
-            Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
-                username: None,
-                qq: Some(999),
-                beatmap_id: Some(123),
-                score_id: None,
-                mods: None,
-                limit: 1,
-                is_all: false,
-            }
-        );
+    fn test_score_on_beatmap_username_and_qq_mutually_exclusive() {
+        assert!(parse_command("!s ZnCookie @999 123", None).is_none());
+        assert!(parse_command("!s @999 ZnCookie 123", None).is_none());
     }
 
     #[test]
