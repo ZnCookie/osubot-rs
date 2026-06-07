@@ -61,6 +61,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 };
                 return Some(Command::QueryMentionedUser { qq, mode });
             }
+            return None;
         }
         let username = first.to_string();
         let mode = if parts.len() > 1 {
@@ -144,6 +145,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                     qq: Some(parsed),
                 });
             }
+            return None;
         }
         return Some(Command::ProfileCard {
             username: Some(rest.to_string()),
@@ -218,6 +220,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                         if let Ok(parsed) = at.parse::<i64>() {
                             qq_id = Some(parsed);
                             uname = None;
+                        } else {
+                            return None;
                         }
                         continue;
                     }
@@ -309,7 +313,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 if let Ok(parsed) = at.parse::<i64>() {
                     (None, Some(parsed))
                 } else {
-                    (Some(username_part.to_string()), None)
+                    return None;
                 }
             } else {
                 (Some(username_part.to_string()), None)
@@ -415,15 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_qq_in_text_non_numeric_username() {
-        let cmd = parse_command("!profile @ZnCookie", None).unwrap();
-        assert_eq!(
-            cmd,
-            Command::ProfileCard {
-                username: Some("@ZnCookie".to_string()),
-                qq: None,
-            }
-        );
+    fn test_profile_qq_in_text_non_numeric_returns_none() {
+        assert!(parse_command("!profile @ZnCookie", None).is_none());
     }
 
     #[test]
@@ -547,18 +544,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pass_qq_in_text_non_numeric_username() {
-        let cmd = parse_command("!p @ZnCookie", None).unwrap();
-        assert_eq!(
-            cmd,
-            Command::Pass {
-                mode: GameMode::Osu,
-                username: Some("@ZnCookie".to_string()),
-                qq: None,
-                limit: 1,
-                is_summary: false,
-            }
-        );
+    fn test_pass_qq_in_text_non_numeric_returns_none() {
+        assert!(parse_command("!p @ZnCookie", None).is_none());
     }
 
     #[test]
@@ -934,15 +921,8 @@ mod tests {
     }
 
     #[test]
-    fn test_where_qq_in_text_non_numeric_falls_back() {
-        let cmd = parse_command("where @ZnCookie", None).unwrap();
-        assert_eq!(
-            cmd,
-            Command::QueryUser {
-                username: "@ZnCookie".to_string(),
-                mode: GameMode::Osu,
-            }
-        );
+    fn test_where_qq_in_text_non_numeric_returns_none() {
+        assert!(parse_command("where @ZnCookie", None).is_none());
     }
 
     #[test]
@@ -1137,20 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn test_score_on_beatmap_at_non_numeric_ignored() {
-        let cmd = parse_command("!s @ZnCookie 123456", None).unwrap();
-        assert_eq!(
-            cmd,
-            Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
-                username: None,
-                qq: None,
-                beatmap_id: Some(123456),
-                score_id: None,
-                mods: None,
-                limit: 1,
-                is_all: false,
-            }
-        );
+    fn test_score_on_beatmap_at_non_numeric_returns_none() {
+        assert!(parse_command("!s @ZnCookie 123456", None).is_none());
     }
 }
