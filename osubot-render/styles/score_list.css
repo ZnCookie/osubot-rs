@@ -329,6 +329,11 @@
 .mini-card .pp { font-size: 56px; font-weight: 600; color: #a8dcff; }
 .mini-card .pp-unit { font-size: 30px; font-weight: 500; margin-left: 2px; }
 .mini-card .pp-fail { color: #938f99; }
+.mini-card .bid {
+  font-size: 24px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.35);
+}
 .mini-card .acc {
   font-size: 36px;
   font-weight: 700;
