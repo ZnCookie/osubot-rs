@@ -174,7 +174,7 @@ impl Scheduler {
                 Err(ApiError::NotFound) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::UserNotExists,
-                        success: false,
+                        success: true,
                     };
                 }
                 Err(ApiError::RateLimitedWithRetryAfter(_)) => {
