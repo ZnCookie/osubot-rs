@@ -266,7 +266,7 @@ fn make_varied_score(idx: usize) -> Score {
 
     Score {
         score_id: idx as i64 + 1,
-        beatmap_id: idx as i64 + 1000,
+        beatmap_id: idx as i64 + 900000,
         beatmapset_id: idx as i64 + 100,
         artist: artists[idx].to_string(),
         title: titles[idx].to_string(),

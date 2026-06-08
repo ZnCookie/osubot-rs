@@ -329,10 +329,19 @@
 .mini-card .pp { font-size: 56px; font-weight: 600; color: #a8dcff; }
 .mini-card .pp-unit { font-size: 30px; font-weight: 500; margin-left: 2px; }
 .mini-card .pp-fail { color: #938f99; }
-.mini-card .bid {
-  font-size: 24px;
-  font-weight: 400;
-  color: rgba(255, 255, 255, 0.35);
+.mini-card .cover-strip .bid-in-cover {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  font-size: 34px;
+  font-weight: 800;
+  color: #ffffff;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 2px 8px rgba(0, 0, 0, 0.75);
 }
 .mini-card .acc {
   font-size: 36px;

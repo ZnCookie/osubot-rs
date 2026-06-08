@@ -115,6 +115,12 @@ fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
         escape_html(&data.relative_time)
     ));
 
+    // Beatmap ID
+    html.push_str(&format!(
+        r#"<span class="bid-in-cover">{}</span>"#,
+        data.score.beatmap_id
+    ));
+
     html.push_str(r#"</div>"#); // end cover-strip
 
     // Body
@@ -140,9 +146,8 @@ fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
     // Acc + PP row
     let pp_class = if data.passed { "pp" } else { "pp pp-fail" };
     html.push_str(&format!(
-        r#"<div class="row2"><span class="acc">{}</span><span class="bid">{}</span><span class="{}">{}<span class="pp-unit">pp</span></span></div>"#,
+        r#"<div class="row2"><span class="acc">{}</span><span class="{}">{}<span class="pp-unit">pp</span></span></div>"#,
         data.acc_formatted,
-        data.score.beatmap_id,
         pp_class,
         data.pp_formatted
     ));
