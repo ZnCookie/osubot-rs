@@ -1194,6 +1194,15 @@ async fn render_and_send_score_list(
         None
     };
 
+    let change = ctx
+        .storage
+        .calculate_change(user_stats.user_id, mode, user_stats)
+        .ok()
+        .flatten();
+    let pp_change = change.as_ref().and_then(|c| c.pp_change);
+    let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
+    let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+
     let render_result = tokio::time::timeout(
         Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
         render_score_list_card(osubot_render::ScoreListCardParams {
@@ -1207,9 +1216,9 @@ async fn render_and_send_score_list(
             user_global_rank,
             user_country_rank,
             country_code: &user_stats.country_code,
-            pp_change: None,
-            global_rank_change: None,
-            country_rank_change: None,
+            pp_change,
+            global_rank_change,
+            country_rank_change,
             hero_cover_url: &hero_cover_url,
         }),
     )
