@@ -331,7 +331,7 @@ fn std_with_hd_populates_star_rating() {
 }
 
 #[test]
-fn std_nf_only_returns_beatmap_star_rating() {
+fn std_nf_only_calculates_pp() {
     let mut mods = GameMods::new();
     mods.insert(rosu_mods::GameMod::NoFailOsu(Default::default()));
     let pp = calculate_pp_breakdown(PpCalcParams {
@@ -347,19 +347,12 @@ fn std_nf_only_returns_beatmap_star_rating() {
         passed: true,
     })
     .expect("should return breakdown");
-    assert_eq!(
-        pp.star_rating,
-        Some(5.5),
-        "NF-only should return beatmap star_rating"
-    );
-    assert_eq!(
-        pp.total_pp, 0.0,
-        "NF-only fast path should have total_pp = 0.0"
-    );
+    assert!(pp.star_rating.unwrap() > 0.0, "star_rating should be > 0");
+    assert!(pp.total_pp > 0.0, "NF-only should calculate PP");
 }
 
 #[test]
-fn std_cl_only_returns_beatmap_star_rating() {
+fn std_cl_only_calculates_pp() {
     let mut mods = GameMods::new();
     mods.insert(rosu_mods::GameMod::ClassicOsu(Default::default()));
     let pp = calculate_pp_breakdown(PpCalcParams {
@@ -375,15 +368,8 @@ fn std_cl_only_returns_beatmap_star_rating() {
         passed: true,
     })
     .expect("should return breakdown");
-    assert_eq!(
-        pp.star_rating,
-        Some(5.5),
-        "CL-only should return beatmap star_rating"
-    );
-    assert_eq!(
-        pp.total_pp, 0.0,
-        "CL-only fast path should have total_pp = 0.0"
-    );
+    assert!(pp.star_rating.unwrap() > 0.0, "star_rating should be > 0");
+    assert!(pp.total_pp > 0.0, "CL-only should calculate PP");
 }
 
 #[test]

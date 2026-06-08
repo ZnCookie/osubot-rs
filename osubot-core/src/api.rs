@@ -212,21 +212,8 @@ fn apply_stats_and_calculate(
     perf.calculate()
 }
 
-/// 判断 mod 是否仅包含不影响难度的 mod（NF、CL）
-fn has_only_non_difficulty_mods(mods: &GameMods) -> bool {
-    use rosu_mods::GameModIntermode;
-    if mods.is_empty() {
-        return false;
-    }
-    mods.iter().all(|m| {
-        let intermode = m.intermode();
-        intermode == GameModIntermode::NoFail || intermode == GameModIntermode::Classic
-    })
-}
-
 /// Calculate PP breakdown (aim/speed/acc/flashlight/difficulty) and star rating.
 ///
-/// For non-convert + NF/CL-only maps, returns early with beatmap's original star rating.
 /// For converts, extracts star rating from `PerformanceAttributes::stars()`.
 /// Catch mode returns a minimal `PpBreakdown` with only `star_rating` and `total_pp`.
 pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
@@ -243,26 +230,6 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
 
     let map_mode = to_rosu_pp_game_mode(params.mode);
     let needs_convert = map.mode != map_mode;
-
-    // 非转谱 + 仅 NF/CL：跳过难度计算，使用传入的谱面原始星级
-    // NF 和 CL 不影响难度，rosu-pp 的 Difficulty::calculate() 会忽略它们
-    // total_pp 和 accuracy 设为 0.0：score.pp 已来自 API，此处仅用于提取 star_rating
-    // 必须在 pp_mods 消费 params.mods 之前检查
-    if !needs_convert
-        && params.beatmap_star_rating.is_some()
-        && has_only_non_difficulty_mods(&params.mods)
-        && params.passed
-    {
-        return Some(PpBreakdown {
-            aim: None,
-            speed: None,
-            accuracy: 0.0,
-            flashlight: None,
-            difficulty: None,
-            total_pp: 0.0,
-            star_rating: params.beatmap_star_rating,
-        });
-    }
 
     let pp_mods = PpMods::from(params.mods);
 
