@@ -404,7 +404,7 @@
 
 .user-pp-change.up { color: #a0e0aa; }
 .user-pp-change.down { color: #ff9090; }
-.user-pp-change.zero { color: #938f99; }
+.user-pp-change.zero { color: rgba(255, 255, 255, 0.5); }
 
 .rank-change {
   font-size: 28px;
@@ -414,7 +414,7 @@
 
 .rank-change.up { color: #a0e0aa; }
 .rank-change.down { color: #ff9090; }
-.rank-change.zero { color: #938f99; }
+.rank-change.zero { color: rgba(255, 255, 255, 0.5); }
 
 .stats-card {
   padding: 32px 48px;

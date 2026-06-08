@@ -130,7 +130,7 @@
 
 .rank-change.up { color: #a0e0aa; }
 .rank-change.down { color: #ff9090; }
-.rank-change.zero { color: #938f99; }
+.rank-change.zero { color: rgba(255, 255, 255, 0.5); }
 
 .user-pp-section {
   display: flex;
@@ -151,7 +151,7 @@
 
 .user-pp-change.up { color: #a0e0aa; }
 .user-pp-change.down { color: #ff9090; }
-.user-pp-change.zero { color: #938f99; }
+.user-pp-change.zero { color: rgba(255, 255, 255, 0.5); }
 
 /* ===== Score List ===== */
 .score-list {
