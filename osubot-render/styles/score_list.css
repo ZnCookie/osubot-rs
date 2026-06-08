@@ -331,7 +331,7 @@
 .mini-card .pp-fail { color: #938f99; }
 .mini-card .cover-strip .bid-in-cover {
   position: absolute;
-  bottom: 10px;
+  top: 18px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 1;
