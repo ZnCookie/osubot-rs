@@ -762,6 +762,17 @@ mod tests {
         assert!(output.contains("2024/01/01 08:00:00"));
         assert!(output.contains("#1 Artist - Song [Expert]"));
         assert!(output.contains("#2 Artist - Song [Expert]"));
+        assert!(output.contains("400x/500x"));
+    }
+
+    #[test]
+    fn test_format_star_rating_boundaries() {
+        assert_eq!(format_star_rating(0.0), " 0.00*");
+        assert_eq!(format_star_rating(5.0), "★★★★★ 5.00*");
+        assert_eq!(format_star_rating(5.49), "★★★★★ 5.49*");
+        assert_eq!(format_star_rating(5.5), "★★★★★☆ 5.50*");
+        assert_eq!(format_star_rating(5.99), "★★★★★☆ 5.99*");
+        assert_eq!(format_star_rating(14.3), "★★★★★★★★★★★★★★ 14.30*");
     }
 
     #[test]

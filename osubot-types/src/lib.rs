@@ -52,12 +52,7 @@ impl GameMode {
 
     /// 短名称，用于成绩响应中显示（兼容 yumubot 格式）
     pub fn short_name(&self) -> &'static str {
-        match self {
-            GameMode::Osu => "osu",
-            GameMode::Taiko => "taiko",
-            GameMode::Catch => "fruits",
-            GameMode::Mania => "mania",
-        }
+        self.api_value()
     }
 
     pub fn api_value(&self) -> &'static str {
