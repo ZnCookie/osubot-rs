@@ -217,7 +217,7 @@ impl UpstreamBindingProvider for XfsUpstream {
 #[cfg(all(test, feature = "integration-tests"))]
 mod integration_tests {
     use super::*;
-    use crate::config::{default_upstream_url, ProviderConfig};
+    use crate::config::ProviderConfig;
     use osubot_core::OauthTokenCache;
     use osubot_core::RateLimiter;
     use std::sync::Arc;
@@ -233,7 +233,7 @@ mod integration_tests {
             provider_type: "xfs".into(),
             rate_per_minute: 10,
             burst: 20,
-            url: "wss://public-service.b11p.com/".into(),
+            url: Some("wss://public-service.b11p.com/".into()),
             access_token: "bleatingsheep.org".into(),
             self_id: None,
             timeout_secs: 10,

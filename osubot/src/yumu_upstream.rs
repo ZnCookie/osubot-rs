@@ -290,7 +290,7 @@ mod integration_tests {
             provider_type: "yumu".into(),
             rate_per_minute: 10,
             burst: 20,
-            url: YUMU_DEFAULT_URL.into(),
+            url: Some(YUMU_DEFAULT_URL.into()),
             access_token: String::new(),
             self_id: None,
             timeout_secs: 10,
