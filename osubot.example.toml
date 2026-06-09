@@ -54,11 +54,18 @@ path = "osubot.db"
 # enabled = true
 #
 # [[upstream.providers]]
-# type = "xfs"              # 消防栓（hydrant）bot
-# 以下均为可选，xfs 有内置默认值
+# type = "xfs"              # 消防栓（hydrant）bot，通过 OneBot 中继查询
 # url = "wss://public-service.b11p.com/"
 # access_token = "bleatingsheep.org"
-# self_id = 100000000       # 不配则随机
+# self_id = 100000000       # 不配则随机，避免与其他客户端冲突
 # timeout_secs = 10
 # rate_per_minute = 10      # 每分钟查询上限
 # burst = 20                # 突发排队上限
+#
+# [[upstream.providers]]
+# type = "yumu"             # yumu-bot，直接连接 OneBot 服务（伪装用户 QQ 发 !bi 命令）
+# url = "ws://121.41.63.60:11735/pub/onebotSocket"
+# timeout_secs = 10
+# rate_per_minute = 10
+# burst = 20
+# yumu 无需 access_token 和 self_id，直接伪装目标 QQ 连接

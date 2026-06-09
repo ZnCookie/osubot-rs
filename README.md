@@ -45,8 +45,13 @@
 [upstream]
 enabled = true
 
+# xfs（消防栓）：通过 OneBot 中继查询，需要 access_token
 [[upstream.providers]]
 type = "xfs"
+
+# yumu（yumu-bot）：直接连接 yumu 的 OneBot 服务，无需 access_token
+[[upstream.providers]]
+type = "yumu"
 ```
 
 ### 高光
