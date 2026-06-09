@@ -16,28 +16,11 @@ use tracing::{debug, warn};
 use osubot_core::api;
 use osubot_core::rate_limiter::RateLimiter;
 use osubot_core::types::GameMode;
+use osubot_core::upstream::extract_text_from_message;
 use osubot_core::OauthTokenCache;
 use osubot_core::UpstreamBindingProvider;
 
 use crate::config::ProviderConfig;
-
-fn extract_text_from_message(msg: &serde_json::Value) -> String {
-    match msg {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter_map(|seg| {
-                if seg["type"] == "text" {
-                    seg["data"]["text"].as_str().map(String::from)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
-}
 
 pub struct XfsUpstream {
     url: String,

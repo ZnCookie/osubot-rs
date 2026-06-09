@@ -13,29 +13,12 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tracing::{debug, warn};
 
 use osubot_core::rate_limiter::RateLimiter;
+use osubot_core::upstream::extract_text_from_message;
 use osubot_core::UpstreamBindingProvider;
 
 use crate::config::ProviderConfig;
 
 const YUMU_DEFAULT_URL: &str = "ws://121.41.63.60:11735/pub/onebotSocket";
-
-fn extract_text_from_message(msg: &serde_json::Value) -> String {
-    match msg {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter_map(|seg| {
-                if seg["type"] == "text" {
-                    seg["data"]["text"].as_str().map(String::from)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
-}
 
 fn parse_bind_response_text(resp_text: &str) -> Option<(i64, String)> {
     if let Some(pos) = resp_text.find("您已绑定") {
@@ -72,7 +55,11 @@ fn parse_send_msg_action(action_text: &str) -> Option<String> {
         return None;
     }
     let text = extract_text_from_message(&action.params["message"]);
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 pub struct YumuUpstream {
@@ -110,6 +97,10 @@ impl UpstreamBindingProvider for YumuUpstream {
             let mut rng = rand::thread_rng();
             rng.gen_range(1000000000..9999999999i64)
         };
+        let message_id: i32 = {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(1..i32::MAX)
+        };
 
         let mut request = match self.url.as_str().into_client_request() {
             Ok(r) => r,
@@ -138,11 +129,9 @@ impl UpstreamBindingProvider for YumuUpstream {
             }
         };
 
-        let ts = Utc::now().timestamp();
-
         // Step 1: Send lifecycle event
         let lifecycle = json!({
-            "time": ts,
+            "time": Utc::now().timestamp(),
             "self_id": qq,
             "post_type": "meta_event",
             "meta_event_type": "lifecycle",
@@ -165,12 +154,12 @@ impl UpstreamBindingProvider for YumuUpstream {
         // Brief pause for server to process lifecycle
         tokio::time::sleep(Duration::from_millis(100)).await;
         let event = json!({
-            "time": ts,
+            "time": Utc::now().timestamp(),
             "self_id": qq,
             "post_type": "message",
             "message_type": "group",
             "sub_type": "normal",
-            "message_id": 12345,
+            "message_id": message_id,
             "message_seq": 1,
             "group_id": group_id,
             "user_id": qq,
@@ -227,15 +216,15 @@ impl UpstreamBindingProvider for YumuUpstream {
                 _ => continue,
             };
 
-            debug!(target: "yumu_upstream", %text, "收到消息");
+            debug!(target: "yumu_upstream", %text, "received message");
 
             #[cfg(test)]
             eprintln!("[yumu] recv: {}", text);
 
             if let Some(resp_text) = parse_send_msg_action(&text) {
-                debug!(target: "yumu_upstream", resp = %resp_text, "解析到 send 动作");
+                debug!(target: "yumu_upstream", resp = %resp_text, "parsed send action");
                 if let Some(binding) = parse_bind_response_text(&resp_text) {
-                    debug!(target: "yumu_upstream", username = %binding.1, osu_id = binding.0, "解析到绑定");
+                    debug!(target: "yumu_upstream", username = %binding.1, osu_id = binding.0, "parsed binding");
                     return Ok(Some(binding));
                 }
                 // Got a response but it's not a binding info (e.g., "已撤回绑定授权" etc.)
@@ -271,7 +260,10 @@ mod tests {
     fn test_parse_send_msg_action() {
         let action = r#"{"action":"send_group_msg","echo":1272,"params":{"group_id":9876543210,"message":[{"data":{"text":"您已绑定 (18230719) ZnCookie，但是令牌依旧有效。\n如果要改绑，请回复 OK。"},"type":"text"}],"auto_escape":false}}"#;
         let text = parse_send_msg_action(action).unwrap();
-        assert_eq!(text, "您已绑定 (18230719) ZnCookie，但是令牌依旧有效。\n如果要改绑，请回复 OK。");
+        assert_eq!(
+            text,
+            "您已绑定 (18230719) ZnCookie，但是令牌依旧有效。\n如果要改绑，请回复 OK。"
+        );
     }
 
     #[test]

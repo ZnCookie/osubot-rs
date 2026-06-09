@@ -2,6 +2,24 @@ use crate::dedup::RequestDedup;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+pub fn extract_text_from_message(msg: &serde_json::Value) -> String {
+    match msg {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|seg| {
+                if seg["type"] == "text" {
+                    seg["data"]["text"].as_str().map(String::from)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
 /// Resolves QQ → osu! user binding from an external bot server.
 ///
 /// Implementations query an upstream service (e.g., another osu! bot's
