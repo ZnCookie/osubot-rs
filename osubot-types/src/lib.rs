@@ -118,6 +118,9 @@ pub struct PpIfAcc {
     pub acc_100: f64,
     /// 如果 Full Combo 能获得的 PP
     pub if_fc: f64,
+    /// 理论 Perfect (SS) PP，无状态计算（仅谱面+mods）
+    #[serde(default)]
+    pub perfect_pp: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -128,6 +131,12 @@ pub struct ScoreStatistics {
     pub count_100: i64,
     pub count_50: i64,
     pub count_miss: i64,
+    /// Osu slider tick hits / Catch large droplet hits (lazer)
+    pub osu_large_tick_hits: i64,
+    /// Osu small slider tick hits / Catch small droplet hits (lazer)
+    pub osu_small_tick_hits: i64,
+    /// Osu slider end hits (lazer)
+    pub osu_slider_tail_hits: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -171,6 +180,9 @@ pub struct Score {
     pub pp_breakdown: Option<PpBreakdown>,
     #[serde(default)]
     pub pp_if_acc: Option<PpIfAcc>,
+    /// 理论 Perfect (SS) PP，来自 PpIfAcc
+    #[serde(default)]
+    pub perfect_pp: Option<f64>,
     pub rank: String,
     #[serde(default = "default_true")]
     pub passed: bool,

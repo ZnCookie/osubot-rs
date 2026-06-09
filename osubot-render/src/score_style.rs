@@ -683,6 +683,7 @@ mod tests {
             pp: Some(456.7),
             pp_breakdown: None,
             pp_if_acc: None,
+            perfect_pp: None,
             rank: "S".to_string(),
             passed: true,
             mods,
@@ -698,6 +699,9 @@ mod tests {
                 count_100: 45,
                 count_50: 12,
                 count_miss: 2,
+                osu_large_tick_hits: 0,
+                osu_small_tick_hits: 0,
+                osu_slider_tail_hits: 0,
             },
             cover_url: "https://example.com/cover.jpg".to_string(),
             user: osubot_types::ScoreUser {
@@ -999,6 +1003,7 @@ mod tests {
             acc_99: 440.0,
             acc_100: 480.0,
             if_fc: 520.0,
+            perfect_pp: 600.0,
         });
         let data = ScoreCardData {
             score,
@@ -1104,6 +1109,7 @@ mod tests {
                 pp: Some(200.0),
                 pp_breakdown: None,
                 pp_if_acc: None,
+                perfect_pp: None,
                 rank: "A".to_string(),
                 passed: true,
                 mods,
@@ -1119,6 +1125,9 @@ mod tests {
                     count_100: 50,
                     count_50: 10,
                     count_miss: 5,
+                    osu_large_tick_hits: 0,
+                    osu_small_tick_hits: 0,
+                    osu_slider_tail_hits: 0,
                 },
                 cover_url: String::new(),
                 user: ScoreUser {

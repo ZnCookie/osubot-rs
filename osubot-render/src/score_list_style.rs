@@ -319,6 +319,7 @@ mod tests {
             pp: Some(456.0),
             pp_breakdown: None,
             pp_if_acc: None,
+            perfect_pp: None,
             rank: "S".to_string(),
             passed: true,
             mods,
@@ -334,6 +335,9 @@ mod tests {
                 count_100: 45,
                 count_50: 12,
                 count_miss: 2,
+                osu_large_tick_hits: 0,
+                osu_small_tick_hits: 0,
+                osu_slider_tail_hits: 0,
             },
             cover_url: "https://example.com/cover.jpg".to_string(),
             user: ScoreUser {

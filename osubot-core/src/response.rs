@@ -662,6 +662,7 @@ mod tests {
             pp: Some(250.0),
             pp_breakdown: None,
             pp_if_acc: None,
+            perfect_pp: None,
             rank: "S".to_string(),
             passed: true,
             mods,
@@ -677,6 +678,9 @@ mod tests {
                 count_100: 5,
                 count_50: 0,
                 count_miss: 0,
+                osu_large_tick_hits: 0,
+                osu_small_tick_hits: 0,
+                osu_slider_tail_hits: 0,
             },
             cover_url: String::new(),
             user: ScoreUser {
@@ -801,6 +805,9 @@ mod tests {
             count_100: 30,
             count_50: 10,
             count_miss: 5,
+            osu_large_tick_hits: 0,
+            osu_small_tick_hits: 0,
+            osu_slider_tail_hits: 0,
         };
         let output = format_score(&score, "TestUser", GameMode::Mania, None, true);
         assert!(output.contains("100/200/50/30/10/5"));

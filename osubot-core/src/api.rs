@@ -144,14 +144,16 @@ fn create_performance<'a>(
 /// Apply mode-appropriate stats to a `Performance` calculator and compute the result.
 ///
 /// For all modes with `statistics` available, uses
-/// `.n300(), .n100(), .n50(), .misses()`. For Mania, additionally uses
-/// `.n_geki(), .n_katu()`. These are not called for non-Mania modes because
-/// `.n_katu()` explicitly sets `tiny_droplet_misses` for Catch in rosu-pp 4.0.1,
-/// which would silently shift Catch PP when `count_katu=0`.
+/// `.n_geki(), .n300(), .n_katu(), .n100(), .n50(), .misses()`,
+/// `.large_tick_hits(), .small_tick_hits(), .slider_end_hits()`.
+/// For Osu/Taiko, geki/katu are typically 0 from the API, so calling
+/// these is harmless. For Catch, katu carries the small droplet miss count
+/// (`tiny_droplet_misses`). For Mania, geki/katu carry the 320/200 judgment
+/// counts.
 ///
 /// For failed scores (`passed=false`) with `statistics` available,
-/// also calls `passed_objects(total_hits)` to truncate strain / difficulty
-/// calculation to the actual objects hit.
+/// zeros n300 (matching yumu-bot's `getScoreRosuPerformance`).
+/// `hitresult_priority` defaults to `BestCase` in rosu-pp 4.0.1.
 ///
 /// When `statistics` is `None`, falls back to `combo + accuracy + misses`
 /// (used by mode converts and call sites that don't pass hit counts).
@@ -166,7 +168,7 @@ fn create_performance<'a>(
 /// than try to "fix" it.
 fn apply_stats_and_calculate(
     perf: rosu_pp::Performance<'_>,
-    mode: GameMode,
+    _mode: GameMode,
     statistics: Option<&ScoreStatistics>,
     accuracy: f64,
     max_combo: u32,
@@ -175,34 +177,22 @@ fn apply_stats_and_calculate(
 ) -> rosu_pp::any::PerformanceAttributes {
     let perf = match statistics {
         Some(s) => {
-            let total_hits = u32::try_from(
-                s.count_geki + s.count_300 + s.count_katu + s.count_100 + s.count_50 + s.count_miss,
-            )
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    count_geki = s.count_geki,
-                    count_300 = s.count_300,
-                    count_katu = s.count_katu,
-                    count_100 = s.count_100,
-                    count_50 = s.count_50,
-                    count_miss = s.count_miss,
-                    "ScoreStatistics hit counts overflow u32; passing 0 to passed_objects"
-                );
+            let n300 = if passed {
+                s.count_300 as u32
+            } else {
                 0
-            });
-            let mut perf = perf
-                .n300(s.count_300 as u32)
+            };
+            perf
+                .combo(max_combo)
+                .n300(n300)
                 .n100(s.count_100 as u32)
                 .n50(s.count_50 as u32)
-                .misses(miss_count);
-            if mode == GameMode::Mania {
-                perf = perf.n_geki(s.count_geki as u32).n_katu(s.count_katu as u32);
-            }
-            if !passed {
-                perf.passed_objects(total_hits)
-            } else {
-                perf
-            }
+                .n_geki(s.count_geki as u32)
+                .n_katu(s.count_katu as u32)
+                .large_tick_hits(s.osu_large_tick_hits as u32)
+                .small_tick_hits(s.osu_small_tick_hits as u32)
+                .slider_end_hits(s.osu_slider_tail_hits as u32)
+                .misses(miss_count)
         }
         None => perf
             .combo(max_combo)
@@ -363,12 +353,18 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
     // For converts this avoids repeated try_mode() calls (map re-conversion).
     let base_perf = create_performance(
         &map,
-        diff_attrs,
-        pp_mods,
+        diff_attrs.clone(),
+        pp_mods.clone(),
         params.is_lazer,
         needs_convert,
         map_mode,
     );
+
+    let perfect_pp = if let Some(perf) = base_perf.clone() {
+        perf.calculate().pp()
+    } else {
+        0.0
+    };
 
     let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
         let perf = match base_perf.clone() {
@@ -382,22 +378,13 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             .pp()
     };
 
-    let calc_mania_fc = |counts: &ScoreStatistics, miss_override: u32| -> f64 {
-        let perf = match base_perf.clone() {
-            Some(p) => p,
-            None => return 0.0,
+    let if_fc = 'fc: {
+        let Some(s) = params.statistics else {
+            break 'fc calc_pp(params.accuracy, bm_combo, 0);
         };
-        perf.n_geki(counts.count_geki as u32)
-            .n300(counts.count_300 as u32)
-            .n_katu(counts.count_katu as u32)
-            .n100(counts.count_100 as u32)
-            .n50(counts.count_50 as u32)
-            .misses(miss_override)
-            .calculate()
-            .pp()
-    };
-
-    let if_fc = if let (GameMode::Mania, Some(s)) = (params.mode, params.statistics) {
+        let Some(perf) = base_perf.clone() else {
+            break 'fc 0.0;
+        };
         let fc_counts = ScoreStatistics {
             count_geki: s.count_geki,
             count_300: s.count_300 + s.count_miss,
@@ -405,10 +392,37 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             count_100: s.count_100,
             count_50: s.count_50,
             count_miss: 0,
+            osu_large_tick_hits: s.osu_large_tick_hits,
+            osu_small_tick_hits: s.osu_small_tick_hits,
+            osu_slider_tail_hits: s.osu_slider_tail_hits,
         };
-        calc_mania_fc(&fc_counts, 0)
-    } else {
-        calc_pp(params.accuracy, bm_combo, 0)
+        match params.mode {
+            GameMode::Mania => perf
+                .n_geki(fc_counts.count_geki as u32)
+                .n300(fc_counts.count_300 as u32)
+                .n_katu(fc_counts.count_katu as u32)
+                .n100(fc_counts.count_100 as u32)
+                .n50(fc_counts.count_50 as u32)
+                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
+                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
+                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
+                .misses(fc_counts.count_miss as u32)
+                .calculate()
+                .pp(),
+            _ => perf
+                .n_geki(fc_counts.count_geki as u32)
+                .n300(fc_counts.count_300 as u32)
+                .n_katu(fc_counts.count_katu as u32)
+                .n100(fc_counts.count_100 as u32)
+                .n50(fc_counts.count_50 as u32)
+                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
+                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
+                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
+                .misses(fc_counts.count_miss as u32)
+                .combo(bm_combo)
+                .calculate()
+                .pp(),
+        }
     };
 
     let calc_acc = |acc: f64| -> f64 {
@@ -426,6 +440,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         acc_99: calc_acc(0.99),
         acc_100: calc_acc(1.0),
         if_fc,
+        perfect_pp,
     })
 }
 
@@ -501,6 +516,11 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
 
     score.pp_breakdown = pp_breakdown;
     score.pp_if_acc = pp_if_acc;
+    if let Some(ref if_acc) = score.pp_if_acc {
+        if if_acc.perfect_pp > 0.0 {
+            score.perfect_pp = Some(if_acc.perfect_pp);
+        }
+    }
 
     // 从 pp_breakdown 中提取星级（所有模式，含 Catch）
     if let Some(ref bd) = score.pp_breakdown {
@@ -611,6 +631,7 @@ struct OsuApiScore {
     #[serde(default)]
     total_score: Option<i64>,
     #[serde(default)]
+    #[allow(dead_code)] // is_lazer now determined from build_id > 0 (aligned with yumu-bot)
     is_lazer: bool,
     #[serde(default)]
     build_id: Option<i64>,
@@ -659,17 +680,26 @@ struct OsuApiScoreStatistics {
     count_geki: i64,
     #[serde(default, alias = "great")]
     count_300: i64,
-    #[serde(default)]
+    #[serde(default, alias = "good", alias = "small_tick_miss")]
     count_katu: i64,
-    #[serde(default, alias = "meh")]
-    count_100: i64,
     #[serde(default)]
+    count_100: i64,
+    #[serde(default, alias = "meh")]
     count_50: i64,
     #[serde(default, alias = "miss")]
     count_miss: i64,
     /// Lazer `ok` field — maps to count_100 (standard) or count_katu (mania)
     #[serde(default)]
     ok: i64,
+    /// Lazer `large_tick_hit` — slider ticks (Osu), large droplets (Catch)
+    #[serde(default, alias = "large_tick_hit")]
+    osu_large_tick_hits: i64,
+    /// Lazer `small_tick_hit` — small slider ticks (Osu), small droplets (Catch)
+    #[serde(default, alias = "small_tick_hit")]
+    osu_small_tick_hits: i64,
+    /// Lazer `slider_tail_hit` — slider ends (Osu)
+    #[serde(default, alias = "slider_tail_hit")]
+    osu_slider_tail_hits: i64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -894,6 +924,7 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
+        perfect_pp: None,
         rank: if api.passed {
             api.rank
         } else {
@@ -903,13 +934,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         mods: api_mods_to_game_mods(&api.mods, mode),
         is_perfect: api.perfect,
         created_at: api.ended_at,
-        // 三种方式检测 lazer 模式：
-        // 1. API 显式标记 is_lazer = true
-        // 2. build_id > 0 表示使用了 lazer 客户端
-        // 3. legacy_total_score == 0 表示该分数在 lazer 中创建，无旧版分数
-        is_lazer: api.is_lazer
-            || api.build_id.is_some_and(|id| id > 0)
-            || api.legacy_total_score.is_some_and(|v| v == 0),
+        // 对齐 yumu-bot：仅通过 build_id > 0 判断 lazer
+        is_lazer: api.build_id.is_some_and(|id| id > 0),
         has_replay: api.has_replay,
         legacy_score_id: api.legacy_score_id,
         statistics: ScoreStatistics {
@@ -922,17 +948,38 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
                     api.statistics.ok
                 }
             } else {
-                0
+                api.statistics.count_katu
             },
-            count_100: if mode == GameMode::Mania {
-                api.statistics.count_100
+            count_100: if mode == GameMode::Catch {
+                if api.statistics.osu_large_tick_hits != 0 {
+                    api.statistics.osu_large_tick_hits
+                } else {
+                    api.statistics.count_100
+                }
+            } else if mode == GameMode::Mania {
+                if api.statistics.ok != 0 {
+                    api.statistics.ok
+                } else {
+                    api.statistics.count_100
+                }
             } else if api.statistics.ok != 0 {
                 api.statistics.ok
             } else {
                 api.statistics.count_100
             },
-            count_50: api.statistics.count_50,
+            count_50: if mode == GameMode::Catch {
+                if api.statistics.osu_small_tick_hits != 0 {
+                    api.statistics.osu_small_tick_hits
+                } else {
+                    api.statistics.count_50
+                }
+            } else {
+                api.statistics.count_50
+            },
             count_miss: api.statistics.count_miss,
+            osu_large_tick_hits: api.statistics.osu_large_tick_hits,
+            osu_small_tick_hits: api.statistics.osu_small_tick_hits,
+            osu_slider_tail_hits: api.statistics.osu_slider_tail_hits,
         },
         cover_url,
         user,
@@ -2096,6 +2143,9 @@ mod tests {
                 count_100: 10,
                 count_50: 0,
                 count_miss: 1,
+                osu_large_tick_hits: 0,
+                osu_small_tick_hits: 0,
+                osu_slider_tail_hits: 0,
                 ok: 0,
             },
             ruleset_id: 0,
@@ -2255,7 +2305,7 @@ mod tests {
         api.build_id = None;
         api.legacy_total_score = Some(0);
         let score = api_score_to_score(api, GameMode::Osu);
-        assert!(score.is_lazer);
+        assert!(!score.is_lazer, "legacy_total_score=0 should no longer trigger is_lazer");
     }
 
     #[test]
