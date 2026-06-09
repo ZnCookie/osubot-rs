@@ -454,6 +454,37 @@ mod tests {
     }
 
     #[test]
+    fn test_config_from_toml_with_upstream() {
+        let toml_str = r#"
+            [osu]
+            api_key = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+            [upstream]
+            enabled = true
+            [[upstream.providers]]
+            type = "xfs"
+            [[upstream.providers]]
+            type = "yumu"
+            url = "ws://custom-yumu:1234"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let upstream = config.upstream;
+        assert!(upstream.enabled);
+        assert_eq!(upstream.providers.len(), 2);
+        assert_eq!(upstream.providers[0].provider_type, "xfs");
+        assert_eq!(upstream.providers[0].url, None);
+        assert_eq!(upstream.providers[1].provider_type, "yumu");
+        assert_eq!(
+            upstream.providers[1].url,
+            Some("ws://custom-yumu:1234".into())
+        );
+    }
+
+    #[test]
     fn test_group_filter_invalid_mode_fails() {
         let toml_str = r#"
             [osu]

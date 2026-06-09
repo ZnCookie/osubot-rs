@@ -2,6 +2,7 @@ use crate::dedup::RequestDedup;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing::warn;
 
 #[derive(Deserialize)]
 pub struct SendAction {
@@ -85,6 +86,9 @@ impl UpstreamChain {
                 }
             })
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                warn!("upstream dedup error: {e}");
+                None
+            })
     }
 }

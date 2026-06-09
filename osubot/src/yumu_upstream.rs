@@ -248,6 +248,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_bind_response_revoked() {
+        let text = "您已撤回绑定授权";
+        assert!(parse_bind_response_text(text).is_none());
+    }
+
+    #[test]
     fn test_parse_send_msg_action() {
         let action = r#"{"action":"send_group_msg","echo":1272,"params":{"group_id":9876543210,"message":[{"data":{"text":"您已绑定 (18230719) ZnCookie，但是令牌依旧有效。\n如果要改绑，请回复 OK。"},"type":"text"}],"auto_escape":false}}"#;
         let text = parse_send_msg_action(action).unwrap();

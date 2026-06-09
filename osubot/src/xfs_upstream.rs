@@ -37,6 +37,8 @@ impl XfsUpstream {
         oauth: Arc<OauthTokenCache>,
         api_rate_limiter: Arc<RateLimiter>,
     ) -> Self {
+        // Use random self_id when not explicitly configured, to avoid
+        // identity conflicts with other connected OneBot clients.
         let self_id = cfg.self_id.unwrap_or_else(|| {
             let mut rng = rand::thread_rng();
             rng.gen_range(100000000..999999999i64)
@@ -79,16 +81,25 @@ impl UpstreamBindingProvider for XfsUpstream {
                 return Ok(None);
             }
         };
-        request
-            .headers_mut()
-            .insert("X-Self-ID", self.self_id.to_string().parse().unwrap());
+        request.headers_mut().insert(
+            "X-Self-ID",
+            self.self_id
+                .to_string()
+                .parse()
+                .expect("self_id should be a valid header value"),
+        );
         request.headers_mut().insert(
             "Authorization",
-            format!("Bearer {}", self.access_token).parse().unwrap(),
+            format!("Bearer {}", self.access_token)
+                .parse()
+                .expect("access_token should be a valid header value"),
         );
-        request
-            .headers_mut()
-            .insert("X-Client-Role", "Universal".parse().unwrap());
+        request.headers_mut().insert(
+            "X-Client-Role",
+            "Universal"
+                .parse()
+                .expect("literal 'Universal' should be a valid header value"),
+        );
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,
