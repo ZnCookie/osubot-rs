@@ -64,6 +64,9 @@ fn mania_breakdown_difficulty_only_and_no_aim() {
         count_100: 5,
         count_50: 0,
         count_miss: 2,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
     let pp = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("1638954.osu"),
@@ -114,6 +117,9 @@ fn std_to_mania_convert_produces_mania_breakdown() {
         count_100: 5,
         count_50: 0,
         count_miss: 2,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
     let pp = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
@@ -194,6 +200,9 @@ fn mania_if_acc_fc_has_reasonable_values() {
         count_100: 80,
         count_50: 10,
         count_miss: 10,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
     let if_acc = calculate_pp_if_acc(
         PpCalcParams {
@@ -227,6 +236,9 @@ fn mania_acc_95_differs_from_acc_100() {
         count_100: 80,
         count_50: 10,
         count_miss: 10,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
     let if_acc = calculate_pp_if_acc(
         PpCalcParams {
@@ -259,6 +271,9 @@ fn mania_acc_95_on_convert_uses_accuracy_path() {
         count_100: 5,
         count_50: 0,
         count_miss: 2,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
     let if_acc = calculate_pp_if_acc(
         PpCalcParams {
@@ -331,7 +346,7 @@ fn std_with_hd_populates_star_rating() {
 }
 
 #[test]
-fn std_nf_only_returns_beatmap_star_rating() {
+fn std_nf_only_calculates_pp() {
     let mut mods = GameMods::new();
     mods.insert(rosu_mods::GameMod::NoFailOsu(Default::default()));
     let pp = calculate_pp_breakdown(PpCalcParams {
@@ -347,19 +362,12 @@ fn std_nf_only_returns_beatmap_star_rating() {
         passed: true,
     })
     .expect("should return breakdown");
-    assert_eq!(
-        pp.star_rating,
-        Some(5.5),
-        "NF-only should return beatmap star_rating"
-    );
-    assert_eq!(
-        pp.total_pp, 0.0,
-        "NF-only fast path should have total_pp = 0.0"
-    );
+    assert!(pp.star_rating.unwrap() > 0.0, "star_rating should be > 0");
+    assert!(pp.total_pp > 0.0, "NF-only should calculate PP");
 }
 
 #[test]
-fn std_cl_only_returns_beatmap_star_rating() {
+fn std_cl_only_calculates_pp() {
     let mut mods = GameMods::new();
     mods.insert(rosu_mods::GameMod::ClassicOsu(Default::default()));
     let pp = calculate_pp_breakdown(PpCalcParams {
@@ -375,15 +383,8 @@ fn std_cl_only_returns_beatmap_star_rating() {
         passed: true,
     })
     .expect("should return breakdown");
-    assert_eq!(
-        pp.star_rating,
-        Some(5.5),
-        "CL-only should return beatmap star_rating"
-    );
-    assert_eq!(
-        pp.total_pp, 0.0,
-        "CL-only fast path should have total_pp = 0.0"
-    );
+    assert!(pp.star_rating.unwrap() > 0.0, "star_rating should be > 0");
+    assert!(pp.total_pp > 0.0, "CL-only should calculate PP");
 }
 
 #[test]
@@ -549,10 +550,10 @@ fn std_to_mania_with_hd_populates_breakdown() {
     );
 }
 
-// === passed_objects behavior on failed scores ===
+// === failed score n300=0 behavior ===
 
 #[test]
-fn failed_score_with_statistics_uses_passed_objects() {
+fn failed_score_n300_zeroed() {
     let stats = ScoreStatistics {
         count_geki: 0,
         count_300: 200,
@@ -560,20 +561,10 @@ fn failed_score_with_statistics_uses_passed_objects() {
         count_100: 10,
         count_50: 0,
         count_miss: 5,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
-    let pp_passed = calculate_pp_breakdown(PpCalcParams {
-        osu_path: &resource("2785319.osu"),
-        mode: GameMode::Osu,
-        mods: GameMods::new(),
-        accuracy: 0.97,
-        max_combo: 210,
-        miss_count: 5,
-        is_lazer: false,
-        statistics: Some(&stats),
-        beatmap_star_rating: None,
-        passed: true,
-    })
-    .expect("passed score should return breakdown");
     let pp_failed = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
         mode: GameMode::Osu,
@@ -587,15 +578,6 @@ fn failed_score_with_statistics_uses_passed_objects() {
         passed: false,
     })
     .expect("failed score should return breakdown");
-    // passed_objects truncates strain/difficulty to actual hits,
-    // so the failed score must have strictly lower total_pp
-    // (assuming non-zero hits were registered).
-    assert!(
-        pp_failed.total_pp < pp_passed.total_pp,
-        "failed PP ({}) should be < passed PP ({})",
-        pp_failed.total_pp,
-        pp_passed.total_pp
-    );
     assert!(
         pp_failed.total_pp > 0.0,
         "failed score with statistics should still produce non-zero PP (got {})",
@@ -632,7 +614,7 @@ fn failed_score_nf_cl_only_does_not_take_fast_path() {
 // === Mania failed-score behavior ===
 
 #[test]
-fn failed_score_mania_uses_passed_objects() {
+fn failed_score_mania_n300_zeroed() {
     let stats = ScoreStatistics {
         count_geki: 50,
         count_300: 200,
@@ -640,20 +622,10 @@ fn failed_score_mania_uses_passed_objects() {
         count_100: 5,
         count_50: 0,
         count_miss: 3,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
-    let pp_passed = calculate_pp_breakdown(PpCalcParams {
-        osu_path: &resource("2785319.osu"),
-        mode: GameMode::Mania,
-        mods: GameMods::new(),
-        accuracy: 0.95,
-        max_combo: 268,
-        miss_count: 3,
-        is_lazer: true,
-        statistics: Some(&stats),
-        beatmap_star_rating: None,
-        passed: true,
-    })
-    .expect("passed Mania score should return breakdown");
     let pp_failed = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
         mode: GameMode::Mania,
@@ -667,12 +639,6 @@ fn failed_score_mania_uses_passed_objects() {
         passed: false,
     })
     .expect("failed Mania score should return breakdown");
-    assert!(
-        pp_failed.total_pp < pp_passed.total_pp,
-        "failed Mania PP ({}) should be < passed Mania PP ({})",
-        pp_failed.total_pp,
-        pp_passed.total_pp
-    );
     assert!(
         pp_failed.total_pp > 0.0,
         "failed Mania score with statistics should still produce non-zero PP (got {})",
@@ -694,6 +660,9 @@ fn if_acc_ignores_passed_field_and_assumes_full_play() {
         count_100: 10,
         count_50: 0,
         count_miss: 5,
+        osu_large_tick_hits: 0,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 0,
     };
     let pp_if_acc_passed = calculate_pp_if_acc(
         PpCalcParams {

@@ -54,7 +54,9 @@ fn make_max_score(mode: GameMode) -> Score {
             acc_99: 9999.9,
             acc_100: 9999.9,
             if_fc: 9999.9,
+            perfect_pp: 9999.9,
         }),
+        perfect_pp: None,
         rank: "X".to_string(),
         passed: true,
         mods: make_max_mods(),
@@ -71,6 +73,9 @@ fn make_max_score(mode: GameMode) -> Score {
                 count_100: 9999,
                 count_50: 9999,
                 count_miss: 9999,
+                osu_large_tick_hits: 0,
+                osu_small_tick_hits: 0,
+                osu_slider_tail_hits: 0,
             };
             if !is_mania {
                 s.count_geki = 0;
@@ -266,7 +271,7 @@ fn make_varied_score(idx: usize) -> Score {
 
     Score {
         score_id: idx as i64 + 1,
-        beatmap_id: idx as i64 + 1000,
+        beatmap_id: idx as i64 + 900000,
         beatmapset_id: idx as i64 + 100,
         artist: artists[idx].to_string(),
         title: titles[idx].to_string(),
@@ -286,6 +291,7 @@ fn make_varied_score(idx: usize) -> Score {
         pp: Some(pp_values[idx]),
         pp_breakdown: None,
         pp_if_acc: None,
+        perfect_pp: None,
         rank: ranks[idx].to_string(),
         passed: !matches!(idx, 3 | 8 | 14),
         mods,
@@ -306,6 +312,9 @@ fn make_varied_score(idx: usize) -> Score {
             count_100: 50 - idx as i64,
             count_50: 5,
             count_miss: idx as i64 % 7,
+            osu_large_tick_hits: 0,
+            osu_small_tick_hits: 0,
+            osu_slider_tail_hits: 0,
         },
         cover_url: format!(
             "https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg",

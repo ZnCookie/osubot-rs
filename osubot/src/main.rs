@@ -2,6 +2,8 @@ mod config;
 mod constants;
 mod last_beatmap_cache;
 mod scheduler;
+mod xfs_upstream;
+mod yumu_upstream;
 
 use config::Config;
 use futures_util::{future::join_all, SinkExt, StreamExt};
@@ -16,6 +18,7 @@ use osubot_core::{
     response::{format_score, format_scores, format_stats_with_change},
     storage::Storage,
     types::{format_play_datetime, Command, GameMode, Score, UserStats},
+    upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
 use osubot_render::cache as render_cache;
@@ -36,6 +39,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
+use xfs_upstream::XfsUpstream;
+use yumu_upstream::YumuUpstream;
 
 use constants::*;
 
@@ -179,6 +184,75 @@ struct BotContext {
     write: Arc<Mutex<WriteSink>>,
     onebot_api: Arc<OneBotApi>,
     last_beatmap: LastBeatmapCache,
+    upstream_chain: Arc<UpstreamChain>,
+}
+
+fn api_error_msg(e: &ApiError) -> String {
+    match e {
+        ApiError::NotFound => "未找到该用户".to_string(),
+        ApiError::MissingApiKey => "API Key 未配置".to_string(),
+        ApiError::OAuthError => "OAuth 认证失败".to_string(),
+        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
+            format!("查询繁忙，请 {} 秒后再试", secs)
+        }
+        ApiError::RateLimitedWithRetryAfter(None) => "查询繁忙，请稍后再试".to_string(),
+        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
+        _ => "查询失败，请稍后重试".to_string(),
+    }
+}
+
+impl BotContext {
+    async fn resolve_binding(&self, qq: i64) -> Option<(i64, String)> {
+        match self.storage.get_binding(qq) {
+            Ok(Some(binding)) => Some(binding),
+            Ok(None) => {
+                let binding = self.upstream_chain.try_query(qq).await?;
+                if let Err(e) = self.storage.set_user_id(&binding.1, binding.0) {
+                    warn!("failed to persist user_id from upstream: {e}");
+                }
+                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1) {
+                    warn!("failed to persist binding from upstream: {e}");
+                }
+                Some(binding)
+            }
+            Err(_) => None,
+        }
+    }
+
+    async fn fetch_stats_and_reply(
+        &self,
+        qq: i64,
+        user_id: i64,
+        username: &str,
+        mode: GameMode,
+        resp_tx: &mpsc::Sender<String>,
+        log_label: &str,
+    ) {
+        self.scheduler.trigger_update(user_id, mode);
+        match api::fetch_user_stats_by_user_id(&self.rate_limiter, &self.oauth, user_id, mode).await
+        {
+            Ok(stats) => {
+                if stats.username != username {
+                    self.storage
+                        .update_binding_username(qq, &stats.username)
+                        .ok();
+                }
+                self.storage.set_user_id(&stats.username, user_id).ok();
+                let change = self
+                    .storage
+                    .calculate_change(user_id, mode, &stats)
+                    .ok()
+                    .flatten();
+                info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{log_label} success");
+                let response = format_stats_with_change(&stats, &change, mode);
+                let _ = resp_tx.send(response).await;
+            }
+            Err(e) => {
+                warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{log_label} failed");
+                let _ = resp_tx.send(api_error_msg(&e)).await;
+            }
+        }
+    }
 }
 
 type ProfileDedup = RequestDedup<(i64, GameMode), Arc<Vec<u8>>, String>;
@@ -254,24 +328,22 @@ async fn resolve_score_user(
         }
     } else {
         let (user_id, _stored_name, error_msg) = if let Some(mentioned_qq) = qq {
-            match ctx.storage.get_binding(*mentioned_qq) {
-                Ok(Some((user_id, name))) => (user_id, name, None),
-                Ok(None) => (
+            match ctx.resolve_binding(*mentioned_qq).await {
+                Some((user_id, name)) => (user_id, name, None),
+                None => (
                     0,
                     String::new(),
                     Some("该用户还没有绑定 osu! 账号".to_string()),
                 ),
-                Err(_) => (0, String::new(), Some("数据库错误".to_string())),
             }
         } else {
-            match ctx.storage.get_binding(msg.user_id) {
-                Ok(Some((user_id, name))) => (user_id, name, None),
-                Ok(None) => (
+            match ctx.resolve_binding(msg.user_id).await {
+                Some((user_id, name)) => (user_id, name, None),
+                None => (
                     0,
                     String::new(),
                     Some("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string()),
                 ),
-                Err(_) => (0, String::new(), Some("数据库错误".to_string())),
             }
         };
         if let Some(err) = error_msg {
@@ -318,16 +390,12 @@ async fn handle_score_query(
     let is_self = params.username.is_none() && params.qq.is_none();
     let include_fails = !params.is_pass;
     let (user_id, resolved_username, user_stats, score_result) = if is_self {
-        let (uid, name) = match ctx.storage.get_binding(msg.user_id) {
-            Ok(Some((uid, name))) => (uid, name),
-            Ok(None) => {
+        let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
+            Some(binding) => binding,
+            None => {
                 let _ = resp_tx
                     .send("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string())
                     .await;
-                return;
-            }
-            Err(_) => {
-                let _ = resp_tx.send("数据库错误".to_string()).await;
                 return;
             }
         };
@@ -1132,6 +1200,15 @@ async fn render_and_send_score_list(
         None
     };
 
+    let change = ctx
+        .storage
+        .calculate_change(user_stats.user_id, mode, user_stats)
+        .ok()
+        .flatten();
+    let pp_change = change.as_ref().and_then(|c| c.pp_change);
+    let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
+    let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+
     let render_result = tokio::time::timeout(
         Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
         render_score_list_card(osubot_render::ScoreListCardParams {
@@ -1145,9 +1222,9 @@ async fn render_and_send_score_list(
             user_global_rank,
             user_country_rank,
             country_code: &user_stats.country_code,
-            pp_change: None,
-            global_rank_change: None,
-            country_rank_change: None,
+            pp_change,
+            global_rank_change,
+            country_rank_change,
             hero_cover_url: &hero_cover_url,
         }),
     )
@@ -1242,61 +1319,35 @@ async fn handle_command(
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
             match ctx.storage.get_binding(msg.user_id) {
-                Ok(Some((user_id, current_username))) => {
-                    // Trigger update for the queried mode (bypassing cooldown)
-                    ctx.scheduler.trigger_update(user_id, mode);
-                    match api::fetch_user_stats_by_user_id(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
+                Ok(Some((user_id, username))) => {
+                    ctx.fetch_stats_and_reply(
+                        msg.user_id,
                         user_id,
+                        &username,
                         mode,
+                        &resp_tx,
+                        "QuerySelf",
                     )
-                    .await
-                    {
-                        Ok(stats) => {
-                            // Username change detection
-                            if stats.username != current_username {
-                                ctx.storage
-                                    .update_binding_username(msg.user_id, &stats.username)
-                                    .ok();
-                            }
-                            ctx.storage.set_user_id(&stats.username, user_id).ok();
-                            // Get change from storage (compares with 24h ago snapshot)
-                            let change = ctx
-                                .storage
-                                .calculate_change(user_id, mode, &stats)
-                                .ok()
-                                .flatten();
-                            info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QuerySelf success");
-                            let response = format_stats_with_change(&stats, &change, mode);
-                            let _ = resp_tx.send(response).await;
-                        }
-                        Err(e) => {
-                            warn!(user_id = user_id, mode = ?mode, error = ?e, "QuerySelf failed");
-                            let err_msg = match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
-                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                    format!("查询繁忙，请 {} 秒后再试", secs)
-                                }
-                                ApiError::RateLimitedWithRetryAfter(None) => {
-                                    "查询繁忙，请稍后再试".to_string()
-                                }
-                                ApiError::ClientRateLimited => {
-                                    "本地请求限流，请稍后再试".to_string()
-                                }
-                                _ => "查询失败，请稍后重试".to_string(),
-                            };
-                            let _ = resp_tx.send(err_msg).await;
-                        }
-                    }
+                    .await;
                 }
                 Ok(None) => {
-                    info!(user_id = msg.user_id, "QuerySelf but no binding");
-                    let _ = resp_tx
-                        .send("请先绑定 osu! 用户名，使用 绑定 <用户名>".to_string())
+                    if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id).await {
+                        info!(user_id = msg.user_id, osu_id = user_id, username = %username, "QuerySelf auto-bound via upstream");
+                        ctx.fetch_stats_and_reply(
+                            msg.user_id,
+                            user_id,
+                            &username,
+                            mode,
+                            &resp_tx,
+                            "QuerySelf (auto-bound)",
+                        )
                         .await;
+                    } else {
+                        info!(user_id = msg.user_id, "QuerySelf but no binding");
+                        let _ = resp_tx
+                            .send("请先绑定 osu! 用户名，使用 绑定 <用户名>".to_string())
+                            .await;
+                    }
                 }
                 Err(_) => {
                     error!(user_id = msg.user_id, "QuerySelf database error");
@@ -1331,80 +1382,45 @@ async fn handle_command(
                 }
                 Err(e) => {
                     warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
-                    let err_msg = match e {
-                        ApiError::NotFound => "未找到该用户".to_string(),
-                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                            format!("查询繁忙，请 {} 秒后再试", secs)
-                        }
-                        ApiError::RateLimitedWithRetryAfter(None) => {
-                            "查询繁忙，请稍后再试".to_string()
-                        }
-                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
-                        _ => "查询失败，请稍后重试".to_string(),
-                    };
-                    let _ = resp_tx.send(err_msg).await;
+                    let _ = resp_tx.send(api_error_msg(&e)).await;
                 }
             }
         }
         Command::QueryMentionedUser { qq, mode } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
             match ctx.storage.get_binding(qq) {
-                Ok(Some((user_id, current_username))) => {
-                    ctx.scheduler.trigger_update(user_id, mode);
-                    match api::fetch_user_stats_by_user_id(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
+                Ok(Some((user_id, username))) => {
+                    ctx.fetch_stats_and_reply(
+                        qq,
                         user_id,
+                        &username,
                         mode,
+                        &resp_tx,
+                        "QueryMentionedUser",
                     )
-                    .await
-                    {
-                        Ok(stats) => {
-                            if stats.username != current_username {
-                                ctx.storage
-                                    .update_binding_username(qq, &stats.username)
-                                    .ok();
-                            }
-                            ctx.storage.set_user_id(&stats.username, user_id).ok();
-                            let change = ctx
-                                .storage
-                                .calculate_change(user_id, mode, &stats)
-                                .ok()
-                                .flatten();
-                            info!(user_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryMentionedUser success");
-                            let response = format_stats_with_change(&stats, &change, mode);
-                            let _ = resp_tx.send(response).await;
-                        }
-                        Err(e) => {
-                            warn!(user_id = user_id, mode = ?mode, error = ?e, "QueryMentionedUser failed");
-                            let err_msg = match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
-                                ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                    format!("查询繁忙，请 {} 秒后再试", secs)
-                                }
-                                ApiError::RateLimitedWithRetryAfter(None) => {
-                                    "查询繁忙，请稍后重试".to_string()
-                                }
-                                ApiError::ClientRateLimited => {
-                                    "本地请求限流，请稍后再试".to_string()
-                                }
-                                _ => "查询失败，请稍后重试".to_string(),
-                            };
-                            let _ = resp_tx.send(err_msg).await;
-                        }
-                    }
+                    .await;
                 }
                 Ok(None) => {
-                    info!(qq = qq, "QueryMentionedUser but no binding");
-                    let _ = resp_tx
-                        .send(
-                            "该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string(),
+                    if let Some((user_id, username)) = ctx.resolve_binding(qq).await {
+                        info!(qq = qq, osu_id = user_id, username = %username, "QueryMentionedUser auto-bound via upstream");
+                        ctx.fetch_stats_and_reply(
+                            qq,
+                            user_id,
+                            &username,
+                            mode,
+                            &resp_tx,
+                            "QueryMentionedUser (auto-bound)",
                         )
                         .await;
+                    } else {
+                        info!(qq = qq, "QueryMentionedUser but no binding");
+                        let _ = resp_tx
+                            .send(
+                                "该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定"
+                                    .to_string(),
+                            )
+                            .await;
+                    }
                 }
                 Err(_) => {
                     error!(qq = qq, "QueryMentionedUser database error");
@@ -1717,45 +1733,52 @@ async fn handle_command(
                 }
                 None => {
                     match qq {
-                        Some(mentioned_qq) => {
-                            match ctx.storage.get_binding(mentioned_qq) {
-                                Ok(Some((user_id, current_username))) => {
-                                    info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "ProfileCard mention");
-                                    user_id
-                                }
-                                Ok(None) => {
+                        Some(mentioned_qq) => match ctx.storage.get_binding(mentioned_qq) {
+                            Ok(Some((user_id, current_username))) => {
+                                info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "ProfileCard mention");
+                                user_id
+                            }
+                            Ok(None) => {
+                                if let Some((uid, uname)) = ctx.resolve_binding(mentioned_qq).await
+                                {
+                                    info!(qq = mentioned_qq, osu_id = uid, username = %uname, "ProfileCard mention auto-bound");
+                                    uid
+                                } else {
                                     info!(qq = mentioned_qq, "ProfileCard mention but no binding");
                                     let _ = resp_tx
-                                    .send("该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string())
-                                    .await;
-                                    return;
-                                }
-                                Err(_) => {
-                                    error!(qq = mentioned_qq, "ProfileCard mention database error");
-                                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                                        .send("该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string())
+                                        .await;
                                     return;
                                 }
                             }
-                        }
-                        None => {
-                            match ctx.storage.get_binding(msg.user_id) {
-                                Ok(Some((user_id, current_username))) => {
-                                    info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "ProfileCard self");
-                                    user_id
-                                }
-                                Ok(None) => {
+                            Err(_) => {
+                                error!(qq = mentioned_qq, "ProfileCard mention database error");
+                                let _ = resp_tx.send("数据库错误".to_string()).await;
+                                return;
+                            }
+                        },
+                        None => match ctx.storage.get_binding(msg.user_id) {
+                            Ok(Some((user_id, current_username))) => {
+                                info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "ProfileCard self");
+                                user_id
+                            }
+                            Ok(None) => {
+                                if let Some((uid, uname)) = ctx.resolve_binding(msg.user_id).await {
+                                    info!(user_id = msg.user_id, osu_id = uid, username = %uname, "ProfileCard self auto-bound");
+                                    uid
+                                } else {
                                     let _ = resp_tx
-                                    .send("请先绑定 osu! 用户名，或使用 !profile <用户名> 查询他人".to_string())
-                                    .await;
-                                    return;
-                                }
-                                Err(_) => {
-                                    error!(user_id = msg.user_id, "ProfileCard database error");
-                                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                                        .send("请先绑定 osu! 用户名，或使用 !profile <用户名> 查询他人".to_string())
+                                        .await;
                                     return;
                                 }
                             }
-                        }
+                            Err(_) => {
+                                error!(user_id = msg.user_id, "ProfileCard database error");
+                                let _ = resp_tx.send("数据库错误".to_string()).await;
+                                return;
+                            }
+                        },
                     }
                 }
             };
@@ -2124,6 +2147,32 @@ async fn main() {
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
+    let upstream_chain = Arc::new({
+        if config.upstream.enabled {
+            let mut providers: Vec<Box<dyn osubot_core::UpstreamBindingProvider>> = Vec::new();
+            for p_cfg in &config.upstream.providers {
+                match p_cfg.provider_type.as_str() {
+                    "xfs" => {
+                        providers.push(Box::new(XfsUpstream::from_config(
+                            p_cfg,
+                            oauth.clone(),
+                            rate_limiter.clone(),
+                        )));
+                    }
+                    "yumu" => {
+                        providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
+                    }
+                    other => {
+                        tracing::warn!("unknown upstream provider type: {other}");
+                    }
+                }
+            }
+            UpstreamChain::new(providers)
+        } else {
+            UpstreamChain::new(Vec::new())
+        }
+    });
+
     match storage.get_users_without_ids() {
         Ok(users) if !users.is_empty() => {
             info!("Backfilling user IDs for {} users...", users.len());
@@ -2359,6 +2408,7 @@ async fn main() {
                             write: write.clone(),
                             onebot_api: onebot_api.clone(),
                             last_beatmap: last_beatmap.clone(),
+                            upstream_chain: upstream_chain.clone(),
                         };
                         let irc_nickname = irc_nickname.clone();
                         tokio::spawn(async move {

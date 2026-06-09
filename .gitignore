@@ -9,3 +9,4 @@ osubot.toml
 docs/
 .superpowers/
 .opencode/
+osubot-render/tests/dump/

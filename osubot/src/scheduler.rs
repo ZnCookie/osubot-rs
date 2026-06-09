@@ -122,7 +122,12 @@ impl Scheduler {
 
         for (user_id, mode) in due {
             let result = self.eval_activity(user_id, mode).await;
-            self.update_next_time(user_id, mode, result.activity);
+            if result.success {
+                self.update_next_time(user_id, mode, result.activity);
+            } else {
+                // Retry on next tick — rate limiter naturally throttles persistent failures
+                let _ = self.storage.set_next_update(user_id, mode, Utc::now());
+            }
         }
     }
 
@@ -138,6 +143,7 @@ impl Scheduler {
         if !self.rate_limiter.try_acquire().await {
             return osubot_core::types::UpdateResult {
                 activity: UserActivity::NoRecent,
+                success: false,
             };
         }
 
@@ -168,22 +174,26 @@ impl Scheduler {
                 Err(ApiError::NotFound) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::UserNotExists,
+                        success: true,
                     };
                 }
                 Err(ApiError::RateLimitedWithRetryAfter(_)) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::NoRecent,
+                        success: false,
                     };
                 }
                 Err(ApiError::ClientRateLimited) => {
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::NoRecent,
+                        success: false,
                     };
                 }
                 Err(_) => {
                     // Other transient errors: use shorter retry interval (6h instead of 48h)
                     return osubot_core::types::UpdateResult {
                         activity: UserActivity::NoRecent,
+                        success: false,
                     };
                 }
             };
@@ -280,7 +290,10 @@ impl Scheduler {
             }
         }
 
-        osubot_core::types::UpdateResult { activity }
+        osubot_core::types::UpdateResult {
+            activity,
+            success: true,
+        }
     }
 
     /// Return next update interval based on activity

@@ -17,6 +17,8 @@ pub struct Config {
     pub group_filter: GroupFilterConfig,
     #[serde(default)]
     pub groups: GroupsConfig,
+    #[serde(default)]
+    pub upstream: UpstreamConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -222,6 +224,52 @@ impl GroupsConfig {
     }
 }
 
+pub(crate) fn default_upstream_url() -> String {
+    "wss://public-service.b11p.com/".to_string()
+}
+
+fn default_access_token() -> String {
+    "bleatingsheep.org".to_string()
+}
+
+fn default_timeout_secs() -> u64 {
+    10
+}
+
+fn default_rate_per_minute() -> u32 {
+    10
+}
+
+fn default_burst() -> u32 {
+    20
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    #[serde(default = "default_rate_per_minute")]
+    pub rate_per_minute: u32,
+    #[serde(default = "default_burst")]
+    pub burst: u32,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_access_token")]
+    pub access_token: String,
+    #[serde(default)]
+    pub self_id: Option<i64>,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct UpstreamConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
+}
+
 impl Config {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
@@ -248,6 +296,7 @@ impl Default for Config {
             irc: IrcConfig::default(),
             group_filter: GroupFilterConfig::default(),
             groups: GroupsConfig::default(),
+            upstream: UpstreamConfig::default(),
         }
     }
 }
@@ -402,6 +451,37 @@ mod tests {
         assert!(g111.is_enabled(CommandGroup::Highlight));
         let g222 = config.groups.get_group_config(222);
         assert!(!g222.is_enabled(CommandGroup::Highlight));
+    }
+
+    #[test]
+    fn test_config_from_toml_with_upstream() {
+        let toml_str = r#"
+            [osu]
+            api_key = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+            [upstream]
+            enabled = true
+            [[upstream.providers]]
+            type = "xfs"
+            [[upstream.providers]]
+            type = "yumu"
+            url = "ws://custom-yumu:1234"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let upstream = config.upstream;
+        assert!(upstream.enabled);
+        assert_eq!(upstream.providers.len(), 2);
+        assert_eq!(upstream.providers[0].provider_type, "xfs");
+        assert_eq!(upstream.providers[0].url, None);
+        assert_eq!(upstream.providers[1].provider_type, "yumu");
+        assert_eq!(
+            upstream.providers[1].url,
+            Some("ws://custom-yumu:1234".into())
+        );
     }
 
     #[test]

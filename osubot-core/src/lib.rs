@@ -8,6 +8,7 @@ pub mod rate_limiter;
 pub mod response;
 pub mod storage;
 pub mod types;
+pub mod upstream;
 pub mod ur;
 
 pub use api::{
@@ -23,3 +24,4 @@ pub use rate_limiter::{RateLimitError, RateLimiter};
 pub use response::{format_score, format_scores, format_stats, format_stats_with_change};
 pub use storage::Storage;
 pub use types::{Command, GameMode, ScoreUser, UserStats};
+pub use upstream::{UpstreamBindingProvider, UpstreamChain};

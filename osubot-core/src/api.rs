@@ -144,14 +144,16 @@ fn create_performance<'a>(
 /// Apply mode-appropriate stats to a `Performance` calculator and compute the result.
 ///
 /// For all modes with `statistics` available, uses
-/// `.n300(), .n100(), .n50(), .misses()`. For Mania, additionally uses
-/// `.n_geki(), .n_katu()`. These are not called for non-Mania modes because
-/// `.n_katu()` explicitly sets `tiny_droplet_misses` for Catch in rosu-pp 4.0.1,
-/// which would silently shift Catch PP when `count_katu=0`.
+/// `.n_geki(), .n300(), .n_katu(), .n100(), .n50(), .misses()`,
+/// `.large_tick_hits(), .small_tick_hits(), .slider_end_hits()`.
+/// For Osu/Taiko, geki/katu are typically 0 from the API, so calling
+/// these is harmless. For Catch, katu carries the small droplet miss count
+/// (`tiny_droplet_misses`). For Mania, geki/katu carry the 320/200 judgment
+/// counts.
 ///
 /// For failed scores (`passed=false`) with `statistics` available,
-/// also calls `passed_objects(total_hits)` to truncate strain / difficulty
-/// calculation to the actual objects hit.
+/// zeros n300 (matching yumu-bot's `getScoreRosuPerformance`).
+/// `hitresult_priority` defaults to `BestCase` in rosu-pp 4.0.1.
 ///
 /// When `statistics` is `None`, falls back to `combo + accuracy + misses`
 /// (used by mode converts and call sites that don't pass hit counts).
@@ -166,7 +168,7 @@ fn create_performance<'a>(
 /// than try to "fix" it.
 fn apply_stats_and_calculate(
     perf: rosu_pp::Performance<'_>,
-    mode: GameMode,
+    _mode: GameMode,
     statistics: Option<&ScoreStatistics>,
     accuracy: f64,
     max_combo: u32,
@@ -175,34 +177,17 @@ fn apply_stats_and_calculate(
 ) -> rosu_pp::any::PerformanceAttributes {
     let perf = match statistics {
         Some(s) => {
-            let total_hits = u32::try_from(
-                s.count_geki + s.count_300 + s.count_katu + s.count_100 + s.count_50 + s.count_miss,
-            )
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    count_geki = s.count_geki,
-                    count_300 = s.count_300,
-                    count_katu = s.count_katu,
-                    count_100 = s.count_100,
-                    count_50 = s.count_50,
-                    count_miss = s.count_miss,
-                    "ScoreStatistics hit counts overflow u32; passing 0 to passed_objects"
-                );
-                0
-            });
-            let mut perf = perf
-                .n300(s.count_300 as u32)
+            let n300 = if passed { s.count_300 as u32 } else { 0 };
+            perf.combo(max_combo)
+                .n300(n300)
                 .n100(s.count_100 as u32)
                 .n50(s.count_50 as u32)
-                .misses(miss_count);
-            if mode == GameMode::Mania {
-                perf = perf.n_geki(s.count_geki as u32).n_katu(s.count_katu as u32);
-            }
-            if !passed {
-                perf.passed_objects(total_hits)
-            } else {
-                perf
-            }
+                .n_geki(s.count_geki as u32)
+                .n_katu(s.count_katu as u32)
+                .large_tick_hits(s.osu_large_tick_hits as u32)
+                .small_tick_hits(s.osu_small_tick_hits as u32)
+                .slider_end_hits(s.osu_slider_tail_hits as u32)
+                .misses(miss_count)
         }
         None => perf
             .combo(max_combo)
@@ -212,21 +197,8 @@ fn apply_stats_and_calculate(
     perf.calculate()
 }
 
-/// 判断 mod 是否仅包含不影响难度的 mod（NF、CL）
-fn has_only_non_difficulty_mods(mods: &GameMods) -> bool {
-    use rosu_mods::GameModIntermode;
-    if mods.is_empty() {
-        return false;
-    }
-    mods.iter().all(|m| {
-        let intermode = m.intermode();
-        intermode == GameModIntermode::NoFail || intermode == GameModIntermode::Classic
-    })
-}
-
 /// Calculate PP breakdown (aim/speed/acc/flashlight/difficulty) and star rating.
 ///
-/// For non-convert + NF/CL-only maps, returns early with beatmap's original star rating.
 /// For converts, extracts star rating from `PerformanceAttributes::stars()`.
 /// Catch mode returns a minimal `PpBreakdown` with only `star_rating` and `total_pp`.
 pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
@@ -243,26 +215,6 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
 
     let map_mode = to_rosu_pp_game_mode(params.mode);
     let needs_convert = map.mode != map_mode;
-
-    // 非转谱 + 仅 NF/CL：跳过难度计算，使用传入的谱面原始星级
-    // NF 和 CL 不影响难度，rosu-pp 的 Difficulty::calculate() 会忽略它们
-    // total_pp 和 accuracy 设为 0.0：score.pp 已来自 API，此处仅用于提取 star_rating
-    // 必须在 pp_mods 消费 params.mods 之前检查
-    if !needs_convert
-        && params.beatmap_star_rating.is_some()
-        && has_only_non_difficulty_mods(&params.mods)
-        && params.passed
-    {
-        return Some(PpBreakdown {
-            aim: None,
-            speed: None,
-            accuracy: 0.0,
-            flashlight: None,
-            difficulty: None,
-            total_pp: 0.0,
-            star_rating: params.beatmap_star_rating,
-        });
-    }
 
     let pp_mods = PpMods::from(params.mods);
 
@@ -396,12 +348,18 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
     // For converts this avoids repeated try_mode() calls (map re-conversion).
     let base_perf = create_performance(
         &map,
-        diff_attrs,
-        pp_mods,
+        diff_attrs.clone(),
+        pp_mods.clone(),
         params.is_lazer,
         needs_convert,
         map_mode,
     );
+
+    let perfect_pp = if let Some(perf) = base_perf.clone() {
+        perf.calculate().pp()
+    } else {
+        0.0
+    };
 
     let calc_pp = |acc: f64, combo: u32, misses: u32| -> f64 {
         let perf = match base_perf.clone() {
@@ -415,22 +373,13 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             .pp()
     };
 
-    let calc_mania_fc = |counts: &ScoreStatistics, miss_override: u32| -> f64 {
-        let perf = match base_perf.clone() {
-            Some(p) => p,
-            None => return 0.0,
+    let if_fc = 'fc: {
+        let Some(s) = params.statistics else {
+            break 'fc calc_pp(params.accuracy, bm_combo, 0);
         };
-        perf.n_geki(counts.count_geki as u32)
-            .n300(counts.count_300 as u32)
-            .n_katu(counts.count_katu as u32)
-            .n100(counts.count_100 as u32)
-            .n50(counts.count_50 as u32)
-            .misses(miss_override)
-            .calculate()
-            .pp()
-    };
-
-    let if_fc = if let (GameMode::Mania, Some(s)) = (params.mode, params.statistics) {
+        let Some(perf) = base_perf.clone() else {
+            break 'fc 0.0;
+        };
         let fc_counts = ScoreStatistics {
             count_geki: s.count_geki,
             count_300: s.count_300 + s.count_miss,
@@ -438,10 +387,37 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             count_100: s.count_100,
             count_50: s.count_50,
             count_miss: 0,
+            osu_large_tick_hits: s.osu_large_tick_hits,
+            osu_small_tick_hits: s.osu_small_tick_hits,
+            osu_slider_tail_hits: s.osu_slider_tail_hits,
         };
-        calc_mania_fc(&fc_counts, 0)
-    } else {
-        calc_pp(params.accuracy, bm_combo, 0)
+        match params.mode {
+            GameMode::Mania => perf
+                .n_geki(fc_counts.count_geki as u32)
+                .n300(fc_counts.count_300 as u32)
+                .n_katu(fc_counts.count_katu as u32)
+                .n100(fc_counts.count_100 as u32)
+                .n50(fc_counts.count_50 as u32)
+                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
+                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
+                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
+                .misses(fc_counts.count_miss as u32)
+                .calculate()
+                .pp(),
+            _ => perf
+                .n_geki(fc_counts.count_geki as u32)
+                .n300(fc_counts.count_300 as u32)
+                .n_katu(fc_counts.count_katu as u32)
+                .n100(fc_counts.count_100 as u32)
+                .n50(fc_counts.count_50 as u32)
+                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
+                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
+                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
+                .misses(fc_counts.count_miss as u32)
+                .combo(bm_combo)
+                .calculate()
+                .pp(),
+        }
     };
 
     let calc_acc = |acc: f64| -> f64 {
@@ -459,6 +435,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         acc_99: calc_acc(0.99),
         acc_100: calc_acc(1.0),
         if_fc,
+        perfect_pp,
     })
 }
 
@@ -534,6 +511,11 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
 
     score.pp_breakdown = pp_breakdown;
     score.pp_if_acc = pp_if_acc;
+    if let Some(ref if_acc) = score.pp_if_acc {
+        if if_acc.perfect_pp > 0.0 {
+            score.perfect_pp = Some(if_acc.perfect_pp);
+        }
+    }
 
     // 从 pp_breakdown 中提取星级（所有模式，含 Catch）
     if let Some(ref bd) = score.pp_breakdown {
@@ -644,6 +626,7 @@ struct OsuApiScore {
     #[serde(default)]
     total_score: Option<i64>,
     #[serde(default)]
+    #[allow(dead_code)] // is_lazer now determined from build_id > 0 (aligned with yumu-bot)
     is_lazer: bool,
     #[serde(default)]
     build_id: Option<i64>,
@@ -692,17 +675,26 @@ struct OsuApiScoreStatistics {
     count_geki: i64,
     #[serde(default, alias = "great")]
     count_300: i64,
-    #[serde(default)]
+    #[serde(default, alias = "good", alias = "small_tick_miss")]
     count_katu: i64,
-    #[serde(default, alias = "meh")]
-    count_100: i64,
     #[serde(default)]
+    count_100: i64,
+    #[serde(default, alias = "meh")]
     count_50: i64,
     #[serde(default, alias = "miss")]
     count_miss: i64,
     /// Lazer `ok` field — maps to count_100 (standard) or count_katu (mania)
     #[serde(default)]
     ok: i64,
+    /// Lazer `large_tick_hit` — slider ticks (Osu), large droplets (Catch)
+    #[serde(default, alias = "large_tick_hit")]
+    osu_large_tick_hits: i64,
+    /// Lazer `small_tick_hit` — small slider ticks (Osu), small droplets (Catch)
+    #[serde(default, alias = "small_tick_hit")]
+    osu_small_tick_hits: i64,
+    /// Lazer `slider_tail_hit` — slider ends (Osu)
+    #[serde(default, alias = "slider_tail_hit")]
+    osu_slider_tail_hits: i64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -927,6 +919,7 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
+        perfect_pp: None,
         rank: if api.passed {
             api.rank
         } else {
@@ -936,13 +929,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         mods: api_mods_to_game_mods(&api.mods, mode),
         is_perfect: api.perfect,
         created_at: api.ended_at,
-        // 三种方式检测 lazer 模式：
-        // 1. API 显式标记 is_lazer = true
-        // 2. build_id > 0 表示使用了 lazer 客户端
-        // 3. legacy_total_score == 0 表示该分数在 lazer 中创建，无旧版分数
-        is_lazer: api.is_lazer
-            || api.build_id.is_some_and(|id| id > 0)
-            || api.legacy_total_score.is_some_and(|v| v == 0),
+        // 对齐 yumu-bot：仅通过 build_id > 0 判断 lazer
+        is_lazer: api.build_id.is_some_and(|id| id > 0),
         has_replay: api.has_replay,
         legacy_score_id: api.legacy_score_id,
         statistics: ScoreStatistics {
@@ -955,17 +943,38 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
                     api.statistics.ok
                 }
             } else {
-                0
+                api.statistics.count_katu
             },
-            count_100: if mode == GameMode::Mania {
-                api.statistics.count_100
+            count_100: if mode == GameMode::Catch {
+                if api.statistics.osu_large_tick_hits != 0 {
+                    api.statistics.osu_large_tick_hits
+                } else {
+                    api.statistics.count_100
+                }
+            } else if mode == GameMode::Mania {
+                if api.statistics.ok != 0 {
+                    api.statistics.ok
+                } else {
+                    api.statistics.count_100
+                }
             } else if api.statistics.ok != 0 {
                 api.statistics.ok
             } else {
                 api.statistics.count_100
             },
-            count_50: api.statistics.count_50,
+            count_50: if mode == GameMode::Catch {
+                if api.statistics.osu_small_tick_hits != 0 {
+                    api.statistics.osu_small_tick_hits
+                } else {
+                    api.statistics.count_50
+                }
+            } else {
+                api.statistics.count_50
+            },
             count_miss: api.statistics.count_miss,
+            osu_large_tick_hits: api.statistics.osu_large_tick_hits,
+            osu_small_tick_hits: api.statistics.osu_small_tick_hits,
+            osu_slider_tail_hits: api.statistics.osu_slider_tail_hits,
         },
         cover_url,
         user,
@@ -1016,13 +1025,22 @@ impl ApiError {
     }
 }
 
-/// 区分 JSON 反序列化错误（非瞬态）与 body 读取网络错误（瞬态）
-fn json_to_api_error(e: reqwest::Error) -> ApiError {
-    if e.is_decode() {
+/// 读取响应体文本并反序列化为目标类型。
+/// 反序列化失败时将 body 全文写入 warn 日志。
+async fn json_body<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T, ApiError> {
+    let status = resp.status();
+    let url = resp.url().to_string();
+    let body = resp.text().await.map_err(ApiError::Http)?;
+    serde_json::from_str::<T>(&body).map_err(|e| {
+        tracing::warn!(
+            %status,
+            %url,
+            body = %body,
+            error = %e,
+            "API 响应反序列化失败"
+        );
         ApiError::Deserialization(e.to_string())
-    } else {
-        ApiError::Http(e)
-    }
+    })
 }
 
 /// osu! OAuth token response
@@ -1088,6 +1106,10 @@ impl OauthTokenCache {
         }
     }
 
+    pub fn is_configured(&self) -> bool {
+        !self.client_id.is_empty() && !self.client_secret.is_empty()
+    }
+
     pub async fn invalidate(&self) {
         let _guard = self.refresh_lock.lock().await;
         let mut guard = self.cache.lock().await;
@@ -1136,7 +1158,7 @@ impl OauthTokenCache {
             return Err(ApiError::OAuthError);
         }
 
-        let token_data: OauthResponse = resp.json().await.map_err(json_to_api_error)?;
+        let token_data: OauthResponse = json_body(resp).await?;
 
         // 重新获取锁，写入缓存
         {
@@ -1318,7 +1340,7 @@ async fn fetch_user_stats_internal(
             }
             classify_http_error(&resp)?;
 
-            let data: OsuApiV2User = resp.json().await.map_err(json_to_api_error)?;
+            let data: OsuApiV2User = json_body(resp).await?;
 
             let stats = match data.statistics {
                 Some(s) => s,
@@ -1515,7 +1537,7 @@ pub async fn get_user_recent(
             }
             classify_http_error(&resp)?;
 
-            let raw_json: serde_json::Value = resp.json().await.map_err(json_to_api_error)?;
+            let raw_json: serde_json::Value = json_body(resp).await?;
 
             let plays: Vec<OsuApiScore> = serde_json::from_value(raw_json).map_err(|e| {
                 tracing::error!(error = %e, "Failed to parse score JSON");
@@ -1809,7 +1831,7 @@ pub async fn get_score_by_id(
             }
             classify_http_error(&resp)?;
 
-            let raw: OsuApiScore = resp.json().await.map_err(json_to_api_error)?;
+            let raw: OsuApiScore = json_body(resp).await?;
             let mode = raw.extra_mode();
             let mut score = api_score_to_score(raw, mode);
             backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
@@ -1851,7 +1873,7 @@ async fn fetch_score_detail(
             }
             classify_http_error(&resp)?;
 
-            let data: serde_json::Value = resp.json().await.map_err(json_to_api_error)?;
+            let data: serde_json::Value = json_body(resp).await?;
             tracing::trace!(
                 keys = ?data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
                 score = ?data.get("score"),
@@ -1901,7 +1923,7 @@ async fn fetch_beatmap(
             }
             classify_http_error(&resp)?;
 
-            resp.json().await.map_err(json_to_api_error)
+            json_body(resp).await
         })
     })
     .await
@@ -1936,7 +1958,7 @@ async fn fetch_beatmapset(
             }
             classify_http_error(&resp)?;
 
-            resp.json().await.map_err(json_to_api_error)
+            json_body(resp).await
         })
     })
     .await
@@ -1972,7 +1994,7 @@ pub async fn get_user_info(
             }
             classify_http_error(&resp)?;
 
-            let user: OsuUserInfo = resp.json().await.map_err(json_to_api_error)?;
+            let user: OsuUserInfo = json_body(resp).await?;
             Ok(Some(user))
         })
     })
@@ -2042,7 +2064,7 @@ pub async fn fetch_user_profile(
             }
             classify_http_error(&resp)?;
 
-            let data: OsuProfileResponse = resp.json().await.map_err(json_to_api_error)?;
+            let data: OsuProfileResponse = json_body(resp).await?;
 
             let cover_url = data.cover.and_then(|c| c.custom_url.or(c.url));
 
@@ -2116,6 +2138,9 @@ mod tests {
                 count_100: 10,
                 count_50: 0,
                 count_miss: 1,
+                osu_large_tick_hits: 0,
+                osu_small_tick_hits: 0,
+                osu_slider_tail_hits: 0,
                 ok: 0,
             },
             ruleset_id: 0,
@@ -2275,7 +2300,10 @@ mod tests {
         api.build_id = None;
         api.legacy_total_score = Some(0);
         let score = api_score_to_score(api, GameMode::Osu);
-        assert!(score.is_lazer);
+        assert!(
+            !score.is_lazer,
+            "legacy_total_score=0 should no longer trigger is_lazer"
+        );
     }
 
     #[test]

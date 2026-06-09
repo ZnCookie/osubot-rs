@@ -129,4 +129,5 @@ pub enum UserActivity {
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub activity: UserActivity,
+    pub success: bool,
 }
