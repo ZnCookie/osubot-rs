@@ -195,7 +195,7 @@ impl UpstreamBindingProvider for XfsUpstream {
 
                 debug!(username, "xfs: resolved username from upstream");
                 if !self.oauth.is_configured() {
-                    debug!("xfs: skipping osu! API resolution - credentials not configured");
+                    warn!("xfs: skipping osu! API resolution - credentials not configured");
                     return Ok(None);
                 }
                 let user_id = match api::fetch_user_stats_by_username(

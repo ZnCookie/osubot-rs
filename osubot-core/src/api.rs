@@ -177,13 +177,8 @@ fn apply_stats_and_calculate(
 ) -> rosu_pp::any::PerformanceAttributes {
     let perf = match statistics {
         Some(s) => {
-            let n300 = if passed {
-                s.count_300 as u32
-            } else {
-                0
-            };
-            perf
-                .combo(max_combo)
+            let n300 = if passed { s.count_300 as u32 } else { 0 };
+            perf.combo(max_combo)
                 .n300(n300)
                 .n100(s.count_100 as u32)
                 .n50(s.count_50 as u32)
@@ -2305,7 +2300,10 @@ mod tests {
         api.build_id = None;
         api.legacy_total_score = Some(0);
         let score = api_score_to_score(api, GameMode::Osu);
-        assert!(!score.is_lazer, "legacy_total_score=0 should no longer trigger is_lazer");
+        assert!(
+            !score.is_lazer,
+            "legacy_total_score=0 should no longer trigger is_lazer"
+        );
     }
 
     #[test]
