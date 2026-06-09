@@ -3,6 +3,7 @@ mod constants;
 mod last_beatmap_cache;
 mod scheduler;
 mod xfs_upstream;
+mod yumu_upstream;
 
 use config::Config;
 use futures_util::{future::join_all, SinkExt, StreamExt};
@@ -39,6 +40,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use xfs_upstream::XfsUpstream;
+use yumu_upstream::YumuUpstream;
 
 use constants::*;
 
@@ -2152,6 +2154,9 @@ async fn main() {
                             oauth.clone(),
                             rate_limiter.clone(),
                         )));
+                    }
+                    "yumu" => {
+                        providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
                     }
                     other => {
                         tracing::warn!("unknown upstream provider type: {other}");
