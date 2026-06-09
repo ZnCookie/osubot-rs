@@ -73,25 +73,20 @@ fn format_playtime(seconds: i64) -> String {
 
 fn format_star_rating(stars: f64) -> String {
     let full = stars.floor() as usize;
-    let empty = 10_usize.saturating_sub(full);
-    let filled: String = "\u{2605}".repeat(full.min(10));
-    let empty: String = "\u{2606}".repeat(empty);
-    format!("{}{} {:.2}*", filled, empty, stars)
-}
-
-fn format_combo(score: &Score) -> String {
-    if score.is_perfect {
-        format!("{}x (FC)", score.max_combo)
+    let half = stars % 1.0 >= 0.5;
+    let filled: String = "\u{2605}".repeat(full);
+    let stars_str = if half {
+        format!("{filled}\u{2606}")
     } else {
-        format!("{}x", score.max_combo)
-    }
+        filled
+    };
+    format!("{} {:.2}*", stars_str, stars)
 }
 
 struct ScoreDisplayFields {
     length: String,
     stars: String,
     pp_str: String,
-    combo_str: String,
     acc: String,
 }
 
@@ -103,7 +98,6 @@ fn compute_display_fields(score: &Score) -> ScoreDisplayFields {
             Some(pp) => format!("{:.2}", pp),
             None => "--".to_string(),
         },
-        combo_str: format_combo(score),
         acc: format_accuracy(score.accuracy), // score.accuracy is already a 0-1 fraction from the API
     }
 }
@@ -123,19 +117,24 @@ pub fn format_score(
         format!(" | {}", format_mods(&score.mods))
     };
 
-    let client_tag = if score.is_lazer { " (lazer)" } else { "" };
     let label = if is_pass {
         "最近通过"
     } else {
         "最近游玩"
     };
     let position_str = match position {
-        Some(pos) => format!("#{} {}{}", pos + 1, label, client_tag),
-        None => format!("{}{}", label, client_tag),
+        Some(pos) => format!("#{} {}", pos + 1, label),
+        None => label.to_string(),
     };
 
     let score_val = format_number(score.score_value);
     let play_time = format_play_datetime(&score.created_at);
+
+    let combo_str = if score.beatmap_max_combo > 0 {
+        format!("{}x/{}x", score.max_combo, score.beatmap_max_combo)
+    } else {
+        format!("{}x", score.max_combo)
+    };
 
     let hits_str = if mode == GameMode::Mania {
         format!(
@@ -157,30 +156,35 @@ pub fn format_score(
         )
     };
 
+    let mode_short = mode.short_name();
+
     format!(
-        "{artist} - {title} ({creator}) [{version}]\n\
+        "{artist} - {title} [{version}]\n\
          {stars} [{length}]\n\n\
-         {username}: {pp}pp\n\
-         [{rank}] {score_val} | {acc} | {combo}\n\
+         {username} ({mode}): {pp}pp\n\
+         [{rank}] {score_val}\n\n\
+         {combo} // {acc}\n\
          {hits}{mods}\n\
          {play_time}\n\n\
-         {position}",
+         {position}\n\
+         ID: {beatmap_id}",
         artist = score.artist,
         title = score.title,
-        creator = score.creator,
         version = score.version,
         stars = fields.stars,
         length = fields.length,
         username = username,
+        mode = mode_short,
         pp = fields.pp_str,
         rank = score.rank,
         score_val = score_val,
+        combo = combo_str,
         acc = fields.acc,
-        combo = fields.combo_str,
         hits = hits_str,
         mods = mods_str,
         play_time = play_time,
         position = position_str,
+        beatmap_id = score.beatmap_id,
     )
 }
 
@@ -197,27 +201,33 @@ pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, is_pass: 
     for (i, score) in scores.iter().enumerate() {
         let fields = compute_display_fields(score);
 
-        let lazer_tag = if score.is_lazer { " (lazer)" } else { "" };
         let mods_str = if score.mods.is_empty() {
             String::new()
         } else {
-            format!(" | {}", format_mods(&score.mods))
+            format!(" // {}", format_mods(&score.mods))
         };
         let play_time = format_play_datetime(&score.created_at);
 
+        let combo_str = if score.beatmap_max_combo > 0 {
+            format!("{}x/{}x", score.max_combo, score.beatmap_max_combo)
+        } else {
+            format!("{}x", score.max_combo)
+        };
+
         lines.push(format!(
-            "#{idx} {artist} - {title} [{version}] {stars}{lazer_tag}\n   [{rank}] {pp}pp | {acc} | {combo} | {length}{mods} | {play_time}",
+            "#{idx} {artist} - {title} [{version}]\n\
+                {stars} [{length}]\n\
+                [{rank}] {pp}pp // {acc} // {combo}{mods} // {play_time}",
             idx = i + 1,
             artist = score.artist,
             title = score.title,
             version = score.version,
             stars = fields.stars,
-            lazer_tag = lazer_tag,
+            length = fields.length,
             rank = score.rank,
             pp = fields.pp_str,
             acc = fields.acc,
-            combo = fields.combo_str,
-            length = fields.length,
+            combo = combo_str,
             mods = mods_str,
             play_time = play_time,
         ));
@@ -688,14 +698,14 @@ mod tests {
     fn test_format_score_single_pass() {
         let score = make_score(false);
         let output = format_score(&score, "TestUser", GameMode::Osu, Some(0), true);
-        assert!(output.contains("Artist - Song (Mapper) [Expert]"));
-        assert!(output.contains("TestUser: 250.00pp"));
+        assert!(output.contains("Artist - Song [Expert]"));
+        assert!(output.contains("★★★★★★☆ 6.50* [3:00]"));
+        assert!(output.contains("TestUser (osu): 250.00pp"));
         assert!(output.contains("[S] 900,000"));
-        assert!(output.contains("98.5%"));
-        assert!(output.contains("400x"));
-        assert!(output.contains("300/5/0/0"));
-        assert!(output.contains("HD HR"));
+        assert!(output.contains("400x/500x // 98.5%"));
+        assert!(output.contains("300/5/0/0 | HD HR"));
         assert!(output.contains("#1 最近通过"));
+        assert!(output.contains("ID: 100"));
     }
 
     #[test]
@@ -703,6 +713,7 @@ mod tests {
         let score = make_score(false);
         let output = format_score(&score, "TestUser", GameMode::Osu, Some(2), false);
         assert!(output.contains("#3 最近游玩"));
+        assert!(output.contains("ID: 100"));
     }
 
     #[test]
@@ -710,7 +721,7 @@ mod tests {
         let mut score = make_score(false);
         score.pp = None;
         let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
-        assert!(output.contains("TestUser: --pp"));
+        assert!(output.contains("TestUser (osu): --pp"));
     }
 
     #[test]
@@ -725,15 +736,15 @@ mod tests {
     fn test_format_score_is_perfect() {
         let score = make_score(true);
         let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
-        assert!(output.contains("400x (FC)"));
+        assert!(output.contains("400x/500x"));
     }
 
     #[test]
-    fn test_format_score_lazer_tag() {
+    fn test_format_score_lazer_tag_omitted() {
         let mut score = make_score(false);
         score.is_lazer = true;
         let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
-        assert!(output.contains("(lazer)"));
+        assert!(!output.contains("(lazer)"));
     }
 
     #[test]
@@ -749,6 +760,8 @@ mod tests {
         let output = format_scores(&scores, "TestUser", GameMode::Osu, true);
         assert!(output.contains("HD HR"));
         assert!(output.contains("2024/01/01 08:00:00"));
+        assert!(output.contains("#1 Artist - Song [Expert]"));
+        assert!(output.contains("#2 Artist - Song [Expert]"));
     }
 
     #[test]
