@@ -224,7 +224,7 @@ impl GroupsConfig {
     }
 }
 
-fn default_upstream_url() -> String {
+pub(crate) fn default_upstream_url() -> String {
     "wss://public-service.b11p.com/".to_string()
 }
 
@@ -252,8 +252,8 @@ pub struct ProviderConfig {
     pub rate_per_minute: u32,
     #[serde(default = "default_burst")]
     pub burst: u32,
-    #[serde(default = "default_upstream_url")]
-    pub url: String,
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default = "default_access_token")]
     pub access_token: String,
     #[serde(default)]

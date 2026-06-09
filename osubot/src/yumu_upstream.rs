@@ -70,11 +70,7 @@ pub struct YumuUpstream {
 
 impl YumuUpstream {
     pub fn from_config(cfg: &ProviderConfig) -> Self {
-        let url = if cfg.url.is_empty() {
-            YUMU_DEFAULT_URL.to_string()
-        } else {
-            cfg.url.clone()
-        };
+        let url = cfg.url.clone().unwrap_or_else(|| YUMU_DEFAULT_URL.into());
 
         Self {
             url,

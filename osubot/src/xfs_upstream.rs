@@ -20,7 +20,7 @@ use osubot_core::upstream::extract_text_from_message;
 use osubot_core::OauthTokenCache;
 use osubot_core::UpstreamBindingProvider;
 
-use crate::config::ProviderConfig;
+use crate::config::{default_upstream_url, ProviderConfig};
 
 pub struct XfsUpstream {
     url: String,
@@ -44,7 +44,7 @@ impl XfsUpstream {
         });
 
         Self {
-            url: cfg.url.clone(),
+            url: cfg.url.clone().unwrap_or_else(default_upstream_url),
             access_token: cfg.access_token.clone(),
             self_id,
             timeout: Duration::from_secs(cfg.timeout_secs),
@@ -224,7 +224,7 @@ impl UpstreamBindingProvider for XfsUpstream {
 #[cfg(all(test, feature = "integration-tests"))]
 mod integration_tests {
     use super::*;
-    use crate::config::ProviderConfig;
+    use crate::config::{default_upstream_url, ProviderConfig};
     use osubot_core::OauthTokenCache;
     use osubot_core::RateLimiter;
     use std::sync::Arc;
