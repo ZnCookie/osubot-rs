@@ -1,6 +1,13 @@
 use crate::dedup::RequestDedup;
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct SendAction {
+    pub action: String,
+    pub params: serde_json::Value,
+}
 
 pub fn extract_text_from_message(msg: &serde_json::Value) -> String {
     match msg {

@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
-use serde::Deserialize;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
@@ -16,7 +15,7 @@ use tracing::{debug, warn};
 use osubot_core::api;
 use osubot_core::rate_limiter::RateLimiter;
 use osubot_core::types::GameMode;
-use osubot_core::upstream::extract_text_from_message;
+use osubot_core::upstream::{extract_text_from_message, SendAction};
 use osubot_core::OauthTokenCache;
 use osubot_core::UpstreamBindingProvider;
 
@@ -157,13 +156,7 @@ impl UpstreamBindingProvider for XfsUpstream {
             eprintln!("[xfs] recv: {}", text);
             debug!(target: "xfs_upstream", %text, "服务器返回");
 
-            #[derive(Deserialize)]
-            struct SendMsgAction {
-                action: String,
-                params: serde_json::Value,
-            }
-
-            let action: SendMsgAction = match serde_json::from_str(text) {
+            let action: SendAction = match serde_json::from_str(text) {
                 Ok(a) => a,
                 Err(_) => continue,
             };

@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
-use serde::Deserialize;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
@@ -13,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tracing::{debug, warn};
 
 use osubot_core::rate_limiter::RateLimiter;
-use osubot_core::upstream::extract_text_from_message;
+use osubot_core::upstream::{extract_text_from_message, SendAction};
 use osubot_core::UpstreamBindingProvider;
 
 use crate::config::ProviderConfig;
@@ -44,12 +43,6 @@ fn parse_bind_response_text(resp_text: &str) -> Option<(i64, String)> {
 }
 
 fn parse_send_msg_action(action_text: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct SendAction {
-        action: String,
-        params: serde_json::Value,
-    }
-
     let action: SendAction = serde_json::from_str(action_text).ok()?;
     if action.action != "send_group_msg" && action.action != "send_msg" {
         return None;
@@ -113,8 +106,8 @@ impl UpstreamBindingProvider for YumuUpstream {
             .headers_mut()
             .insert("X-Self-ID", qq.to_string().parse().unwrap());
 
-        let mut ws_stream = match timeout(self.timeout, connect_async(request)).await {
-            Ok(Ok(result)) => result.0,
+        let ws_stream = match timeout(self.timeout, connect_async(request)).await {
+            Ok(Ok((stream, _))) => stream,
             Ok(Err(e)) => {
                 warn!("yumu: WS connect failed: {e}");
                 return Ok(None);
@@ -124,6 +117,8 @@ impl UpstreamBindingProvider for YumuUpstream {
                 return Ok(None);
             }
         };
+
+        let (mut write, mut read) = ws_stream.split();
 
         // Step 1: Send lifecycle event
         let lifecycle = json!({
@@ -138,7 +133,7 @@ impl UpstreamBindingProvider for YumuUpstream {
         let lifecycle_str = lifecycle.to_string();
         #[cfg(test)]
         eprintln!("[yumu] send lifecycle: {}", lifecycle_str);
-        if timeout(self.timeout, ws_stream.send(lifecycle_str.into()))
+        if timeout(self.timeout, write.send(lifecycle_str.into()))
             .await
             .is_err()
         {
@@ -179,7 +174,7 @@ impl UpstreamBindingProvider for YumuUpstream {
         #[cfg(test)]
         eprintln!("[yumu] send event: {}", event_str);
 
-        if timeout(self.timeout, ws_stream.send(event_str.into()))
+        if timeout(self.timeout, write.send(event_str.into()))
             .await
             .is_err()
         {
@@ -191,7 +186,7 @@ impl UpstreamBindingProvider for YumuUpstream {
         let deadline = Instant::now() + self.timeout;
         while let Ok(Some(_msg)) = timeout(
             deadline.saturating_duration_since(Instant::now()),
-            ws_stream.next(),
+            read.next(),
         )
         .await
         {
