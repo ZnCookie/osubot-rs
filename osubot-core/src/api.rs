@@ -983,13 +983,22 @@ impl ApiError {
     }
 }
 
-/// 区分 JSON 反序列化错误（非瞬态）与 body 读取网络错误（瞬态）
-fn json_to_api_error(e: reqwest::Error) -> ApiError {
-    if e.is_decode() {
+/// 读取响应体文本并反序列化为目标类型。
+/// 反序列化失败时将 body 全文写入 warn 日志。
+async fn json_body<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T, ApiError> {
+    let status = resp.status();
+    let url = resp.url().to_string();
+    let body = resp.text().await.map_err(ApiError::Http)?;
+    serde_json::from_str::<T>(&body).map_err(|e| {
+        tracing::warn!(
+            %status,
+            %url,
+            body = %body,
+            error = %e,
+            "API 响应反序列化失败"
+        );
         ApiError::Deserialization(e.to_string())
-    } else {
-        ApiError::Http(e)
-    }
+    })
 }
 
 /// osu! OAuth token response
@@ -1107,7 +1116,7 @@ impl OauthTokenCache {
             return Err(ApiError::OAuthError);
         }
 
-        let token_data: OauthResponse = resp.json().await.map_err(json_to_api_error)?;
+        let token_data: OauthResponse = json_body(resp).await?;
 
         // 重新获取锁，写入缓存
         {
@@ -1289,7 +1298,7 @@ async fn fetch_user_stats_internal(
             }
             classify_http_error(&resp)?;
 
-            let data: OsuApiV2User = resp.json().await.map_err(json_to_api_error)?;
+            let data: OsuApiV2User = json_body(resp).await?;
 
             let stats = match data.statistics {
                 Some(s) => s,
@@ -1486,7 +1495,7 @@ pub async fn get_user_recent(
             }
             classify_http_error(&resp)?;
 
-            let raw_json: serde_json::Value = resp.json().await.map_err(json_to_api_error)?;
+            let raw_json: serde_json::Value = json_body(resp).await?;
 
             let plays: Vec<OsuApiScore> = serde_json::from_value(raw_json).map_err(|e| {
                 tracing::error!(error = %e, "Failed to parse score JSON");
@@ -1780,7 +1789,7 @@ pub async fn get_score_by_id(
             }
             classify_http_error(&resp)?;
 
-            let raw: OsuApiScore = resp.json().await.map_err(json_to_api_error)?;
+            let raw: OsuApiScore = json_body(resp).await?;
             let mode = raw.extra_mode();
             let mut score = api_score_to_score(raw, mode);
             backfill_score_details(rate_limiter, oauth, &mut score, mode.api_value()).await;
@@ -1822,7 +1831,7 @@ async fn fetch_score_detail(
             }
             classify_http_error(&resp)?;
 
-            let data: serde_json::Value = resp.json().await.map_err(json_to_api_error)?;
+            let data: serde_json::Value = json_body(resp).await?;
             tracing::trace!(
                 keys = ?data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
                 score = ?data.get("score"),
@@ -1872,7 +1881,7 @@ async fn fetch_beatmap(
             }
             classify_http_error(&resp)?;
 
-            resp.json().await.map_err(json_to_api_error)
+            json_body(resp).await
         })
     })
     .await
@@ -1907,7 +1916,7 @@ async fn fetch_beatmapset(
             }
             classify_http_error(&resp)?;
 
-            resp.json().await.map_err(json_to_api_error)
+            json_body(resp).await
         })
     })
     .await
@@ -1943,7 +1952,7 @@ pub async fn get_user_info(
             }
             classify_http_error(&resp)?;
 
-            let user: OsuUserInfo = resp.json().await.map_err(json_to_api_error)?;
+            let user: OsuUserInfo = json_body(resp).await?;
             Ok(Some(user))
         })
     })
@@ -2013,7 +2022,7 @@ pub async fn fetch_user_profile(
             }
             classify_http_error(&resp)?;
 
-            let data: OsuProfileResponse = resp.json().await.map_err(json_to_api_error)?;
+            let data: OsuProfileResponse = json_body(resp).await?;
 
             let cover_url = data.cover.and_then(|c| c.custom_url.or(c.url));
 
