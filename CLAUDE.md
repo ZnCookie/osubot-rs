@@ -33,7 +33,7 @@ osubot-core    osubot-render  ← 两者无依赖关系，均只依赖 osubot-ty
 
 **osubot-render**：信号量限制并发 1 个渲染任务。流程：下载缓存图片 → 提取封面主色调 → 生成内联 CSS 和 data URI 的 HTML → blitz 布局 → Vello CPU 光栅化（超高内容分块渲染）→ JPEG 编码。下载的封面/头像等图片缓存在 `~/.cache/osubot/resources/`；replay/`.osu` 谱面文件分别缓存在 `~/.cache/osubot/{replays,beatmaps}/`，均按 SHA256 命名；这三类缓存由调度器按 `cache_retention_days`（默认 7 天）定期清理。
 
-**osubot（二进制）**：`main.rs` 拥有 WebSocket 循环和命令调度，每条消息 spawn 独立 tokio 任务，通过 `mpsc::channel(1)` 返回响应。`scheduler.rs` 按用户活跃度（4h~48h）轮询更新，命令处理时通过 `trigger_update` 刷新数据。`last_beatmap_cache.rs` 维护群内最近查询的谱面缓存（6h TTL），`!s` 不传谱面 ID 时自动使用。`xfs_upstream.rs` 通过 WebSocket 连接消防栓 bot 的 OneBot 服务，模拟查询消息解析用户名实现自动绑定。
+**osubot（二进制）**：`main.rs` 拥有 WebSocket 循环和命令调度，每条消息 spawn 独立 tokio 任务，通过 `mpsc::channel(1)` 返回响应。`scheduler.rs` 按用户活跃度（4h~48h）轮询更新，命令处理时通过 `trigger_update` 刷新数据。`last_beatmap_cache.rs` 维护群内最近查询的谱面缓存（6h TTL），`!s` 不传谱面 ID 时自动使用。`xfs_upstream.rs` 通过 WebSocket 连接消防栓 bot 的 OneBot 服务，模拟查询消息解析用户名实现自动绑定。`yumu_upstream.rs` 通过 WebSocket 连接 yumu-bot 的 OneBot 服务，伪装用户 QQ 以 `!bi` 命令获取绑定信息。
 
 ## 关键模式
 

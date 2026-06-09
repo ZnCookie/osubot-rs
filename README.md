@@ -198,6 +198,7 @@ osubot-rs/
 │       ├── constants.rs # 超时常量定义
 │       ├── last_beatmap_cache.rs # 群谱面查询缓存
 │       ├── xfs_upstream.rs # 消防栓上游绑定查询
+│       ├── yumu_upstream.rs # yumu 上游绑定查询
 │       └── scheduler.rs # 后台定时更新调度器
 ├── osubot-core/        # 核心库
 │   └── src/
