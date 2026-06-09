@@ -207,8 +207,12 @@ impl BotContext {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
                 let binding = self.upstream_chain.try_query(qq).await?;
-                let _ = self.storage.set_user_id(&binding.1, binding.0);
-                let _ = self.storage.bind(qq, binding.0, &binding.1);
+                if let Err(e) = self.storage.set_user_id(&binding.1, binding.0) {
+                    warn!("failed to persist user_id from upstream: {e}");
+                }
+                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1) {
+                    warn!("failed to persist binding from upstream: {e}");
+                }
                 Some(binding)
             }
             Err(_) => None,
