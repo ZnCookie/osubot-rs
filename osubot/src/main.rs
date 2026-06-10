@@ -1303,10 +1303,36 @@ async fn handle_command(
         }
     }
 
-    let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
-        Some(cmd) => cmd,
-        None => return,
-    };
+    let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
+
+    // 未识别命令 — 走插件 on_command 分发，插件无法处理则直接结束
+    if cmd_opt.is_none() {
+        let cmd_name = msg.message.split_whitespace().next().unwrap_or("");
+        if cmd_name.is_empty() {
+            return;
+        }
+        let cmd_payload = serde_json::json!({
+            "command_type": cmd_name,
+            "group_id": msg.group_id,
+            "user_id": msg.user_id,
+            "message": msg.message,
+            "mentioned_user_id": msg.mentioned_user_id,
+        });
+        let mut pm_guard = ctx.plugin_manager.lock().await;
+        if let Some(ref mut pm) = *pm_guard {
+            if !pm.is_empty() {
+                match pm.handle_command(cmd_name, &cmd_payload.to_string()).await {
+                    osubot_plugin::PluginActionResult::Handled(response) => {
+                        let _ = resp_tx.send(response).await;
+                    }
+                    osubot_plugin::PluginActionResult::Intercepted => {}
+                    osubot_plugin::PluginActionResult::Next => {}
+                }
+            }
+        }
+        return;
+    }
+    let cmd = cmd_opt.unwrap();
 
     // 命令开关检查
     let group_cfg = {
