@@ -132,6 +132,8 @@ pub struct QQMessage {
 
 插件通过 `PluginContext` 调用宿主能力。所有调用返回 `Result<T, String>`，失败时返回错误描述字符串。
 
+> **设计说明：** `PluginContext` 是单元结构体，通过 `static CTX` 全局访问而非以参数形式传递。WASM 实例始终在单线程中运行（wasmtime 保证），宿主通过 `Caller` 上下文自动路由到正确实例，因此 `static` 在此模型下是安全的。
+
 > **输入限制：** 每次宿主函数调用中，函数名和 JSON payload 各不能超过 **1MB**（通过 `host_call_impl` 的 `name_len`/`payload_len` 参数校验）。传参过大将收到错误返回。
 
 ### `send_group_msg(group_id, text)`

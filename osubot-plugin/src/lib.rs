@@ -686,6 +686,11 @@ impl PluginManager {
 
             if let Err(e) = instance.on_load() {
                 warn!(name = %pcfg.name, "on_load 失败: {e}");
+                // on_load 中可能已注册 tick，失败后需清理残留
+                {
+                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+                    registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != sorted_idx);
+                }
                 self.instances.push(Some(instance));
                 self.modules.push(module);
                 self.instance_params.push(params);
