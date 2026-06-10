@@ -2416,7 +2416,11 @@ async fn main() {
         std::path::PathBuf::from(plugin_dir),
     );
     // Coordinator::start() 内部已通过 error! 日志处理异常退出
-    let _watcher_monitor_handle = coordinator.start();
+    let watcher_monitor_handle = coordinator.start();
+    tokio::spawn(async move {
+        let _ = watcher_monitor_handle.await;
+        warn!("文件监控任务已退出，热重载功能不可用");
+    });
 
     let user_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>> =
         Arc::new(dashmap::DashMap::new());

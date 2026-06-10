@@ -78,7 +78,7 @@ dir = "./plugins"
 [[plugin.instances]]
 name = "hello"
 path = "hello_plugin.wasm"
-enabled = true
+enabled = false    # 默认禁用，改为 true 启用
 priority = 50
 
 # 可选：插件自定义配置（通过 get_plugin_config() 访问）

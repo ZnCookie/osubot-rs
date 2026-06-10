@@ -178,6 +178,25 @@ let stats_json = ctx.osu_api_fetch_user("Cookiezi", 0)?;
 // 返回 osu! API v2 的 UserStats JSON
 ```
 
+JSON 字段说明：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | `i64` | 用户 ID |
+| `username` | `String` | 用户名 |
+| `pp` | `f64` | PP |
+| `rank` | `i64` | 全球排名 |
+| `country_rank` | `i64` | 国家排名 |
+| `country_code` | `String` | 国家代码（如 `"CN"`） |
+| `ranked_score` | `i64` | 排位分 |
+| `accuracy` | `f64` | 准确率（如 `97.5`） |
+| `playcount` | `i64` | 游玩次数 |
+| `hits` | `i64` | 打击数 |
+| `playtime` | `i64` | 游戏时间（秒） |
+| `rank_change` | `i64` 或 `null` | 排名变化 |
+| `country_rank_change` | `i64` 或 `null` | 国家排名变化 |
+| `cover_url` | `String` 或 `null` | 封面图 URL |
+
 ### `register_tick(name, interval_secs)`
 
 注册定时任务。
@@ -329,6 +348,8 @@ key = "value"
   │
   └─→ 默认处理器（osubot 内置功能）
 ```
+
+> **警告：** `on_message` 返回 `Intercepted` 会**中断整个事件处理流程**——不会解析命令、不会通知 `on_command`、不会执行默认处理器。请仅在明确需要完全接管消息时使用。`on_command` 返回 `Intercepted` 则仅跳过默认处理器，影响范围更小。
 
 ---
 

@@ -100,7 +100,8 @@ pub extern "C" fn on_tick(tick_ptr: u32, tick_len: u32) -> *const u8 {
         .get("tick_id")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    // 实际插件中应存储并引用收到消息时的 group_id
-    // send_group_msg(0, ...) 会静默失败
+    // on_tick 没有群号上下文。实际插件应当在 on_command 或 on_message 中
+    // 通过 Command::group_id 或 QQMessage::group_id 获取并存储群号，
+    // 然后在 on_tick 中使用存储的群号调用 send_group_msg。
     serialize_return(&serde_json::json!({"ok": true, "tick_id": tick_id}))
 }

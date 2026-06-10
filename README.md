@@ -255,7 +255,7 @@ osubot-rs/
 │       ├── instance.rs  # PluginInstance（wasmtime 封装）
 │       ├── config.rs    # 插件配置 TOML 反序列化
 │       └── types.rs     # PluginAction/PluginMetadata
-├── osubot-plugin-sdk/  # WASM 插件 SDK（编译到 wasm32-wasip1）
+├── osubot-plugin-sdk/  # WASM 插件 SDK（编译到 wasm32-unknown-unknown 或 wasm32-wasip1，无 WASI 依赖），供插件作者使用
 │   └── src/
 │       ├── lib.rs       # 宿主调用封装 + alloc/dealloc
 │       └── types.rs     # PluginMetadata、PluginAction、Command
