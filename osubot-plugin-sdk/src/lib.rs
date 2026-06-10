@@ -115,7 +115,9 @@ impl PluginContext {
 /// The caller must ensure the returned pointer is later freed via [`dealloc`]
 /// with the same size. The memory is uninitialized.
 pub unsafe fn alloc(size: u32) -> *mut u8 {
-    let layout = alloc::alloc::Layout::array::<u8>(size as usize).unwrap();
+    let Ok(layout) = alloc::alloc::Layout::array::<u8>(size as usize) else {
+        return core::ptr::null_mut();
+    };
     alloc::alloc::alloc(layout)
 }
 

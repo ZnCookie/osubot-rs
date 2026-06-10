@@ -314,11 +314,8 @@ impl PluginManager {
         PluginAction::Next
     }
 
-    // SAFETY: The closure `f` must NOT be called on a tokio runtime thread because
-    // plugin host calls (e.g. send_group_msg, http_request) use `block_on` internally.
-    // This function runs `f` via `spawn_blocking` which executes on a separate
-    // blocking thread pool, making `block_on` safe. Do NOT refactor to run `f`
-    // directly on an async task without moving `block_on` to `block_in_place`.
+    // 插件宿主函数（send_group_msg、http_request 等）通过 block_in_place + block_on
+    // 调用异步运行时，在 spawn_blocking 或 async 上下文中均可安全执行。
     async fn dispatch<F, T>(
         &mut self,
         idx: usize,
@@ -387,6 +384,9 @@ impl PluginManager {
             }
             Err(_) => {
                 tracing::warn!(plugin = %name, "Plugin {operation} timed out");
+                // 强制推进 epoch，使 spawn_blocking 中的 wasm 执行尽快触发 epoch trap，
+                // 避免后台线程在超时后继续泄漏 10+ 秒
+                self.engine.increment_epoch();
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                 if self.lost_instances[idx] >= 5 {
                     tracing::warn!(
@@ -433,7 +433,10 @@ impl PluginManager {
 
         // 清除旧的 tick 注册，防止重复注册和内存泄漏
         {
-            let mut registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+            let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
             registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
         }
 
@@ -451,7 +454,10 @@ impl PluginManager {
 
         if let Err(e) = instance.on_load() {
             // on_load 中可能已注册 tick，失败后需清理残留
-            let mut registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+            let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
             registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
             return Err(e);
         }
@@ -469,7 +475,10 @@ impl PluginManager {
     }
 
     pub fn get_ticks(&self) -> Vec<(usize, u64, u32)> {
-        let registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+        let registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
         registry
             .iter()
             .map(|(plugin_idx, _, interval_secs, tick_id)| (*plugin_idx, *interval_secs, *tick_id))
@@ -504,6 +513,8 @@ impl PluginManager {
     pub async fn shutdown(&mut self) {
         self.epoch_running.store(false, Ordering::Relaxed);
         self.epoch_handle.abort();
+        // epoch task 通过 epoch_running 标志自行退出，无需 join。
+        // abort() 确保在极少数情况下（如任务卡在 interval tick 中）强制终止。
 
         for idx in 0..self.instances.len() {
             let has = self.instances[idx]
@@ -642,7 +653,10 @@ impl PluginManager {
             self.on_message_indices.remove(idx);
 
             {
-                let mut registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+                let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
                 registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
             }
 
@@ -688,18 +702,14 @@ impl PluginManager {
                 warn!(name = %pcfg.name, "on_load 失败: {e}");
                 // on_load 中可能已注册 tick，失败后需清理残留
                 {
-                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
                     registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != sorted_idx);
                 }
-                self.instances.push(Some(instance));
-                self.modules.push(module);
-                self.instance_params.push(params);
-                self.lost_instances.push(1);
-                let wasm_mtime = std::fs::metadata(&wasm_path)
-                    .ok()
-                    .and_then(|m| m.modified().ok());
-                self.wasm_mtimes.push(wasm_mtime);
-                self.wasm_paths.push(wasm_path);
+                // 不 push 失败实例，避免僵尸 slot（永不 dispatch，占用 100MB Store）。
+                // 实例/module/params 在此处 drop，compact() 负责清理索引空洞。
                 continue;
             }
 
@@ -776,7 +786,10 @@ impl PluginManager {
 
                 // 在 on_load 之前清理旧 tick，避免新注册的 tick 被误删
                 {
-                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
                     registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
                 }
 
@@ -788,7 +801,10 @@ impl PluginManager {
                     self.lost_instances[*idx] = 1;
                     {
                         let mut registry =
-                            self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+                            self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
                         registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
                     }
                     for indices in self.command_map.values_mut() {
@@ -887,7 +903,10 @@ impl PluginManager {
             .collect();
 
         {
-            let mut reg = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+            let mut reg = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
             for entry in reg.iter_mut() {
                 if let Some(new_idx) = old_to_new.get(entry.0).and_then(|x| *x) {
                     entry.0 = new_idx;

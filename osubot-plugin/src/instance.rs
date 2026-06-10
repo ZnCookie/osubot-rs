@@ -49,8 +49,9 @@ impl PluginInstance {
         params: PluginInstanceParams,
         mut store: Store<HostServices>,
     ) -> Result<Self, String> {
-        // 30 秒 epoch deadline 作为最后防线（dispatch() 中的 10 秒 tokio::timeout 为主要超时控制）
-        store.set_epoch_deadline(60_000);
+        // 10 秒 epoch deadline（与 dispatch() 中的 tokio::timeout 一致）。
+        // epoch 每 500μs 递增一次，20_000 个 tick = 10 秒。
+        store.set_epoch_deadline(20_000);
         let instance = linker
             .instantiate(&mut store, module)
             .map_err(|e| format!("instantiate {}: {e}", params.name))?;
@@ -128,8 +129,8 @@ impl PluginInstance {
             .get_export(&mut self.store, "on_load")
             .and_then(|e| e.into_func())
             .ok_or("missing on_load export")?;
-        // 30 秒 epoch deadline — on_load 中的异步宿主调用不应耗时过长
-        self.store.set_epoch_deadline(60_000);
+        // 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）
+        self.store.set_epoch_deadline(20_000);
         let ptr: u32 = func
             .typed::<(), u32>(&self.store)
             .map_err(|e| e.to_string())?
@@ -172,8 +173,8 @@ impl PluginInstance {
             .get_export(&mut self.store, "on_unload")
             .and_then(|e| e.into_func())
             .ok_or("missing on_unload export")?;
-        // 30 秒 epoch deadline — on_unload 中的异步宿主调用不应耗时过长
-        self.store.set_epoch_deadline(60_000);
+        // 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）
+        self.store.set_epoch_deadline(20_000);
         let ptr: u32 = func
             .typed::<(), u32>(&self.store)
             .map_err(|e| e.to_string())?
@@ -184,8 +185,8 @@ impl PluginInstance {
     }
 
     fn call_with_json(&mut self, export_name: &str, json: &str) -> Result<u32, String> {
-        // 30 秒 epoch deadline 作为最后防线（dispatch() 中的 10 秒 timeout 为主要超时控制）
-        self.store.set_epoch_deadline(60_000);
+        // 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）
+        self.store.set_epoch_deadline(20_000);
 
         let func = self
             .instance

@@ -142,11 +142,13 @@ fn dispatch_host_call(
                 .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
             let text = get_field(&v, "text")?;
             let rate_limiter = services.rate_limiter.clone();
-            services.runtime_handle.block_on(async {
-                if rate_limiter.acquire().await.is_err() {
-                    return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
-                }
-                Ok(())
+            tokio::task::block_in_place(|| {
+                services.runtime_handle.block_on(async {
+                    if rate_limiter.acquire().await.is_err() {
+                        return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
+                    }
+                    Ok(())
+                })
             })?;
             (services.send_msg_fn)(group_id, serde_json::Value::String(text))
                 .map_err(BridgeError::SendMsg)?;
@@ -159,11 +161,13 @@ fn dispatch_host_call(
                 .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
             let jpeg_b64 = get_field(&v, "jpeg_base64")?;
             let rate_limiter = services.rate_limiter.clone();
-            services.runtime_handle.block_on(async {
-                if rate_limiter.acquire().await.is_err() {
-                    return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
-                }
-                Ok(())
+            tokio::task::block_in_place(|| {
+                services.runtime_handle.block_on(async {
+                    if rate_limiter.acquire().await.is_err() {
+                        return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
+                    }
+                    Ok(())
+                })
             })?;
             let image_segment = serde_json::json!([{
                 "type": "image",
@@ -178,13 +182,15 @@ fn dispatch_host_call(
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
             let rate_limiter = services.rate_limiter.clone();
-            services.runtime_handle.block_on(async {
-                if rate_limiter.acquire().await.is_err() {
-                    return Err(BridgeError::HttpRequest(
-                        "请求过于频繁，请稍后再试".to_string(),
-                    ));
-                }
-                Ok::<_, BridgeError>(())
+            tokio::task::block_in_place(|| {
+                services.runtime_handle.block_on(async {
+                    if rate_limiter.acquire().await.is_err() {
+                        return Err(BridgeError::HttpRequest(
+                            "请求过于频繁，请稍后再试".to_string(),
+                        ));
+                    }
+                    Ok::<_, BridgeError>(())
+                })
             })?;
             let body = services
                 .blocking_http_client
@@ -222,20 +228,22 @@ fn dispatch_host_call(
                 3 => osubot_types::GameMode::Mania,
                 _ => return Err(BridgeError::InvalidMode(mode_num)),
             };
-            let stats = services.runtime_handle.block_on(async {
-                if services.rate_limiter.acquire().await.is_err() {
-                    return Err(BridgeError::HttpRequest(
-                        "请求过于频繁，请稍后再试".to_string(),
-                    ));
-                }
-                osubot_core::api::fetch_user_stats_by_username(
-                    &services.rate_limiter,
-                    &services.oauth,
-                    &username,
-                    mode,
-                )
-                .await
-                .map_err(|e| BridgeError::HttpRequest(e.to_string()))
+            let stats = tokio::task::block_in_place(|| {
+                services.runtime_handle.block_on(async {
+                    if services.rate_limiter.acquire().await.is_err() {
+                        return Err(BridgeError::HttpRequest(
+                            "请求过于频繁，请稍后再试".to_string(),
+                        ));
+                    }
+                    osubot_core::api::fetch_user_stats_by_username(
+                        &services.rate_limiter,
+                        &services.oauth,
+                        &username,
+                        mode,
+                    )
+                    .await
+                    .map_err(|e| BridgeError::HttpRequest(e.to_string()))
+                })
             })?;
             serde_json::to_string(&stats).map_err(|e| BridgeError::HttpRequest(e.to_string()))
         }
