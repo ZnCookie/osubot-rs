@@ -195,10 +195,11 @@ impl PluginManager {
                 .ok()
                 .and_then(|m| m.modified().ok());
             wasm_mtimes.push(wasm_mtime);
-            wasm_paths_vec.push(blueprint.wasm_path);
+            let wasm_path = blueprint.wasm_path;
+            wasm_paths_vec.push(wasm_path);
 
             tracing::info!(
-                name = %instance_params.last().unwrap().name,
+                name = %instance_params.last().map_or("unknown", |p| &p.name),
                 sorted_idx,
                 "Plugin instantiated"
             );

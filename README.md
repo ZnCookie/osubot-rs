@@ -251,7 +251,7 @@ osubot-rs/
 ├── osubot-plugin/      # WASM 插件运行时
 │   └── src/
 │       ├── lib.rs       # PluginManager（加载/调度/热重载）
-│       ├── bridge.rs    # 宿主函数（HostServices + SSRF 防护）
+│       ├── bridge.rs    # 宿主函数（HostServices + 7 种宿主调用分发）
 │       ├── instance.rs  # PluginInstance（wasmtime 封装）
 │       ├── config.rs    # 插件配置 TOML 反序列化
 │       └── types.rs     # PluginAction/PluginMetadata

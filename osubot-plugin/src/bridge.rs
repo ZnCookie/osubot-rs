@@ -129,26 +129,6 @@ fn parse_payload(payload: &str) -> Result<serde_json::Value, BridgeError> {
     serde_json::from_str(payload).map_err(BridgeError::JsonParse)
 }
 
-fn is_allowed_url(url: &str) -> bool {
-    let rest = match url.strip_prefix("https://") {
-        Some(r) => r,
-        None => return false,
-    };
-    let authority = match rest.split('/').next() {
-        Some(h) => h,
-        None => return false,
-    };
-    if authority.is_empty() {
-        return false;
-    }
-    // 去除端口号（osu.ppy.sh:443 → osu.ppy.sh），保留 IPv6 等边界情况
-    let host = match authority.split(':').next() {
-        Some(h) if !h.is_empty() => h,
-        _ => authority,
-    };
-    host == "osu.ppy.sh" || host.ends_with(".osu.ppy.sh")
-}
-
 fn dispatch_host_call(
     services: &HostServices,
     name: &str,
@@ -197,11 +177,6 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
-            if !is_allowed_url(&url) {
-                return Err(BridgeError::HttpRequest(format!(
-                    "URL 不在允许列表中: {url}"
-                )));
-            }
             let rate_limiter = services.rate_limiter.clone();
             services.runtime_handle.block_on(async {
                 if rate_limiter.acquire().await.is_err() {

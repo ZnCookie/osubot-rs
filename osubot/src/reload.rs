@@ -206,10 +206,6 @@ impl ReloadCoordinator {
             cfg.plugin.clone()
         };
 
-        if plugin_config.instances.is_empty() {
-            return Ok(());
-        }
-
         {
             let mut guard = self.handle.pm.lock().await;
             if let Some(ref mut pm) = *guard {
