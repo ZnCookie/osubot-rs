@@ -2559,8 +2559,9 @@ async fn main() {
             // this from a tokio runtime thread — it will deadlock.
             let msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
                 Arc::new(move |group_id, message| {
-                    let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async {
+                    tokio::task::block_in_place(|| {
+                        let rt = tokio::runtime::Handle::current();
+                        rt.block_on(async {
                         let json = serde_json::json!({
                             "action": "send_group_msg",
                             "params": {
@@ -2574,6 +2575,7 @@ async fn main() {
                             Err(e) => Err(e.to_string()),
                         }
                     })
+                })
                 });
 
             let services = HostServices {
@@ -2621,24 +2623,32 @@ async fn main() {
             loop {
                 interval.tick().await;
                 let now = std::time::Instant::now();
-                let ticks = {
+                // 第一阶段：收集到期 tick（短暂持锁，读取后立即释放）
+                let due_ticks: Vec<(usize, u32)> = {
                     let mut guard = pm_for_tick.lock().await;
-                    guard.as_mut().map(|pm| pm.get_ticks())
+                    guard
+                        .as_mut()
+                        .map(|pm| {
+                            pm.get_ticks()
+                                .into_iter()
+                                .filter(|(idx, interval_secs, tid)| {
+                                    let key = (*idx, *tid);
+                                    last_fired.get(&key).is_none_or(|last| {
+                                        now.duration_since(*last) >= Duration::from_secs(*interval_secs)
+                                    })
+                                })
+                                .map(|(idx, _, tid)| (idx, tid))
+                                .collect()
+                        })
+                        .unwrap_or_default()
                 };
-                if let Some(ticks) = ticks {
-                    for (plugin_idx, interval_secs, tick_id) in ticks {
-                        let key = (plugin_idx, tick_id);
-                        let due = last_fired.get(&key).is_none_or(|last| {
-                            now.duration_since(*last) >= Duration::from_secs(interval_secs)
-                        });
-                        if due {
-                            let mut guard = pm_for_tick.lock().await;
-                            if let Some(ref mut pm) = *guard {
-                                pm.handle_tick(plugin_idx, tick_id).await;
-                            }
-                            last_fired.insert(key, now);
-                        }
+                // 第二阶段：逐个触发 tick（每个 tick 独立持锁，允许消息处理插入）
+                for (plugin_idx, tick_id) in due_ticks {
+                    let mut guard = pm_for_tick.lock().await;
+                    if let Some(ref mut pm) = *guard {
+                        pm.handle_tick(plugin_idx, tick_id).await;
                     }
+                    last_fired.insert((plugin_idx, tick_id), now);
                 }
             }
         });
