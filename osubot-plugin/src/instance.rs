@@ -231,6 +231,11 @@ impl PluginInstance {
         {
             let data_len = u32::from_le_bytes(len_buf);
             self.dealloc(ptr, 4 + data_len);
+        } else {
+            tracing::warn!(
+                ptr,
+                "dealloc_result: 无法读取长度前缀，跳过释放（WASM 线性内存泄漏）"
+            );
         }
     }
 

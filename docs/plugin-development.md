@@ -46,7 +46,7 @@ osubot 插件是编译为 WebAssembly 的模块（`wasm32-unknown-unknown` 或 `
 | `on_unload` | `() -> *const u8` | 卸载时调用，用于清理 |
 | `on_command` | `(cmd_ptr: u32, cmd_len: u32) -> *const u8` | 匹配到插件注册的命令时调用 |
 | `on_message` | `(msg_ptr: u32, msg_len: u32) -> *const u8` | 收到任何群消息时调用 |
-| `on_tick` | `(tick_ptr: u32, tick_len: u32) -> *const u8` | 定时任务触发时调用 |
+| `on_tick` | `(tick_ptr: u32, tick_len: u32) -> *const u8` | 定时任务触发时调用，传入 `{"tick_id": u32}` |
 
 ### 内存协议
 
@@ -182,9 +182,13 @@ let stats_json = ctx.osu_api_fetch_user("Cookiezi", 0)?;
 
 注册定时任务。
 
+- 最小间隔：**5 秒**
+- 每插件最多注册 **8 个** tick
+- 同名 tick 重复注册会更新间隔（返回原有 tick_id），不消耗配额
+
 ```rust
 let tick_id = ctx.register_tick("check-update", 3600)?;
-// 每小时触发一次 on_tick
+// 每小时触发一次 on_tick，传入 {"tick_id": tick_id}
 ```
 
 ### `get_plugin_config()`

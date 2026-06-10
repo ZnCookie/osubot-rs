@@ -80,3 +80,7 @@ name = "hello"
 path = "hello_plugin.wasm"
 enabled = true
 priority = 50
+
+# 可选：插件自定义配置（通过 get_plugin_config() 访问）
+# [plugin.instances.config]
+# endpoint = "https://api.example.com"

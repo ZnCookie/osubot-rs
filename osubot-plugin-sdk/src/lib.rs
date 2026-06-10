@@ -1,6 +1,8 @@
 mod types;
 pub use types::*;
 
+extern crate alloc;
+
 use core::ptr;
 use core::slice;
 use core::str;
@@ -104,15 +106,17 @@ impl PluginContext {
 
 /// Allocate a buffer of `size` bytes and return a raw pointer.
 ///
+/// Uses the global allocator directly to ensure layout consistency with
+/// [`dealloc`]. Unlike `Vec::with_capacity`, no internal over-allocation
+/// can occur that would produce a layout mismatch on deallocation.
+///
 /// # Safety
 ///
 /// The caller must ensure the returned pointer is later freed via [`dealloc`]
 /// with the same size. The memory is uninitialized.
 pub unsafe fn alloc(size: u32) -> *mut u8 {
-    let mut buf = Vec::with_capacity(size as usize);
-    let ptr = buf.as_mut_ptr();
-    core::mem::forget(buf);
-    ptr
+    let layout = alloc::alloc::Layout::array::<u8>(size as usize).unwrap();
+    alloc::alloc::alloc(layout)
 }
 
 /// Deallocate a buffer previously allocated by [`alloc`].
@@ -122,7 +126,8 @@ pub unsafe fn alloc(size: u32) -> *mut u8 {
 /// `ptr` must have been returned by a previous call to [`alloc`] and `size`
 /// must match the size passed to that call.
 pub unsafe fn dealloc(ptr: *mut u8, size: u32) {
-    let _ = Vec::from_raw_parts(ptr, 0, size as usize);
+    let layout = alloc::alloc::Layout::array::<u8>(size as usize).unwrap();
+    alloc::alloc::dealloc(ptr, layout);
 }
 
 pub fn serialize_return<T: serde::Serialize>(val: &T) -> *const u8 {
@@ -130,10 +135,13 @@ pub fn serialize_return<T: serde::Serialize>(val: &T) -> *const u8 {
         .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"));
     let bytes = json.into_bytes();
     let len = bytes.len();
-    let mut buf = Vec::with_capacity(4 + len);
-    buf.extend_from_slice(&(len as u32).to_le_bytes());
-    buf.extend_from_slice(&bytes);
-    let ptr = buf.as_ptr();
-    core::mem::forget(buf);
+    let total = 4 + len;
+    let layout = alloc::alloc::Layout::array::<u8>(total).unwrap();
+    let ptr = unsafe { alloc::alloc::alloc(layout) };
+    unsafe {
+        let len_le = (len as u32).to_le_bytes();
+        core::ptr::copy_nonoverlapping(len_le.as_ptr(), ptr, 4);
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.add(4), len);
+    }
     ptr
 }
