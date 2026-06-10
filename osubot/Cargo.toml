@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 osubot-core = { path = "../osubot-core" }
 osubot-render = { path = "../osubot-render" }
+osubot-plugin = { path = "../osubot-plugin" }
 tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
 toml = "0.8"
@@ -21,6 +22,7 @@ image = "0.25"
 dashmap = "6"
 async-trait = "0.1"
 rand = "0.8"
+notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
 
 [features]
 integration-tests = []

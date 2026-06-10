@@ -69,3 +69,14 @@ path = "osubot.db"
 # rate_per_minute = 10
 # burst = 20
 # yumu 无需 access_token 和 self_id，直接伪装目标 QQ 连接
+
+[plugin]
+# Directory containing .wasm plugin files
+dir = "./plugins"
+
+# Plugin instances to load
+[[plugin.instances]]
+name = "hello"
+path = "hello_plugin.wasm"
+enabled = true
+priority = 50

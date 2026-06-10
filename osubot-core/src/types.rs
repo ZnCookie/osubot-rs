@@ -2,7 +2,7 @@ pub use osubot_types::{
     format_length, format_play_datetime, GameMode, Score, ScoreStatistics, ScoreUser,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct UserStats {
     pub user_id: i64,
     pub username: String,
@@ -90,6 +90,21 @@ impl Command {
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
             Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
+        }
+    }
+
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Command::QuerySelf { .. } => "~",
+            Command::QueryUser { .. } => "where",
+            Command::QueryMentionedUser { .. } => "where",
+            Command::Bind { .. } => "绑定",
+            Command::Unbind => "解绑",
+            Command::Highlight { .. } => "今日高光",
+            Command::ProfileCard { .. } => "!profile",
+            Command::Pass { .. } => "!p",
+            Command::Recent { .. } => "!r",
+            Command::ScoreOnBeatmap { .. } => "!s",
         }
     }
 }

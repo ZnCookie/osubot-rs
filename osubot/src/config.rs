@@ -1,4 +1,5 @@
 use osubot_core::types::CommandGroup;
+use osubot_plugin::config::PluginConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -19,6 +20,8 @@ pub struct Config {
     pub groups: GroupsConfig,
     #[serde(default)]
     pub upstream: UpstreamConfig,
+    #[serde(default)]
+    pub plugin: PluginConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -270,6 +273,22 @@ pub struct UpstreamConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
+/// 热重载时会从新 TOML 解析的部分，遗留字段（osu/bot/database/irc）保持旧值不变。
+/// 每新增一个可重载字段，或新增遗留不可变字段时，需同步更新 reload.rs 中的构造。
+#[derive(Debug, Deserialize, Clone)]
+pub struct MutableConfig {
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub group_filter: GroupFilterConfig,
+    #[serde(default)]
+    pub groups: GroupsConfig,
+    #[serde(default)]
+    pub upstream: UpstreamConfig,
+    #[serde(default)]
+    pub plugin: PluginConfig,
+}
+
 impl Config {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
@@ -297,6 +316,7 @@ impl Default for Config {
             group_filter: GroupFilterConfig::default(),
             groups: GroupsConfig::default(),
             upstream: UpstreamConfig::default(),
+            plugin: PluginConfig::default(),
         }
     }
 }
