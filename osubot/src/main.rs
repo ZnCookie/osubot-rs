@@ -2647,7 +2647,11 @@ async fn main() {
                     guard
                         .as_mut()
                         .map(|pm| {
-                            pm.get_ticks()
+                            let all_ticks = pm.get_ticks();
+                            let valid_keys: std::collections::HashSet<_> =
+                                all_ticks.iter().map(|(idx, _, tid)| (*idx, *tid)).collect();
+                            last_fired.retain(|k, _| valid_keys.contains(k));
+                            all_ticks
                                 .into_iter()
                                 .filter(|(idx, interval_secs, tid)| {
                                     let key = (*idx, *tid);

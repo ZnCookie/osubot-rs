@@ -107,7 +107,7 @@ impl Scheduler {
             info!("Scheduler tick");
             let interval_secs = {
                 let cfg = self.config.read().await;
-                60 * cfg.scheduler.interval_minutes
+                60 * cfg.scheduler.interval_minutes.max(1)
             };
             time::sleep(time::Duration::from_secs(interval_secs)).await;
             self.process_due_users().await;

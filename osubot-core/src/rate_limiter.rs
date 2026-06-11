@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{self, timeout, Duration};
@@ -13,6 +14,7 @@ pub struct RateLimiter {
     burst: u32,
     per_minute: u32,
     refill_handle: StdMutex<tokio::task::JoinHandle<()>>,
+    refill_respawning: Arc<AtomicBool>,
 }
 
 struct State {
@@ -77,13 +79,19 @@ impl RateLimiter {
             burst,
             per_minute,
             refill_handle,
+            refill_respawning: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Check if the refill task is alive and respawn if it panicked.
     fn ensure_refill_alive(&self) {
         if let Ok(mut guard) = self.refill_handle.lock() {
-            if guard.is_finished() {
+            if guard.is_finished()
+                && self
+                    .refill_respawning
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+            {
                 tracing::error!("rate limiter refill task panicked, respawning");
                 *guard = spawn_refill(
                     self.state.clone(),
@@ -91,6 +99,7 @@ impl RateLimiter {
                     self.burst as f64,
                     self.per_minute,
                 );
+                self.refill_respawning.store(false, Ordering::Release);
             }
         }
     }

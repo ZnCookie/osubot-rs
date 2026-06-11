@@ -130,21 +130,12 @@ fn create_performance<'a>(
     needs_convert: bool,
     target_mode: rosu_pp::model::mode::GameMode,
 ) -> Option<rosu_pp::Performance<'a>> {
-    // 非转谱时必须提供 diff_attrs，否则 Performance::new 会 panic
-    assert!(
-        needs_convert || diff_attrs.is_some(),
-        "create_performance: diff_attrs must be Some when needs_convert is false"
-    );
-
     if needs_convert {
         let perf = rosu_pp::Performance::new(map).mods(mods).lazer(is_lazer);
         perf.try_mode(target_mode).ok()
     } else {
-        Some(
-            rosu_pp::Performance::new(diff_attrs.unwrap())
-                .mods(mods)
-                .lazer(is_lazer),
-        )
+        let attrs = diff_attrs?;
+        Some(rosu_pp::Performance::new(attrs).mods(mods).lazer(is_lazer))
     }
 }
 
@@ -1215,7 +1206,7 @@ pub(crate) fn classify_http_error(resp: &reqwest::Response) -> Result<(), ApiErr
 fn backoff_with_jitter(attempt: u32) -> Duration {
     use rand::Rng;
     let base_delay = Duration::from_secs(1);
-    let exp = base_delay * 2u32.pow(attempt);
+    let exp = base_delay * 2u32.pow(attempt.min(31));
     let exp_ms = exp.as_millis() as u64;
     // 75%~125% 范围：先算 75% 基准，再加 0~50% 随机偏移
     let min_ms = exp_ms * 3 / 4;

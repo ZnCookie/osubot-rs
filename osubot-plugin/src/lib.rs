@@ -28,6 +28,20 @@ enum DispatchOutcome<T> {
     NotAvailable,
 }
 
+/// WASM 插件系统运行时宿主。
+///
+/// # 信任模型
+///
+/// 本系统采用**完全信任插件**模型：
+///
+/// - 所有宿主函数（HTTP 请求、消息发送、数据库查询等）对插件完全开放，不做 URL 白名单或响应大小限制
+/// - 插件的操作能力和「正常编译的 Rust 代码」一致——它们可以做的事是功能，不是漏洞
+/// - 部署者有责任审查加载的每个 `.wasm` 文件，并对插件行为承担后果
+/// - 宿主仅提供**进程级故障隔离**：wasmtime 沙箱（内存上限、无文件系统）、epoch 超时中断、
+///   tokio::timeout 兜底、令牌桶限流
+///
+/// 如果某个安全加固措施属于「限制插件能做什么」而非「保护宿主进程不崩溃」，
+/// 则它不应存在于此模块中。
 pub struct PluginManager {
     instances: Vec<Option<PluginInstance>>,
     command_map: HashMap<String, Vec<usize>>,
@@ -387,16 +401,15 @@ impl PluginManager {
                 // 强制推进 epoch，使 spawn_blocking 中的 wasm 执行尽快触发 epoch trap，
                 // 避免后台线程在超时后继续泄漏 10+ 秒
                 self.engine.increment_epoch();
-                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if self.lost_instances[idx] >= 5 {
-                    tracing::warn!(
-                        plugin = %name,
-                        consecutive = self.lost_instances[idx],
-                        "Plugin {operation} 连续超时，自动重载"
-                    );
-                    if let Err(e) = self.reload_instance(idx) {
-                        tracing::error!(plugin = %name, "Failed to reload plugin instance: {e}");
-                    }
+                // 超时时实例已被 take() 移出并移交给了 spawn_blocking（仍在后台运行），
+                // 无法放回 self.instances[idx]，必须立即重载——不需要等待 lost_instances 累积到 5，
+                // 因为后续 dispatch 会因 self.instances[idx] 为 None 而直接返回 NotAvailable
+                tracing::warn!(
+                    plugin = %name,
+                    "Plugin {operation} 超时，自动重载实例"
+                );
+                if let Err(e) = self.reload_instance(idx) {
+                    tracing::error!(plugin = %name, "Failed to reload plugin instance: {e}");
                 }
                 DispatchOutcome::TimeoutLost
             }

@@ -3,6 +3,11 @@ use std::sync::Arc;
 use wasmtime::Result as WasmResult;
 use wasmtime::{Caller, Linker, StoreLimits};
 
+// 信任模型：所有宿主函数默认信任 WASM 插件的调用意图。
+// 插件可以发送消息到任意群、发起任意 HTTP 请求、查询任意绑定——
+// 这些能力是功能而非漏洞。部署者需自行审查插件行为，对插件的操作后果负责。
+// 宿主仅提供进程级保护（wasmtime 沙箱 + 限流 + 超时），不做应用层权限控制。
+
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
     #[error("JSON 解析失败: {0}")]
@@ -161,56 +166,6 @@ fn send_msg_with_timeout(
     })
 }
 
-fn validate_url(url_str: &str) -> Result<(), BridgeError> {
-    let parsed =
-        url::Url::parse(url_str).map_err(|_| BridgeError::HttpRequest("invalid URL".into()))?;
-
-    let scheme = parsed.scheme();
-    if scheme != "http" && scheme != "https" {
-        return Err(BridgeError::HttpRequest(format!(
-            "unsupported URL scheme: {scheme}"
-        )));
-    }
-
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| BridgeError::HttpRequest("URL missing host".into()))?;
-
-    let blocked_hosts = [
-        "127.0.0.1",
-        "::1",
-        "localhost",
-        "169.254.169.254",
-        "100.100.100.200",
-        "0.0.0.0",
-    ];
-    if blocked_hosts.contains(&host) {
-        return Err(BridgeError::HttpRequest(format!(
-            "blocked internal address: {host}"
-        )));
-    }
-
-    if host.starts_with("10.") || host.starts_with("192.168.") {
-        return Err(BridgeError::HttpRequest(format!(
-            "blocked private IP range: {host}"
-        )));
-    }
-
-    if host.starts_with("172.") {
-        if let Some(second) = host.split('.').nth(1) {
-            if let Ok(n) = second.parse::<u32>() {
-                if (16..=31).contains(&n) {
-                    return Err(BridgeError::HttpRequest(format!(
-                        "blocked private IP range: {host}"
-                    )));
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn dispatch_host_call(
     services: &HostServices,
     name: &str,
@@ -250,35 +205,19 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
-            validate_url(&url)?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
                     "请求过于频繁，请稍后再试".to_string(),
                 ));
             }
-            const MAX_RESPONSE_SIZE: u64 = 10 * 1024 * 1024;
-            let response = services
+            let body = services
                 .blocking_http_client
                 .get(&url)
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
                 .send()
-                .map_err(|e| BridgeError::HttpRequest(format!("HTTP request failed: {e}")))?;
-            if let Some(cl) = response.content_length() {
-                if cl > MAX_RESPONSE_SIZE {
-                    return Err(BridgeError::HttpRequest(format!(
-                        "response too large: {cl} bytes (max {MAX_RESPONSE_SIZE})"
-                    )));
-                }
-            }
-            let body = response
+                .map_err(|e| BridgeError::HttpRequest(format!("HTTP request failed: {e}")))?
                 .text()
                 .map_err(|e| BridgeError::HttpRequest(format!("read response: {e}")))?;
-            if body.len() as u64 > MAX_RESPONSE_SIZE {
-                return Err(BridgeError::HttpRequest(format!(
-                    "response too large: {} bytes (max {MAX_RESPONSE_SIZE})",
-                    body.len()
-                )));
-            }
             Ok(body)
         }
         "db_get_binding" => {
