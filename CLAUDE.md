@@ -22,13 +22,14 @@ cargo test --locked -p <crate> <name> # 运行单个测试
 六 crate 工作空间：
 
 ```
+                     osubot-plugin-sdk  ← WASM 插件 SDK，供插件作者使用
+                        （编译到 wasm32-unknown-unknown 或 wasm32-wasip1，无 WASI 依赖）
+
 osubot-types           ← 共享类型（Score、GameMode），依赖 chrono、rosu-mods
     ↑           ↑
 osubot-core    osubot-render  ← 两者无依赖关系，均只依赖 osubot-types
-    ↑           ↑
-osubot-plugin-sdk      ← WASM 插件 SDK（编译到 wasm32-unknown-unknown 或 wasm32-wasip1，无 WASI 依赖），供插件作者使用
     ↑
-osubot-plugin          ← WASM 运行时宿主（PluginManager、wasmtime 集成）
+osubot-plugin          ← WASM 运行时宿主（PluginManager、wasmtime 集成，依赖 osubot-core）
     ↑
     └─── osubot ───┘   ← 二进制入口
 ```

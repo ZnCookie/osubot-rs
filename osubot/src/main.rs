@@ -2562,20 +2562,20 @@ async fn main() {
                     tokio::task::block_in_place(|| {
                         let rt = tokio::runtime::Handle::current();
                         rt.block_on(async {
-                        let json = serde_json::json!({
-                            "action": "send_group_msg",
-                            "params": {
-                                "group_id": group_id,
-                                "message": message
+                            let json = serde_json::json!({
+                                "action": "send_group_msg",
+                                "params": {
+                                    "group_id": group_id,
+                                    "message": message
+                                }
+                            });
+                            let mut sink = write_for_plugin.lock().await;
+                            match sink.send(Message::Text(json.to_string().into())).await {
+                                Ok(_) => Ok(()),
+                                Err(e) => Err(e.to_string()),
                             }
-                        });
-                        let mut sink = write_for_plugin.lock().await;
-                        match sink.send(Message::Text(json.to_string().into())).await {
-                            Ok(_) => Ok(()),
-                            Err(e) => Err(e.to_string()),
-                        }
+                        })
                     })
-                })
                 });
 
             let services = HostServices {
@@ -2634,7 +2634,8 @@ async fn main() {
                                 .filter(|(idx, interval_secs, tid)| {
                                     let key = (*idx, *tid);
                                     last_fired.get(&key).is_none_or(|last| {
-                                        now.duration_since(*last) >= Duration::from_secs(*interval_secs)
+                                        now.duration_since(*last)
+                                            >= Duration::from_secs(*interval_secs)
                                     })
                                 })
                                 .map(|(idx, _, tid)| (idx, tid))

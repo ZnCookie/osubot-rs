@@ -19,6 +19,8 @@ pub enum BridgeError {
     SendMsg(String),
     #[error("未知宿主函数: {0}")]
     UnknownHostCall(String),
+    #[error("参数校验失败: {0}")]
+    Validation(String),
 }
 
 impl From<BridgeError> for String {
@@ -129,6 +131,15 @@ fn parse_payload(payload: &str) -> Result<serde_json::Value, BridgeError> {
     serde_json::from_str(payload).map_err(BridgeError::JsonParse)
 }
 
+fn acquire_rate_limiter(services: &HostServices) -> bool {
+    let rl = services.rate_limiter.clone();
+    tokio::task::block_in_place(|| {
+        services
+            .runtime_handle
+            .block_on(async { rl.acquire().await.is_ok() })
+    })
+}
+
 fn dispatch_host_call(
     services: &HostServices,
     name: &str,
@@ -141,15 +152,9 @@ fn dispatch_host_call(
                 .as_i64()
                 .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
             let text = get_field(&v, "text")?;
-            let rate_limiter = services.rate_limiter.clone();
-            tokio::task::block_in_place(|| {
-                services.runtime_handle.block_on(async {
-                    if rate_limiter.acquire().await.is_err() {
-                        return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
-                    }
-                    Ok(())
-                })
-            })?;
+            if !acquire_rate_limiter(services) {
+                return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
+            }
             (services.send_msg_fn)(group_id, serde_json::Value::String(text))
                 .map_err(BridgeError::SendMsg)?;
             Ok("{}".to_string())
@@ -160,15 +165,9 @@ fn dispatch_host_call(
                 .as_i64()
                 .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
             let jpeg_b64 = get_field(&v, "jpeg_base64")?;
-            let rate_limiter = services.rate_limiter.clone();
-            tokio::task::block_in_place(|| {
-                services.runtime_handle.block_on(async {
-                    if rate_limiter.acquire().await.is_err() {
-                        return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
-                    }
-                    Ok(())
-                })
-            })?;
+            if !acquire_rate_limiter(services) {
+                return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
+            }
             let image_segment = serde_json::json!([{
                 "type": "image",
                 "data": {
@@ -181,17 +180,11 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
-            let rate_limiter = services.rate_limiter.clone();
-            tokio::task::block_in_place(|| {
-                services.runtime_handle.block_on(async {
-                    if rate_limiter.acquire().await.is_err() {
-                        return Err(BridgeError::HttpRequest(
-                            "请求过于频繁，请稍后再试".to_string(),
-                        ));
-                    }
-                    Ok::<_, BridgeError>(())
-                })
-            })?;
+            if !acquire_rate_limiter(services) {
+                return Err(BridgeError::HttpRequest(
+                    "请求过于频繁，请稍后再试".to_string(),
+                ));
+            }
             let body = services
                 .blocking_http_client
                 .get(&url)
@@ -228,13 +221,13 @@ fn dispatch_host_call(
                 3 => osubot_types::GameMode::Mania,
                 _ => return Err(BridgeError::InvalidMode(mode_num)),
             };
+            if !acquire_rate_limiter(services) {
+                return Err(BridgeError::HttpRequest(
+                    "请求过于频繁，请稍后再试".to_string(),
+                ));
+            }
             let stats = tokio::task::block_in_place(|| {
                 services.runtime_handle.block_on(async {
-                    if services.rate_limiter.acquire().await.is_err() {
-                        return Err(BridgeError::HttpRequest(
-                            "请求过于频繁，请稍后再试".to_string(),
-                        ));
-                    }
                     osubot_core::api::fetch_user_stats_by_username(
                         &services.rate_limiter,
                         &services.oauth,
@@ -264,7 +257,7 @@ fn dispatch_host_call(
             const MIN_INTERVAL: u64 = 5;
             const MAX_TICKS_PER_PLUGIN: usize = 8;
             if interval_secs < MIN_INTERVAL {
-                return Err(BridgeError::Database(format!(
+                return Err(BridgeError::Validation(format!(
                     "tick 间隔不能小于 {MIN_INTERVAL} 秒"
                 )));
             }
@@ -281,7 +274,7 @@ fn dispatch_host_call(
                     .iter()
                     .any(|(idx, name, _, _)| *idx == services.instance_idx && name == &tick_name)
             {
-                return Err(BridgeError::Database(format!(
+                return Err(BridgeError::Validation(format!(
                     "每个插件最多注册 {MAX_TICKS_PER_PLUGIN} 个 tick"
                 )));
             }

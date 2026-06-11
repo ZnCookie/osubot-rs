@@ -180,7 +180,7 @@ let stats_json = ctx.osu_api_fetch_user("Cookiezi", 0)?;
 // 返回 osu! API v2 的 UserStats JSON
 ```
 
-JSON 字段说明：
+JSON 字段说明（以下为常用字段，完整字段见 osu! API v2 文档；版本升级时可能新增字段但不会删除现有字段）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -307,7 +307,9 @@ cargo build --target wasm32-unknown-unknown --release
 ls target/wasm32-unknown-unknown/release/my_plugin.wasm
 ```
 
-> SDK 使用自定义 `alloc`/`dealloc`，不依赖 WASI 导入，因此 `wasm32-unknown-unknown` 和 `wasm32-wasip1` 目标均可使用。推荐 `wasm32-unknown-unknown`（编译更快）。
+> SDK 使用自定义 `alloc`/`dealloc`，不依赖 WASI 导入，因此两个目标均可使用：
+> - **`wasm32-unknown-unknown`**（推荐）：无标准库依赖，编译更快，二进制更小
+> - **`wasm32-wasip1`**：包含 WASI 导入但 SDK 不使用，编译稍慢
 
 ### 4. 部署
 
@@ -455,3 +457,45 @@ osubot 使用文件监控（`notify` crate）自动检测以下变更：
 - **仅部署来自可信来源的 `.wasm` 文件**
 - 审查插件源代码后再部署
 - 不要在插件配置中存储敏感信息（如 API 密钥）
+
+---
+
+## 测试插件
+
+osubot 的 `osubot-plugin` crate 提供了集成测试框架，可用于验证插件行为。参考 `osubot-plugin/src/lib.rs` 中的 `#[cfg(test)]` 模块，其中包含 18 个测试覆盖了：
+
+- 元数据解析
+- 命令/消息分发（Handled / Next / Intercepted 三种返回值）
+- tick 生命周期（注册、触发、重载清理）
+- compact（索引合并）
+- reload_all（增/删/改/空插件、优先级变更、mtime 变更检测）
+
+### 编写测试的基本流程
+
+```rust
+#[test]
+fn test_my_plugin() {
+    // 1. 编译 .wasm（或使用 cargo build 构建产物）
+    let wasm_path = find_my_plugin_wasm();
+
+    // 2. 创建 tokio runtime 和 HostServices
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let services = make_services(&rt);
+
+    // 3. 配置并加载插件
+    let config = PluginConfigInput { ... };
+    let mut pm = rt.block_on(PluginManager::new(&config, services)).unwrap();
+
+    // 4. 验证行为
+    let cmd_json = r#"{"command_type":"!ping","group_id":1,"user_id":1,...}"#;
+    let action = rt.block_on(pm.handle_command("!ping", cmd_json));
+    assert!(matches!(action, PluginActionResult::Handled(_)));
+
+    // 5. 清理
+    rt.block_on(pm.shutdown());
+    drop(_guard);
+}
+```
+
+> **提示：** 测试依赖于已编译的 `.wasm` 文件。`osubot-plugin` 的测试会自动检测 `examples/hello-plugin/target/wasm32-unknown-unknown/debug/hello_plugin.wasm`，若不存在则自动执行 `cargo build` 编译。

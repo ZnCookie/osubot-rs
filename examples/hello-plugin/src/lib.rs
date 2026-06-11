@@ -29,7 +29,10 @@ pub extern "C" fn plugin_metadata() -> *const u8 {
 #[no_mangle]
 pub extern "C" fn on_load() -> *const u8 {
     // Register a tick every 3600 seconds (1 hour) as a demo
-    let _ = CTX.register_tick("hello_tick", 3600);
+    if let Err(e) = CTX.register_tick("hello_tick", 3600) {
+        // WASM 环境无标准日志系统；返回错误给宿主记录
+        return serialize_return(&serde_json::json!({"error": e}));
+    }
     serialize_return(&serde_json::json!({"ok": true}))
 }
 
@@ -47,12 +50,15 @@ pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
 
     match cmd.command_type.as_str() {
         "!hello" => {
+            // 使用 Intercepted 表示插件已处理（通过 send_group_msg 主动发送），
+            // 宿主无需再使用 Handled 的返回值重复发送响应。
             if let Some(gid) = cmd.group_id {
                 let _ = CTX.send_group_msg(gid, "你好，这是来自 WASM 插件的消息！");
             }
-            serialize_return(&PluginAction::Handled("Hello from WASM plugin!".to_string()))
+            serialize_return(&PluginAction::Intercepted)
         }
         "!ping" => {
+            // 使用 Handled 让宿主代为发送响应——插件无需主动调用 send_group_msg
             serialize_return(&PluginAction::Handled("pong from WASM plugin".to_string()))
         }
         _ => serialize_return(&PluginAction::Next),
