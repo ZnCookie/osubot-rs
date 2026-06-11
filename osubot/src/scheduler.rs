@@ -74,7 +74,10 @@ impl Scheduler {
             Ok(deleted) if deleted > 0 => {
                 info!(deleted, "pruned expired pending binds");
             }
-            _ => {}
+            Ok(_) => {}
+            Err(e) => {
+                error!(error = ?e, "failed to prune expired pending binds");
+            }
         }
 
         // Prune expired pending unbinds
@@ -82,7 +85,10 @@ impl Scheduler {
             Ok(deleted) if deleted > 0 => {
                 info!(deleted, "pruned expired pending unbinds");
             }
-            _ => {}
+            Ok(_) => {}
+            Err(e) => {
+                error!(error = ?e, "failed to prune expired pending unbinds");
+            }
         }
 
         osubot_render::cleanup_expired(scheduler_cfg.cache_retention_days).await;
