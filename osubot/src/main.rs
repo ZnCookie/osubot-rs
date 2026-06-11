@@ -2075,20 +2075,25 @@ async fn handle_command(
                         hue = profile.profile_hue,
                         "ProfileCard HTML fetched"
                     );
-                    render_profile_card(
+                    let profile_render = render_profile_card(
                         &profile.html,
                         profile.profile_hue,
                         &profile.avatar_url,
                         &profile.username,
                         PROFILE_VIEWPORT_WIDTH,
                         1200,
-                    )
-                    .await
-                    .map(Arc::new)
-                    .map_err(|e| {
-                        warn!(user_id = target_user_id, error = %e, "render failed");
-                        "渲染失败，请稍后重试".to_string()
-                    })
+                    );
+                    tokio::time::timeout(ctx.render_timeout, profile_render)
+                        .await
+                        .map_err(|_| {
+                            warn!(user_id = target_user_id, "ProfileCard render timed out");
+                            "渲染超时，请稍后重试".to_string()
+                        })?
+                        .map(Arc::new)
+                        .map_err(|e| {
+                            warn!(user_id = target_user_id, error = %e, "render failed");
+                            "渲染失败，请稍后重试".to_string()
+                        })
                 })
                 .await;
 
@@ -2754,11 +2759,17 @@ async fn main() {
 
         // Spawn plugin tick loop
         let pm_for_tick = pm.clone();
+        let tick_drain = drain.clone();
         let tick_handle = tokio::spawn(async move {
             let mut last_fired: HashMap<(usize, u32), std::time::Instant> = HashMap::new();
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
+                // 热重载 drain 期间暂停 tick 分派，避免 phase 1 收集的索引
+                // 在 phase 2 使用前被 reload_all()→compact() 重映射
+                if tick_drain.load(Ordering::SeqCst) {
+                    continue;
+                }
                 let now = std::time::Instant::now();
                 // 第一阶段：收集到期 tick（短暂持锁，读取后立即释放）
                 let due_ticks: Vec<(usize, u32)> = {
@@ -2872,7 +2883,7 @@ async fn main() {
                             .await
                             .is_err()
                             {
-                                tracing::warn!("命令处理超时（120秒）");
+                                tracing::warn!("命令处理超时（{}秒）", command_timeout.as_secs());
                                 let _ = resp_tx.send("命令处理超时，请稍后重试".to_string()).await;
                             }
                         });

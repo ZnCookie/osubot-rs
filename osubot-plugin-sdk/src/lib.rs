@@ -128,7 +128,9 @@ pub unsafe fn alloc(size: u32) -> *mut u8 {
 /// `ptr` must have been returned by a previous call to [`alloc`] and `size`
 /// must match the size passed to that call.
 pub unsafe fn dealloc(ptr: *mut u8, size: u32) {
-    let layout = alloc::alloc::Layout::array::<u8>(size as usize).unwrap();
+    let Ok(layout) = alloc::alloc::Layout::array::<u8>(size as usize) else {
+        return;
+    };
     alloc::alloc::dealloc(ptr, layout);
 }
 
@@ -138,8 +140,14 @@ pub fn serialize_return<T: serde::Serialize>(val: &T) -> *const u8 {
     let bytes = json.into_bytes();
     let len = bytes.len();
     let total = 4 + len;
-    let layout = alloc::alloc::Layout::array::<u8>(total).unwrap();
+    let layout = match alloc::alloc::Layout::array::<u8>(total) {
+        Ok(l) => l,
+        Err(_) => return core::ptr::null(),
+    };
     let ptr = unsafe { alloc::alloc::alloc(layout) };
+    if ptr.is_null() {
+        return core::ptr::null();
+    }
     unsafe {
         let len_le = (len as u32).to_le_bytes();
         core::ptr::copy_nonoverlapping(len_le.as_ptr(), ptr, 4);

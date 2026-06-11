@@ -468,8 +468,11 @@ pub async fn render_score_list_card(
     });
     let abort_handle = join_handle.abort_handle();
 
-    let render_result =
-        tokio::time::timeout(std::time::Duration::from_secs(120), join_handle).await;
+    let render_result = tokio::time::timeout(
+        std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
+        join_handle,
+    )
+    .await;
 
     let (pixels, w, h) = match render_result {
         Ok(Ok(result)) => result?,
