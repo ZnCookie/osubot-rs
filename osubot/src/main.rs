@@ -248,14 +248,34 @@ impl BotContext {
         {
             Ok(stats) => {
                 if stats.username != username {
-                    self.storage
-                        .update_binding_username(qq, &stats.username)
-                        .ok();
+                    if let Err(e) = self.storage.update_binding_username(qq, &stats.username) {
+                        tracing::warn!(
+                            qq = qq,
+                            username = %stats.username,
+                            error = %e,
+                            "Failed to update binding username"
+                        );
+                    }
                 }
-                self.storage.set_user_id(&stats.username, user_id).ok();
+                if let Err(e) = self.storage.set_user_id(&stats.username, user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 let change = self
                     .storage
                     .calculate_change(user_id, mode, &stats)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            user_id = user_id,
+                            mode = ?mode,
+                            error = %e,
+                            "Failed to calculate change"
+                        )
+                    })
                     .ok()
                     .flatten();
                 info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{log_label} success");
@@ -319,7 +339,14 @@ async fn resolve_score_user(
         tracing::trace!("resolve_score_user: looking up by username '{}'", name);
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 Some((stats.user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -368,7 +395,14 @@ async fn resolve_score_user(
         tracing::info!("resolve_score_user: fetching stats for user_id={}", user_id);
         match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 Some((user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -464,7 +498,14 @@ async fn handle_score_query(
 
         let user_stats = match stats_result {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 stats
             }
             Err(e) => {
@@ -649,6 +690,14 @@ async fn handle_score_query(
                 let change = ctx
                     .storage
                     .calculate_change(user_id, params.mode, &user_stats)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            user_id = user_id,
+                            mode = ?params.mode,
+                            error = %e,
+                            "Failed to calculate change"
+                        )
+                    })
                     .ok()
                     .flatten();
                 let pp_change = change.as_ref().and_then(|c| c.pp_change);
@@ -786,7 +835,14 @@ async fn handle_beatmap_score_query(
         .await
         {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 ctx.scheduler.trigger_update(user_id, mode).await;
                 stats
             }
@@ -1218,6 +1274,14 @@ async fn render_and_send_score_list(
     let change = ctx
         .storage
         .calculate_change(user_stats.user_id, mode, user_stats)
+        .inspect_err(|e| {
+            tracing::warn!(
+                user_id = user_stats.user_id,
+                mode = ?mode,
+                error = %e,
+                "Failed to calculate change"
+            )
+        })
         .ok()
         .flatten();
     let pp_change = change.as_ref().and_then(|c| c.pp_change);
@@ -1334,7 +1398,7 @@ async fn handle_command(
         }
         return;
     }
-    let cmd = cmd_opt.unwrap();
+    let cmd = cmd_opt.expect("guarded by cmd_opt.is_none() early-return");
 
     // 命令开关检查
     let group_cfg = {
@@ -1514,14 +1578,36 @@ async fn handle_command(
             {
                 Ok(stats) => {
                     // Cache user_id for future lookups (even for unbound users)
-                    ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                    if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                        tracing::warn!(
+                            username = %stats.username,
+                            user_id = stats.user_id,
+                            error = %e,
+                            "Failed to cache user_id"
+                        );
+                    }
                     if stats.username != username {
-                        ctx.storage.set_user_id(&username, stats.user_id).ok();
+                        if let Err(e) = ctx.storage.set_user_id(&username, stats.user_id) {
+                            tracing::warn!(
+                                username = %username,
+                                user_id = stats.user_id,
+                                error = %e,
+                                "Failed to cache user_id"
+                            );
+                        }
                     }
                     ctx.scheduler.trigger_update(stats.user_id, mode).await;
                     let change = ctx
                         .storage
                         .calculate_change(stats.user_id, mode, &stats)
+                        .inspect_err(|e| {
+                            tracing::warn!(
+                                user_id = stats.user_id,
+                                mode = ?mode,
+                                error = %e,
+                                "Failed to calculate change"
+                            )
+                        })
                         .ok()
                         .flatten();
                     let has_change = change.is_some();
@@ -1729,7 +1815,13 @@ async fn handle_command(
                     // Execute unbind and clear pending
                     match ctx.storage.unbind(msg.user_id) {
                         Ok(_) => {
-                            ctx.storage.remove_pending_unbind(msg.user_id).ok();
+                            if let Err(e) = ctx.storage.remove_pending_unbind(msg.user_id) {
+                                tracing::warn!(
+                                    user_id = msg.user_id,
+                                    error = %e,
+                                    "Failed to remove pending unbind"
+                                );
+                            }
                             info!(user_id = msg.user_id, "Unbind success");
                             let _ = resp_tx
                                 .send(format!("[CQ:at,qq={}] 解绑成功", msg.user_id))
@@ -1747,7 +1839,13 @@ async fn handle_command(
                     // Ask for confirmation and set pending
                     match ctx.storage.get_binding(msg.user_id) {
                         Ok(Some((_, current_username))) => {
-                            ctx.storage.set_pending_unbind(msg.user_id).ok();
+                            if let Err(e) = ctx.storage.set_pending_unbind(msg.user_id) {
+                                tracing::warn!(
+                                    user_id = msg.user_id,
+                                    error = %e,
+                                    "Failed to set pending unbind"
+                                );
+                            }
                             info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
                             let _ = resp_tx
                                 .send(format!(
@@ -1857,7 +1955,16 @@ async fn handle_command(
                         {
                             Ok(stats) => {
                                 info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
-                                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                                if let Err(e) =
+                                    ctx.storage.set_user_id(&stats.username, stats.user_id)
+                                {
+                                    tracing::warn!(
+                                        username = %stats.username,
+                                        user_id = stats.user_id,
+                                        error = %e,
+                                        "Failed to cache user_id"
+                                    );
+                                }
                                 stats.user_id
                             }
                             Err(e) => {
@@ -2067,7 +2174,7 @@ async fn handle_command(
     }
 }
 
-use tokio_tungstenite::tungstenite::Message as WsMsg;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMsg};
 use tracing_subscriber::fmt::time::LocalTime;
 type WriteSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -2094,7 +2201,7 @@ async fn send_group_msg_with_image(
     write: &Arc<Mutex<WriteSink>>,
     group_id: i64,
     image_data: &[u8],
-) -> Result<(), ()> {
+) -> Result<(), WsError> {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
     let segments = serde_json::json!([
@@ -2115,7 +2222,7 @@ async fn send_group_msg_with_image(
     let mut sink = write.lock().await;
     sink.send(WsMsg::Text(json.to_string().into()))
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
             warn!(error = %e, group_id = group_id, "Failed to send group image message");
         })
 }
@@ -2206,7 +2313,9 @@ async fn handle_irc_message(
     };
 
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
-        storage.remove_pending_bind(code).ok();
+        if let Err(e) = storage.remove_pending_bind(code) {
+            tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (username mismatch)");
+        }
         let msg = format!(
             "[CQ:at,qq={}] 绑定失败（绑定的不是本人）",
             pending.qq_user_id
@@ -2225,7 +2334,9 @@ async fn handle_irc_message(
             }
             match storage.bind(pending.qq_user_id, info.id, &info.username) {
                 Ok(Ok(())) => {
-                    storage.remove_pending_bind(code).ok();
+                    if let Err(e) = storage.remove_pending_bind(code) {
+                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (bind success)");
+                    }
                     info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
                     let msg = format!(
                         "[CQ:at,qq={}] 成功绑定为{}",
@@ -2234,7 +2345,9 @@ async fn handle_irc_message(
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Ok(Err(_)) => {
-                    storage.remove_pending_bind(code).ok();
+                    if let Err(e) = storage.remove_pending_bind(code) {
+                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (already bound)");
+                    }
                     let msg = format!(
                         "[CQ:at,qq={}] 绑定失败（该 osu! 用户已绑定其他 QQ）",
                         pending.qq_user_id
@@ -2242,20 +2355,26 @@ async fn handle_irc_message(
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Err(_) => {
-                    storage.remove_pending_bind(code).ok();
+                    if let Err(e) = storage.remove_pending_bind(code) {
+                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (db error)");
+                    }
                     let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
             }
         }
         Ok(None) => {
-            storage.remove_pending_bind(code).ok();
+            if let Err(e) = storage.remove_pending_bind(code) {
+                tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (user not found)");
+            }
             warn!("User {} not found during IRC bind", pending.target_username);
             let msg = format!("[CQ:at,qq={}] 绑定失败（用户不存在）", pending.qq_user_id);
             send_group_msg(&write, pending.group_id, &msg).await;
         }
         Err(e) => {
-            storage.remove_pending_bind(code).ok();
+            if let Err(e2) = storage.remove_pending_bind(code) {
+                tracing::warn!(code = %code, error = %e2, "Failed to remove pending bind (api error)");
+            }
             warn!(
                 "Failed to fetch user info for {} during IRC bind: {e}",
                 pending.target_username

@@ -40,8 +40,8 @@ impl XfsUpstream {
         // Use random self_id when not explicitly configured, to avoid
         // identity conflicts with other connected OneBot clients.
         let self_id = cfg.self_id.unwrap_or_else(|| {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(100000000..999999999i64)
+            let mut rng = rand::rng();
+            rng.random_range(100000000..999999999i64)
         });
 
         Self {
@@ -66,12 +66,12 @@ impl UpstreamBindingProvider for XfsUpstream {
             .map_err(|_| "rate limited")?;
 
         let group_id: i64 = {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1000000000..9999999999i64)
+            let mut rng = rand::rng();
+            rng.random_range(1000000000..9999999999i64)
         };
         let message_id: i32 = {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1..i32::MAX)
+            let mut rng = rand::rng();
+            rng.random_range(1..i32::MAX)
         };
 
         let mut request = match self.url.as_str().into_client_request() {
@@ -129,8 +129,6 @@ impl UpstreamBindingProvider for XfsUpstream {
         debug!(target: "xfs_upstream", %event, "计划请求");
 
         let event_str = event.to_string();
-        #[cfg(test)]
-        eprintln!("[xfs] send: {}", event_str);
         debug!(target: "xfs_upstream", text = %event_str, "实际发送");
         let deadline = Instant::now() + self.timeout;
 
@@ -162,8 +160,6 @@ impl UpstreamBindingProvider for XfsUpstream {
                 Err(_) => continue,
             };
 
-            #[cfg(test)]
-            eprintln!("[xfs] recv: {}", text);
             debug!(target: "xfs_upstream", %text, "服务器返回");
 
             let action: SendAction = match serde_json::from_str(text) {
@@ -262,7 +258,7 @@ mod integration_tests {
         );
         let binding = result.unwrap();
         if binding.is_none() {
-            eprintln!(
+            tracing::info!(
                 "NOTE: relay responded but osu! API resolution failed (no credentials in test)"
             );
         }

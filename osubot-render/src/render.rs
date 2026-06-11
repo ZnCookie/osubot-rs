@@ -38,7 +38,7 @@ pub fn render_html_to_image(
             if let Ok(resource) = result {
                 cb_resources
                     .lock()
-                    .expect("loaded_resources lock poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .push(resource);
                 let _ = resource_tx.send(());
             }
@@ -70,7 +70,7 @@ pub fn render_html_to_image(
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources
             .lock()
-            .expect("loaded_resources lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .drain(..)
             .collect();
         for resource in resources {

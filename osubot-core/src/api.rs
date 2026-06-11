@@ -103,7 +103,11 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     // 写入缓存（best-effort，与 replay 路径一致）
     let write_path = cache_path.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = std::fs::create_dir_all(write_path.parent().unwrap()) {
+        if let Err(e) = std::fs::create_dir_all(
+            write_path
+                .parent()
+                .expect("cache path always has parent dirs (beatmap_cache_dir()/id.osu)"),
+        ) {
             tracing::warn!("failed to create cache dir: {e}");
         }
         if let Err(e) = std::fs::write(&write_path, &bytes) {
@@ -1212,7 +1216,7 @@ fn backoff_with_jitter(attempt: u32) -> Duration {
     let min_ms = exp_ms * 3 / 4;
     let range_ms = exp_ms / 2;
     let jitter_ms = if range_ms > 0 {
-        rand::thread_rng().gen_range(0..=range_ms)
+        rand::rng().random_range(0..=range_ms)
     } else {
         0
     };

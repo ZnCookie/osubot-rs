@@ -9,14 +9,16 @@ use crate::types::{GameMode, UserChange, UserStats};
 pub fn today_0am_utc() -> i64 {
     let local_now = chrono::Local::now();
     let today_local = local_now.date_naive();
-    let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
+    let today_0am_local = today_local
+        .and_hms_opt(0, 0, 0)
+        .expect("00:00:00 is always a valid NaiveTime");
     // .single() returns None when midnight doesn't exist (DST spring-forward)
     // or is ambiguous (DST fall-back); fall back to 1:00 AM in that case.
     let dt = Local
         .from_local_datetime(&today_0am_local)
         .single()
         .unwrap_or_else(|| {
-            let fallback = today_0am_local + chrono::Duration::hours(1);
+            let fallback = today_0am_local + chrono::TimeDelta::hours(1);
             Local
                 .from_local_datetime(&fallback)
                 .earliest()
@@ -437,7 +439,7 @@ impl Storage {
         hours: i64,
     ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
         self.with_conn(|conn| {
-            let cutoff = Utc::now() - chrono::Duration::hours(hours);
+            let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
             let cutoff_str = cutoff.to_rfc3339();
 
             let mut stmt = conn.prepare(
@@ -491,8 +493,8 @@ impl Storage {
         max_lookback: i64,
     ) -> SqlResult<Option<(DateTime<Utc>, UserStats)>> {
         let now = Utc::now();
-        let target_time = now - chrono::Duration::hours(target_hours_ago);
-        let earliest = now - chrono::Duration::hours(max_lookback);
+        let target_time = now - chrono::TimeDelta::hours(target_hours_ago);
+        let earliest = now - chrono::TimeDelta::hours(max_lookback);
 
         let all = self.get_snapshots_within_hours(user_id, mode, max_lookback)?;
 
@@ -506,7 +508,7 @@ impl Storage {
             candidates
                 .into_iter()
                 .min_by_key(|(dt, _)| (*dt - target_time).num_seconds().unsigned_abs() as i64)
-                .unwrap(),
+                .expect("candidates is non-empty; guarded by is_empty() check above"),
         ))
     }
 
@@ -775,7 +777,7 @@ impl Storage {
     /// Prune expired pending unbind records (older than 5 minutes).
     pub fn prune_expired_pending_unbinds(&self) -> SqlResult<usize> {
         self.with_conn(|conn| {
-            let cutoff = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+            let cutoff = (Utc::now() - chrono::TimeDelta::minutes(5)).to_rfc3339();
             let deleted = conn.execute(
                 "DELETE FROM pending_unbind WHERE created_at < ?1",
                 params![cutoff],
@@ -789,7 +791,7 @@ impl Storage {
     pub fn prune_old_records(&self, retention_days: u64) -> SqlResult<(u64, u64, u64)> {
         self.with_conn(|conn| {
             let retention_i64 = retention_days as i64;
-            let cutoff_stats = Utc::now() - chrono::Duration::days(retention_i64);
+            let cutoff_stats = Utc::now() - chrono::TimeDelta::days(retention_i64);
             let cutoff_stats_str = cutoff_stats.to_rfc3339();
 
             let deleted_stats = conn.execute(
@@ -798,7 +800,7 @@ impl Storage {
             )? as u64;
 
             let cutoff_plays_ts =
-                (Utc::now() - chrono::Duration::days(retention_i64)).timestamp();
+                (Utc::now() - chrono::TimeDelta::days(retention_i64)).timestamp();
 
             let deleted_plays = conn.execute(
                 "DELETE FROM user_play_records WHERE played_at < ?1",
@@ -835,8 +837,10 @@ impl Storage {
         target_username: &str,
     ) -> SqlResult<String> {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let code: String = (0..6).map(|_| rng.gen_range(0..10).to_string()).collect();
+        let mut rng = rand::rng();
+        let code: String = (0..6)
+            .map(|_| rng.random_range(0..10).to_string())
+            .collect();
 
         let now = Utc::now();
         let expires_at = now.timestamp() + 120;

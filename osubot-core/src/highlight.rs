@@ -62,7 +62,7 @@ fn get_baseline_snapshot(
     }
 
     let now = Utc::now();
-    let target = now - chrono::Duration::hours(24);
+    let target = now - chrono::TimeDelta::hours(24);
 
     let closest = all
         .into_iter()

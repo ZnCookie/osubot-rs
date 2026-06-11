@@ -21,7 +21,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] 
 image = "0.25"
 dashmap = "6"
 async-trait = "0.1"
-rand = "0.8"
+rand = "0.9"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
 
 [features]
