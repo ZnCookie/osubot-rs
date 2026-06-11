@@ -67,6 +67,8 @@ fn mania_breakdown_difficulty_only_and_no_aim() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let pp = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("1638954.osu"),
@@ -120,6 +122,8 @@ fn std_to_mania_convert_produces_mania_breakdown() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let pp = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
@@ -203,6 +207,8 @@ fn mania_if_acc_fc_has_reasonable_values() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let if_acc = calculate_pp_if_acc(
         PpCalcParams {
@@ -239,6 +245,8 @@ fn mania_acc_95_differs_from_acc_100() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let if_acc = calculate_pp_if_acc(
         PpCalcParams {
@@ -274,6 +282,8 @@ fn mania_acc_95_on_convert_uses_accuracy_path() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let if_acc = calculate_pp_if_acc(
         PpCalcParams {
@@ -564,6 +574,8 @@ fn failed_score_n300_zeroed() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let pp_failed = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
@@ -625,6 +637,8 @@ fn failed_score_mania_n300_zeroed() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let pp_failed = calculate_pp_breakdown(PpCalcParams {
         osu_path: &resource("2785319.osu"),
@@ -663,6 +677,8 @@ fn if_acc_ignores_passed_field_and_assumes_full_play() {
         osu_large_tick_hits: 0,
         osu_small_tick_hits: 0,
         osu_slider_tail_hits: 0,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
     };
     let pp_if_acc_passed = calculate_pp_if_acc(
         PpCalcParams {

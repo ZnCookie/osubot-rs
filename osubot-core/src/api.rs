@@ -392,6 +392,8 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             osu_large_tick_hits: s.osu_large_tick_hits,
             osu_small_tick_hits: s.osu_small_tick_hits,
             osu_slider_tail_hits: s.osu_slider_tail_hits,
+            osu_large_tick_misses: 0,
+            osu_small_tick_misses: 0,
         };
         match params.mode {
             GameMode::Mania => perf
@@ -677,7 +679,7 @@ struct OsuApiScoreStatistics {
     count_geki: i64,
     #[serde(default, alias = "great")]
     count_300: i64,
-    #[serde(default, alias = "good", alias = "small_tick_miss")]
+    #[serde(default, alias = "good")]
     count_katu: i64,
     #[serde(default)]
     count_100: i64,
@@ -688,6 +690,12 @@ struct OsuApiScoreStatistics {
     /// Lazer `ok` field — maps to count_100 (standard) or count_katu (mania)
     #[serde(default)]
     ok: i64,
+    /// Lazer `large_tick_miss` — missed large droplets (Catch)
+    #[serde(default, alias = "large_tick_miss")]
+    osu_large_tick_misses: i64,
+    /// Lazer `small_tick_miss` — missed small droplets (Catch)
+    #[serde(default, alias = "small_tick_miss")]
+    osu_small_tick_misses: i64,
     /// Lazer `large_tick_hit` — slider ticks (Osu), large droplets (Catch)
     #[serde(default, alias = "large_tick_hit")]
     osu_large_tick_hits: i64,
@@ -831,8 +839,197 @@ fn fullsize_cover_url(covers: Option<&serde_json::Value>) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// 对齐 yumu-bot: 用 hit statistics 重新计算 Stable 规则的 Grade（而非信任 API 的 `rank` 字段）。
+/// 仅在 `passed` 为 true 时调用；若 `passed` 为 false，返回 "F"。
+/// `has_hidden` 用于给 S/X 追加 "H" 后缀（HD/FL/PF）。
+fn get_stable_rank(
+    stats: &OsuApiScoreStatistics,
+    mode: GameMode,
+    passed: bool,
+    has_hidden: bool,
+) -> String {
+    if !passed {
+        return "F".to_string();
+    }
+
+    let great = stats.count_300;
+    let count_100 = stats.count_100;
+    let meh = stats.count_50;
+    let miss = stats.count_miss;
+
+    let total = match mode {
+        GameMode::Taiko => great + count_100 + miss,
+        GameMode::Catch => {
+            great
+                + stats.osu_large_tick_hits
+                + stats.osu_small_tick_hits
+                + stats.osu_large_tick_misses
+                + stats.osu_small_tick_misses
+                + miss
+        }
+        GameMode::Mania => stats.count_geki + great + stats.count_katu + count_100 + meh + miss,
+        _ => great + count_100 + meh + miss, // osu!standard
+    };
+
+    let rank = match mode {
+        GameMode::Taiko => {
+            if great == total {
+                "X"
+            } else if great * 10 > total * 9 {
+                if miss > 0 {
+                    "A"
+                } else {
+                    "S"
+                }
+            } else if great * 10 > total * 8 {
+                if miss > 0 {
+                    "B"
+                } else {
+                    "A"
+                }
+            } else if great * 10 > total * 7 {
+                if miss > 0 {
+                    "C"
+                } else {
+                    "B"
+                }
+            } else if great * 10 > total * 6 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+        GameMode::Catch => {
+            let hit = great + stats.osu_large_tick_hits + stats.osu_small_tick_hits;
+            if hit == total {
+                "X"
+            } else if hit * 100 > total * 98 {
+                "S"
+            } else if hit * 100 > total * 94 {
+                "A"
+            } else if hit * 100 > total * 90 {
+                "B"
+            } else if hit * 100 > total * 85 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+        GameMode::Mania => {
+            let perfect = stats.count_geki;
+            let good = stats.count_katu;
+            let judgement = perfect * 300 + great * 300 + good * 200 + count_100 * 100 + meh * 50;
+            if judgement == total * 300 {
+                "X"
+            } else if judgement * 100 > total * 300 * 95 {
+                "S"
+            } else if judgement * 100 > total * 300 * 90 {
+                "A"
+            } else if judgement * 100 > total * 300 * 80 {
+                "B"
+            } else if judgement * 100 > total * 300 * 70 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+        _ => {
+            // osu!standard
+            let is50_over_1p = meh * 100 > total;
+            if great == total {
+                "X"
+            } else if great * 10 > total * 9 {
+                if miss > 0 || is50_over_1p {
+                    "A"
+                } else {
+                    "S"
+                }
+            } else if great * 10 > total * 8 {
+                if miss > 0 {
+                    "B"
+                } else {
+                    "A"
+                }
+            } else if great * 10 > total * 7 {
+                if miss > 0 {
+                    "C"
+                } else {
+                    "B"
+                }
+            } else if great * 10 > total * 6 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+    };
+
+    if has_hidden && (rank == "S" || rank == "X") {
+        format!("{}H", rank)
+    } else {
+        rank.to_string()
+    }
+}
+
+/// 对齐 yumu-bot: 用 hit statistics 重新计算 Stable 规则的 Accuracy。
+/// 返回 0.0 表示无法计算（例如 fail 成绩无 max stats），此时应回退到 API 的 accuracy。
+fn get_stable_accuracy(stats: &OsuApiScoreStatistics, mode: GameMode, passed: bool) -> f64 {
+    let great = stats.count_300 as f64;
+    let count_100 = stats.count_100 as f64;
+    let meh = stats.count_50 as f64;
+    let miss = stats.count_miss as f64;
+
+    let total = if passed {
+        match mode {
+            GameMode::Taiko => great + count_100 + miss,
+            GameMode::Catch => {
+                great
+                    + stats.osu_large_tick_hits as f64
+                    + stats.osu_small_tick_hits as f64
+                    + stats.osu_large_tick_misses as f64
+                    + stats.osu_small_tick_misses as f64
+                    + miss
+            }
+            GameMode::Mania => {
+                stats.count_geki as f64 + great + stats.count_katu as f64 + count_100 + meh + miss
+            }
+            _ => great + count_100 + meh + miss, // osu!standard
+        }
+    } else {
+        // 对于未通过的谱面没有 max statistics，返回 0.0 表示 fallback
+        return 0.0;
+    };
+
+    if total == 0.0 {
+        return 0.0;
+    }
+
+    let hit = match mode {
+        GameMode::Taiko => great + 1.0 / 2.0 * count_100,
+        GameMode::Catch => {
+            (great + stats.osu_large_tick_hits as f64 + stats.osu_small_tick_hits as f64) * 1.0
+        }
+        GameMode::Mania => {
+            let perfect = stats.count_geki as f64;
+            let good = stats.count_katu as f64;
+            perfect + great + 2.0 / 3.0 * good + 1.0 / 3.0 * count_100 + 1.0 / 6.0 * meh
+        }
+        _ => great + 1.0 / 3.0 * count_100 + 1.0 / 6.0 * meh, // osu!standard
+    };
+
+    (hit / total).clamp(0.0, 1.0)
+}
+
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
     let bmap = api.beatmap.as_ref();
+    let is_lazer = api.build_id.is_some_and(|id| id > 0);
+    let has_hidden = api.mods.iter().any(|m| {
+        let acronym = match m {
+            OsuApiMod::String(s) => s.as_str(),
+            OsuApiMod::Object { acronym, .. } => acronym.as_str(),
+        };
+        acronym == "HD" || acronym == "FL" || acronym == "PF"
+    });
 
     let cover_url = api
         .beatmapset
@@ -865,6 +1062,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
 
     let score_value = if api.score > 0 {
         api.score
+    } else if !is_lazer {
+        api.legacy_total_score.or(api.total_score).unwrap_or(0)
     } else {
         api.total_score.or(api.legacy_total_score).unwrap_or(0)
     };
@@ -915,24 +1114,36 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         hp: bmap.map_or(0.0, |b| b.hp),
         length_seconds: bmap.map_or(0, |b| b.total_length),
         score_value,
-        accuracy: api.accuracy,
+        accuracy: if is_lazer {
+            api.accuracy
+        } else {
+            let stable_acc = get_stable_accuracy(&api.statistics, mode, api.passed);
+            if stable_acc > 0.0 {
+                stable_acc
+            } else {
+                api.accuracy
+            }
+        },
         max_combo: api.max_combo,
         beatmap_max_combo: bmap.map_or(0, |b| b.max_combo),
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
         perfect_pp: None,
-        rank: if api.passed {
-            api.rank
+        rank: if is_lazer {
+            if api.passed {
+                api.rank
+            } else {
+                "F".to_string()
+            }
         } else {
-            "F".to_string()
+            get_stable_rank(&api.statistics, mode, api.passed, has_hidden)
         },
         passed: api.passed,
         mods: api_mods_to_game_mods(&api.mods, mode),
         is_perfect: api.perfect,
         created_at: api.ended_at,
-        // 对齐 yumu-bot：仅通过 build_id > 0 判断 lazer
-        is_lazer: api.build_id.is_some_and(|id| id > 0),
+        is_lazer,
         has_replay: api.has_replay,
         legacy_score_id: api.legacy_score_id,
         statistics: ScoreStatistics {
@@ -977,6 +1188,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
             osu_large_tick_hits: api.statistics.osu_large_tick_hits,
             osu_small_tick_hits: api.statistics.osu_small_tick_hits,
             osu_slider_tail_hits: api.statistics.osu_slider_tail_hits,
+            osu_large_tick_misses: api.statistics.osu_large_tick_misses,
+            osu_small_tick_misses: api.statistics.osu_small_tick_misses,
         },
         cover_url,
         user,
@@ -2143,6 +2356,8 @@ mod tests {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
                 ok: 0,
             },
             ruleset_id: 0,
@@ -2168,11 +2383,11 @@ mod tests {
         assert!((score.hp - 5.0).abs() < 0.0001);
         assert_eq!(score.length_seconds, 200);
         assert_eq!(score.score_value, 1234567);
-        assert!((score.accuracy - 0.9876).abs() < 0.0001);
+        assert!((score.accuracy - 0.9850).abs() < 0.0001);
         assert_eq!(score.max_combo, 543);
         assert_eq!(score.beatmap_max_combo, 800);
         assert_eq!(score.pp, Some(300.5));
-        assert_eq!(score.rank, "S");
+        assert_eq!(score.rank, "A");
         let mod_acronyms: Vec<String> = score
             .mods
             .iter()

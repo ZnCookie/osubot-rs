@@ -137,6 +137,12 @@ pub struct ScoreStatistics {
     pub osu_small_tick_hits: i64,
     /// Osu slider end hits (lazer)
     pub osu_slider_tail_hits: i64,
+    /// Catch large droplets missed (lazer)
+    #[serde(default)]
+    pub osu_large_tick_misses: i64,
+    /// Catch small droplets missed (lazer)
+    #[serde(default)]
+    pub osu_small_tick_misses: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

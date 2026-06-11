@@ -705,6 +705,8 @@ mod tests {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
             },
             cover_url: "https://example.com/cover.jpg".to_string(),
             user: osubot_types::ScoreUser {
@@ -1131,6 +1133,8 @@ mod tests {
                     osu_large_tick_hits: 0,
                     osu_small_tick_hits: 0,
                     osu_slider_tail_hits: 0,
+                    osu_large_tick_misses: 0,
+                    osu_small_tick_misses: 0,
                 },
                 cover_url: String::new(),
                 user: ScoreUser {
