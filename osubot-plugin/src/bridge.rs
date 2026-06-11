@@ -140,6 +140,77 @@ fn acquire_rate_limiter(services: &HostServices) -> bool {
     })
 }
 
+fn send_msg_with_timeout(
+    services: &HostServices,
+    group_id: i64,
+    message: serde_json::Value,
+) -> Result<(), BridgeError> {
+    let send_fn = services.send_msg_fn.clone();
+    let rt = services.runtime_handle.clone();
+    tokio::task::block_in_place(|| {
+        rt.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::task::spawn_blocking(move || send_fn(group_id, message)),
+            )
+            .await
+            .map_err(|_| BridgeError::SendMsg("消息发送超时 (5s)".into()))?
+            .map_err(|e| BridgeError::SendMsg(format!("spawn_blocking: {e}")))?
+            .map_err(BridgeError::SendMsg)
+        })
+    })
+}
+
+fn validate_url(url_str: &str) -> Result<(), BridgeError> {
+    let parsed =
+        url::Url::parse(url_str).map_err(|_| BridgeError::HttpRequest("invalid URL".into()))?;
+
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(BridgeError::HttpRequest(format!(
+            "unsupported URL scheme: {scheme}"
+        )));
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| BridgeError::HttpRequest("URL missing host".into()))?;
+
+    let blocked_hosts = [
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "169.254.169.254",
+        "100.100.100.200",
+        "0.0.0.0",
+    ];
+    if blocked_hosts.contains(&host) {
+        return Err(BridgeError::HttpRequest(format!(
+            "blocked internal address: {host}"
+        )));
+    }
+
+    if host.starts_with("10.") || host.starts_with("192.168.") {
+        return Err(BridgeError::HttpRequest(format!(
+            "blocked private IP range: {host}"
+        )));
+    }
+
+    if host.starts_with("172.") {
+        if let Some(second) = host.split('.').nth(1) {
+            if let Ok(n) = second.parse::<u32>() {
+                if (16..=31).contains(&n) {
+                    return Err(BridgeError::HttpRequest(format!(
+                        "blocked private IP range: {host}"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn dispatch_host_call(
     services: &HostServices,
     name: &str,
@@ -155,8 +226,7 @@ fn dispatch_host_call(
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
             }
-            (services.send_msg_fn)(group_id, serde_json::Value::String(text))
-                .map_err(BridgeError::SendMsg)?;
+            send_msg_with_timeout(services, group_id, serde_json::Value::String(text))?;
             Ok("{}".to_string())
         }
         "send_image" => {
@@ -174,25 +244,41 @@ fn dispatch_host_call(
                     "file": format!("base64://{}", jpeg_b64)
                 }
             }]);
-            (services.send_msg_fn)(group_id, image_segment).map_err(BridgeError::SendMsg)?;
+            send_msg_with_timeout(services, group_id, image_segment)?;
             Ok("{}".to_string())
         }
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
+            validate_url(&url)?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
                     "请求过于频繁，请稍后再试".to_string(),
                 ));
             }
-            let body = services
+            const MAX_RESPONSE_SIZE: u64 = 10 * 1024 * 1024;
+            let response = services
                 .blocking_http_client
                 .get(&url)
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(10))
                 .send()
-                .map_err(|e| BridgeError::HttpRequest(format!("HTTP 请求失败 (30s 超时): {e}")))?
+                .map_err(|e| BridgeError::HttpRequest(format!("HTTP request failed: {e}")))?;
+            if let Some(cl) = response.content_length() {
+                if cl > MAX_RESPONSE_SIZE {
+                    return Err(BridgeError::HttpRequest(format!(
+                        "response too large: {cl} bytes (max {MAX_RESPONSE_SIZE})"
+                    )));
+                }
+            }
+            let body = response
                 .text()
-                .map_err(|e| BridgeError::HttpRequest(format!("读取响应体失败: {e}")))?;
+                .map_err(|e| BridgeError::HttpRequest(format!("read response: {e}")))?;
+            if body.len() as u64 > MAX_RESPONSE_SIZE {
+                return Err(BridgeError::HttpRequest(format!(
+                    "response too large: {} bytes (max {MAX_RESPONSE_SIZE})",
+                    body.len()
+                )));
+            }
             Ok(body)
         }
         "db_get_binding" => {

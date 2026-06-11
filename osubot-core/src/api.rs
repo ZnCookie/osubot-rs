@@ -44,7 +44,7 @@ pub struct PpCalcParams<'a> {
 
 pub(crate) const API_VERSION: &str = "20260408";
 
-pub(crate) fn http_client() -> &'static Client {
+pub fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         Client::builder()
@@ -103,8 +103,15 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     // 写入缓存（best-effort，与 replay 路径一致）
     let write_path = cache_path.clone();
     tokio::task::spawn_blocking(move || {
-        let _ = std::fs::create_dir_all(write_path.parent().unwrap());
-        let _ = std::fs::write(&write_path, &bytes);
+        if let Err(e) = std::fs::create_dir_all(write_path.parent().unwrap()) {
+            tracing::warn!("failed to create cache dir: {e}");
+        }
+        if let Err(e) = std::fs::write(&write_path, &bytes) {
+            tracing::warn!(
+                "failed to write beatmap cache file {}: {e}",
+                write_path.display()
+            );
+        }
     })
     .await
     .ok();
@@ -124,7 +131,7 @@ fn create_performance<'a>(
     target_mode: rosu_pp::model::mode::GameMode,
 ) -> Option<rosu_pp::Performance<'a>> {
     // 非转谱时必须提供 diff_attrs，否则 Performance::new 会 panic
-    debug_assert!(
+    assert!(
         needs_convert || diff_attrs.is_some(),
         "create_performance: diff_attrs must be Some when needs_convert is false"
     );
@@ -1236,7 +1243,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    assert!(
+    debug_assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
@@ -1274,7 +1281,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    assert!(
+    debug_assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );

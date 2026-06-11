@@ -81,25 +81,24 @@ impl UpstreamBindingProvider for XfsUpstream {
                 return Ok(None);
             }
         };
-        request.headers_mut().insert(
-            "X-Self-ID",
-            self.self_id
-                .to_string()
-                .parse()
-                .expect("self_id should be a valid header value"),
-        );
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {}", self.access_token)
-                .parse()
-                .expect("access_token should be a valid header value"),
-        );
-        request.headers_mut().insert(
-            "X-Client-Role",
-            "Universal"
-                .parse()
-                .expect("literal 'Universal' should be a valid header value"),
-        );
+        if let Ok(val) = self.self_id.to_string().parse() {
+            request.headers_mut().insert("X-Self-ID", val);
+        } else {
+            warn!("xfs: invalid self_id header value");
+            return Ok(None);
+        }
+        if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
+            request.headers_mut().insert("Authorization", val);
+        } else {
+            warn!("xfs: invalid access_token header value");
+            return Ok(None);
+        }
+        if let Ok(val) = "Universal".parse() {
+            request.headers_mut().insert("X-Client-Role", val);
+        } else {
+            warn!("xfs: invalid X-Client-Role header value");
+            return Ok(None);
+        }
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,

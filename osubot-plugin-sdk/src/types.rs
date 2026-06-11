@@ -1,18 +1,38 @@
 use serde::{Deserialize, Serialize};
 
+/// Metadata exported by every plugin via `PLUGIN_METADATA` static.
+///
+/// The host reads this struct before loading the plugin to determine
+/// which commands the plugin handles and to display plugin info.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PluginMetadata {
+    /// Human-readable plugin name.
     pub name: &'static str,
+    /// Plugin version string (e.g. "1.0.0").
     pub version: &'static str,
+    /// Plugin author (e.g. "YourName").
     pub author: &'static str,
+    /// Short description of what the plugin does.
     pub description: &'static str,
+    /// Command names this plugin handles (without `!` prefix).
+    /// The host dispatches matching commands to this plugin.
     pub commands: Vec<&'static str>,
 }
 
+/// Return value from `on_message` / `on_command` lifecycle hooks.
+///
+/// Controls how the host should proceed after the plugin processes
+/// a message or command.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PluginAction {
+    /// Plugin produced a response; the host should send this text
+    /// to the group and stop dispatching.
     Handled(String),
+    /// Plugin chose not to handle this event; the host should try
+    /// the next plugin (or fall through to the default handler).
     Next,
+    /// Plugin wants to stop dispatching without sending a response
+    /// (e.g. the message is spam or should be silently dropped).
     Intercepted,
 }
 
@@ -29,26 +49,47 @@ pub enum PluginAction {
 /// 这仅在 WASM 单实例单线程模型下成立。若未来支持多线程 WASM，需重新评估此设计。
 pub struct PluginContext;
 
+/// Incoming group message received by the bot, passed to plugin lifecycle hooks.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QQMessage {
+    /// Group chat ID where the message was sent.
     pub group_id: i64,
+    /// QQ user ID of the sender.
     pub user_id: i64,
+    /// Raw message text.
     pub message: String,
+    /// If the message contained an @mention, the QQ ID of the mentioned user.
     pub mentioned_user_id: Option<i64>,
 }
 
+/// Parsed command dispatched from a group message, passed to `on_command`.
+///
+/// The host parses raw messages into this struct before calling plugins,
+/// so plugin authors get structured data without manual parsing.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Command {
+    /// Command type string (e.g. "!p", "!profile", "~").
     pub command_type: String,
+    /// Group ID where the command was sent, if applicable.
     pub group_id: Option<i64>,
+    /// QQ user ID of the command issuer.
     pub user_id: Option<i64>,
+    /// The message text associated with this command.
     pub message: Option<String>,
+    /// Game mode (0=osu, 1=taiko, 2=catch, 3=mania), if specified.
     pub mode: Option<u8>,
+    /// osu! username found in the command, if any.
     pub username: Option<String>,
+    /// QQ ID referenced in the command (`@` mention or `qq=` prefix).
     pub qq: Option<i64>,
+    /// Beatmap ID extracted from score commands (`!s`, `!ss`).
     pub beatmap_id: Option<u32>,
+    /// Score ID extracted from `!s <score_id>` syntax.
     pub score_id: Option<u64>,
+    /// Mod filter (e.g. `+HDDT`) from score commands.
     pub mods: Option<Vec<String>>,
+    /// Pagination limit (`#N`) from score list commands.
     pub limit: Option<u32>,
+    /// Mentioned user ID from `@` mentions in the command.
     pub mentioned_user_id: Option<i64>,
 }

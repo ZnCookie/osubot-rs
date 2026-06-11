@@ -93,14 +93,14 @@ impl Scheduler {
     }
 
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
     }
 
     /// Background task entry point - only processes due users/modes
     pub async fn run(&self) {
         info!("Scheduler task started");
         loop {
-            if self.shutdown.load(Ordering::Relaxed) {
+            if self.shutdown.load(Ordering::Acquire) {
                 info!("Scheduler shutting down");
                 break;
             }

@@ -99,12 +99,18 @@ impl UpstreamBindingProvider for YumuUpstream {
             }
         };
 
-        request
-            .headers_mut()
-            .insert("X-Client-Role", "Universal".parse().unwrap());
-        request
-            .headers_mut()
-            .insert("X-Self-ID", qq.to_string().parse().unwrap());
+        if let Ok(val) = "Universal".parse() {
+            request.headers_mut().insert("X-Client-Role", val);
+        } else {
+            warn!("yumu: invalid X-Client-Role header value");
+            return Ok(None);
+        }
+        if let Ok(val) = qq.to_string().parse() {
+            request.headers_mut().insert("X-Self-ID", val);
+        } else {
+            warn!("yumu: invalid X-Self-ID header value");
+            return Ok(None);
+        }
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,

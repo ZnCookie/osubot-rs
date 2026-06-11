@@ -79,7 +79,13 @@ impl UpstreamChain {
                         match provider.query_binding(qq).await {
                             Ok(Some(binding)) => return Ok(Some(binding)),
                             Ok(None) => continue,
-                            Err(_) => continue,
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?e,
+                                    "upstream provider query failed, trying next provider"
+                                );
+                                continue;
+                            }
                         }
                     }
                     Ok(None)

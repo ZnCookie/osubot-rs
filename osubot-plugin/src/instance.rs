@@ -211,16 +211,16 @@ impl PluginInstance {
             .write(&mut self.store, ptr as usize, bytes)
             .map_err(|e| format!("memory write failed: {e}"))?;
 
-        let result_ptr: u32 = func
+        let call_result: Result<u32, String> = func
             .typed::<(u32, u32), u32>(&self.store)
             .map_err(|e| e.to_string())?
             .call(&mut self.store, (ptr, bytes.len() as u32))
-            .map_err(|e| format!("{export_name} call failed: {e}"))?;
+            .map_err(|e| format!("{export_name} call failed: {e}"));
 
-        // Free the input buffer allocated for this call
+        // Free the input buffer — always, even on call failure
         self.dealloc(ptr, bytes.len() as u32);
 
-        Ok(result_ptr)
+        call_result
     }
 
     fn dealloc_result(&mut self, ptr: u32) {

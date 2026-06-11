@@ -35,7 +35,15 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
     let mut deleted = 0u64;
     let mut errors = 0u64;
 
-    while let Ok(Some(entry)) = entries.next_entry().await {
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!("failed to read {} dir entry during cleanup: {e}", label);
+                continue;
+            }
+        };
         let path = entry.path();
 
         let modified = match entry.metadata().await.and_then(|m| m.modified()) {

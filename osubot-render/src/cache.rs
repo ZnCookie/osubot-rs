@@ -157,6 +157,14 @@ fn rasterize_svg_to_png(svg_bytes: &[u8]) -> Result<Vec<u8>, CacheError> {
     let width = dims.0.ceil() as i32;
     let height = dims.1.ceil() as i32;
 
+    const MAX_SVG_DIMENSION: i32 = 4096;
+    if width <= 0 || height <= 0 || width > MAX_SVG_DIMENSION || height > MAX_SVG_DIMENSION {
+        return Err(CacheError::SvgRasterizationFailed(format!(
+            "SVG dimensions {}x{} exceed maximum {}x{}",
+            width, height, MAX_SVG_DIMENSION, MAX_SVG_DIMENSION
+        )));
+    }
+
     // Create Cairo surface
     let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
         .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;

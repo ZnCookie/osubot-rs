@@ -245,7 +245,9 @@ fn match_hits(
         let lo = nt - w50;
         let hi = nt + w50;
         // 滑动窗口：找到 key_times 中第一个 >= lo 的索引
-        let start = match key_times.binary_search_by(|&k| k.partial_cmp(&lo).unwrap()) {
+        let start = match key_times
+            .binary_search_by(|&k| k.partial_cmp(&lo).unwrap_or(std::cmp::Ordering::Equal))
+        {
             Ok(i) | Err(i) => i,
         };
         for (ki, &kt) in key_times.iter().enumerate().skip(start) {

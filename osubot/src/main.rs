@@ -46,8 +46,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 use xfs_upstream::XfsUpstream;
 use yumu_upstream::YumuUpstream;
 
-use constants::*;
-
 struct InFlightGuard(Arc<AtomicUsize>);
 
 impl Drop for InFlightGuard {
@@ -83,12 +81,14 @@ struct PendingEntry {
 
 struct OneBotApi {
     pending: Mutex<HashMap<String, PendingEntry>>,
+    timeout: Duration,
 }
 
 impl OneBotApi {
-    fn new() -> Self {
+    fn new(timeout: Duration) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
+            timeout,
         }
     }
 }
@@ -198,6 +198,8 @@ struct BotContext {
     last_beatmap: LastBeatmapCache,
     upstream_chain: Arc<UpstreamChain>,
     plugin_manager: Arc<tokio::sync::Mutex<Option<PluginManager>>>,
+    render_timeout: Duration,
+    ur_timeout: Duration,
 }
 
 fn api_error_msg(e: &ApiError) -> String {
@@ -1017,7 +1019,7 @@ async fn render_and_send_single_score(
             mods: score.mods.clone(),
         };
         match tokio::time::timeout(
-            Duration::from_secs(UR_TIMEOUT_SECS),
+            ctx.ur_timeout,
             osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
         )
         .await
@@ -1093,7 +1095,7 @@ async fn render_and_send_single_score(
     let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
 
     let render_result = tokio::time::timeout(
-        Duration::from_secs(RENDER_TIMEOUT_SECS),
+        ctx.render_timeout,
         render_score_card(osubot_render::ScoreCardParams {
             score: &score,
             username: &user_stats.username,
@@ -2148,7 +2150,7 @@ async fn call_onebot_api(
             .map_err(|e| e.to_string())?;
     }
 
-    let result = tokio::time::timeout(Duration::from_secs(ONEBOT_API_TIMEOUT_SECS), rx).await;
+    let result = tokio::time::timeout(api.timeout, rx).await;
     api.pending.lock().await.remove(&echo);
 
     match result {
@@ -2292,13 +2294,28 @@ async fn main() {
     let db_path = config.read().await.database.path.clone();
     let storage = Arc::new(Storage::new(&db_path).expect("Failed to open database"));
 
-    let (client_id, api_key) = {
+    let (client_id, client_secret) = {
         let cfg = config.read().await;
-        (cfg.osu.client_id.clone(), cfg.osu.api_key.clone())
+        (cfg.osu.client_id.clone(), cfg.osu.client_secret.clone())
     };
-    let oauth = Arc::new(OauthTokenCache::new(client_id, api_key));
+    let oauth = Arc::new(OauthTokenCache::new(client_id, client_secret));
 
     let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Trigger lazy initialization of the shared reqwest HTTP client early, so any
+    // build failure (e.g. missing TLS backend) is surfaced at startup rather than
+    // crashing the process mid-flight on the first API call.
+    let _ = osubot_core::api::http_client();
+
+    let (command_timeout, render_timeout, ur_timeout, onebot_api_timeout) = {
+        let cfg = config.read().await;
+        (
+            Duration::from_secs(cfg.bot.command_timeout_secs),
+            Duration::from_secs(cfg.bot.render_timeout_secs),
+            Duration::from_secs(cfg.bot.ur_timeout_secs),
+            Duration::from_secs(cfg.bot.onebot_api_timeout_secs),
+        )
+    };
 
     let upstream_chain = {
         let cfg = config.read().await;
@@ -2396,12 +2413,12 @@ async fn main() {
 
     {
         let cfg = config.read().await;
-        if cfg.osu.api_key.is_empty() || cfg.osu.api_key == "your-api-key-here" {
-            warn!("API Key not configured. Please set osu.api_key in osubot.toml");
+        if cfg.osu.client_secret.is_empty() || cfg.osu.client_secret == "your-client-secret-here" {
+            warn!("osu! API v2 client_secret not configured. Please set osu.client_secret in osubot.toml");
         }
     }
 
-    let onebot_api = Arc::new(OneBotApi::new());
+    let onebot_api = Arc::new(OneBotApi::new(onebot_api_timeout));
 
     let onebot_cleanup = onebot_api.clone();
     tokio::spawn(async move {
@@ -2553,29 +2570,30 @@ async fn main() {
         };
 
         let new_pm = if plugin_cfg.instances.iter().any(|p| p.enabled) {
-            let write_for_plugin = write.clone();
-            // SAFETY: This closure uses `block_on` and MUST only be called from
-            // `spawn_blocking` context (via PluginManager::dispatch). Do NOT call
-            // this from a tokio runtime thread — it will deadlock.
+            let (plugin_tx, mut plugin_rx) = mpsc::channel::<(i64, serde_json::Value)>(256);
+
+            let write_consumer = write.clone();
+            tokio::spawn(async move {
+                while let Some((group_id, message)) = plugin_rx.recv().await {
+                    let json = serde_json::json!({
+                        "action": "send_group_msg",
+                        "params": {
+                            "group_id": group_id,
+                            "message": message
+                        }
+                    });
+                    let mut sink = write_consumer.lock().await;
+                    if let Err(e) = sink.send(Message::Text(json.to_string().into())).await {
+                        tracing::debug!(error = %e, "plugin send channel closed");
+                    }
+                }
+            });
+
             let msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
                 Arc::new(move |group_id, message| {
-                    tokio::task::block_in_place(|| {
-                        let rt = tokio::runtime::Handle::current();
-                        rt.block_on(async {
-                            let json = serde_json::json!({
-                                "action": "send_group_msg",
-                                "params": {
-                                    "group_id": group_id,
-                                    "message": message
-                                }
-                            });
-                            let mut sink = write_for_plugin.lock().await;
-                            match sink.send(Message::Text(json.to_string().into())).await {
-                                Ok(_) => Ok(()),
-                                Err(e) => Err(e.to_string()),
-                            }
-                        })
-                    })
+                    plugin_tx
+                        .try_send((group_id, message))
+                        .map_err(|e| format!("plugin message channel busy: {e}"))
                 });
 
             let services = HostServices {
@@ -2716,6 +2734,8 @@ async fn main() {
                             last_beatmap: last_beatmap.clone(),
                             upstream_chain: upstream_chain.clone(),
                             plugin_manager: pm.clone(),
+                            render_timeout,
+                            ur_timeout,
                         };
                         let irc_nickname = irc_nickname.clone();
                         let in_flight2 = in_flight.clone();
@@ -2723,7 +2743,7 @@ async fn main() {
                         tokio::spawn(async move {
                             let _guard = InFlightGuard(in_flight2);
                             if tokio::time::timeout(
-                                Duration::from_secs(COMMAND_TIMEOUT_SECS),
+                                command_timeout,
                                 handle_command(ctx, qq_msg, resp_tx.clone(), irc_nickname),
                             )
                             .await

@@ -26,13 +26,39 @@ pub struct Config {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct OsuConfig {
-    pub api_key: String,
+    #[serde(alias = "api_key")]
+    pub client_secret: String,
     pub client_id: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct BotConfig {
     pub onebot_url: String,
+    /// 命令处理超时（秒），默认 120
+    #[serde(default = "default_command_timeout_secs")]
+    pub command_timeout_secs: u64,
+    /// 渲染超时（秒），默认 30
+    #[serde(default = "default_render_timeout_secs")]
+    pub render_timeout_secs: u64,
+    /// OneBot API 请求超时（秒），默认 5
+    #[serde(default = "default_onebot_api_timeout_secs")]
+    pub onebot_api_timeout_secs: u64,
+    /// UR 计算超时（秒），默认 10
+    #[serde(default = "default_ur_timeout_secs")]
+    pub ur_timeout_secs: u64,
+}
+
+fn default_command_timeout_secs() -> u64 {
+    120
+}
+fn default_render_timeout_secs() -> u64 {
+    30
+}
+fn default_onebot_api_timeout_secs() -> u64 {
+    5
+}
+fn default_ur_timeout_secs() -> u64 {
+    10
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -301,12 +327,18 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             osu: OsuConfig {
-                api_key: std::env::var("OSU_API_KEY").unwrap_or_default(),
+                client_secret: std::env::var("OSU_CLIENT_SECRET")
+                    .or_else(|_| std::env::var("OSU_API_KEY"))
+                    .unwrap_or_default(),
                 client_id: std::env::var("OSU_CLIENT_ID").unwrap_or_default(),
             },
             bot: BotConfig {
                 onebot_url: std::env::var("ONEBOT_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
+                command_timeout_secs: 120,
+                render_timeout_secs: 30,
+                onebot_api_timeout_secs: 5,
+                ur_timeout_secs: 10,
             },
             database: DatabaseConfig {
                 path: std::env::var("DATABASE_PATH").unwrap_or_else(|_| "osubot.db".to_string()),

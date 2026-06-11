@@ -647,9 +647,15 @@ impl Storage {
             let mut rows = stmt.query(params![user_id, mode as i32])?;
             if let Some(row) = rows.next()? {
                 let ts: i64 = row.get(0)?;
-                return Ok(Some(
-                    Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now),
-                ));
+                return Ok(Some(Utc.timestamp_opt(ts, 0).single().unwrap_or_else(
+                    || {
+                        tracing::warn!(
+                            ts,
+                            "failed to parse next_update timestamp, falling back to now"
+                        );
+                        Utc::now()
+                    },
+                )));
             }
             Ok(None)
         })
@@ -859,7 +865,10 @@ impl Storage {
                 let created_at_str: String = row.get(4)?;
                 let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(created_at_str, error = %e, "failed to parse pending_bind created_at, falling back to now");
+                        Utc::now()
+                    });
                 Ok(Some(PendingBind {
                     code: row.get(0)?,
                     qq_user_id: row.get(1)?,
