@@ -571,4 +571,35 @@ mod tests {
         let result: Result<Config, _> = toml::from_str(toml_str);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_config_accepts_client_secret_canonical_name() {
+        let toml_str = r#"
+            [osu]
+            client_secret = "my-secret"
+            client_id = "my-id"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.osu.client_secret, "my-secret");
+        assert_eq!(config.osu.client_id, "my-id");
+    }
+
+    #[test]
+    fn test_config_accepts_api_key_as_alias() {
+        let toml_str = r#"
+            [osu]
+            api_key = "old-api-key"
+            client_id = "my-id"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.osu.client_secret, "old-api-key");
+    }
 }

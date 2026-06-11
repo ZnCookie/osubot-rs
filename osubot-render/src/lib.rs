@@ -480,10 +480,10 @@ pub async fn render_score_list_card(
         Err(_) => {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             abort_handle.abort();
-            tracing::warn!("score list render timed out after 120s");
-            return Err(RenderError::Render(
-                "score list render timed out after 120s".into(),
-            ));
+            tracing::warn!("score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s");
+            return Err(RenderError::Render(format!(
+                "score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s",
+            )));
         }
     };
 

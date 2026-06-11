@@ -14,7 +14,7 @@ pub struct PluginMetadata {
     pub author: &'static str,
     /// Short description of what the plugin does.
     pub description: &'static str,
-    /// Command names this plugin handles (without `!` prefix).
+    /// Command names this plugin handles (with `!` prefix, e.g. `"!ping"`).
     /// The host dispatches matching commands to this plugin.
     pub commands: Vec<&'static str>,
 }
