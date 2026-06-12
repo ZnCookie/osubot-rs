@@ -459,7 +459,7 @@ impl PluginManager {
         Ok((instance, params))
     }
 
-    fn reload_instance(&mut self, idx: usize) -> Result<(), String> {
+    pub fn reload_instance(&mut self, idx: usize) -> Result<(), String> {
         let module = self
             .modules
             .get(idx)
@@ -521,6 +521,19 @@ impl PluginManager {
             .iter()
             .map(|(plugin_idx, _, interval_secs, tick_id)| (*plugin_idx, *interval_secs, *tick_id))
             .collect()
+    }
+
+    /// 从指定槽位取出实例（不持锁时调用方负责同步）。
+    /// 返回 None 表示槽位越界或为空。
+    pub fn take_instance(&mut self, idx: usize) -> Option<PluginInstance> {
+        self.instances.get_mut(idx).and_then(|slot| slot.take())
+    }
+
+    /// 将实例放回指定槽位。如果槽位越界则静默丢弃。
+    pub fn put_instance(&mut self, idx: usize, instance: PluginInstance) {
+        if idx < self.instances.len() {
+            self.instances[idx] = Some(instance);
+        }
     }
 
     pub async fn handle_tick(&mut self, plugin_idx: usize, tick_id: u32) {

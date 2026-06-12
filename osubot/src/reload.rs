@@ -246,6 +246,12 @@ impl ReloadCoordinator {
                 new_config.bot.ur_timeout_secs
             ));
         }
+        if new_config.scheduler.interval_minutes > 1440 {
+            return Err(format!(
+                "scheduler.interval_minutes 过大（{} > 1440 分钟 = 1 天）",
+                new_config.scheduler.interval_minutes
+            ));
+        }
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
         {

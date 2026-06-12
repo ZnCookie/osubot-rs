@@ -2782,17 +2782,65 @@ async fn main() {
                         })
                         .unwrap_or_default()
                 };
-                // 第二阶段：逐个触发 tick（每个 tick 独立持锁，允许消息处理插入）
+                // 第二阶段：逐个触发 tick
+                // 采用 take → execute（无锁）→ put 模式：
+                // dispatch 内部有 spawn_blocking + timeout 的 .await 点，
+                // 若在此期间持有 pm 锁，会阻塞消息分发和热重载。
                 for (plugin_idx, tick_id) in due_ticks {
-                    // 热重载 drain 期间停止 dispatch，避免 reload_all() compact
-                    // 后索引过期导致 dispatch 到错误插件
                     if tick_drain.load(Ordering::SeqCst) {
                         break;
                     }
-                    let mut guard = pm_for_tick.lock().await;
-                    if let Some(ref mut pm) = *guard {
-                        pm.handle_tick(plugin_idx, tick_id).await;
+
+                    // 取出实例（短暂持锁）
+                    let instance = {
+                        let mut guard = pm_for_tick.lock().await;
+                        guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx))
+                    };
+
+                    let Some(mut inst) = instance else {
+                        continue;
+                    };
+
+                    // 检查导出（不持锁）
+                    if !inst.has_export("on_tick") {
+                        let mut guard = pm_for_tick.lock().await;
+                        if let Some(ref mut pm) = *guard {
+                            pm.put_instance(plugin_idx, inst);
+                        }
+                        last_fired.insert((plugin_idx, tick_id), now);
+                        continue;
                     }
+
+                    // 执行 tick（不持锁，允许消息分发/热重载在此期间获取 pm）
+                    let timeout_dur = inst.timeout;
+                    let result = tokio::time::timeout(
+                        timeout_dur,
+                        tokio::task::spawn_blocking(move || {
+                            let res = inst.on_tick(tick_id);
+                            (res, inst)
+                        }),
+                    )
+                    .await;
+
+                    // 处理结果并放回实例
+                    {
+                        let mut guard = pm_for_tick.lock().await;
+                        if let Some(ref mut pm) = *guard {
+                            match result {
+                                Ok(Ok((Ok(()), inst))) | Ok(Ok((Err(_), inst))) => {
+                                    // 成功或插件错误：放回实例
+                                    // （handle_tick 原本也忽略 PluginError，
+                                    //   lost_instances 跟踪由其他 dispatch 路径处理）
+                                    pm.put_instance(plugin_idx, inst);
+                                }
+                                Ok(Err(_)) | Err(_) => {
+                                    // spawn_blocking join error 或 timeout：实例已丢失，重载
+                                    let _ = pm.reload_instance(plugin_idx);
+                                }
+                            }
+                        }
+                    }
+
                     last_fired.insert((plugin_idx, tick_id), now);
                 }
             }
