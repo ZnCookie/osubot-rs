@@ -484,6 +484,19 @@ impl PluginManager {
             .get(idx)
             .ok_or_else(|| format!("params not found for idx {idx}"))?;
 
+        // 保存旧 tick 注册快照，new() 或 on_load 失败时恢复
+        let old_ticks: Vec<_> = {
+            let registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                e.into_inner()
+            });
+            registry
+                .iter()
+                .filter(|(pi, _, _, _)| *pi == idx)
+                .cloned()
+                .collect()
+        };
+
         // 清除旧的 tick 注册，防止重复注册和内存泄漏
         {
             let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
@@ -495,16 +508,31 @@ impl PluginManager {
 
         let store = self.create_reload_store(idx, params.plugin_config.clone());
         let mut instance =
-            PluginInstance::new(&self.engine, &self.linker, module, params.clone(), store)?;
+            match PluginInstance::new(&self.engine, &self.linker, module, params.clone(), store) {
+                Ok(inst) => inst,
+                Err(e) => {
+                    // new() 失败：恢复旧 tick 注册，旧实例仍然有效
+                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                        tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                        e.into_inner()
+                    });
+                    registry.extend(old_ticks);
+                    self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
+                    return Err(e);
+                }
+            };
         instance.set_instance_idx(idx);
 
         if let Err(e) = instance.on_load() {
-            // on_load 中可能已注册 tick，失败后需清理残留
-            let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
-                e.into_inner()
-            });
-            registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
+            // on_load 中可能已注册 tick，失败后需清理残留并恢复旧 tick
+            {
+                let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    e.into_inner()
+                });
+                registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
+                registry.extend(old_ticks);
+            }
             // 旧实例仍然有效，不清理 command_map / on_message_indices
             self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
             return Err(e);
@@ -830,6 +858,19 @@ impl PluginManager {
 
                 let (mut instance, params) = self.build_instance(*idx, pcfg, &module)?;
 
+                // 保存旧 tick 注册快照，on_load 失败时恢复
+                let old_ticks: Vec<_> = {
+                    let registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                        tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                        e.into_inner()
+                    });
+                    registry
+                        .iter()
+                        .filter(|(pi, _, _, _)| *pi == *idx)
+                        .cloned()
+                        .collect()
+                };
+
                 // 在 on_load 之前清理旧 tick，避免新注册的 tick 被误删
                 {
                     let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
@@ -841,10 +882,7 @@ impl PluginManager {
 
                 if let Err(e) = instance.on_load() {
                     warn!(name = %pcfg.name, "on_load 失败: {e}");
-                    self.instances[*idx] = Some(instance);
-                    self.modules[*idx] = module;
-                    self.instance_params[*idx] = params;
-                    self.lost_instances[*idx] = 1;
+                    // 恢复旧 tick 注册，旧实例仍然有效
                     {
                         let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
                             tracing::warn!(
@@ -853,11 +891,9 @@ impl PluginManager {
                             e.into_inner()
                         });
                         registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
+                        registry.extend(old_ticks);
                     }
-                    for indices in self.command_map.values_mut() {
-                        indices.retain(|i| *i != *idx);
-                    }
-                    self.on_message_indices.remove(idx);
+                    self.reload_failures[*idx] = self.reload_failures[*idx].saturating_add(1);
                     continue;
                 }
 

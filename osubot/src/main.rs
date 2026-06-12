@@ -2755,6 +2755,7 @@ async fn main() {
         // Spawn plugin tick loop
         let pm_for_tick = pm.clone();
         let tick_drain = drain.clone();
+        let tick_in_flight = in_flight.clone();
         let tick_handle = tokio::spawn(async move {
             let mut last_fired: HashMap<(usize, u32), std::time::Instant> = HashMap::new();
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -2799,18 +2800,18 @@ async fn main() {
                         break;
                     }
 
-                    // 取出实例（短暂持锁）
-                    // 取出后立即再次检查 drain：若已设置，说明 reload_all()→compact()
-                    // 正在重排索引，此时放回实例会因旧 plugin_idx 错位而污染其他槽位。
-                    // 直接丢弃实例——热重载会重建所有实例，不需要我们放回。
-                    let instance = {
+                    // 取出实例（短暂持锁），同时注册 in_flight 防止 reload_all()→compact()
+                    // 在 spawn_blocking 执行期间重排索引导致 put_instance 用旧 idx 污染其他槽位。
+                    // InFlightGuard 确保 wait_drain() 等待 tick 完成后再执行 compact()。
+                    let (instance, _tick_guard) = {
                         let mut guard = pm_for_tick.lock().await;
                         let inst = guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx));
                         if tick_drain.load(Ordering::SeqCst) {
                             drop(inst); // 丢弃实例，热重载会重建
                             break; // 跳出 for 循环，不再处理后续到期 tick
                         }
-                        inst
+                        let tick_guard = InFlightGuard(tick_in_flight.clone());
+                        (inst, tick_guard)
                     };
 
                     let Some(mut inst) = instance else {
