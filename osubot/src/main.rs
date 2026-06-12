@@ -2756,7 +2756,7 @@ async fn main() {
         let pm_for_tick = pm.clone();
         let tick_drain = drain.clone();
         let tick_in_flight = in_flight.clone();
-        let tick_handle = tokio::spawn(async move {
+        let mut tick_handle = tokio::spawn(async move {
             let mut last_fired: HashMap<(usize, u32), std::time::Instant> = HashMap::new();
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
@@ -2807,9 +2807,15 @@ async fn main() {
                         let mut guard = pm_for_tick.lock().await;
                         let inst = guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx));
                         if tick_drain.load(Ordering::SeqCst) {
-                            drop(inst); // 丢弃实例，热重载会重建
+                            // 放回实例，热重载会接管
+                            if let Some(inst) = inst {
+                                if let Some(ref mut pm) = *guard {
+                                    pm.put_instance(plugin_idx, inst);
+                                }
+                            }
                             break; // 跳出 for 循环，不再处理后续到期 tick
                         }
+                        tick_in_flight.fetch_add(1, Ordering::SeqCst);
                         let tick_guard = InFlightGuard(tick_in_flight.clone());
                         (inst, tick_guard)
                     };
@@ -2971,8 +2977,12 @@ async fn main() {
         force_reconnect.store(false, Ordering::SeqCst);
         ping_handle.abort();
         // 等待 tick 完成（插件 dispatch 超时 10s，留足余量），超时后强制 abort
-        let _ = tokio::time::timeout(Duration::from_secs(15), tick_handle).await;
-        // timeout 返回 Err 表示超时，此时 JoinHandle 已被 drop（等同于 abort）
+        if tokio::time::timeout(Duration::from_secs(15), &mut tick_handle)
+            .await
+            .is_err()
+        {
+            tick_handle.abort();
+        }
 
         // Clear the write handle so the IRC bridge doesn't use a stale connection
         {

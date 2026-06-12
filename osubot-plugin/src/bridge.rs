@@ -158,11 +158,13 @@ fn send_msg_with_timeout(
     let rt = services.runtime_handle.clone();
     tokio::task::block_in_place(|| {
         rt.block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async move {
-                send_fn(group_id, message)
-            })
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::task::spawn_blocking(move || send_fn(group_id, message)),
+            )
             .await
             .map_err(|_| BridgeError::SendMsg("消息发送超时 (5s)".into()))?
+            .map_err(|join_err| BridgeError::SendMsg(format!("send_msg_fn panicked: {join_err}")))?
             .map_err(BridgeError::SendMsg)
         })
     })

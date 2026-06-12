@@ -511,12 +511,16 @@ impl PluginManager {
             match PluginInstance::new(&self.engine, &self.linker, module, params.clone(), store) {
                 Ok(inst) => inst,
                 Err(e) => {
-                    // new() 失败：恢复旧 tick 注册，旧实例仍然有效
-                    let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                        tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
-                        e.into_inner()
-                    });
-                    registry.extend(old_ticks);
+                    // new() 失败：仅在旧实例仍存在时恢复旧 tick 注册
+                    if self.instances[idx].is_some() {
+                        let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
+                            tracing::warn!(
+                                "tick_registry mutex 被污染，强制恢复（数据可能不一致）"
+                            );
+                            e.into_inner()
+                        });
+                        registry.extend(old_ticks);
+                    }
                     self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
                     return Err(e);
                 }
@@ -846,6 +850,9 @@ impl PluginManager {
                     }
                 };
 
+                // 先验证新实例能否构建和加载，再卸载旧实例
+                let (mut instance, params) = self.build_instance(*idx, pcfg, &module)?;
+
                 let has_unload = self.instances[*idx]
                     .as_mut()
                     .map(|i| i.has_export("on_unload"))
@@ -855,8 +862,6 @@ impl PluginManager {
                         .dispatch(*idx, "on_unload", |instance| instance.on_unload())
                         .await;
                 }
-
-                let (mut instance, params) = self.build_instance(*idx, pcfg, &module)?;
 
                 // 保存旧 tick 注册快照，on_load 失败时恢复
                 let old_ticks: Vec<_> = {
@@ -878,6 +883,17 @@ impl PluginManager {
                         e.into_inner()
                     });
                     registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
+                }
+
+                // 连续重载失败保护：超过阈值则跳过，需手动干预
+                let consecutive = self.reload_failures[*idx];
+                if consecutive >= 3 {
+                    warn!(
+                        idx = *idx,
+                        consecutive,
+                        "plugin reload failed too many times in reload_all, manual reload required"
+                    );
+                    continue;
                 }
 
                 if let Err(e) = instance.on_load() {
