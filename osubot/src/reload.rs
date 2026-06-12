@@ -222,6 +222,30 @@ impl ReloadCoordinator {
                 new_config.bot.ur_timeout_secs
             ));
         }
+        if new_config.bot.command_timeout_secs > 3600 {
+            return Err(format!(
+                "command_timeout_secs 过大（{} > 3600 秒）",
+                new_config.bot.command_timeout_secs
+            ));
+        }
+        if new_config.bot.render_timeout_secs > 600 {
+            return Err(format!(
+                "render_timeout_secs 过大（{} > 600 秒）",
+                new_config.bot.render_timeout_secs
+            ));
+        }
+        if new_config.bot.onebot_api_timeout_secs > 120 {
+            return Err(format!(
+                "onebot_api_timeout_secs 过大（{} > 120 秒）",
+                new_config.bot.onebot_api_timeout_secs
+            ));
+        }
+        if new_config.bot.ur_timeout_secs > 300 {
+            return Err(format!(
+                "ur_timeout_secs 过大（{} > 300 秒）",
+                new_config.bot.ur_timeout_secs
+            ));
+        }
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
         {
@@ -319,7 +343,7 @@ impl ReloadCoordinator {
     }
 }
 
-fn build_upstream_chain(
+pub(crate) fn build_upstream_chain(
     upstream: &UpstreamConfig,
     oauth: &Arc<OauthTokenCache>,
     rate_limiter: &Arc<RateLimiter>,

@@ -43,8 +43,6 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
-use xfs_upstream::XfsUpstream;
-use yumu_upstream::YumuUpstream;
 
 struct InFlightGuard(Arc<AtomicUsize>);
 
@@ -2441,29 +2439,11 @@ async fn main() {
 
     let upstream_chain = {
         let cfg = config.read().await;
-        Arc::new(tokio::sync::RwLock::new(if cfg.upstream.enabled {
-            let mut providers: Vec<Box<dyn osubot_core::UpstreamBindingProvider>> = Vec::new();
-            for p_cfg in &cfg.upstream.providers {
-                match p_cfg.provider_type.as_str() {
-                    "xfs" => {
-                        providers.push(Box::new(XfsUpstream::from_config(
-                            p_cfg,
-                            oauth.clone(),
-                            rate_limiter.clone(),
-                        )));
-                    }
-                    "yumu" => {
-                        providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
-                    }
-                    other => {
-                        tracing::warn!("unknown upstream provider type: {other}");
-                    }
-                }
-            }
-            UpstreamChain::new(providers)
-        } else {
-            UpstreamChain::new(Vec::new())
-        }))
+        Arc::new(tokio::sync::RwLock::new(reload::build_upstream_chain(
+            &cfg.upstream,
+            &oauth,
+            &rate_limiter,
+        )))
     };
 
     match storage.get_users_without_ids() {
