@@ -244,7 +244,7 @@ fn extract_raw_replay_frames(osr_bytes: &[u8]) -> Option<Vec<(i32, f32, f32, u32
 ///
 /// osu! lazer `LegacyScoreDecoder` applies Correction B *before* stripping
 /// lazer markers `(256, -500)`, ensuring the first real frame's timing stays
-/// consistent. The `rosu_replay` crate strips markers without this correction,
+/// consistent. The upstream replay decoder strips markers without this correction,
 /// corrupting the first frame's delta. We re-implement both steps here.
 ///
 /// Returns corrected `(delta, keys)` pairs ready for key-time extraction.
@@ -777,106 +777,42 @@ mod tests {
         assert!(ur > 0.0, "Non-zero UR expected, got {ur}");
     }
 
-    fn osu_event(time_delta: i32, keys: u32) -> rosu_replay::ReplayEvent {
-        rosu_replay::ReplayEvent::Osu(rosu_replay::ReplayEventOsu {
-            time_delta,
-            x: 0.0,
-            y: 0.0,
-            keys: rosu_replay::Key(keys),
-        })
-    }
-
-    fn extract_key_times_and_offset(
-        events: &[rosu_replay::ReplayEvent],
-    ) -> Option<(Vec<f64>, f64)> {
-        use rosu_replay::ReplayEvent;
-
-        let mut cumulative_time = 0.0f64;
-        let mut key_times = Vec::new();
-        let mut prev_keys = 0u32;
-        let mut first_frame = true;
-        let mut time_offset = 0.0f64;
-
-        for event in events.iter() {
-            let delta = event.time_delta();
-
-            if first_frame {
-                first_frame = false;
-                if !(0..=10000).contains(&delta) {
-                    time_offset = (delta as f64).abs();
-                    continue;
-                }
-            }
-
-            cumulative_time += delta as f64;
-
-            if let ReplayEvent::Osu(e) = event {
-                let current_keys = e.keys.value();
-                let just_pressed = current_keys & !prev_keys;
-                if just_pressed != 0 {
-                    key_times.push(cumulative_time);
-                }
-                prev_keys = current_keys;
-            }
-        }
-
-        if key_times.is_empty() {
-            return None;
-        }
-
-        Some((key_times, time_offset))
-    }
-
-    const K1: u32 = 1 << 2; // rosu_replay::Key::K1
+    const K1: u32 = 4; // bit 2 = K1 key press
 
     #[test]
     fn extract_normal_no_offset() {
-        // first delta 50 is in range → no offset; presses on frames 1 and 3
-        let events = [
-            osu_event(50, 0),
-            osu_event(50, K1),
-            osu_event(50, 0),
-            osu_event(50, K1),
-        ];
-        let (key_times, offset) = extract_key_times_and_offset(&events).unwrap();
+        let deltas = [(50, 0), (50, K1), (50, 0), (50, K1)];
+        let (key_times, offset) = extract_key_times_from_deltas(&deltas).unwrap();
         assert_eq!(offset, 0.0);
         assert_eq!(key_times, vec![100.0, 200.0]);
     }
 
     #[test]
     fn extract_abnormal_first_delta_is_offset() {
-        // first delta -5000 is out of range → offset 5000, frame skipped (no accumulate)
-        let events = [
-            osu_event(-5000, 0),
-            osu_event(50, K1),
-            osu_event(50, 0),
-            osu_event(50, K1),
-        ];
-        let (key_times, offset) = extract_key_times_and_offset(&events).unwrap();
+        let deltas = [(-5000, 0), (50, K1), (50, 0), (50, K1)];
+        let (key_times, offset) = extract_key_times_from_deltas(&deltas).unwrap();
         assert_eq!(offset, 5000.0);
         assert_eq!(key_times, vec![50.0, 150.0]);
     }
 
     #[test]
     fn extract_held_key_counts_once() {
-        // K1 held across two frames → a single press at the first frame
-        let events = [osu_event(50, K1), osu_event(50, K1), osu_event(50, 0)];
-        let (key_times, offset) = extract_key_times_and_offset(&events).unwrap();
+        let deltas = [(50, K1), (50, K1), (50, 0)];
+        let (key_times, offset) = extract_key_times_from_deltas(&deltas).unwrap();
         assert_eq!(offset, 0.0);
         assert_eq!(key_times, vec![50.0]);
     }
 
     #[test]
     fn extract_no_presses_returns_none() {
-        let events = [osu_event(50, 0), osu_event(50, 0)];
-        assert!(extract_key_times_and_offset(&events).is_none());
+        let deltas = [(50, 0), (50, 0)];
+        assert!(extract_key_times_from_deltas(&deltas).is_none());
     }
 
     #[test]
     fn extract_large_first_delta_over_threshold_is_offset() {
-        // boundary: delta 10001 > 10000 → treated as offset
-        let events = [osu_event(10001, 0), osu_event(50, K1)];
-        let (key_times, offset) = extract_key_times_and_offset(&events).unwrap();
+        let deltas = [(10001, 0), (50, K1)];
+        let (key_times, offset) = extract_key_times_from_deltas(&deltas).unwrap();
         assert_eq!(offset, 10001.0);
         assert_eq!(key_times, vec![50.0]);
     }

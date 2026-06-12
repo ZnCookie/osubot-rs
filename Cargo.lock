@@ -4282,7 +4282,6 @@ dependencies = [
  "reqwest",
  "rosu-mods",
  "rosu-pp",
- "rosu-replay",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5301,20 +5300,6 @@ dependencies = [
  "divan",
  "rosu-map",
  "rosu-mods",
-]
-
-[[package]]
-name = "rosu-replay"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b763bdd4f25a8f5ac9aa634d51ebe1bd15ad490bb2f8881277ef48ba9d126615"
-dependencies = [
- "base64",
- "byteorder",
- "chrono",
- "liblzma",
- "serde",
- "thiserror 2.0.18",
 ]
 
 [[package]]
