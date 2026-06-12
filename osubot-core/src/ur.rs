@@ -4,6 +4,7 @@ use crate::types::GameMode;
 use rosu_mods::GameMods;
 use rosu_pp::model::beatmap::BeatmapAttributesBuilder;
 use rosu_pp::Beatmap;
+use std::io::Read;
 use std::sync::Arc;
 
 use crate::cache::replay_cache_dir;
@@ -133,53 +134,176 @@ fn hit_windows(od: f64) -> (f64, f64, f64) {
     (great, ok, meh)
 }
 
-/// 解析 replay 获取按键时间点
-fn parse_replay_key_times(osr_bytes: &[u8]) -> Option<(Vec<f64>, f64)> {
-    use rosu_replay::Replay;
+// === osu! .osr binary header helpers ===
 
-    let replay = Replay::from_bytes(osr_bytes).ok()?;
-
-    tracing::trace!(
-        replay_data_len = replay.replay_data.len(),
-        mode = ?replay.mode,
-        mods = replay.mods.value(),
-        replay_300 = replay.count_300,
-        replay_100 = replay.count_100,
-        replay_50 = replay.count_50,
-        replay_miss = replay.count_miss,
-        "Replay parsed"
-    );
-
-    let result = extract_key_times_and_offset(&replay.replay_data);
-
-    if let Some((ref key_times, time_offset)) = result {
-        tracing::trace!(
-            key_times_count = key_times.len(),
-            time_offset,
-            "Key times extracted from replay"
-        );
+/// Skip an osu! binary string at the given position.
+/// Returns the new position after the string, or `None` on malformed input.
+fn skip_osu_string(data: &[u8], pos: usize) -> Option<usize> {
+    if pos >= data.len() {
+        return None;
     }
-
-    result
+    match data[pos] {
+        0x00 => Some(pos + 1),
+        0x0b => {
+            let mut new_pos = pos + 1;
+            let mut length: usize = 0;
+            let mut shift = 0;
+            loop {
+                if new_pos >= data.len() {
+                    return None;
+                }
+                let byte = data[new_pos];
+                new_pos += 1;
+                length |= ((byte & 0x7f) as usize) << shift;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+                if shift >= 64 {
+                    return None;
+                }
+            }
+            if new_pos + length > data.len() {
+                return None;
+            }
+            Some(new_pos + length)
+        }
+        _ => None,
+    }
 }
 
-/// 从 replay 事件流提取按键时间点与 replay→beatmap 时序偏移。
-///
-/// 第一帧若 delta 异常（不在 0..=10000），视为 replay 与谱面的时间偏移并跳过累加。
-/// 按键按下通过状态从 0 变为非 0 检测，按住不重复计数。
-/// key_times 为空时返回 None。
-fn extract_key_times_and_offset(events: &[rosu_replay::ReplayEvent]) -> Option<(Vec<f64>, f64)> {
-    use rosu_replay::ReplayEvent;
+/// Decompress the LZMA-compressed replay data from a raw `.osr` file
+/// and parse all frames into `(absolute_time_ms, x, y, keys)` tuples.
+fn extract_raw_replay_frames(osr_bytes: &[u8]) -> Option<Vec<(i32, f32, f32, u32)>> {
+    let mut pos = 1usize; // gameMode (1 byte)
+    pos += 4; // gameVersion (4 bytes)
 
+    // Skip 3 osu! strings: beatmap hash, player name, replay hash
+    for _ in 0..3 {
+        pos = skip_osu_string(osr_bytes, pos)?;
+    }
+
+    // Skip fixed fields: 6 shorts (hit counts, 12 bytes) + i32 (total score, 4) +
+    // short (max combo, 2) + byte (perfect, 1) + i32 (mods, 4) = 23 bytes
+    pos += 12 + 4 + 2 + 1 + 4;
+
+    // Skip lifebar string
+    pos = skip_osu_string(osr_bytes, pos)?;
+
+    // Skip timestamp (8 bytes)
+    pos += 8;
+
+    // Read replay_length (i32 LE)
+    if pos + 4 > osr_bytes.len() {
+        return None;
+    }
+    let replay_len = i32::from_le_bytes(osr_bytes[pos..pos + 4].try_into().ok()?) as usize;
+    pos += 4;
+
+    // Extract compressed data
+    if pos + replay_len > osr_bytes.len() {
+        return None;
+    }
+    let compressed = &osr_bytes[pos..pos + replay_len];
+
+    // LZMA decompress
+    let mut buffer = Vec::new();
+    liblzma::read::XzDecoder::new_multi_decoder(compressed)
+        .read_to_end(&mut buffer)
+        .ok()?;
+
+    let data_str = String::from_utf8(buffer).ok()?;
+
+    // Parse CSV frames: `time_delta|x|y|keys`
+    let mut frames: Vec<(i32, f32, f32, u32)> = Vec::new();
+    let mut cum_time: i32 = 0;
+
+    for s in data_str.trim_end_matches(',').split(',') {
+        let parts: Vec<&str> = s.split('|').collect();
+        if parts.len() != 4 {
+            continue;
+        }
+        if parts[0] == "-12345" {
+            // RNG seed marker — signals end of real replay frames
+            continue;
+        }
+
+        let delta: i32 = parts[0].parse().ok()?;
+        let x: f32 = parts[1].parse().ok()?;
+        let y: f32 = parts[2].parse().ok()?;
+        let keys: u32 = parts[3].parse().ok()?;
+
+        cum_time += delta;
+        frames.push((cum_time, x, y, keys));
+    }
+
+    Some(frames)
+}
+
+/// Apply osu! lazer's time Correction B and strip lazer marker frames.
+///
+/// osu! lazer `LegacyScoreDecoder` applies Correction B *before* stripping
+/// lazer markers `(256, -500)`, ensuring the first real frame's timing stays
+/// consistent. The `rosu_replay` crate strips markers without this correction,
+/// corrupting the first frame's delta. We re-implement both steps here.
+///
+/// Returns corrected `(delta, keys)` pairs ready for key-time extraction.
+fn parse_corrected_replay_deltas(osr_bytes: &[u8]) -> Option<Vec<(i32, u32)>> {
+    let mut frames = extract_raw_replay_frames(osr_bytes)?;
+
+    if frames.len() < 3 {
+        return None;
+    }
+
+    // Correction B (from osu! lazer `LegacyScoreDecoder`):
+    //   if frame[0].time > frame[2].time:
+    //       frame[0].time = frame[1].time = frame[2].time
+    // This aligns lazer marker frames with the first real frame so that
+    // stripping them does not break the delta chain.
+    if frames[0].0 > frames[2].0 {
+        let new_time = frames[2].0;
+        frames[0].0 = new_time;
+        frames[1].0 = new_time;
+    }
+
+    // Strip lazer marker frames at position (256, -500).
+    // These are injected by the osu! API / lazer replay encoder and carry
+    // no gameplay information.
+    while !frames.is_empty() && frames[0].1 == 256.0 && frames[0].2 == -500.0 {
+        frames.remove(0);
+    }
+
+    if frames.is_empty() {
+        return None;
+    }
+
+    // Convert absolute times back to deltas for downstream processing
+    let mut deltas: Vec<(i32, u32)> = Vec::with_capacity(frames.len());
+    for i in 0..frames.len() {
+        let delta = if i == 0 {
+            frames[i].0 // first frame: delta = its corrected absolute time
+        } else {
+            frames[i].0 - frames[i - 1].0
+        };
+        deltas.push((delta, frames[i].3));
+    }
+
+    Some(deltas)
+}
+
+/// Extract key press times from corrected `(delta, keys)` pairs.
+///
+/// Uses the same offset detection and rising-edge press detection logic
+/// as the original `extract_key_times_and_offset`, but operates on
+/// pre-corrected (delta, keys) tuples instead of `ReplayEvent` objects.
+fn extract_key_times_from_deltas(deltas_and_keys: &[(i32, u32)]) -> Option<(Vec<f64>, f64)> {
     let mut cumulative_time = 0.0f64;
     let mut key_times = Vec::new();
     let mut prev_keys = 0u32;
     let mut first_frame = true;
     let mut time_offset = 0.0f64;
 
-    for event in events.iter() {
-        let delta = event.time_delta();
-
+    for &(delta, keys) in deltas_and_keys {
         if first_frame {
             first_frame = false;
             if !(0..=10000).contains(&delta) {
@@ -191,16 +315,12 @@ fn extract_key_times_and_offset(events: &[rosu_replay::ReplayEvent]) -> Option<(
 
         cumulative_time += delta as f64;
 
-        // 只处理 osu! standard 的 events
-        if let ReplayEvent::Osu(e) = event {
-            let current_keys = e.keys.value();
-            // 检测按键按下（状态从 0 变为非 0）
-            let just_pressed = current_keys & !prev_keys;
-            if just_pressed != 0 {
-                key_times.push(cumulative_time);
-            }
-            prev_keys = current_keys;
+        // Detect rising edge of key presses (M1|M2|K1|K2)
+        let just_pressed = keys & !prev_keys;
+        if just_pressed != 0 {
+            key_times.push(cumulative_time);
         }
+        prev_keys = keys;
     }
 
     if key_times.is_empty() {
@@ -208,6 +328,28 @@ fn extract_key_times_and_offset(events: &[rosu_replay::ReplayEvent]) -> Option<(
     }
 
     Some((key_times, time_offset))
+}
+
+/// 解析 replay 获取按键时间点
+fn parse_replay_key_times(osr_bytes: &[u8]) -> Option<(Vec<f64>, f64)> {
+    let deltas = parse_corrected_replay_deltas(osr_bytes)?;
+
+    tracing::trace!(
+        replay_data_len = deltas.len(),
+        "Replay parsed with lazer time correction"
+    );
+
+    let result = extract_key_times_from_deltas(&deltas);
+
+    if let Some((ref key_times, time_offset)) = result {
+        tracing::trace!(
+            key_times_count = key_times.len(),
+            time_offset,
+            "Key times extracted from replay"
+        );
+    }
+
+    result
 }
 
 /// Calculate preempt time (ms) from AR — how long before a note appears
@@ -642,6 +784,47 @@ mod tests {
             y: 0.0,
             keys: rosu_replay::Key(keys),
         })
+    }
+
+    fn extract_key_times_and_offset(
+        events: &[rosu_replay::ReplayEvent],
+    ) -> Option<(Vec<f64>, f64)> {
+        use rosu_replay::ReplayEvent;
+
+        let mut cumulative_time = 0.0f64;
+        let mut key_times = Vec::new();
+        let mut prev_keys = 0u32;
+        let mut first_frame = true;
+        let mut time_offset = 0.0f64;
+
+        for event in events.iter() {
+            let delta = event.time_delta();
+
+            if first_frame {
+                first_frame = false;
+                if !(0..=10000).contains(&delta) {
+                    time_offset = (delta as f64).abs();
+                    continue;
+                }
+            }
+
+            cumulative_time += delta as f64;
+
+            if let ReplayEvent::Osu(e) = event {
+                let current_keys = e.keys.value();
+                let just_pressed = current_keys & !prev_keys;
+                if just_pressed != 0 {
+                    key_times.push(cumulative_time);
+                }
+                prev_keys = current_keys;
+            }
+        }
+
+        if key_times.is_empty() {
+            return None;
+        }
+
+        Some((key_times, time_offset))
     }
 
     const K1: u32 = 1 << 2; // rosu_replay::Key::K1

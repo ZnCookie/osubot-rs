@@ -21,6 +21,7 @@ rosu-mods = { version = "0.4", features = ["serde"] }
 rosu-replay = "0.2"
 bytes = "1"
 dirs = "6"
+liblzma = "0.4"
 phf = { version = "0.11", features = ["macros"] }
 
 [dev-dependencies]

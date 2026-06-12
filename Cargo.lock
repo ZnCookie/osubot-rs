@@ -4221,6 +4221,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
+ "liblzma",
  "osubot-types",
  "phf",
  "rand 0.9.4",
