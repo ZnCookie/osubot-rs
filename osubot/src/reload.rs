@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{error, info, warn};
 
 use crate::config::{Config, MutableConfig, UpstreamConfig};
+use crate::scheduler::Scheduler;
 use crate::xfs_upstream::XfsUpstream;
 use crate::yumu_upstream::YumuUpstream;
 use osubot_core::{OauthTokenCache, RateLimiter, UpstreamBindingProvider, UpstreamChain};
@@ -23,6 +24,8 @@ pub struct ReloadHandle {
     pub upstream_chain: Arc<RwLock<UpstreamChain>>,
     pub oauth: Arc<OauthTokenCache>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub force_reconnect: Arc<AtomicBool>,
+    pub scheduler: Scheduler,
 }
 
 impl ReloadHandle {
@@ -33,6 +36,7 @@ impl ReloadHandle {
         upstream_chain: Arc<RwLock<UpstreamChain>>,
         oauth: Arc<OauthTokenCache>,
         rate_limiter: Arc<RateLimiter>,
+        scheduler: Scheduler,
     ) -> Self {
         Self {
             config,
@@ -43,6 +47,8 @@ impl ReloadHandle {
             upstream_chain,
             oauth,
             rate_limiter,
+            force_reconnect: Arc::new(AtomicBool::new(false)),
+            scheduler,
         }
     }
 }
@@ -142,12 +148,15 @@ impl ReloadCoordinator {
         self.handle.drain.store(true, Ordering::SeqCst);
         self.wait_drain().await;
 
-        if let Err(e) = self.reload_config(watcher, plugin_dir).await {
-            error!("配置重载失败，保留旧配置: {e}");
-        }
-
-        if let Err(e) = self.reload_plugins().await {
-            error!("插件重载失败: {e}");
+        match self.reload_config(watcher, plugin_dir).await {
+            Ok(()) => {
+                if let Err(e) = self.reload_plugins().await {
+                    error!("插件重载失败: {e}");
+                }
+            }
+            Err(e) => {
+                error!("配置重载失败，保留旧配置并跳过插件重载: {e}");
+            }
         }
 
         self.handle.drain.store(false, Ordering::SeqCst);
@@ -158,6 +167,11 @@ impl ReloadCoordinator {
         watcher: &mut RecommendedWatcher,
         plugin_dir: &Arc<std::sync::RwLock<PathBuf>>,
     ) -> Result<(), String> {
+        let old_onebot_url = {
+            let old = self.handle.config.read().await;
+            old.bot.onebot_url.clone()
+        };
+
         let content = tokio::fs::read_to_string(&self.config_path)
             .await
             .map_err(|e| format!("读取配置文件失败: {e}"))?;
@@ -180,8 +194,33 @@ impl ReloadCoordinator {
             }
         };
 
+        // validate
         if new_config.bot.onebot_url.is_empty() {
             return Err("onebot_url 为空".to_string());
+        }
+        if new_config.bot.command_timeout_secs < 5 {
+            return Err(format!(
+                "command_timeout_secs 过小（{} < 5 秒）",
+                new_config.bot.command_timeout_secs
+            ));
+        }
+        if new_config.bot.render_timeout_secs < 5 {
+            return Err(format!(
+                "render_timeout_secs 过小（{} < 5 秒）",
+                new_config.bot.render_timeout_secs
+            ));
+        }
+        if new_config.bot.onebot_api_timeout_secs < 2 {
+            return Err(format!(
+                "onebot_api_timeout_secs 过小（{} < 2 秒）",
+                new_config.bot.onebot_api_timeout_secs
+            ));
+        }
+        if new_config.bot.ur_timeout_secs < 3 {
+            return Err(format!(
+                "ur_timeout_secs 过小（{} < 3 秒）",
+                new_config.bot.ur_timeout_secs
+            ));
         }
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
@@ -205,6 +244,7 @@ impl ReloadCoordinator {
         }
 
         let onebot_api_timeout_secs = new_config.bot.onebot_api_timeout_secs;
+        let new_onebot_url = new_config.bot.onebot_url.clone();
         let upstream_config = new_config.upstream.clone();
 
         {
@@ -215,6 +255,17 @@ impl ReloadCoordinator {
         self.handle
             .onebot_api_timeout
             .store(onebot_api_timeout_secs, Ordering::Relaxed);
+
+        if old_onebot_url != new_onebot_url {
+            info!(
+                old = %old_onebot_url,
+                new = %new_onebot_url,
+                "onebot_url 已变更，触发重连"
+            );
+            self.handle.force_reconnect.store(true, Ordering::SeqCst);
+        }
+
+        self.handle.scheduler.reschedule_all().await;
 
         let new_chain = build_upstream_chain(
             &upstream_config,

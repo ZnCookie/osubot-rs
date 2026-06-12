@@ -614,6 +614,18 @@ impl Storage {
         })
     }
 
+    /// Reset all user next_update timestamps to now, so they are re-evaluated
+    /// on the next scheduler tick with the new config intervals.
+    pub fn reset_all_next_updates(&self) -> SqlResult<usize> {
+        self.with_conn(|conn| {
+            let now_ts = Utc::now().timestamp();
+            conn.execute(
+                "UPDATE user_next_update SET next_update = ?1",
+                params![now_ts],
+            )
+        })
+    }
+
     /// Get all user bindings (qq -> user_id, current_username mappings)
     pub fn get_all_user_bindings(&self) -> SqlResult<Vec<(i64, i64, String)>> {
         self.with_conn(|conn| {

@@ -31,7 +31,7 @@ pub struct OsuConfig {
     pub client_id: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct BotConfig {
     pub onebot_url: String,
     /// 命令处理超时（秒），默认 120
@@ -313,6 +313,7 @@ pub struct MutableConfig {
     pub upstream: UpstreamConfig,
     #[serde(default)]
     pub plugin: PluginConfig,
+    #[serde(default)]
     pub bot: BotConfig,
 }
 

@@ -2575,11 +2575,13 @@ async fn main() {
         upstream_chain.clone(),
         oauth.clone(),
         rate_limiter.clone(),
+        scheduler.clone(),
     );
 
-    // Extract drain/in_flight refs for message loop (reload_handle consumed by coordinator)
+    // Extract drain/in_flight/force_reconnect refs for message loop
     let drain = reload_handle.drain.clone();
     let in_flight = reload_handle.in_flight.clone();
+    let force_reconnect = reload_handle.force_reconnect.clone();
 
     // Start file watcher coordinator
     let coordinator = reload::ReloadCoordinator::new(
@@ -2802,6 +2804,11 @@ async fn main() {
                 };
                 // 第二阶段：逐个触发 tick（每个 tick 独立持锁，允许消息处理插入）
                 for (plugin_idx, tick_id) in due_ticks {
+                    // 热重载 drain 期间停止 dispatch，避免 reload_all() compact
+                    // 后索引过期导致 dispatch 到错误插件
+                    if tick_drain.load(Ordering::SeqCst) {
+                        break;
+                    }
                     let mut guard = pm_for_tick.lock().await;
                     if let Some(ref mut pm) = *guard {
                         pm.handle_tick(plugin_idx, tick_id).await;
@@ -2814,6 +2821,11 @@ async fn main() {
         // Message loop
         loop {
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            // onebot_url hot-reload triggers a forced reconnect
+            if force_reconnect.load(Ordering::SeqCst) {
+                info!("强制重连：onebot_url 已热重载变更");
                 break;
             }
             match read.next().await {
@@ -2912,6 +2924,7 @@ async fn main() {
         }
 
         connection_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        force_reconnect.store(false, Ordering::SeqCst);
         ping_handle.abort();
         // 等待 tick 完成（插件 dispatch 超时 10s，留足余量），超时后强制 abort
         let _ = tokio::time::timeout(Duration::from_secs(15), tick_handle).await;

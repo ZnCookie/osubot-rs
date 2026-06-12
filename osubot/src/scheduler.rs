@@ -334,6 +334,14 @@ impl Scheduler {
         }
     }
 
+    pub async fn reschedule_all(&self) {
+        match self.storage.reset_all_next_updates() {
+            Ok(0) => {}
+            Ok(count) => info!(count, "配置变更，已重置所有用户更新排程"),
+            Err(e) => warn!("重置排程失败: {e}"),
+        }
+    }
+
     /// Check if user/mode is in cooldown
     pub async fn is_in_cooldown(&self, user_id: i64, mode: GameMode) -> bool {
         if let Ok(Some(last_update)) = self.storage.get_last_update(user_id, mode) {
