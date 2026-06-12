@@ -1140,7 +1140,22 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
             get_stable_rank(&api.statistics, mode, api.passed, has_hidden)
         },
         passed: api.passed,
-        mods: api_mods_to_game_mods(&api.mods, mode),
+        mods: if is_lazer {
+            api_mods_to_game_mods(&api.mods, mode)
+        } else {
+            let filtered_mods: Vec<OsuApiMod> = api
+                .mods
+                .into_iter()
+                .filter(|m| {
+                    let acr = match m {
+                        OsuApiMod::String(s) => s.as_str(),
+                        OsuApiMod::Object { acronym, .. } => acronym.as_str(),
+                    };
+                    acr != "CL"
+                })
+                .collect();
+            api_mods_to_game_mods(&filtered_mods, mode)
+        },
         is_perfect: api.perfect,
         created_at: api.ended_at,
         is_lazer,
