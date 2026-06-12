@@ -2800,9 +2800,17 @@ async fn main() {
                     }
 
                     // 取出实例（短暂持锁）
+                    // 取出后立即再次检查 drain：若已设置，说明 reload_all()→compact()
+                    // 正在重排索引，此时放回实例会因旧 plugin_idx 错位而污染其他槽位。
+                    // 直接丢弃实例——热重载会重建所有实例，不需要我们放回。
                     let instance = {
                         let mut guard = pm_for_tick.lock().await;
-                        guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx))
+                        let inst = guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx));
+                        if tick_drain.load(Ordering::SeqCst) {
+                            drop(inst); // 丢弃实例，热重载会重建
+                            break; // 跳出 for 循环，不再处理后续到期 tick
+                        }
+                        inst
                     };
 
                     let Some(mut inst) = instance else {
