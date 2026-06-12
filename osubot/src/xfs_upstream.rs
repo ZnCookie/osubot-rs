@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use rand::Rng;
+use rand::RngExt;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;

@@ -1436,7 +1436,7 @@ pub(crate) fn classify_http_error(resp: &reqwest::Response) -> Result<(), ApiErr
 /// jitter 在基准值的 75%~125% 之间波动，双向分散避免 thundering herd。
 /// `attempt` 由调用方保证 <= 30（`max_retries <= 30`），无需溢出防护。
 fn backoff_with_jitter(attempt: u32) -> Duration {
-    use rand::Rng;
+    use rand::RngExt;
     let base_delay = Duration::from_secs(1);
     let exp = base_delay * 2u32.pow(attempt.min(31));
     let exp_ms = exp.as_millis() as u64;
@@ -2757,7 +2757,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_retries must be <= 30")]
     fn test_retry_on_401_rejects_large_max_retries() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let oauth = OauthTokenCache::new("test".to_string(), "test".to_string());
             let _ = retry_on_401(&oauth, 31, || async { Ok(42) }).await;
@@ -2767,7 +2769,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_retries must be <= 30")]
     fn test_retry_on_transient_rejects_large_max_retries() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _ = retry_on_transient(31, || async { Ok(42) }).await;
         });

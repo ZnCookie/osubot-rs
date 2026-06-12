@@ -31,73 +31,9 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
-/// Check if the database has the old (username-based) schema
-fn has_old_schema(conn: &Connection) -> SqlResult<bool> {
-    // Check if user_bindings exists and has osu_username column (old schema marker)
-    let mut stmt = conn.prepare("PRAGMA table_info(user_bindings)")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let col_name: String = row.get(1)?;
-        if col_name == "osu_username" {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Migrate from old username-based schema to user_id-based schema.
-fn migrate_old_schema(conn: &Connection) -> SqlResult<()> {
-    tracing::info!("Detected old database schema, migrating...");
-
-    // Migrate user_bindings: map osu_username → user_id via osu_user_ids cache
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS user_bindings_new (
-            qq INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            current_username TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        INSERT INTO user_bindings_new (qq, user_id, current_username, created_at)
-        SELECT b.qq, COALESCE(o.user_id, 0), b.osu_username, b.created_at
-        FROM user_bindings b
-        LEFT JOIN osu_user_ids o ON LOWER(o.username) = LOWER(b.osu_username);
-        DROP TABLE user_bindings;
-        ALTER TABLE user_bindings_new RENAME TO user_bindings;",
-    )?;
-
-    let unmigrated: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_bindings WHERE user_id = 0",
-        [],
-        |row| row.get(0),
-    )?;
-    if unmigrated > 0 {
-        tracing::warn!(
-            "{} binding(s) could not be migrated (username→user_id lookup failed). These users need to re-bind.",
-            unmigrated
-        );
-    }
-
-    // Drop derived data tables and old indexes — will be recreated below
-    conn.execute_batch(
-        "DROP TABLE IF EXISTS user_stats_history;
-         DROP TABLE IF EXISTS user_play_records;
-         DROP TABLE IF EXISTS user_next_update;
-         DROP TABLE IF EXISTS user_last_update;
-         DROP INDEX IF EXISTS idx_history_user;
-         DROP INDEX IF EXISTS idx_play_records_user;",
-    )?;
-
-    tracing::info!("Schema migration complete.");
-    Ok(())
-}
-
 impl Storage {
     pub fn new<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
-
-        if has_old_schema(&conn)? {
-            migrate_old_schema(&conn)?;
-        }
 
         // Schema: user_bindings (qq → user_id, current_username)
         conn.execute(
@@ -836,7 +772,7 @@ impl Storage {
         group_id: i64,
         target_username: &str,
     ) -> SqlResult<String> {
-        use rand::Rng;
+        use rand::RngExt;
         let mut rng = rand::rng();
         let code: String = (0..6)
             .map(|_| rng.random_range(0..10).to_string())

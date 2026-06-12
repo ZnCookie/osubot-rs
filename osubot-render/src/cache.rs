@@ -73,13 +73,21 @@ fn dirs_proj() -> Option<PathBuf> {
 fn sha256_hex(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn detect_mime_and_ext(url: &str, bytes: &[u8]) -> (&'static str, &'static str) {
