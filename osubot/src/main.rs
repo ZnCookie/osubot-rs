@@ -2665,7 +2665,8 @@ async fn main() {
         let ping_shutdown = shutdown.clone();
         let ping_connection_alive = connection_alive.clone();
         let ping_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(constants::PING_INTERVAL_SECS));
             loop {
                 interval.tick().await;
                 if ping_shutdown.load(std::sync::atomic::Ordering::Relaxed)
@@ -2803,8 +2804,19 @@ async fn main() {
                     // 取出实例（短暂持锁），同时注册 in_flight 防止 reload_all()→compact()
                     // 在 spawn_blocking 执行期间重排索引导致 put_instance 用旧 idx 污染其他槽位。
                     // InFlightGuard 确保 wait_drain() 等待 tick 完成后再执行 compact()。
+                    //
+                    // phase 1 收集 due_ticks 后释放锁，在 phase 2 获取锁前 compact() 可能
+                    // 已完成并重映射索引。通过 has_tick 验证 (plugin_idx, tick_id) 仍注册在
+                    // 该索引，防止对错误插件分派 tick。
                     let (instance, _tick_guard) = {
                         let mut guard = pm_for_tick.lock().await;
+                        // 验证 tick 仍注册在该索引（compact 可能已重映射）
+                        let tick_valid = guard.as_ref().is_some_and(|pm| {
+                            pm.has_instance(plugin_idx) && pm.has_tick(plugin_idx, tick_id)
+                        });
+                        if !tick_valid {
+                            continue;
+                        }
                         let inst = guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx));
                         if tick_drain.load(Ordering::SeqCst) {
                             // 放回实例，热重载会接管
@@ -2977,9 +2989,12 @@ async fn main() {
         force_reconnect.store(false, Ordering::SeqCst);
         ping_handle.abort();
         // 等待 tick 完成（插件 dispatch 超时 10s，留足余量），超时后强制 abort
-        if tokio::time::timeout(Duration::from_secs(15), &mut tick_handle)
-            .await
-            .is_err()
+        if tokio::time::timeout(
+            Duration::from_secs(constants::TICK_HANDLE_SHUTDOWN_SECS),
+            &mut tick_handle,
+        )
+        .await
+        .is_err()
         {
             tick_handle.abort();
         }

@@ -16,6 +16,9 @@ use osubot_core::irc::{IrcClient, IrcConfig as CoreIrcConfig};
 use osubot_core::{OauthTokenCache, RateLimiter, UpstreamBindingProvider, UpstreamChain};
 use osubot_plugin::PluginManager;
 
+/// 热重载 drain 超时（秒），超时后强制切换不再等待进行中任务
+const DRAIN_TIMEOUT_SECS: u64 = 30;
+
 pub struct ReloadHandle {
     pub config: Arc<RwLock<Config>>,
     pub pm: Arc<Mutex<Option<PluginManager>>>,
@@ -366,14 +369,17 @@ impl ReloadCoordinator {
 
     async fn wait_drain(&self) {
         let start = tokio::time::Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(DRAIN_TIMEOUT_SECS);
         loop {
             let count = self.handle.in_flight.load(Ordering::SeqCst);
             if count == 0 {
                 return;
             }
             if start.elapsed() >= timeout {
-                warn!(in_flight = count, "等待进行中任务超时 (30s)，强制切换");
+                warn!(
+                    in_flight = count,
+                    "等待进行中任务超时 ({DRAIN_TIMEOUT_SECS}s)，强制切换"
+                );
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

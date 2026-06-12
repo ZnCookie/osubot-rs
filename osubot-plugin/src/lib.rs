@@ -582,6 +582,20 @@ impl PluginManager {
             .collect()
     }
 
+    /// 检查指定索引处是否存在有效实例。
+    pub fn has_instance(&self, idx: usize) -> bool {
+        self.instances.get(idx).is_some_and(|s| s.is_some())
+    }
+
+    /// 检查指定 (plugin_idx, tick_id) 是否仍在 tick_registry 中注册。
+    /// 用于 tick loop phase 2 验证 stale index（compact 可能已重映射索引）。
+    pub fn has_tick(&self, plugin_idx: usize, tick_id: u32) -> bool {
+        let registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .iter()
+            .any(|(idx, _, _, tid)| *idx == plugin_idx && *tid == tick_id)
+    }
+
     /// 从指定槽位取出实例（不持锁时调用方负责同步）。
     /// 返回 None 表示槽位越界或为空。
     pub fn take_instance(&mut self, idx: usize) -> Option<PluginInstance> {
