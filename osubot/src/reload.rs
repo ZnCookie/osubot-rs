@@ -12,6 +12,7 @@ use crate::config::{Config, MutableConfig, UpstreamConfig};
 use crate::scheduler::Scheduler;
 use crate::xfs_upstream::XfsUpstream;
 use crate::yumu_upstream::YumuUpstream;
+use osubot_core::irc::{IrcClient, IrcConfig as CoreIrcConfig};
 use osubot_core::{OauthTokenCache, RateLimiter, UpstreamBindingProvider, UpstreamChain};
 use osubot_plugin::PluginManager;
 
@@ -26,9 +27,12 @@ pub struct ReloadHandle {
     pub rate_limiter: Arc<RateLimiter>,
     pub force_reconnect: Arc<AtomicBool>,
     pub scheduler: Scheduler,
+    pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
 }
 
 impl ReloadHandle {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<RwLock<Config>>,
         pm: Arc<Mutex<Option<PluginManager>>>,
@@ -37,6 +41,8 @@ impl ReloadHandle {
         oauth: Arc<OauthTokenCache>,
         rate_limiter: Arc<RateLimiter>,
         scheduler: Scheduler,
+        irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
     ) -> Self {
         Self {
             config,
@@ -49,6 +55,8 @@ impl ReloadHandle {
             rate_limiter,
             force_reconnect: Arc::new(AtomicBool::new(false)),
             scheduler,
+            irc_handle,
+            irc_tx,
         }
     }
 }
@@ -167,9 +175,9 @@ impl ReloadCoordinator {
         watcher: &mut RecommendedWatcher,
         plugin_dir: &Arc<std::sync::RwLock<PathBuf>>,
     ) -> Result<(), String> {
-        let old_onebot_url = {
+        let (old_onebot_url, old_osu, old_irc) = {
             let old = self.handle.config.read().await;
-            old.bot.onebot_url.clone()
+            (old.bot.onebot_url.clone(), old.osu.clone(), old.irc.clone())
         };
 
         let content = tokio::fs::read_to_string(&self.config_path)
@@ -179,13 +187,16 @@ impl ReloadCoordinator {
         let mutable: MutableConfig =
             toml::from_str(&content).map_err(|e| format!("TOML 解析失败: {e}"))?;
 
+        let new_osu = mutable.osu.unwrap_or(old_osu.clone());
+        let new_irc = mutable.irc.unwrap_or(old_irc.clone());
+
         let new_config = {
             let old = self.handle.config.read().await;
             Config {
-                osu: old.osu.clone(),
+                osu: new_osu.clone(),
                 bot: mutable.bot,
                 database: old.database.clone(),
-                irc: old.irc.clone(),
+                irc: new_irc.clone(),
                 scheduler: mutable.scheduler,
                 group_filter: mutable.group_filter,
                 groups: mutable.groups,
@@ -286,6 +297,27 @@ impl ReloadCoordinator {
             .onebot_api_timeout
             .store(onebot_api_timeout_secs, Ordering::Relaxed);
 
+        // osu! API 凭据变更：更新 OAuth 缓存，旧 token 自动失效
+        if new_osu.client_id != old_osu.client_id || new_osu.client_secret != old_osu.client_secret
+        {
+            info!("osu! API 凭据已变更，正在更新 OAuth 缓存");
+            self.handle
+                .oauth
+                .update_credentials(new_osu.client_id, new_osu.client_secret)
+                .await;
+        }
+
+        // IRC 配置变更：重启 IRC 连接
+        if new_irc.enabled != old_irc.enabled
+            || new_irc.server != old_irc.server
+            || new_irc.port != old_irc.port
+            || new_irc.nickname != old_irc.nickname
+            || new_irc.password != old_irc.password
+        {
+            info!("IRC 配置已变更，正在重启连接");
+            self.restart_irc(&new_irc).await;
+        }
+
         if old_onebot_url != new_onebot_url {
             info!(
                 old = %old_onebot_url,
@@ -345,6 +377,40 @@ impl ReloadCoordinator {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn restart_irc(&self, irc_cfg: &crate::config::IrcConfig) {
+        let mut guard = self.handle.irc_handle.lock().unwrap();
+        if let Some(old) = guard.take() {
+            old.abort();
+        }
+
+        if !irc_cfg.enabled {
+            info!("IRC 已禁用，连接已关闭");
+            return;
+        }
+
+        if irc_cfg.nickname.is_empty() || irc_cfg.password.is_empty() {
+            warn!("IRC 已启用但 nickname/password 为空，跳过重连");
+            return;
+        }
+
+        if let Some(ref tx) = self.handle.irc_tx {
+            let client_config = CoreIrcConfig::new(
+                irc_cfg.enabled,
+                &irc_cfg.server,
+                irc_cfg.port,
+                &irc_cfg.nickname,
+                &irc_cfg.password,
+            );
+            let client = IrcClient::new(client_config, tx.clone());
+            *guard = Some(tokio::spawn(async move {
+                if let Err(e) = client.run().await {
+                    error!(error = %e, "IRC client error");
+                }
+            }));
+            info!("IRC 连接已重启");
         }
     }
 }

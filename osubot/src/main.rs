@@ -1336,12 +1336,7 @@ async fn render_and_send_score_list(
 
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
-async fn handle_command(
-    ctx: BotContext,
-    msg: QQMessage,
-    resp_tx: mpsc::Sender<String>,
-    irc_nickname: Option<String>,
-) {
+async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
     // Plugin on_message dispatch — let plugins intercept raw messages before command parsing
     {
         let mut pm_guard = ctx.plugin_manager.lock().await;
@@ -1677,6 +1672,14 @@ async fn handle_command(
                         .await;
                 }
                 Ok(None) => {
+                    let irc_nickname = {
+                        let cfg = ctx.config.read().await;
+                        if cfg.irc.enabled {
+                            Some(cfg.irc.nickname.clone())
+                        } else {
+                            None
+                        }
+                    };
                     if let Some(nickname) = irc_nickname {
                         match ctx.storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
@@ -2485,7 +2488,13 @@ async fn main() {
 
     let (irc_tx, mut irc_rx) = mpsc::channel::<osubot_core::irc::IrcPrivateMessage>(100);
 
-    let irc_nickname = {
+    let irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    let irc_tx_for_reload = irc_tx.clone();
+    let irc_handle_for_reload = irc_handle.clone();
+
+    {
         let cfg = config.read().await;
         let irc_enabled = cfg.irc.enabled;
 
@@ -2502,14 +2511,11 @@ async fn main() {
                 &cfg.irc.password,
             );
             let irc_client = osubot_core::irc::IrcClient::new(irc_config, irc_tx);
-            tokio::spawn(async move {
+            *irc_handle.lock().unwrap() = Some(tokio::spawn(async move {
                 if let Err(e) = irc_client.run().await {
                     error!(error = %e, "IRC client error");
                 }
-            });
-            Some(cfg.irc.nickname.clone())
-        } else {
-            None
+            }));
         }
     };
 
@@ -2556,6 +2562,8 @@ async fn main() {
         oauth.clone(),
         rate_limiter.clone(),
         scheduler.clone(),
+        irc_handle_for_reload,
+        Some(irc_tx_for_reload),
     );
 
     // Extract drain/in_flight/force_reconnect refs for message loop
@@ -2914,7 +2922,6 @@ async fn main() {
                             upstream_chain: upstream_chain.clone(),
                             plugin_manager: pm.clone(),
                         };
-                        let irc_nickname = irc_nickname.clone();
                         let in_flight2 = in_flight.clone();
                         in_flight.fetch_add(1, Ordering::SeqCst);
                         tokio::spawn(async move {
@@ -2924,7 +2931,7 @@ async fn main() {
                             );
                             if tokio::time::timeout(
                                 command_timeout,
-                                handle_command(ctx, qq_msg, resp_tx.clone(), irc_nickname),
+                                handle_command(ctx, qq_msg, resp_tx.clone()),
                             )
                             .await
                             .is_err()

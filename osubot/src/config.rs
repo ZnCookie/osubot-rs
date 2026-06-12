@@ -299,10 +299,13 @@ pub struct UpstreamConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
-/// 热重载时会从新 TOML 解析的部分，遗留字段（osu/database/irc）保持旧值不变。
+/// 热重载时会从新 TOML 解析的部分，遗留字段（database）保持旧值不变。
+/// osu/irc 用 Option 区分"未写 section"（None，继承旧值）和"写了 section"（Some，使用新值）。
 /// 每新增一个可重载字段，或新增遗留不可变字段时，需同步更新 reload.rs 中的构造。
 #[derive(Debug, Deserialize, Clone)]
 pub struct MutableConfig {
+    #[serde(default)]
+    pub osu: Option<OsuConfig>,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
     #[serde(default)]
@@ -315,6 +318,8 @@ pub struct MutableConfig {
     pub plugin: PluginConfig,
     #[serde(default)]
     pub bot: BotConfig,
+    #[serde(default)]
+    pub irc: Option<IrcConfig>,
 }
 
 impl Config {

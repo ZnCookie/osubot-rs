@@ -6,7 +6,7 @@ use osubot_types::{to_rosu_game_mode, PpBreakdown, PpIfAcc};
 use reqwest::Client;
 use rosu_mods::GameMods;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -1318,8 +1318,8 @@ struct OsuStatistics {
 }
 
 pub struct OauthTokenCache {
-    client_id: String,
-    client_secret: String,
+    client_id: RwLock<String>,
+    client_secret: RwLock<String>,
     cache: Mutex<Option<(String, Instant)>>,
     refresh_lock: Mutex<()>,
     refresh_interval: Duration,
@@ -1328,8 +1328,8 @@ pub struct OauthTokenCache {
 impl OauthTokenCache {
     pub fn new(client_id: String, client_secret: String) -> Self {
         Self {
-            client_id,
-            client_secret,
+            client_id: RwLock::new(client_id),
+            client_secret: RwLock::new(client_secret),
             cache: Mutex::new(None),
             refresh_lock: Mutex::new(()),
             refresh_interval: Duration::from_secs(20 * 3600),
@@ -1337,7 +1337,18 @@ impl OauthTokenCache {
     }
 
     pub fn is_configured(&self) -> bool {
-        !self.client_id.is_empty() && !self.client_secret.is_empty()
+        let cid = self.client_id.read().unwrap();
+        let cs = self.client_secret.read().unwrap();
+        !cid.is_empty() && !cs.is_empty()
+    }
+
+    /// 热重载时更新 API 凭据，同时清空已缓存的 token（旧凭据的 token 已失效）。
+    pub async fn update_credentials(&self, client_id: String, client_secret: String) {
+        let _guard = self.refresh_lock.lock().await;
+        *self.client_id.write().unwrap() = client_id;
+        *self.client_secret.write().unwrap() = client_secret;
+        let mut cache = self.cache.lock().await;
+        *cache = None;
     }
 
     pub async fn invalidate(&self) {
@@ -1372,9 +1383,14 @@ impl OauthTokenCache {
 
         // 缓存过期，发 HTTP 请求（不持有锁）
         let client = http_client();
+        let (cid, cs) = {
+            let cid = self.client_id.read().unwrap();
+            let cs = self.client_secret.read().unwrap();
+            (cid.clone(), cs.clone())
+        };
         let params = [
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
+            ("client_id", cid.as_str()),
+            ("client_secret", cs.as_str()),
             ("grant_type", "client_credentials"),
             ("scope", "public"),
         ];
