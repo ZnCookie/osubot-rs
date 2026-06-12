@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +8,10 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{error, info, warn};
 
-use crate::config::{Config, MutableConfig};
+use crate::config::{Config, MutableConfig, UpstreamConfig};
+use crate::xfs_upstream::XfsUpstream;
+use crate::yumu_upstream::YumuUpstream;
+use osubot_core::{OauthTokenCache, RateLimiter, UpstreamBindingProvider, UpstreamChain};
 use osubot_plugin::PluginManager;
 
 pub struct ReloadHandle {
@@ -16,15 +19,30 @@ pub struct ReloadHandle {
     pub pm: Arc<Mutex<Option<PluginManager>>>,
     pub drain: Arc<AtomicBool>,
     pub in_flight: Arc<AtomicUsize>,
+    pub onebot_api_timeout: Arc<AtomicU64>,
+    pub upstream_chain: Arc<RwLock<UpstreamChain>>,
+    pub oauth: Arc<OauthTokenCache>,
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 impl ReloadHandle {
-    pub fn new(config: Arc<RwLock<Config>>, pm: Arc<Mutex<Option<PluginManager>>>) -> Self {
+    pub fn new(
+        config: Arc<RwLock<Config>>,
+        pm: Arc<Mutex<Option<PluginManager>>>,
+        onebot_api_timeout: Arc<AtomicU64>,
+        upstream_chain: Arc<RwLock<UpstreamChain>>,
+        oauth: Arc<OauthTokenCache>,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> Self {
         Self {
             config,
             pm,
             drain: Arc::new(AtomicBool::new(false)),
             in_flight: Arc::new(AtomicUsize::new(0)),
+            onebot_api_timeout,
+            upstream_chain,
+            oauth,
+            rate_limiter,
         }
     }
 }
@@ -121,16 +139,13 @@ impl ReloadCoordinator {
     ) {
         info!("收到文件变更，开始热重载...");
 
-        // 设置全局 drain，config 和 plugin 在同一个 drain 窗口内原子完成
         self.handle.drain.store(true, Ordering::SeqCst);
         self.wait_drain().await;
 
-        // 配置重载
         if let Err(e) = self.reload_config(watcher, plugin_dir).await {
             error!("配置重载失败，保留旧配置: {e}");
         }
 
-        // 插件重载
         if let Err(e) = self.reload_plugins().await {
             error!("插件重载失败: {e}");
         }
@@ -154,7 +169,7 @@ impl ReloadCoordinator {
             let old = self.handle.config.read().await;
             Config {
                 osu: old.osu.clone(),
-                bot: old.bot.clone(),
+                bot: mutable.bot,
                 database: old.database.clone(),
                 irc: old.irc.clone(),
                 scheduler: mutable.scheduler,
@@ -165,12 +180,10 @@ impl ReloadCoordinator {
             }
         };
 
-        // 基本校验
         if new_config.bot.onebot_url.is_empty() {
             return Err("onebot_url 为空".to_string());
         }
 
-        // 更新插件目录监控（如果目录已变更）
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
         {
             let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
@@ -191,9 +204,26 @@ impl ReloadCoordinator {
             }
         }
 
+        let onebot_api_timeout_secs = new_config.bot.onebot_api_timeout_secs;
+        let upstream_config = new_config.upstream.clone();
+
         {
             let mut cfg = self.handle.config.write().await;
             *cfg = new_config;
+        }
+
+        self.handle
+            .onebot_api_timeout
+            .store(onebot_api_timeout_secs, Ordering::Relaxed);
+
+        let new_chain = build_upstream_chain(
+            &upstream_config,
+            &self.handle.oauth,
+            &self.handle.rate_limiter,
+        );
+        {
+            let mut chain = self.handle.upstream_chain.write().await;
+            *chain = new_chain;
         }
 
         info!("配置热重载成功");
@@ -235,5 +265,35 @@ impl ReloadCoordinator {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+}
+
+fn build_upstream_chain(
+    upstream: &UpstreamConfig,
+    oauth: &Arc<OauthTokenCache>,
+    rate_limiter: &Arc<RateLimiter>,
+) -> UpstreamChain {
+    if upstream.enabled {
+        let mut providers: Vec<Box<dyn UpstreamBindingProvider>> = Vec::new();
+        for p_cfg in &upstream.providers {
+            match p_cfg.provider_type.as_str() {
+                "xfs" => {
+                    providers.push(Box::new(XfsUpstream::from_config(
+                        p_cfg,
+                        oauth.clone(),
+                        rate_limiter.clone(),
+                    )));
+                }
+                "yumu" => {
+                    providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
+                }
+                other => {
+                    warn!("unknown upstream provider type: {other}");
+                }
+            }
+        }
+        UpstreamChain::new(providers)
+    } else {
+        UpstreamChain::new(Vec::new())
     }
 }

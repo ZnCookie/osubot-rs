@@ -81,14 +81,14 @@ struct PendingEntry {
 
 struct OneBotApi {
     pending: Mutex<HashMap<String, PendingEntry>>,
-    timeout: Duration,
+    timeout: Arc<AtomicU64>,
 }
 
 impl OneBotApi {
-    fn new(timeout: Duration) -> Self {
+    fn new(timeout_secs: Arc<AtomicU64>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
-            timeout,
+            timeout: timeout_secs,
         }
     }
 }
@@ -196,10 +196,8 @@ struct BotContext {
     write: Arc<Mutex<WriteSink>>,
     onebot_api: Arc<OneBotApi>,
     last_beatmap: LastBeatmapCache,
-    upstream_chain: Arc<UpstreamChain>,
+    upstream_chain: Arc<tokio::sync::RwLock<UpstreamChain>>,
     plugin_manager: Arc<tokio::sync::Mutex<Option<PluginManager>>>,
-    render_timeout: Duration,
-    ur_timeout: Duration,
 }
 
 fn api_error_msg(e: &ApiError) -> String {
@@ -221,7 +219,7 @@ impl BotContext {
         match self.storage.get_binding(qq) {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
-                let binding = self.upstream_chain.try_query(qq).await?;
+                let binding = self.upstream_chain.read().await.try_query(qq).await?;
                 if let Err(e) = self.storage.set_user_id(&binding.1, binding.0) {
                     warn!("failed to persist user_id from upstream: {e}");
                 }
@@ -1074,8 +1072,9 @@ async fn render_and_send_single_score(
             mode,
             mods: score.mods.clone(),
         };
+        let ur_timeout = Duration::from_secs(ctx.config.read().await.bot.ur_timeout_secs);
         match tokio::time::timeout(
-            ctx.ur_timeout,
+            ur_timeout,
             osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
         )
         .await
@@ -1150,8 +1149,9 @@ async fn render_and_send_single_score(
     let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
     let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
 
+    let render_timeout = Duration::from_secs(ctx.config.read().await.bot.render_timeout_secs);
     let render_result = tokio::time::timeout(
-        ctx.render_timeout,
+        render_timeout,
         render_score_card(osubot_render::ScoreCardParams {
             score: &score,
             username: &user_stats.username,
@@ -2083,7 +2083,9 @@ async fn handle_command(
                         PROFILE_VIEWPORT_WIDTH,
                         1200,
                     );
-                    tokio::time::timeout(ctx.render_timeout, profile_render)
+                    let render_timeout =
+                        Duration::from_secs(ctx.config.read().await.bot.render_timeout_secs);
+                    tokio::time::timeout(render_timeout, profile_render)
                         .await
                         .map_err(|_| {
                             warn!(user_id = target_user_id, "ProfileCard render timed out");
@@ -2262,7 +2264,8 @@ async fn call_onebot_api(
             .map_err(|e| e.to_string())?;
     }
 
-    let result = tokio::time::timeout(api.timeout, rx).await;
+    let timeout_dur = Duration::from_secs(api.timeout.load(Ordering::Relaxed));
+    let result = tokio::time::timeout(timeout_dur, rx).await;
     api.pending.lock().await.remove(&echo);
 
     match result {
@@ -2431,19 +2434,14 @@ async fn main() {
     // crashing the process mid-flight on the first API call.
     let _ = osubot_core::api::http_client();
 
-    let (command_timeout, render_timeout, ur_timeout, onebot_api_timeout) = {
+    let onebot_api_timeout = {
         let cfg = config.read().await;
-        (
-            Duration::from_secs(cfg.bot.command_timeout_secs),
-            Duration::from_secs(cfg.bot.render_timeout_secs),
-            Duration::from_secs(cfg.bot.ur_timeout_secs),
-            Duration::from_secs(cfg.bot.onebot_api_timeout_secs),
-        )
+        Arc::new(AtomicU64::new(cfg.bot.onebot_api_timeout_secs))
     };
 
     let upstream_chain = {
         let cfg = config.read().await;
-        Arc::new(if cfg.upstream.enabled {
+        Arc::new(tokio::sync::RwLock::new(if cfg.upstream.enabled {
             let mut providers: Vec<Box<dyn osubot_core::UpstreamBindingProvider>> = Vec::new();
             for p_cfg in &cfg.upstream.providers {
                 match p_cfg.provider_type.as_str() {
@@ -2465,7 +2463,7 @@ async fn main() {
             UpstreamChain::new(providers)
         } else {
             UpstreamChain::new(Vec::new())
-        })
+        }))
     };
 
     match storage.get_users_without_ids() {
@@ -2542,7 +2540,7 @@ async fn main() {
         }
     }
 
-    let onebot_api = Arc::new(OneBotApi::new(onebot_api_timeout));
+    let onebot_api = Arc::new(OneBotApi::new(onebot_api_timeout.clone()));
 
     let onebot_cleanup = onebot_api.clone();
     tokio::spawn(async move {
@@ -2570,7 +2568,14 @@ async fn main() {
     // Create ReloadHandle (pm starts as None, updated in reconnect loop)
     let pm: Arc<tokio::sync::Mutex<Option<PluginManager>>> =
         Arc::new(tokio::sync::Mutex::new(None));
-    let reload_handle = ReloadHandle::new(config.clone(), pm.clone());
+    let reload_handle = ReloadHandle::new(
+        config.clone(),
+        pm.clone(),
+        onebot_api_timeout,
+        upstream_chain.clone(),
+        oauth.clone(),
+        rate_limiter.clone(),
+    );
 
     // Extract drain/in_flight refs for message loop (reload_handle consumed by coordinator)
     let drain = reload_handle.drain.clone();
@@ -2868,14 +2873,15 @@ async fn main() {
                             last_beatmap: last_beatmap.clone(),
                             upstream_chain: upstream_chain.clone(),
                             plugin_manager: pm.clone(),
-                            render_timeout,
-                            ur_timeout,
                         };
                         let irc_nickname = irc_nickname.clone();
                         let in_flight2 = in_flight.clone();
                         in_flight.fetch_add(1, Ordering::SeqCst);
                         tokio::spawn(async move {
                             let _guard = InFlightGuard(in_flight2);
+                            let command_timeout = Duration::from_secs(
+                                ctx.config.read().await.bot.command_timeout_secs,
+                            );
                             if tokio::time::timeout(
                                 command_timeout,
                                 handle_command(ctx, qq_msg, resp_tx.clone(), irc_nickname),

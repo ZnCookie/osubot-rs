@@ -299,7 +299,7 @@ pub struct UpstreamConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
-/// 热重载时会从新 TOML 解析的部分，遗留字段（osu/bot/database/irc）保持旧值不变。
+/// 热重载时会从新 TOML 解析的部分，遗留字段（osu/database/irc）保持旧值不变。
 /// 每新增一个可重载字段，或新增遗留不可变字段时，需同步更新 reload.rs 中的构造。
 #[derive(Debug, Deserialize, Clone)]
 pub struct MutableConfig {
@@ -313,6 +313,7 @@ pub struct MutableConfig {
     pub upstream: UpstreamConfig,
     #[serde(default)]
     pub plugin: PluginConfig,
+    pub bot: BotConfig,
 }
 
 impl Config {
