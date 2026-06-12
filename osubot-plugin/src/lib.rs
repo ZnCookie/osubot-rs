@@ -498,13 +498,6 @@ impl PluginManager {
             PluginInstance::new(&self.engine, &self.linker, module, params.clone(), store)?;
         instance.set_instance_idx(idx);
 
-        // 更新 on_message 索引
-        if instance.has_export("on_message") {
-            self.on_message_indices.insert(idx);
-        } else {
-            self.on_message_indices.remove(&idx);
-        }
-
         if let Err(e) = instance.on_load() {
             // on_load 中可能已注册 tick，失败后需清理残留
             let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
@@ -512,16 +505,18 @@ impl PluginManager {
                 e.into_inner()
             });
             registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
-            // 清理 command_map 中指向该 idx 的旧条目，避免 stale 引用
-            for indices in self.command_map.values_mut() {
-                indices.retain(|i| *i != idx);
-            }
-            // 递增重载失败计数
+            // 旧实例仍然有效，不清理 command_map / on_message_indices
             self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
             return Err(e);
         }
 
-        // 成功路径：重建 command_map
+        // 成功路径：更新 on_message 索引并重建 command_map
+        if instance.has_export("on_message") {
+            self.on_message_indices.insert(idx);
+        } else {
+            self.on_message_indices.remove(&idx);
+        }
+
         for indices in self.command_map.values_mut() {
             indices.retain(|i| *i != idx);
         }
