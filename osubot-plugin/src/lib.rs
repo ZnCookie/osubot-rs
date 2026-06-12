@@ -49,6 +49,7 @@ pub struct PluginManager {
     tick_registry: Arc<Mutex<Vec<(usize, String, u64, u32)>>>,
     on_message_indices: HashSet<usize>,
     lost_instances: Vec<u32>,
+    reload_failures: Vec<u32>,
     engine: Engine,
     linker: Linker<HostServices>,
     modules: Vec<Module>,
@@ -245,6 +246,7 @@ impl PluginManager {
         };
 
         let lost_instances = vec![0u32; instances.len()];
+        let reload_failures = vec![0u32; instances.len()];
 
         Ok(Self {
             instances,
@@ -252,6 +254,7 @@ impl PluginManager {
             tick_registry,
             on_message_indices,
             lost_instances,
+            reload_failures,
             engine,
             linker,
             modules,
@@ -460,6 +463,18 @@ impl PluginManager {
     }
 
     pub fn reload_instance(&mut self, idx: usize) -> Result<(), String> {
+        // 连续重载失败保护：超过阈值则拒绝重载，需手动干预
+        let consecutive = self.reload_failures.get(idx).copied().unwrap_or(0);
+        if consecutive >= 3 {
+            warn!(
+                idx,
+                consecutive, "plugin reload failed too many times, manual reload required"
+            );
+            return Err(format!(
+                "plugin reload failed too many times ({consecutive}), manual reload required"
+            ));
+        }
+
         let module = self
             .modules
             .get(idx)
@@ -497,10 +512,27 @@ impl PluginManager {
                 e.into_inner()
             });
             registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
+            // 清理 command_map 中指向该 idx 的旧条目，避免 stale 引用
+            for indices in self.command_map.values_mut() {
+                indices.retain(|i| *i != idx);
+            }
+            // 递增重载失败计数
+            self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
             return Err(e);
         }
+
+        // 成功路径：重建 command_map
+        for indices in self.command_map.values_mut() {
+            indices.retain(|i| *i != idx);
+        }
+        let metadata = instance.metadata();
+        for cmd in metadata.commands.iter() {
+            self.command_map.entry(cmd.clone()).or_default().push(idx);
+        }
+
         self.instances[idx] = Some(instance);
         self.lost_instances[idx] = 0;
+        self.reload_failures[idx] = 0;
         Ok(())
     }
 
@@ -596,6 +628,7 @@ impl PluginManager {
         self.wasm_paths.clear();
         self.wasm_mtimes.clear();
         self.lost_instances.clear();
+        self.reload_failures.clear();
         self.on_message_indices.clear();
         self.command_map.clear();
     }
@@ -762,6 +795,7 @@ impl PluginManager {
             self.modules.push(module);
             self.instance_params.push(params);
             self.lost_instances.push(0);
+            self.reload_failures.push(0);
             let wasm_mtime = std::fs::metadata(&wasm_path)
                 .ok()
                 .and_then(|m| m.modified().ok());
@@ -849,6 +883,7 @@ impl PluginManager {
                 self.modules[*idx] = module;
                 self.instance_params[*idx] = params;
                 self.lost_instances[*idx] = 0;
+                self.reload_failures[*idx] = 0;
                 let wasm_mtime = std::fs::metadata(&wasm_path)
                     .ok()
                     .and_then(|m| m.modified().ok());
@@ -900,6 +935,7 @@ impl PluginManager {
         self.wasm_paths = filter_by_mask!(&mut self.wasm_paths);
         self.wasm_mtimes = filter_by_mask!(&mut self.wasm_mtimes);
         self.lost_instances = filter_by_mask!(&mut self.lost_instances);
+        self.reload_failures = filter_by_mask!(&mut self.reload_failures);
 
         for indices in self.command_map.values_mut() {
             let mut retained = Vec::with_capacity(indices.len());
@@ -1797,6 +1833,127 @@ mod tests {
                 PluginAction::Handled(_)
             ),
             "plugin should still work after priority reload"
+        );
+
+        rt.block_on(pm.shutdown());
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_reload_instance_rebuilds_command_map() {
+        let wasm_path = match find_hello_plugin_wasm() {
+            Some(p) => p,
+            None => {
+                eprintln!("wasm32-unknown-unknown target not available, skipping");
+                return;
+            }
+        };
+
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        let _guard = rt.enter();
+        let services = make_services(&rt);
+        let config = PluginConfigInput {
+            dir: ".".to_string(),
+            instances: vec![PluginInstanceConfig {
+                name: "hello".to_string(),
+                path: wasm_path,
+                enabled: true,
+                priority: 0,
+                config: None,
+            }],
+        };
+
+        let mut pm = rt
+            .block_on(PluginManager::new(&config, services))
+            .expect("PluginManager::new failed");
+
+        // Verify initial command_map state
+        assert!(
+            pm.command_map.contains_key("!ping"),
+            "!ping should be in command_map after load"
+        );
+        assert!(
+            pm.command_map.contains_key("!hello"),
+            "!hello should be in command_map after load"
+        );
+
+        // Reload the instance
+        pm.reload_instance(0)
+            .expect("reload_instance should succeed");
+
+        // Verify command_map still contains the plugin's commands
+        assert!(
+            pm.command_map.contains_key("!ping"),
+            "!ping should still be in command_map after reload_instance"
+        );
+        assert!(
+            pm.command_map.contains_key("!hello"),
+            "!hello should still be in command_map after reload_instance"
+        );
+
+        let ping_indices = pm.command_map.get("!ping").unwrap();
+        assert_eq!(ping_indices.len(), 1, "!ping should have exactly 1 entry");
+        assert_eq!(ping_indices[0], 0, "!ping entry should point to index 0");
+
+        // Verify the plugin still works
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let action = rt.block_on(pm.handle_command("!ping", cmd_json));
+        assert!(
+            matches!(action, PluginAction::Handled(_)),
+            "!ping should still work after reload_instance, got {action:?}"
+        );
+
+        rt.block_on(pm.shutdown());
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_reload_instance_failure_cap() {
+        let wasm_path = match find_hello_plugin_wasm() {
+            Some(p) => p,
+            None => {
+                eprintln!("wasm32-unknown-unknown target not available, skipping");
+                return;
+            }
+        };
+
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        let _guard = rt.enter();
+        let services = make_services(&rt);
+        let config = PluginConfigInput {
+            dir: ".".to_string(),
+            instances: vec![PluginInstanceConfig {
+                name: "hello".to_string(),
+                path: wasm_path,
+                enabled: true,
+                priority: 0,
+                config: None,
+            }],
+        };
+
+        let mut pm = rt
+            .block_on(PluginManager::new(&config, services))
+            .expect("PluginManager::new failed");
+
+        // Set reload_failures to 3 (at cap)
+        pm.reload_failures[0] = 3;
+
+        // reload_instance should return Err due to too many failures
+        let result = pm.reload_instance(0);
+        assert!(
+            result.is_err(),
+            "reload_instance should return Err when reload_failures >= 3"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("too many times"),
+            "error message should mention 'too many times', got: {err_msg}"
+        );
+
+        // Verify the instance is still present (not replaced)
+        assert!(
+            pm.instances[0].is_some(),
+            "instance should still be present after capped reload attempt"
         );
 
         rt.block_on(pm.shutdown());

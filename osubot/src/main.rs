@@ -2982,5 +2982,14 @@ async fn main() {
         tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
         reconnect_delay = (reconnect_delay * 2).min(60);
     }
+
+    // Shutdown plugin instances on SIGINT (calls on_unload hooks)
+    {
+        let mut guard = pm.lock().await;
+        if let Some(ref mut mgr) = *guard {
+            mgr.shutdown().await;
+        }
+    }
+
     scheduler.shutdown();
 }

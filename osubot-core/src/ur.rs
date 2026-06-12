@@ -242,24 +242,20 @@ fn extract_raw_replay_frames(osr_bytes: &[u8]) -> Option<Vec<(i32, f32, f32, u32
 
 /// Apply osu! lazer's time Correction B and strip lazer marker frames.
 ///
-/// osu! lazer `LegacyScoreDecoder` applies Correction B *before* stripping
-/// lazer markers `(256, -500)`, ensuring the first real frame's timing stays
-/// consistent. The upstream replay decoder strips markers without this correction,
-/// corrupting the first frame's delta. We re-implement both steps here.
+/// Correction B (from osu! lazer `LegacyScoreDecoder`):
+///   if frame[0].time > frame[2].time:
+///       frame[0].time = frame[1].time = frame[2].time
 ///
-/// Returns corrected `(delta, keys)` pairs ready for key-time extraction.
-fn parse_corrected_replay_deltas(osr_bytes: &[u8]) -> Option<Vec<(i32, u32)>> {
-    let mut frames = extract_raw_replay_frames(osr_bytes)?;
-
+/// Then strips leading lazer marker frames at position (256, -500).
+/// Returns the corrected frames (absolute time, x, y, keys).
+fn apply_correction_b_and_strip_markers(
+    mut frames: Vec<(i32, f32, f32, u32)>,
+) -> Vec<(i32, f32, f32, u32)> {
     if frames.len() < 3 {
-        return None;
+        return frames;
     }
 
-    // Correction B (from osu! lazer `LegacyScoreDecoder`):
-    //   if frame[0].time > frame[2].time:
-    //       frame[0].time = frame[1].time = frame[2].time
-    // This aligns lazer marker frames with the first real frame so that
-    // stripping them does not break the delta chain.
+    // Correction B: align lazer marker frames with the first real frame
     if frames[0].0 > frames[2].0 {
         let new_time = frames[2].0;
         frames[0].0 = new_time;
@@ -267,11 +263,27 @@ fn parse_corrected_replay_deltas(osr_bytes: &[u8]) -> Option<Vec<(i32, u32)>> {
     }
 
     // Strip lazer marker frames at position (256, -500).
-    // These are injected by the osu! API / lazer replay encoder and carry
-    // no gameplay information.
     while !frames.is_empty() && frames[0].1 == 256.0 && frames[0].2 == -500.0 {
         frames.remove(0);
     }
+
+    frames
+}
+
+/// Parse corrected replay deltas from raw .osr bytes.
+///
+/// Extracts raw frames, applies Correction B and strips lazer markers,
+/// then converts absolute times to deltas.
+///
+/// Returns corrected `(delta, keys)` pairs ready for key-time extraction.
+fn parse_corrected_replay_deltas(osr_bytes: &[u8]) -> Option<Vec<(i32, u32)>> {
+    let frames = extract_raw_replay_frames(osr_bytes)?;
+
+    if frames.len() < 3 {
+        return None;
+    }
+
+    let frames = apply_correction_b_and_strip_markers(frames);
 
     if frames.is_empty() {
         return None;
@@ -815,5 +827,69 @@ mod tests {
         let (key_times, offset) = extract_key_times_from_deltas(&deltas).unwrap();
         assert_eq!(offset, 10001.0);
         assert_eq!(key_times, vec![50.0]);
+    }
+
+    // === skip_osu_string tests ===
+
+    #[test]
+    fn test_skip_osu_string_empty_marker() {
+        assert_eq!(skip_osu_string(&[0x00], 0), Some(1));
+        assert_eq!(skip_osu_string(&[0x00, 0xFF], 0), Some(1));
+    }
+
+    #[test]
+    fn test_skip_osu_string_short_string() {
+        let data = [0x0b, 0x05, b'h', b'e', b'l', b'l', b'o'];
+        assert_eq!(skip_osu_string(&data, 0), Some(7));
+    }
+
+    #[test]
+    fn test_skip_osu_string_uleb128_long_length() {
+        let mut data = vec![0x0b, 0x82, 0x01];
+        data.extend(std::iter::repeat(0xAA).take(130));
+        assert_eq!(skip_osu_string(&data, 0), Some(133));
+    }
+
+    #[test]
+    fn test_skip_osu_string_invalid() {
+        assert_eq!(skip_osu_string(&[0x05], 0), None);
+        assert_eq!(skip_osu_string(&[], 0), None);
+        assert_eq!(skip_osu_string(&[0x0b], 0), None);
+    }
+
+    // === apply_correction_b_and_strip_markers tests ===
+
+    #[test]
+    fn test_correction_b_fires_when_first_frame_after_third() {
+        let frames = vec![
+            (1000, 256.0, -500.0, 0),
+            (1000, 256.0, -500.0, 0),
+            (100, 50.0, 50.0, 1),
+            (200, 60.0, 60.0, 0),
+        ];
+        let result = apply_correction_b_and_strip_markers(frames);
+        assert_eq!(result, vec![(100, 50.0, 50.0, 1), (200, 60.0, 60.0, 0)]);
+    }
+
+    #[test]
+    fn test_correction_b_no_fire_when_times_normal() {
+        let frames = vec![
+            (50, 256.0, -500.0, 0),
+            (60, 256.0, -500.0, 0),
+            (100, 50.0, 50.0, 1),
+        ];
+        let result = apply_correction_b_and_strip_markers(frames);
+        assert_eq!(result, vec![(100, 50.0, 50.0, 1)]);
+    }
+
+    #[test]
+    fn test_marker_strip_only_at_head() {
+        let frames = vec![
+            (0, 256.0, -500.0, 0),
+            (10, 50.0, 50.0, 1),
+            (20, 256.0, -500.0, 0),
+        ];
+        let result = apply_correction_b_and_strip_markers(frames);
+        assert_eq!(result, vec![(10, 50.0, 50.0, 1), (20, 256.0, -500.0, 0)]);
     }
 }

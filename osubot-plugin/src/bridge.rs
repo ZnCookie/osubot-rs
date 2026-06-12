@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use wasmtime::Result as WasmResult;
@@ -7,6 +8,9 @@ use wasmtime::{Caller, Linker, StoreLimits};
 // 插件可以发送消息到任意群、发起任意 HTTP 请求、查询任意绑定——
 // 这些能力是功能而非漏洞。部署者需自行审查插件行为，对插件的操作后果负责。
 // 宿主仅提供进程级保护（wasmtime 沙箱 + 限流 + 超时），不做应用层权限控制。
+
+/// HTTP 响应体最大大小限制（10MB），防止恶意或意外的大响应耗尽进程内存。
+const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -154,13 +158,11 @@ fn send_msg_with_timeout(
     let rt = services.runtime_handle.clone();
     tokio::task::block_in_place(|| {
         rt.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                tokio::task::spawn_blocking(move || send_fn(group_id, message)),
-            )
+            tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+                send_fn(group_id, message)
+            })
             .await
             .map_err(|_| BridgeError::SendMsg("消息发送超时 (5s)".into()))?
-            .map_err(|e| BridgeError::SendMsg(format!("spawn_blocking: {e}")))?
             .map_err(BridgeError::SendMsg)
         })
     })
@@ -210,14 +212,44 @@ fn dispatch_host_call(
                     "请求过于频繁，请稍后再试".to_string(),
                 ));
             }
-            let body = services
+            let mut response = services
                 .blocking_http_client
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(30))
                 .send()
-                .map_err(|e| BridgeError::HttpRequest(format!("HTTP request failed: {e}")))?
-                .text()
-                .map_err(|e| BridgeError::HttpRequest(format!("read response: {e}")))?;
+                .map_err(|e| BridgeError::HttpRequest(format!("HTTP request failed: {e}")))?;
+
+            // 检查 Content-Length 头，提前拒绝超大响应
+            if let Some(len) = response.content_length() {
+                if len as usize > MAX_HTTP_RESPONSE_BYTES {
+                    return Err(BridgeError::HttpRequest(format!(
+                        "HTTP response exceeds {}MB limit (Content-Length: {} bytes)",
+                        MAX_HTTP_RESPONSE_BYTES / (1024 * 1024),
+                        len
+                    )));
+                }
+            }
+
+            // 流式读取响应体，限制最大 10MB
+            let mut body = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = response
+                    .read(&mut buf)
+                    .map_err(|e| BridgeError::HttpRequest(format!("read response: {e}")))?;
+                if n == 0 {
+                    break;
+                }
+                if body.len() + n > MAX_HTTP_RESPONSE_BYTES {
+                    return Err(BridgeError::HttpRequest(format!(
+                        "HTTP response exceeds {}MB limit",
+                        MAX_HTTP_RESPONSE_BYTES / (1024 * 1024)
+                    )));
+                }
+                body.extend_from_slice(&buf[..n]);
+            }
+            let body = String::from_utf8(body)
+                .map_err(|e| BridgeError::HttpRequest(format!("invalid UTF-8 in response: {e}")))?;
             Ok(body)
         }
         "db_get_binding" => {
