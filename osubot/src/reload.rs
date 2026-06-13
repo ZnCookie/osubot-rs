@@ -391,7 +391,11 @@ impl ReloadCoordinator {
     }
 
     async fn restart_irc(&self, irc_cfg: &crate::config::IrcConfig) {
-        let mut guard = self.handle.irc_handle.lock().unwrap();
+        let mut guard = self
+            .handle
+            .irc_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(old) = guard.take() {
             old.abort();
         }

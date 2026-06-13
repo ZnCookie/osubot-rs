@@ -75,9 +75,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     // 查询他人 via QQ mention: 查@<QQ用户> [, 模式]
     if msg.starts_with('查') {
         if let Some(qq) = mentioned_user_id {
-            let rest = msg
-                .strip_prefix('查')
-                .expect("guarded by msg.starts_with('查') above");
+            let rest = msg.strip_prefix('查').unwrap();
             let rest = rest.trim_start_matches(',').trim().trim_start_matches(',');
             let mode = if rest.is_empty() {
                 GameMode::Osu

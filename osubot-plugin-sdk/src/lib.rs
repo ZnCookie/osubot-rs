@@ -134,6 +134,17 @@ pub unsafe fn dealloc(ptr: *mut u8, size: u32) {
     alloc::alloc::dealloc(ptr, layout);
 }
 
+/// 将 T 序列化为 JSON，在堆上分配长度为 4 + json.len() 的缓冲区，
+/// 前 4 字节为小端长度前缀，后续为 JSON 字节。
+///
+/// # Safety
+///
+/// 调用方必须确保返回的指针在不再使用时通过 [`dealloc`] 释放。
+/// 返回空指针表示内存分配失败。
+///
+/// # 用途
+///
+/// 此函数设计为从 `extern "C"` 导出函数中使用，返回值直接传给宿主的线性内存读取协议。
 pub fn serialize_return<T: serde::Serialize>(val: &T) -> *const u8 {
     let json = serde_json::to_string(val)
         .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"));

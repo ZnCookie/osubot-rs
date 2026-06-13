@@ -673,6 +673,9 @@ impl PluginManager {
         self.reload_failures.clear();
         self.on_message_indices.clear();
         self.command_map.clear();
+        if let Ok(mut reg) = self.tick_registry.lock() {
+            reg.clear();
+        }
     }
 
     pub async fn reload_all(&mut self, new_config: &PluginConfigInput) -> Result<(), String> {
@@ -799,13 +802,22 @@ impl PluginManager {
                 }
             };
 
-            let module = Module::from_file(&self.engine, &wasm_path).map_err(|e| {
-                warn!(name = %pcfg.name, "WASM 编译失败: {e}");
-                e.to_string()
-            })?;
+            let module = match Module::from_file(&self.engine, &wasm_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(name = %pcfg.name, "WASM 编译失败，跳过: {e}");
+                    continue;
+                }
+            };
 
             let sorted_idx = self.instances.len();
-            let (mut instance, params) = self.build_instance(sorted_idx, pcfg, &module)?;
+            let (mut instance, params) = match self.build_instance(sorted_idx, pcfg, &module) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(name = %pcfg.name, "实例构建失败，跳过: {e}");
+                    continue;
+                }
+            };
 
             if let Err(e) = instance.on_load() {
                 warn!(name = %pcfg.name, "on_load 失败: {e}");
@@ -866,7 +878,13 @@ impl PluginManager {
                 };
 
                 // 先验证新实例能否构建和加载，再卸载旧实例
-                let (mut instance, params) = self.build_instance(*idx, pcfg, &module)?;
+                let (mut instance, params) = match self.build_instance(*idx, pcfg, &module) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(name = %pcfg.name, "实例构建失败，跳过重载: {e}");
+                        continue;
+                    }
+                };
 
                 let has_unload = self.instances[*idx]
                     .as_mut()
@@ -1142,12 +1160,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_due_ticks() {
-        assert!(
-            true,
-            "tick interval scheduling is handled in the main binary tick loop"
-        );
-    }
+    #[ignore = "tick interval scheduling is handled in the main binary tick loop"]
+    fn test_get_due_ticks() {}
 
     fn find_hello_plugin_wasm() -> Option<String> {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;

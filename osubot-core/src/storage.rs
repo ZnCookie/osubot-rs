@@ -440,11 +440,12 @@ impl Storage {
             return Ok(None);
         }
 
+        // SAFETY: candidates is non-empty (guarded by is_empty() check above)
         Ok(Some(
             candidates
                 .into_iter()
                 .min_by_key(|(dt, _)| (*dt - target_time).num_seconds().unsigned_abs() as i64)
-                .expect("candidates is non-empty; guarded by is_empty() check above"),
+                .unwrap(),
         ))
     }
 
