@@ -499,6 +499,23 @@ impl Storage {
             .collect())
     }
 
+    pub async fn get_baseline_snapshot(
+        &self,
+        user_id: i64,
+        mode: GameMode,
+    ) -> DbResult<Option<UserStats>> {
+        let all = self.get_snapshots_within_hours(user_id, mode, 36).await?;
+        if all.is_empty() {
+            return Ok(None);
+        }
+        let now = Utc::now();
+        let target = now - chrono::TimeDelta::hours(24);
+        Ok(all
+            .into_iter()
+            .min_by_key(|(dt, _)| (*dt - target).num_seconds().unsigned_abs())
+            .map(|(_, stats)| stats))
+    }
+
     pub async fn get_closest_snapshot_to_hours_ago(
         &self,
         user_id: i64,

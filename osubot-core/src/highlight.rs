@@ -3,6 +3,7 @@ use crate::storage::Storage;
 use crate::types::GameMode;
 use crate::OauthTokenCache;
 use crate::RateLimiter;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Highlight result for a single user
@@ -60,18 +61,27 @@ pub async fn get_highlight(
     use tokio::task::JoinSet;
 
     let user_ids: Vec<i64> = user_data.iter().map(|(_, user_id, _)| *user_id).collect();
-    let baselines = storage
+    let baselines = match storage
         .get_baseline_snapshots_for_users(&user_ids, mode, 24, 36)
         .await
-        .map_err(|e| {
+    {
+        Ok(map) => map,
+        Err(e) => {
             tracing::warn!(
                 ?e,
                 ?mode,
                 user_count = user_ids.len(),
-                "batch baseline snapshot query failed"
+                "batch baseline snapshot query failed, falling back to per-user queries"
             );
-            HighlightError::Storage(e)
-        })?;
+            let mut map = HashMap::new();
+            for (_, user_id, _) in user_data {
+                if let Ok(Some(s)) = storage.get_baseline_snapshot(*user_id, mode).await {
+                    map.insert(*user_id, s);
+                }
+            }
+            map
+        }
+    };
 
     let semaphore = Arc::new(Semaphore::new(8)); // max 8 concurrent API calls
     let mut join_set = JoinSet::new();
