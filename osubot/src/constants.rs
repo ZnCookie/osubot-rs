@@ -1,8 +1,7 @@
-/// 命令处理超时（秒）
-pub const COMMAND_TIMEOUT_SECS: u64 = 120;
-/// 渲染超时（秒）
-pub const RENDER_TIMEOUT_SECS: u64 = 30;
-/// OneBot API 请求超时（秒）
-pub const ONEBOT_API_TIMEOUT_SECS: u64 = 5;
-/// UR 计算超时（秒）
-pub const UR_TIMEOUT_SECS: u64 = 10;
+// 超时常量已全部迁移到 `osubot.toml` 的 `[bot]` 段配置。
+// 命令/渲染/UR/OneBot API 超时均可在配置中调整。
+
+/// WebSocket 保活 ping 间隔（秒）
+pub const PING_INTERVAL_SECS: u64 = 30;
+/// 重连时等待 tick loop 完成的超时（秒），需大于插件 dispatch 超时（10s）
+pub const TICK_HANDLE_SHUTDOWN_SECS: u64 = 15;

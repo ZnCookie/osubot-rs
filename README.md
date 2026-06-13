@@ -136,6 +136,33 @@ bind = true       # 绑定、解绑
 highlight = false  # 该群禁用今日高光
 ```
 
+### 插件配置
+
+WASM 插件目录和实例配置：
+
+```toml
+[plugin]
+dir = "./plugins"
+
+[[plugin.instances]]
+name = "my-plugin"
+path = "my_plugin.wasm"
+enabled = false     # 默认禁用，需显式启用
+priority = 50       # 优先级（数字越大越先执行）
+```
+
+### 超时配置
+
+`[bot]` 段支持以下超时字段（均可热重载）：
+
+```toml
+[bot]
+# command_timeout_secs = 120   # 命令处理超时（秒）
+# render_timeout_secs = 30     # 渲染超时（秒）
+# onebot_api_timeout_secs = 5  # OneBot API 请求超时（秒）
+# ur_timeout_secs = 10         # UR 计算超时（秒）
+```
+
 ## 用户安装要求
 
 发行包自带所有 C 运行时库（librsvg、cairo、glib2、pango），无需手动安装。唯一需要的是字体：
@@ -202,9 +229,10 @@ osubot-rs/
 │       ├── config.rs   # TOML 配置加载
 │       ├── constants.rs # 超时常量定义
 │       ├── last_beatmap_cache.rs # 群谱面查询缓存
+│       ├── reload.rs    # 热重载（文件监控 + drain + MutableConfig）
+│       ├── scheduler.rs # 后台定时更新调度器
 │       ├── xfs_upstream.rs # 消防栓上游绑定查询
-│       ├── yumu_upstream.rs # yumu 上游绑定查询
-│       └── scheduler.rs # 后台定时更新调度器
+│       └── yumu_upstream.rs # yumu 上游绑定查询
 ├── osubot-core/        # 核心库
 │   └── src/
 │       ├── commands.rs  # 命令解析
@@ -231,8 +259,24 @@ osubot-rs/
 │   │   └── error.rs     # 错误类型
 │   └── styles/
 │       ├── score.css    # 分数卡片样式（MD3）
+│       ├── score_list.css # 成绩列表卡片样式
 │       └── profile.css  # 个人主页样式
-└── osubot-types/       # 共享类型（Score、GameMode、格式化工具）
+├── osubot-plugin/      # WASM 插件运行时
+│   └── src/
+│       ├── lib.rs       # PluginManager（加载/调度/热重载）
+│       ├── bridge.rs    # 宿主函数（HostServices + 7 种宿主调用分发）
+│       ├── instance.rs  # PluginInstance（wasmtime 封装）
+│       ├── config.rs    # 插件配置 TOML 反序列化
+│       └── types.rs     # PluginAction/PluginMetadata
+├── osubot-plugin-sdk/  # WASM 插件 SDK（编译到 wasm32-unknown-unknown 或 wasm32-wasip1，无 WASI 依赖），供插件作者使用
+│   └── src/
+│       ├── lib.rs       # 宿主调用封装 + alloc/dealloc
+│       └── types.rs     # PluginMetadata、PluginAction、Command
+├── osubot-types/       # 共享类型（Score、GameMode）
+├── examples/
+│   └── hello-plugin/   # 示例插件
+└── docs/
+    └── plugin-development.md # 插件开发文档
 ```
 
 ### 调度器
@@ -256,6 +300,64 @@ osubot-rs/
 ### 请求去重与限流
 
 并发的相同请求（如多人同时查询同一用户）通过 `RequestDedup` 只执行一次 API 调用。所有 osu! API 请求经过令牌桶限流（60 突发/1 每秒），防止触发 API 速率限制。上游绑定查询也经过独立令牌桶限流（默认 10/分钟），防止频繁连接上游服务器。
+
+## 插件系统
+
+osubot 支持通过 WASM 动态加载插件扩展功能。每个插件编译为独立的 `.wasm` 文件，通过 wasmtime 运行，与主程序完全隔离——崩溃、死循环、内存越界均不影响主程序运行。
+
+### 文档
+
+插件开发指南见 [`docs/plugin-development.md`](docs/plugin-development.md)，包含完整的 SDK 接口参考、类型定义、开发流程和版本兼容性保证。
+
+### 事件调度
+
+```
+收到群消息
+  │
+  ├─→ on_message (遍历所有插件，按优先级)
+  │     ├─ Handled → 使用响应，结束
+  │     ├─ Intercepted → 结束
+  │     └─ Next → 继续下一个插件
+  │
+  ├─→ parse_command 解析为 Command
+  │
+  ├─→ on_command (只通知声明了该命令的插件)
+  │     ├─ Handled → 使用响应，结束
+  │     ├─ Intercepted → 结束
+  │     └─ Next → 执行默认处理器
+  │
+  └─→ 默认处理器（osubot 内置功能）
+```
+
+### 热重载
+
+- 配置文件（`osubot.toml`）或 `.wasm` 文件变更时自动热重载
+- `notify` 文件监控 + 500ms 防抖，避免频繁触发
+- 热重载时等待进行中的命令完成（drain 机制，最长 30 秒），然后原子切换状态
+- 插件实例重建，内存状态丢失（建议通过宿主函数持久化数据）
+
+### 故障隔离
+
+- 每个插件调用有 10 秒超时（tokio::timeout），epoch 中断作为 30 秒最后防线
+- 内存上限 100MB（wasmtime StoreLimits）
+- 连续 5 次错误/超时/panic 自动重载插件实例
+
+### 快速开始
+
+```bash
+# 安装 WASM 目标（SDK 无 WASI 依赖，两个目标均可，推荐 wasm32-unknown-unknown）
+rustup target add wasm32-unknown-unknown
+
+# 依赖 SDK
+cargo add osubot-plugin-sdk --git https://github.com/ZnCookie/osubot-rs
+
+# 编译为 .wasm
+cargo build --target wasm32-unknown-unknown --release
+```
+
+### 示例
+
+`examples/hello-plugin/` 是一个完整的示例插件，响应 `!hello`、`!ping` 命令，演示 `on_load`、`on_message`、`on_tick`、`on_unload` 生命周期钩子的使用。
 
 ## 许可
 

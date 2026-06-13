@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use rand::Rng;
+use rand::RngExt;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
@@ -40,8 +40,8 @@ impl XfsUpstream {
         // Use random self_id when not explicitly configured, to avoid
         // identity conflicts with other connected OneBot clients.
         let self_id = cfg.self_id.unwrap_or_else(|| {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(100000000..999999999i64)
+            let mut rng = rand::rng();
+            rng.random_range(100000000..999999999i64)
         });
 
         Self {
@@ -66,12 +66,12 @@ impl UpstreamBindingProvider for XfsUpstream {
             .map_err(|_| "rate limited")?;
 
         let group_id: i64 = {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1000000000..9999999999i64)
+            let mut rng = rand::rng();
+            rng.random_range(1000000000..9999999999i64)
         };
         let message_id: i32 = {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1..i32::MAX)
+            let mut rng = rand::rng();
+            rng.random_range(1..i32::MAX)
         };
 
         let mut request = match self.url.as_str().into_client_request() {
@@ -81,25 +81,24 @@ impl UpstreamBindingProvider for XfsUpstream {
                 return Ok(None);
             }
         };
-        request.headers_mut().insert(
-            "X-Self-ID",
-            self.self_id
-                .to_string()
-                .parse()
-                .expect("self_id should be a valid header value"),
-        );
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {}", self.access_token)
-                .parse()
-                .expect("access_token should be a valid header value"),
-        );
-        request.headers_mut().insert(
-            "X-Client-Role",
-            "Universal"
-                .parse()
-                .expect("literal 'Universal' should be a valid header value"),
-        );
+        if let Ok(val) = self.self_id.to_string().parse() {
+            request.headers_mut().insert("X-Self-ID", val);
+        } else {
+            warn!("xfs: invalid self_id header value");
+            return Ok(None);
+        }
+        if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
+            request.headers_mut().insert("Authorization", val);
+        } else {
+            warn!("xfs: invalid access_token header value");
+            return Ok(None);
+        }
+        if let Ok(val) = "Universal".parse() {
+            request.headers_mut().insert("X-Client-Role", val);
+        } else {
+            warn!("xfs: invalid X-Client-Role header value");
+            return Ok(None);
+        }
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,
@@ -130,8 +129,6 @@ impl UpstreamBindingProvider for XfsUpstream {
         debug!(target: "xfs_upstream", %event, "计划请求");
 
         let event_str = event.to_string();
-        #[cfg(test)]
-        eprintln!("[xfs] send: {}", event_str);
         debug!(target: "xfs_upstream", text = %event_str, "实际发送");
         let deadline = Instant::now() + self.timeout;
 
@@ -163,8 +160,6 @@ impl UpstreamBindingProvider for XfsUpstream {
                 Err(_) => continue,
             };
 
-            #[cfg(test)]
-            eprintln!("[xfs] recv: {}", text);
             debug!(target: "xfs_upstream", %text, "服务器返回");
 
             let action: SendAction = match serde_json::from_str(text) {
@@ -263,7 +258,7 @@ mod integration_tests {
         );
         let binding = result.unwrap();
         if binding.is_none() {
-            eprintln!(
+            tracing::info!(
                 "NOTE: relay responded but osu! API resolution failed (no credentials in test)"
             );
         }

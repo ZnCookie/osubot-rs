@@ -9,14 +9,16 @@ use crate::types::{GameMode, UserChange, UserStats};
 pub fn today_0am_utc() -> i64 {
     let local_now = chrono::Local::now();
     let today_local = local_now.date_naive();
-    let today_0am_local = today_local.and_hms_opt(0, 0, 0).unwrap();
+    let today_0am_local = today_local
+        .and_hms_opt(0, 0, 0)
+        .expect("00:00:00 is always a valid NaiveTime");
     // .single() returns None when midnight doesn't exist (DST spring-forward)
     // or is ambiguous (DST fall-back); fall back to 1:00 AM in that case.
     let dt = Local
         .from_local_datetime(&today_0am_local)
         .single()
         .unwrap_or_else(|| {
-            let fallback = today_0am_local + chrono::Duration::hours(1);
+            let fallback = today_0am_local + chrono::TimeDelta::hours(1);
             Local
                 .from_local_datetime(&fallback)
                 .earliest()
@@ -29,73 +31,9 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
-/// Check if the database has the old (username-based) schema
-fn has_old_schema(conn: &Connection) -> SqlResult<bool> {
-    // Check if user_bindings exists and has osu_username column (old schema marker)
-    let mut stmt = conn.prepare("PRAGMA table_info(user_bindings)")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let col_name: String = row.get(1)?;
-        if col_name == "osu_username" {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Migrate from old username-based schema to user_id-based schema.
-fn migrate_old_schema(conn: &Connection) -> SqlResult<()> {
-    tracing::info!("Detected old database schema, migrating...");
-
-    // Migrate user_bindings: map osu_username → user_id via osu_user_ids cache
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS user_bindings_new (
-            qq INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            current_username TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        INSERT INTO user_bindings_new (qq, user_id, current_username, created_at)
-        SELECT b.qq, COALESCE(o.user_id, 0), b.osu_username, b.created_at
-        FROM user_bindings b
-        LEFT JOIN osu_user_ids o ON LOWER(o.username) = LOWER(b.osu_username);
-        DROP TABLE user_bindings;
-        ALTER TABLE user_bindings_new RENAME TO user_bindings;",
-    )?;
-
-    let unmigrated: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_bindings WHERE user_id = 0",
-        [],
-        |row| row.get(0),
-    )?;
-    if unmigrated > 0 {
-        tracing::warn!(
-            "{} binding(s) could not be migrated (username→user_id lookup failed). These users need to re-bind.",
-            unmigrated
-        );
-    }
-
-    // Drop derived data tables and old indexes — will be recreated below
-    conn.execute_batch(
-        "DROP TABLE IF EXISTS user_stats_history;
-         DROP TABLE IF EXISTS user_play_records;
-         DROP TABLE IF EXISTS user_next_update;
-         DROP TABLE IF EXISTS user_last_update;
-         DROP INDEX IF EXISTS idx_history_user;
-         DROP INDEX IF EXISTS idx_play_records_user;",
-    )?;
-
-    tracing::info!("Schema migration complete.");
-    Ok(())
-}
-
 impl Storage {
     pub fn new<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
-
-        if has_old_schema(&conn)? {
-            migrate_old_schema(&conn)?;
-        }
 
         // Schema: user_bindings (qq → user_id, current_username)
         conn.execute(
@@ -437,7 +375,7 @@ impl Storage {
         hours: i64,
     ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
         self.with_conn(|conn| {
-            let cutoff = Utc::now() - chrono::Duration::hours(hours);
+            let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
             let cutoff_str = cutoff.to_rfc3339();
 
             let mut stmt = conn.prepare(
@@ -491,8 +429,8 @@ impl Storage {
         max_lookback: i64,
     ) -> SqlResult<Option<(DateTime<Utc>, UserStats)>> {
         let now = Utc::now();
-        let target_time = now - chrono::Duration::hours(target_hours_ago);
-        let earliest = now - chrono::Duration::hours(max_lookback);
+        let target_time = now - chrono::TimeDelta::hours(target_hours_ago);
+        let earliest = now - chrono::TimeDelta::hours(max_lookback);
 
         let all = self.get_snapshots_within_hours(user_id, mode, max_lookback)?;
 
@@ -502,6 +440,7 @@ impl Storage {
             return Ok(None);
         }
 
+        // SAFETY: candidates is non-empty (guarded by is_empty() check above)
         Ok(Some(
             candidates
                 .into_iter()
@@ -647,9 +586,15 @@ impl Storage {
             let mut rows = stmt.query(params![user_id, mode as i32])?;
             if let Some(row) = rows.next()? {
                 let ts: i64 = row.get(0)?;
-                return Ok(Some(
-                    Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now),
-                ));
+                return Ok(Some(Utc.timestamp_opt(ts, 0).single().unwrap_or_else(
+                    || {
+                        tracing::warn!(
+                            ts,
+                            "failed to parse next_update timestamp, falling back to now"
+                        );
+                        Utc::now()
+                    },
+                )));
             }
             Ok(None)
         })
@@ -667,6 +612,18 @@ impl Storage {
                 params![user_id, mode as i32, time.timestamp()],
             )?;
             Ok(())
+        })
+    }
+
+    /// Reset all user next_update timestamps to now, so they are re-evaluated
+    /// on the next scheduler tick with the new config intervals.
+    pub fn reset_all_next_updates(&self) -> SqlResult<usize> {
+        self.with_conn(|conn| {
+            let now_ts = Utc::now().timestamp();
+            conn.execute(
+                "UPDATE user_next_update SET next_update = ?1",
+                params![now_ts],
+            )
         })
     }
 
@@ -769,7 +726,7 @@ impl Storage {
     /// Prune expired pending unbind records (older than 5 minutes).
     pub fn prune_expired_pending_unbinds(&self) -> SqlResult<usize> {
         self.with_conn(|conn| {
-            let cutoff = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+            let cutoff = (Utc::now() - chrono::TimeDelta::minutes(5)).to_rfc3339();
             let deleted = conn.execute(
                 "DELETE FROM pending_unbind WHERE created_at < ?1",
                 params![cutoff],
@@ -783,7 +740,7 @@ impl Storage {
     pub fn prune_old_records(&self, retention_days: u64) -> SqlResult<(u64, u64, u64)> {
         self.with_conn(|conn| {
             let retention_i64 = retention_days as i64;
-            let cutoff_stats = Utc::now() - chrono::Duration::days(retention_i64);
+            let cutoff_stats = Utc::now() - chrono::TimeDelta::days(retention_i64);
             let cutoff_stats_str = cutoff_stats.to_rfc3339();
 
             let deleted_stats = conn.execute(
@@ -792,7 +749,7 @@ impl Storage {
             )? as u64;
 
             let cutoff_plays_ts =
-                (Utc::now() - chrono::Duration::days(retention_i64)).timestamp();
+                (Utc::now() - chrono::TimeDelta::days(retention_i64)).timestamp();
 
             let deleted_plays = conn.execute(
                 "DELETE FROM user_play_records WHERE played_at < ?1",
@@ -828,9 +785,11 @@ impl Storage {
         group_id: i64,
         target_username: &str,
     ) -> SqlResult<String> {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let code: String = (0..6).map(|_| rng.gen_range(0..10).to_string()).collect();
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        let code: String = (0..6)
+            .map(|_| rng.random_range(0..10).to_string())
+            .collect();
 
         let now = Utc::now();
         let expires_at = now.timestamp() + 120;
@@ -859,7 +818,10 @@ impl Storage {
                 let created_at_str: String = row.get(4)?;
                 let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(created_at_str, error = %e, "failed to parse pending_bind created_at, falling back to now");
+                        Utc::now()
+                    });
                 Ok(Some(PendingBind {
                     code: row.get(0)?,
                     qq_user_id: row.get(1)?,

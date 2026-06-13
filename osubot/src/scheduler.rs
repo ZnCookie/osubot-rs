@@ -13,14 +13,15 @@ use osubot_core::{
     OauthTokenCache, RateLimiter, Storage,
 };
 
-use crate::config::SchedulerConfig;
+use crate::config::Config;
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct Scheduler {
     storage: Arc<Storage>,
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
-    config: SchedulerConfig,
+    config: Arc<RwLock<Config>>,
     last_cleanup: Arc<TokioMutex<Option<DateTime<Utc>>>>,
     shutdown: Arc<AtomicBool>,
 }
@@ -30,7 +31,7 @@ impl Scheduler {
         storage: Arc<Storage>,
         oauth: Arc<OauthTokenCache>,
         rate_limiter: Arc<RateLimiter>,
-        config: SchedulerConfig,
+        config: Arc<RwLock<Config>>,
     ) -> Self {
         Self {
             storage,
@@ -44,6 +45,7 @@ impl Scheduler {
 
     /// Try to run cleanup if 24h have passed since last run.
     async fn try_cleanup(&self) {
+        let scheduler_cfg = self.config.read().await.scheduler.clone();
         let mut last = self.last_cleanup.lock().await;
         let now = Utc::now();
 
@@ -53,7 +55,7 @@ impl Scheduler {
             }
         }
 
-        match self.storage.prune_old_records(self.config.retention_days) {
+        match self.storage.prune_old_records(scheduler_cfg.retention_days) {
             Ok((stats, plays, next)) => {
                 info!(
                     deleted_stats = stats,
@@ -72,7 +74,10 @@ impl Scheduler {
             Ok(deleted) if deleted > 0 => {
                 info!(deleted, "pruned expired pending binds");
             }
-            _ => {}
+            Ok(_) => {}
+            Err(e) => {
+                error!(error = ?e, "failed to prune expired pending binds");
+            }
         }
 
         // Prune expired pending unbinds
@@ -80,30 +85,37 @@ impl Scheduler {
             Ok(deleted) if deleted > 0 => {
                 info!(deleted, "pruned expired pending unbinds");
             }
-            _ => {}
+            Ok(_) => {}
+            Err(e) => {
+                error!(error = ?e, "failed to prune expired pending unbinds");
+            }
         }
 
-        osubot_render::cleanup_expired(self.config.cache_retention_days).await;
-        osubot_core::cache::cleanup_replays(self.config.cache_retention_days).await;
-        osubot_core::cache::cleanup_beatmaps(self.config.cache_retention_days).await;
+        osubot_render::cleanup_expired(scheduler_cfg.cache_retention_days).await;
+        osubot_core::cache::cleanup_replays(scheduler_cfg.cache_retention_days).await;
+        osubot_core::cache::cleanup_beatmaps(scheduler_cfg.cache_retention_days).await;
 
         *last = Some(now);
     }
 
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
     }
 
     /// Background task entry point - only processes due users/modes
     pub async fn run(&self) {
         info!("Scheduler task started");
         loop {
-            if self.shutdown.load(Ordering::Relaxed) {
+            if self.shutdown.load(Ordering::Acquire) {
                 info!("Scheduler shutting down");
                 break;
             }
             info!("Scheduler tick");
-            time::sleep(time::Duration::from_secs(60 * self.config.interval_minutes)).await;
+            let interval_secs = {
+                let cfg = self.config.read().await;
+                60 * cfg.scheduler.interval_minutes.max(1)
+            };
+            time::sleep(time::Duration::from_secs(interval_secs)).await;
             self.process_due_users().await;
             self.try_cleanup().await;
         }
@@ -123,7 +135,7 @@ impl Scheduler {
         for (user_id, mode) in due {
             let result = self.eval_activity(user_id, mode).await;
             if result.success {
-                self.update_next_time(user_id, mode, result.activity);
+                self.update_next_time(user_id, mode, result.activity).await;
             } else {
                 // Retry on next tick — rate limiter naturally throttles persistent failures
                 let _ = self.storage.set_next_update(user_id, mode, Utc::now());
@@ -297,36 +309,46 @@ impl Scheduler {
     }
 
     /// Return next update interval based on activity
-    fn get_update_interval(&self, activity: UserActivity) -> Duration {
+    async fn get_update_interval(&self, activity: UserActivity) -> Duration {
+        let cfg = self.config.read().await.scheduler.clone();
         match activity {
-            UserActivity::SemiActive => Duration::hours(self.config.semi_active_interval_hours),
-            UserActivity::Normal => Duration::hours(self.config.normal_interval_hours),
-            UserActivity::Inactive => Duration::hours(self.config.inactive_interval_hours),
-            UserActivity::NoRecent => Duration::hours(self.config.no_recent_interval_hours),
-            UserActivity::UserNotExists => {
-                Duration::hours(self.config.user_not_exists_interval_hours)
-            }
+            UserActivity::SemiActive => Duration::hours(cfg.semi_active_interval_hours),
+            UserActivity::Normal => Duration::hours(cfg.normal_interval_hours),
+            UserActivity::Inactive => Duration::hours(cfg.inactive_interval_hours),
+            UserActivity::NoRecent => Duration::hours(cfg.no_recent_interval_hours),
+            UserActivity::UserNotExists => Duration::hours(cfg.user_not_exists_interval_hours),
         }
     }
 
     /// Update user's next update time (called after eval)
-    fn update_next_time(&self, user_id: i64, mode: GameMode, activity: UserActivity) {
-        let interval = self.get_update_interval(activity);
+    async fn update_next_time(&self, user_id: i64, mode: GameMode, activity: UserActivity) {
+        let interval = self.get_update_interval(activity).await;
         let next = Utc::now() + interval;
         let _ = self.storage.set_next_update(user_id, mode, next);
     }
 
     /// Trigger update for user (single mode only)
-    pub fn trigger_update(&self, user_id: i64, mode: GameMode) {
-        if !self.is_in_cooldown(user_id, mode) {
+    pub async fn trigger_update(&self, user_id: i64, mode: GameMode) {
+        if !self.is_in_cooldown(user_id, mode).await {
             let _ = self.storage.set_next_update(user_id, mode, Utc::now());
         }
     }
 
+    pub async fn reschedule_all(&self) {
+        match self.storage.reset_all_next_updates() {
+            Ok(0) => {}
+            Ok(count) => info!(count, "配置变更，已重置所有用户更新排程"),
+            Err(e) => warn!("重置排程失败: {e}"),
+        }
+    }
+
     /// Check if user/mode is in cooldown
-    pub fn is_in_cooldown(&self, user_id: i64, mode: GameMode) -> bool {
+    pub async fn is_in_cooldown(&self, user_id: i64, mode: GameMode) -> bool {
         if let Ok(Some(last_update)) = self.storage.get_last_update(user_id, mode) {
-            let cooldown = Duration::hours(self.config.group_trigger_cooldown_hours);
+            let cooldown = {
+                let cfg = self.config.read().await;
+                Duration::hours(cfg.scheduler.group_trigger_cooldown_hours)
+            };
             let now = Utc::now();
             if now - last_update < cooldown {
                 return true;

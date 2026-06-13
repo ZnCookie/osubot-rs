@@ -1,18 +1,52 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{self, timeout, Duration};
 
+/// Error returned when acquiring a token times out, indicating the rate limit has been exceeded.
 #[derive(Debug)]
 pub struct RateLimitError;
 
+/// Token-bucket rate limiter with configurable burst capacity and per-minute refill rate.
 pub struct RateLimiter {
     state: Arc<Mutex<State>>,
     notify: Arc<Notify>,
-    _refill: tokio::task::AbortHandle,
+    burst: u32,
+    per_minute: u32,
+    refill_handle: StdMutex<tokio::task::JoinHandle<()>>,
+    refill_respawning: Arc<AtomicBool>,
+    dropped: AtomicBool,
 }
 
 struct State {
     tokens: f64,
+}
+
+/// Spawn the token refill background task.
+/// Returns a JoinHandle so callers can detect if the task panicked and respawn.
+fn spawn_refill(
+    state: Arc<Mutex<State>>,
+    notify: Arc<Notify>,
+    burst_f: f64,
+    per_minute: u32,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_millis(200));
+        let increment = per_minute as f64 / 300.0;
+        loop {
+            interval.tick().await;
+            let mut s = state.lock().await;
+            let old_whole = s.tokens.floor() as u32;
+            s.tokens = (s.tokens + increment).min(burst_f);
+            let new_whole = s.tokens.floor() as u32;
+            if new_whole > old_whole {
+                drop(s);
+                for _ in 0..(new_whole - old_whole) {
+                    notify.notify_one();
+                }
+            }
+        }
+    })
 }
 
 impl Default for RateLimiter {
@@ -22,42 +56,69 @@ impl Default for RateLimiter {
 }
 
 impl RateLimiter {
+    /// Creates a new `RateLimiter` with default configuration (burst=60, per_minute=60).
     pub fn new() -> Self {
         Self::with_config(60, 60)
     }
 
+    /// Creates a new `RateLimiter` with custom burst capacity and per-minute refill rate.
     pub fn with_config(burst: u32, per_minute: u32) -> Self {
         let burst_f = burst as f64;
         let state = Arc::new(Mutex::new(State { tokens: burst_f }));
         let notify = Arc::new(Notify::new());
 
-        let state_clone = state.clone();
-        let notify_clone = notify.clone();
-        let handle = tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(200));
-            let increment = per_minute as f64 / 300.0;
-            loop {
-                interval.tick().await;
-                let mut s = state_clone.lock().await;
-                let old_whole = s.tokens.floor() as u32;
-                s.tokens = (s.tokens + increment).min(burst_f);
-                let new_whole = s.tokens.floor() as u32;
-                if new_whole > old_whole {
-                    drop(s);
-                    for _ in 0..(new_whole - old_whole) {
-                        notify_clone.notify_one();
-                    }
-                }
-            }
-        });
+        let refill_handle = StdMutex::new(spawn_refill(
+            state.clone(),
+            notify.clone(),
+            burst_f,
+            per_minute,
+        ));
 
         Self {
             state,
             notify,
-            _refill: handle.abort_handle(),
+            burst,
+            per_minute,
+            refill_handle,
+            refill_respawning: Arc::new(AtomicBool::new(false)),
+            dropped: AtomicBool::new(false),
         }
     }
 
+    /// Check if the refill task is alive and respawn if it panicked.
+    fn ensure_refill_alive(&self) {
+        if self.dropped.load(Ordering::Acquire) {
+            return;
+        }
+        let mut guard = self.refill_handle.lock().unwrap_or_else(|e| {
+            tracing::warn!("rate limiter refill handle mutex 被污染，强制恢复");
+            e.into_inner()
+        });
+        if guard.is_finished()
+            && self
+                .refill_respawning
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            tracing::error!("rate limiter refill task panicked, respawning");
+            let new_handle = spawn_refill(
+                self.state.clone(),
+                self.notify.clone(),
+                self.burst as f64,
+                self.per_minute,
+            );
+            // Drop 可能在 spawn 期间设置了 dropped=true；若已执行则立即停止新任务
+            if self.dropped.load(Ordering::Acquire) {
+                new_handle.abort();
+            } else {
+                *guard = new_handle;
+            }
+            self.refill_respawning.store(false, Ordering::Release);
+        }
+    }
+
+    /// Acquires a token, waiting up to 10 seconds if none are available.
+    /// Returns `Ok(())` on success or `Err(RateLimitError)` on timeout.
     pub async fn acquire(&self) -> Result<(), RateLimitError> {
         loop {
             {
@@ -68,6 +129,8 @@ impl RateLimiter {
                 }
             }
 
+            self.ensure_refill_alive();
+
             match timeout(Duration::from_secs(10), self.notify.notified()).await {
                 Ok(_) => continue,
                 Err(_) => return Err(RateLimitError),
@@ -75,6 +138,7 @@ impl RateLimiter {
         }
     }
 
+    /// Attempts to acquire a token without waiting. Returns `true` if successful, `false` otherwise.
     pub async fn try_acquire(&self) -> bool {
         let mut s = self.state.lock().await;
         if s.tokens >= 1.0 {
@@ -88,6 +152,8 @@ impl RateLimiter {
 
 impl Drop for RateLimiter {
     fn drop(&mut self) {
-        self._refill.abort();
+        self.dropped.store(true, Ordering::Release);
+        let guard = self.refill_handle.lock().unwrap_or_else(|e| e.into_inner());
+        guard.abort();
     }
 }

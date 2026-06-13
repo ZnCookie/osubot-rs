@@ -73,13 +73,21 @@ fn dirs_proj() -> Option<PathBuf> {
 fn sha256_hex(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn detect_mime_and_ext(url: &str, bytes: &[u8]) -> (&'static str, &'static str) {
@@ -156,6 +164,14 @@ fn rasterize_svg_to_png(svg_bytes: &[u8]) -> Result<Vec<u8>, CacheError> {
         .unwrap_or((100.0, 100.0));
     let width = dims.0.ceil() as i32;
     let height = dims.1.ceil() as i32;
+
+    const MAX_SVG_DIMENSION: i32 = 4096;
+    if width <= 0 || height <= 0 || width > MAX_SVG_DIMENSION || height > MAX_SVG_DIMENSION {
+        return Err(CacheError::SvgRasterizationFailed(format!(
+            "SVG dimensions {}x{} exceed maximum {}x{}",
+            width, height, MAX_SVG_DIMENSION, MAX_SVG_DIMENSION
+        )));
+    }
 
     // Create Cairo surface
     let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)

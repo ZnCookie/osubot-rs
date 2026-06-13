@@ -338,6 +338,8 @@ mod tests {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
             },
             cover_url: "https://example.com/cover.jpg".to_string(),
             user: ScoreUser {
@@ -493,7 +495,7 @@ mod tests {
     #[test]
     fn test_format_relative_time_under_one_minute() {
         let now = chrono::Utc::now();
-        let ts = (now - chrono::Duration::seconds(30)).to_rfc3339();
+        let ts = (now - chrono::TimeDelta::seconds(30)).to_rfc3339();
         assert_eq!(format_relative_time(&ts), "");
     }
 
@@ -501,7 +503,7 @@ mod tests {
     #[test]
     fn test_format_relative_time_one_minute() {
         let now = chrono::Utc::now();
-        let ts = (now - chrono::Duration::seconds(60)).to_rfc3339();
+        let ts = (now - chrono::TimeDelta::seconds(60)).to_rfc3339();
         let result = format_relative_time(&ts);
         assert!(
             result == "~1min" || result.is_empty(),
@@ -513,7 +515,7 @@ mod tests {
     #[test]
     fn test_format_relative_time_59_minutes() {
         let now = chrono::Utc::now();
-        let ts = (now - chrono::Duration::minutes(59)).to_rfc3339();
+        let ts = (now - chrono::TimeDelta::minutes(59)).to_rfc3339();
         let result = format_relative_time(&ts);
         assert!(
             result.starts_with("~") && (result.ends_with("h") || result.ends_with("min")),
@@ -525,7 +527,7 @@ mod tests {
     #[test]
     fn test_format_relative_time_24_hours() {
         let now = chrono::Utc::now();
-        let ts = (now - chrono::Duration::hours(24)).to_rfc3339();
+        let ts = (now - chrono::TimeDelta::hours(24)).to_rfc3339();
         let result = format_relative_time(&ts);
         assert!(
             result.starts_with("~") && (result.ends_with("d") || result.ends_with("h")),
@@ -537,7 +539,7 @@ mod tests {
     #[test]
     fn test_format_relative_time_30_days() {
         let now = chrono::Utc::now();
-        let ts = (now - chrono::Duration::days(30)).to_rfc3339();
+        let ts = (now - chrono::TimeDelta::days(30)).to_rfc3339();
         let result = format_relative_time(&ts);
         assert!(
             result.starts_with("~") && (result.ends_with("mo") || result.ends_with("d")),
@@ -549,7 +551,7 @@ mod tests {
     #[test]
     fn test_format_relative_time_365_days() {
         let now = chrono::Utc::now();
-        let ts = (now - chrono::Duration::days(365)).to_rfc3339();
+        let ts = (now - chrono::TimeDelta::days(365)).to_rfc3339();
         let result = format_relative_time(&ts);
         assert!(
             result.starts_with("~") && (result.ends_with("y") || result.ends_with("mo")),

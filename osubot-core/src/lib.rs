@@ -1,6 +1,6 @@
 pub mod api;
 pub mod cache;
-pub mod commands;
+pub(crate) mod commands;
 pub mod dedup;
 pub mod highlight;
 pub mod irc;

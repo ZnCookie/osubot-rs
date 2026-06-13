@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// A request deduplicator that ensures concurrent identical requests (same key) execute only once.
+/// Waiters receive the cached result from the in-flight request.
 pub struct RequestDedup<K, V, E> {
     entries: std::sync::Mutex<HashMap<K, Arc<Entry<V, E>>>>,
 }
@@ -51,12 +53,15 @@ where
     V: Clone,
     E: Clone,
 {
+    /// Creates a new empty `RequestDedup`.
     pub fn new() -> Self {
         Self {
             entries: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
+    /// Executes the closure `f` for the given key, or waits for an in-flight request with the same key.
+    /// The first caller becomes the creator and runs `f`; subsequent callers wait and receive the cached result.
     pub async fn run_or_wait<F, Fut>(&self, key: K, f: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut + Send,

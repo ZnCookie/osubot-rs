@@ -6,7 +6,7 @@ use osubot_types::{to_rosu_game_mode, PpBreakdown, PpIfAcc};
 use reqwest::Client;
 use rosu_mods::GameMods;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -44,7 +44,7 @@ pub struct PpCalcParams<'a> {
 
 pub(crate) const API_VERSION: &str = "20260408";
 
-pub(crate) fn http_client() -> &'static Client {
+pub fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         Client::builder()
@@ -103,8 +103,19 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     // 写入缓存（best-effort，与 replay 路径一致）
     let write_path = cache_path.clone();
     tokio::task::spawn_blocking(move || {
-        let _ = std::fs::create_dir_all(write_path.parent().unwrap());
-        let _ = std::fs::write(&write_path, &bytes);
+        if let Err(e) = std::fs::create_dir_all(
+            write_path
+                .parent()
+                .expect("cache path always has parent dirs (beatmap_cache_dir()/id.osu)"),
+        ) {
+            tracing::warn!("failed to create cache dir: {e}");
+        }
+        if let Err(e) = std::fs::write(&write_path, &bytes) {
+            tracing::warn!(
+                "failed to write beatmap cache file {}: {e}",
+                write_path.display()
+            );
+        }
     })
     .await
     .ok();
@@ -123,21 +134,12 @@ fn create_performance<'a>(
     needs_convert: bool,
     target_mode: rosu_pp::model::mode::GameMode,
 ) -> Option<rosu_pp::Performance<'a>> {
-    // 非转谱时必须提供 diff_attrs，否则 Performance::new 会 panic
-    debug_assert!(
-        needs_convert || diff_attrs.is_some(),
-        "create_performance: diff_attrs must be Some when needs_convert is false"
-    );
-
     if needs_convert {
         let perf = rosu_pp::Performance::new(map).mods(mods).lazer(is_lazer);
         perf.try_mode(target_mode).ok()
     } else {
-        Some(
-            rosu_pp::Performance::new(diff_attrs.unwrap())
-                .mods(mods)
-                .lazer(is_lazer),
-        )
+        let attrs = diff_attrs?;
+        Some(rosu_pp::Performance::new(attrs).mods(mods).lazer(is_lazer))
     }
 }
 
@@ -390,6 +392,8 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             osu_large_tick_hits: s.osu_large_tick_hits,
             osu_small_tick_hits: s.osu_small_tick_hits,
             osu_slider_tail_hits: s.osu_slider_tail_hits,
+            osu_large_tick_misses: 0,
+            osu_small_tick_misses: 0,
         };
         match params.mode {
             GameMode::Mania => perf
@@ -675,7 +679,7 @@ struct OsuApiScoreStatistics {
     count_geki: i64,
     #[serde(default, alias = "great")]
     count_300: i64,
-    #[serde(default, alias = "good", alias = "small_tick_miss")]
+    #[serde(default, alias = "good")]
     count_katu: i64,
     #[serde(default)]
     count_100: i64,
@@ -686,6 +690,12 @@ struct OsuApiScoreStatistics {
     /// Lazer `ok` field — maps to count_100 (standard) or count_katu (mania)
     #[serde(default)]
     ok: i64,
+    /// Lazer `large_tick_miss` — missed large droplets (Catch)
+    #[serde(default, alias = "large_tick_miss")]
+    osu_large_tick_misses: i64,
+    /// Lazer `small_tick_miss` — missed small droplets (Catch)
+    #[serde(default, alias = "small_tick_miss")]
+    osu_small_tick_misses: i64,
     /// Lazer `large_tick_hit` — slider ticks (Osu), large droplets (Catch)
     #[serde(default, alias = "large_tick_hit")]
     osu_large_tick_hits: i64,
@@ -779,8 +789,13 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
 }
 
 /// Apply mod adjustments to base AR/OD/CS/HP values.
-/// Returns the effective in-game values after mods (DT, HT, HR, EZ, etc).
+/// Returns the effective in-game values after mods (DT, HT, HR, EZ, DA, etc).
 /// No beatmap download needed — uses BeatmapAttributesBuilder with base stats.
+///
+/// DA (DifficultyAdjust) is handled specially: rosu-pp's `try_set()` skips
+/// `BeatmapAttribute::Given` variants, so we extract DA values first, override
+/// the base stats, and strip DA from the mods before passing to the builder.
+/// This ensures DA values are reflected while HR/EZ/DT/HT still apply correctly.
 pub fn apply_mod_adjustment_to_stats(
     mode: GameMode,
     ar: f64,
@@ -792,6 +807,73 @@ pub fn apply_mod_adjustment_to_stats(
     if mods.is_empty() {
         return (ar, od, cs, hp);
     }
+
+    use rosu_mods::GameMod;
+
+    let (mut ar, mut od, mut cs, mut hp) = (ar, od, cs, hp);
+    let mut effective_mods = mods.clone();
+    let mut has_da = false;
+
+    for m in mods.iter() {
+        match m {
+            GameMod::DifficultyAdjustOsu(da) => {
+                has_da = true;
+                if let Some(v) = da.approach_rate {
+                    ar = v;
+                }
+                if let Some(v) = da.circle_size {
+                    cs = v;
+                }
+                if let Some(v) = da.drain_rate {
+                    hp = v;
+                }
+                if let Some(v) = da.overall_difficulty {
+                    od = v;
+                }
+                effective_mods.remove(m);
+            }
+            GameMod::DifficultyAdjustTaiko(da) => {
+                has_da = true;
+                if let Some(v) = da.drain_rate {
+                    hp = v;
+                }
+                if let Some(v) = da.overall_difficulty {
+                    od = v;
+                }
+                effective_mods.remove(m);
+            }
+            GameMod::DifficultyAdjustCatch(da) => {
+                has_da = true;
+                if let Some(v) = da.approach_rate {
+                    ar = v;
+                }
+                if let Some(v) = da.circle_size {
+                    cs = v;
+                }
+                if let Some(v) = da.drain_rate {
+                    hp = v;
+                }
+                if let Some(v) = da.overall_difficulty {
+                    od = v;
+                }
+                effective_mods.remove(m);
+            }
+            GameMod::DifficultyAdjustMania(da) => {
+                has_da = true;
+                if let Some(v) = da.drain_rate {
+                    hp = v;
+                }
+                if let Some(v) = da.overall_difficulty {
+                    od = v;
+                }
+                effective_mods.remove(m);
+            }
+            _ => {}
+        }
+    }
+
+    let mods_for_builder = if has_da { &effective_mods } else { mods };
+
     use rosu_pp::model::beatmap::BeatmapAttributesBuilder;
     use rosu_pp::model::mode::GameMode as RosuMode;
     let rosu_mode = match mode {
@@ -806,7 +888,7 @@ pub fn apply_mod_adjustment_to_stats(
         .od(od as f32, false)
         .cs(cs as f32, false)
         .hp(hp as f32, false)
-        .mods(mods.clone())
+        .mods(mods_for_builder.clone())
         .build()
         .apply_clock_rate();
     (
@@ -829,8 +911,209 @@ fn fullsize_cover_url(covers: Option<&serde_json::Value>) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// 对齐 yumu-bot: 用 hit statistics 重新计算 Stable 规则的 Grade（而非信任 API 的 `rank` 字段）。
+/// 仅在 `passed` 为 true 时调用；若 `passed` 为 false，返回 "F"。
+/// `has_hidden` 用于给 S/X 追加 "H" 后缀（HD/FL/PF）。
+fn get_stable_rank(
+    stats: &OsuApiScoreStatistics,
+    mode: GameMode,
+    passed: bool,
+    has_hidden: bool,
+) -> String {
+    if !passed {
+        return "F".to_string();
+    }
+
+    let great = stats.count_300;
+    // osu! API v2 now returns lazer-style field names (ok instead of count_100)
+    // for all scores including stable. Fall back to stats.ok when count_100 is 0.
+    let count_100 = if stats.count_100 != 0 {
+        stats.count_100
+    } else {
+        stats.ok
+    };
+    let meh = stats.count_50;
+    let miss = stats.count_miss;
+
+    let total = match mode {
+        GameMode::Taiko => great + count_100 + miss,
+        GameMode::Catch => {
+            great
+                + stats.osu_large_tick_hits
+                + stats.osu_small_tick_hits
+                + stats.osu_large_tick_misses
+                + stats.osu_small_tick_misses
+                + miss
+        }
+        GameMode::Mania => stats.count_geki + great + stats.count_katu + count_100 + meh + miss,
+        _ => great + count_100 + meh + miss, // osu!standard
+    };
+
+    let rank = match mode {
+        GameMode::Taiko => {
+            if great == total {
+                "X"
+            } else if great * 10 > total * 9 {
+                if miss > 0 {
+                    "A"
+                } else {
+                    "S"
+                }
+            } else if great * 10 > total * 8 {
+                if miss > 0 {
+                    "B"
+                } else {
+                    "A"
+                }
+            } else if great * 10 > total * 7 {
+                if miss > 0 {
+                    "C"
+                } else {
+                    "B"
+                }
+            } else if great * 10 > total * 6 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+        GameMode::Catch => {
+            let hit = great + stats.osu_large_tick_hits + stats.osu_small_tick_hits;
+            if hit == total {
+                "X"
+            } else if hit * 100 > total * 98 {
+                "S"
+            } else if hit * 100 > total * 94 {
+                "A"
+            } else if hit * 100 > total * 90 {
+                "B"
+            } else if hit * 100 > total * 85 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+        GameMode::Mania => {
+            let perfect = stats.count_geki;
+            let good = stats.count_katu;
+            let judgement = perfect * 300 + great * 300 + good * 200 + count_100 * 100 + meh * 50;
+            if judgement == total * 300 {
+                "X"
+            } else if judgement * 100 > total * 300 * 95 {
+                "S"
+            } else if judgement * 100 > total * 300 * 90 {
+                "A"
+            } else if judgement * 100 > total * 300 * 80 {
+                "B"
+            } else if judgement * 100 > total * 300 * 70 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+        _ => {
+            // osu!standard
+            let is50_over_1p = meh * 100 > total;
+            if great == total {
+                "X"
+            } else if great * 10 > total * 9 {
+                if miss > 0 || is50_over_1p {
+                    "A"
+                } else {
+                    "S"
+                }
+            } else if great * 10 > total * 8 {
+                if miss > 0 {
+                    "B"
+                } else {
+                    "A"
+                }
+            } else if great * 10 > total * 7 {
+                if miss > 0 {
+                    "C"
+                } else {
+                    "B"
+                }
+            } else if great * 10 > total * 6 {
+                "C"
+            } else {
+                "D"
+            }
+        }
+    };
+
+    if has_hidden && (rank == "S" || rank == "X") {
+        format!("{}H", rank)
+    } else {
+        rank.to_string()
+    }
+}
+
+/// 对齐 yumu-bot: 用 hit statistics 重新计算 Stable 规则的 Accuracy。
+/// 返回 0.0 表示无法计算（例如 fail 成绩无 max stats），此时应回退到 API 的 accuracy。
+fn get_stable_accuracy(stats: &OsuApiScoreStatistics, mode: GameMode, passed: bool) -> f64 {
+    let great = stats.count_300 as f64;
+    // osu! API v2 now returns lazer-style field names (ok instead of count_100)
+    // for all scores including stable. Fall back to stats.ok when count_100 is 0.
+    let count_100 = if stats.count_100 != 0 {
+        stats.count_100 as f64
+    } else {
+        stats.ok as f64
+    };
+    let meh = stats.count_50 as f64;
+    let miss = stats.count_miss as f64;
+
+    let total = if passed {
+        match mode {
+            GameMode::Taiko => great + count_100 + miss,
+            GameMode::Catch => {
+                great
+                    + stats.osu_large_tick_hits as f64
+                    + stats.osu_small_tick_hits as f64
+                    + stats.osu_large_tick_misses as f64
+                    + stats.osu_small_tick_misses as f64
+                    + miss
+            }
+            GameMode::Mania => {
+                stats.count_geki as f64 + great + stats.count_katu as f64 + count_100 + meh + miss
+            }
+            _ => great + count_100 + meh + miss, // osu!standard
+        }
+    } else {
+        // 对于未通过的谱面没有 max statistics，返回 0.0 表示 fallback
+        return 0.0;
+    };
+
+    if total == 0.0 {
+        return 0.0;
+    }
+
+    let hit = match mode {
+        GameMode::Taiko => great + 1.0 / 2.0 * count_100,
+        GameMode::Catch => {
+            (great + stats.osu_large_tick_hits as f64 + stats.osu_small_tick_hits as f64) * 1.0
+        }
+        GameMode::Mania => {
+            let perfect = stats.count_geki as f64;
+            let good = stats.count_katu as f64;
+            perfect + great + 2.0 / 3.0 * good + 1.0 / 3.0 * count_100 + 1.0 / 6.0 * meh
+        }
+        _ => great + 1.0 / 3.0 * count_100 + 1.0 / 6.0 * meh, // osu!standard
+    };
+
+    (hit / total).clamp(0.0, 1.0)
+}
+
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
     let bmap = api.beatmap.as_ref();
+    let is_lazer = api.build_id.is_some_and(|id| id > 0);
+    let has_hidden = api.mods.iter().any(|m| {
+        let acronym = match m {
+            OsuApiMod::String(s) => s.as_str(),
+            OsuApiMod::Object { acronym, .. } => acronym.as_str(),
+        };
+        acronym == "HD" || acronym == "FL" || acronym == "PF"
+    });
 
     let cover_url = api
         .beatmapset
@@ -863,6 +1146,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
 
     let score_value = if api.score > 0 {
         api.score
+    } else if !is_lazer {
+        api.legacy_total_score.or(api.total_score).unwrap_or(0)
     } else {
         api.total_score.or(api.legacy_total_score).unwrap_or(0)
     };
@@ -913,24 +1198,51 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
         hp: bmap.map_or(0.0, |b| b.hp),
         length_seconds: bmap.map_or(0, |b| b.total_length),
         score_value,
-        accuracy: api.accuracy,
+        accuracy: if is_lazer {
+            api.accuracy
+        } else {
+            let stable_acc = get_stable_accuracy(&api.statistics, mode, api.passed);
+            if stable_acc > 0.0 {
+                stable_acc
+            } else {
+                api.accuracy
+            }
+        },
         max_combo: api.max_combo,
         beatmap_max_combo: bmap.map_or(0, |b| b.max_combo),
         pp: api.pp,
         pp_breakdown: None,
         pp_if_acc: None,
         perfect_pp: None,
-        rank: if api.passed {
-            api.rank
+        rank: if is_lazer {
+            if api.passed {
+                api.rank
+            } else {
+                "F".to_string()
+            }
         } else {
-            "F".to_string()
+            get_stable_rank(&api.statistics, mode, api.passed, has_hidden)
         },
         passed: api.passed,
-        mods: api_mods_to_game_mods(&api.mods, mode),
+        mods: if is_lazer {
+            api_mods_to_game_mods(&api.mods, mode)
+        } else {
+            let filtered_mods: Vec<OsuApiMod> = api
+                .mods
+                .into_iter()
+                .filter(|m| {
+                    let acr = match m {
+                        OsuApiMod::String(s) => s.as_str(),
+                        OsuApiMod::Object { acronym, .. } => acronym.as_str(),
+                    };
+                    acr != "CL"
+                })
+                .collect();
+            api_mods_to_game_mods(&filtered_mods, mode)
+        },
         is_perfect: api.perfect,
         created_at: api.ended_at,
-        // 对齐 yumu-bot：仅通过 build_id > 0 判断 lazer
-        is_lazer: api.build_id.is_some_and(|id| id > 0),
+        is_lazer,
         has_replay: api.has_replay,
         legacy_score_id: api.legacy_score_id,
         statistics: ScoreStatistics {
@@ -975,6 +1287,8 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
             osu_large_tick_hits: api.statistics.osu_large_tick_hits,
             osu_small_tick_hits: api.statistics.osu_small_tick_hits,
             osu_slider_tail_hits: api.statistics.osu_slider_tail_hits,
+            osu_large_tick_misses: api.statistics.osu_large_tick_misses,
+            osu_small_tick_misses: api.statistics.osu_small_tick_misses,
         },
         cover_url,
         user,
@@ -1088,8 +1402,8 @@ struct OsuStatistics {
 }
 
 pub struct OauthTokenCache {
-    client_id: String,
-    client_secret: String,
+    client_id: RwLock<String>,
+    client_secret: RwLock<String>,
     cache: Mutex<Option<(String, Instant)>>,
     refresh_lock: Mutex<()>,
     refresh_interval: Duration,
@@ -1098,8 +1412,8 @@ pub struct OauthTokenCache {
 impl OauthTokenCache {
     pub fn new(client_id: String, client_secret: String) -> Self {
         Self {
-            client_id,
-            client_secret,
+            client_id: RwLock::new(client_id),
+            client_secret: RwLock::new(client_secret),
             cache: Mutex::new(None),
             refresh_lock: Mutex::new(()),
             refresh_interval: Duration::from_secs(20 * 3600),
@@ -1107,7 +1421,30 @@ impl OauthTokenCache {
     }
 
     pub fn is_configured(&self) -> bool {
-        !self.client_id.is_empty() && !self.client_secret.is_empty()
+        let cid = self.client_id.read().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        });
+        let cs = self.client_secret.read().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        });
+        !cid.is_empty() && !cs.is_empty()
+    }
+
+    /// 热重载时更新 API 凭据，同时清空已缓存的 token（旧凭据的 token 已失效）。
+    pub async fn update_credentials(&self, client_id: String, client_secret: String) {
+        let _guard = self.refresh_lock.lock().await;
+        *self.client_id.write().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        }) = client_id;
+        *self.client_secret.write().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        }) = client_secret;
+        let mut cache = self.cache.lock().await;
+        *cache = None;
     }
 
     pub async fn invalidate(&self) {
@@ -1142,9 +1479,20 @@ impl OauthTokenCache {
 
         // 缓存过期，发 HTTP 请求（不持有锁）
         let client = http_client();
+        let (cid, cs) = {
+            let cid = self.client_id.read().unwrap_or_else(|e| {
+                tracing::warn!("RwLock poisoned, recovering");
+                e.into_inner()
+            });
+            let cs = self.client_secret.read().unwrap_or_else(|e| {
+                tracing::warn!("RwLock poisoned, recovering");
+                e.into_inner()
+            });
+            (cid.clone(), cs.clone())
+        };
         let params = [
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
+            ("client_id", cid.as_str()),
+            ("client_secret", cs.as_str()),
             ("grant_type", "client_credentials"),
             ("scope", "public"),
         ];
@@ -1206,15 +1554,15 @@ pub(crate) fn classify_http_error(resp: &reqwest::Response) -> Result<(), ApiErr
 /// jitter 在基准值的 75%~125% 之间波动，双向分散避免 thundering herd。
 /// `attempt` 由调用方保证 <= 30（`max_retries <= 30`），无需溢出防护。
 fn backoff_with_jitter(attempt: u32) -> Duration {
-    use rand::Rng;
+    use rand::RngExt;
     let base_delay = Duration::from_secs(1);
-    let exp = base_delay * 2u32.pow(attempt);
+    let exp = base_delay * 2u32.pow(attempt.min(31));
     let exp_ms = exp.as_millis() as u64;
     // 75%~125% 范围：先算 75% 基准，再加 0~50% 随机偏移
     let min_ms = exp_ms * 3 / 4;
     let range_ms = exp_ms / 2;
     let jitter_ms = if range_ms > 0 {
-        rand::thread_rng().gen_range(0..=range_ms)
+        rand::rng().random_range(0..=range_ms)
     } else {
         0
     };
@@ -1236,7 +1584,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    assert!(
+    debug_assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
@@ -1274,7 +1622,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    assert!(
+    debug_assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
@@ -2141,6 +2489,8 @@ mod tests {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
                 ok: 0,
             },
             ruleset_id: 0,
@@ -2166,11 +2516,11 @@ mod tests {
         assert!((score.hp - 5.0).abs() < 0.0001);
         assert_eq!(score.length_seconds, 200);
         assert_eq!(score.score_value, 1234567);
-        assert!((score.accuracy - 0.9876).abs() < 0.0001);
+        assert!((score.accuracy - 0.9850).abs() < 0.0001);
         assert_eq!(score.max_combo, 543);
         assert_eq!(score.beatmap_max_combo, 800);
         assert_eq!(score.pp, Some(300.5));
-        assert_eq!(score.rank, "S");
+        assert_eq!(score.rank, "A");
         let mod_acronyms: Vec<String> = score
             .mods
             .iter()
@@ -2282,6 +2632,151 @@ mod tests {
         let (ar, od, cs, hp) =
             apply_mod_adjustment_to_stats(GameMode::Osu, 9.0, 8.0, 4.0, 5.0, &mods);
         assert_eq!((ar, od, cs, hp), (9.0, 8.0, 4.0, 5.0));
+    }
+
+    #[test]
+    fn mod_adjust_da_osu_overrides_all() {
+        use rosu_mods::generated_mods::DifficultyAdjustOsu;
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustOsu(
+            DifficultyAdjustOsu {
+                approach_rate: Some(3.0),
+                circle_size: Some(7.0),
+                drain_rate: Some(2.0),
+                overall_difficulty: Some(6.0),
+                ..Default::default()
+            },
+        ));
+        let (ar, od, cs, hp) =
+            apply_mod_adjustment_to_stats(GameMode::Osu, 9.0, 8.0, 4.0, 5.0, &mods);
+        assert!((ar - 3.0).abs() < 0.01, "ar={ar}, expected 3.0");
+        assert!((od - 6.0).abs() < 0.01, "od={od}, expected 6.0");
+        assert!((cs - 7.0).abs() < 0.01, "cs={cs}, expected 7.0");
+        assert!((hp - 2.0).abs() < 0.01, "hp={hp}, expected 2.0");
+    }
+
+    #[test]
+    fn mod_adjust_da_partial_override() {
+        use rosu_mods::generated_mods::DifficultyAdjustOsu;
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustOsu(
+            DifficultyAdjustOsu {
+                approach_rate: Some(7.5),
+                ..Default::default()
+            },
+        ));
+        let (ar, od, cs, hp) =
+            apply_mod_adjustment_to_stats(GameMode::Osu, 5.0, 6.0, 4.0, 5.0, &mods);
+        assert!((ar - 7.5).abs() < 0.01, "ar={ar}, expected 7.5");
+        assert!((od - 6.0).abs() < 0.01, "od={od}, expected 6.0 (unchanged)");
+        assert!((cs - 4.0).abs() < 0.01, "cs={cs}, expected 4.0 (unchanged)");
+        assert!((hp - 5.0).abs() < 0.01, "hp={hp}, expected 5.0 (unchanged)");
+    }
+
+    #[test]
+    fn mod_adjust_da_plus_dt_applies_clock_rate() {
+        use rosu_mods::generated_mods::{DifficultyAdjustOsu, DoubleTimeOsu};
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustOsu(
+            DifficultyAdjustOsu {
+                approach_rate: Some(5.0),
+                overall_difficulty: Some(5.0),
+                ..Default::default()
+            },
+        ));
+        mods.insert(rosu_mods::GameMod::DoubleTimeOsu(DoubleTimeOsu::default()));
+        let (ar, od, _cs, _hp) =
+            apply_mod_adjustment_to_stats(GameMode::Osu, 9.0, 8.0, 4.0, 5.0, &mods);
+        // DA sets AR=5.0, OD=5.0; DT clock_rate=1.5 applies to AR and OD
+        // Actual values computed by rosu-pp's apply_clock_rate:
+        assert!((ar - 7.666).abs() < 0.1, "ar={ar}, expected ~7.67");
+        assert!((od - 7.777).abs() < 0.1, "od={od}, expected ~7.78");
+    }
+
+    #[test]
+    fn mod_adjust_da_plus_hr_applies_hr_after_da() {
+        use rosu_mods::generated_mods::{DifficultyAdjustOsu, HardRockOsu};
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustOsu(
+            DifficultyAdjustOsu {
+                approach_rate: Some(5.0),
+                overall_difficulty: Some(5.0),
+                circle_size: Some(4.0),
+                drain_rate: Some(5.0),
+                ..Default::default()
+            },
+        ));
+        mods.insert(rosu_mods::GameMod::HardRockOsu(HardRockOsu::default()));
+        let (ar, od, cs, hp) =
+            apply_mod_adjustment_to_stats(GameMode::Osu, 9.0, 8.0, 4.0, 5.0, &mods);
+        // DA sets values first, then HR multiplies by 1.4 (capped at 10)
+        // AR: 5.0 * 1.4 = 7.0
+        // OD: 5.0 * 1.4 = 7.0
+        // CS: 4.0 * 1.3 = 5.2
+        // HP: 5.0 * 1.4 = 7.0
+        assert!((ar - 7.0).abs() < 0.01, "ar={ar}, expected 7.0");
+        assert!((od - 7.0).abs() < 0.01, "od={od}, expected 7.0");
+        assert!((cs - 5.2).abs() < 0.01, "cs={cs}, expected 5.2");
+        assert!((hp - 7.0).abs() < 0.01, "hp={hp}, expected 7.0");
+    }
+
+    #[test]
+    fn mod_adjust_da_taiko() {
+        use rosu_mods::generated_mods::DifficultyAdjustTaiko;
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustTaiko(
+            DifficultyAdjustTaiko {
+                drain_rate: Some(3.0),
+                overall_difficulty: Some(7.0),
+                ..Default::default()
+            },
+        ));
+        let (ar, od, cs, hp) =
+            apply_mod_adjustment_to_stats(GameMode::Taiko, 5.0, 5.0, 5.0, 5.0, &mods);
+        assert!((ar - 5.0).abs() < 0.01, "taiko ar unchanged, ar={ar}");
+        assert!((od - 7.0).abs() < 0.01, "taiko od={od}, expected 7.0");
+        assert!((cs - 5.0).abs() < 0.01, "taiko cs unchanged, cs={cs}");
+        assert!((hp - 3.0).abs() < 0.01, "taiko hp={hp}, expected 3.0");
+    }
+
+    #[test]
+    fn mod_adjust_da_mania() {
+        use rosu_mods::generated_mods::DifficultyAdjustMania;
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustMania(
+            DifficultyAdjustMania {
+                drain_rate: Some(4.0),
+                overall_difficulty: Some(8.0),
+                ..Default::default()
+            },
+        ));
+        let (ar, od, cs, hp) =
+            apply_mod_adjustment_to_stats(GameMode::Mania, 5.0, 5.0, 5.0, 5.0, &mods);
+        assert!((ar - 5.0).abs() < 0.01, "mania ar unchanged, ar={ar}");
+        assert!((od - 8.0).abs() < 0.01, "mania od={od}, expected 8.0");
+        assert!((cs - 5.0).abs() < 0.01, "mania cs unchanged, cs={cs}");
+        assert!((hp - 4.0).abs() < 0.01, "mania hp={hp}, expected 4.0");
+    }
+
+    #[test]
+    fn mod_adjust_da_catch() {
+        use rosu_mods::generated_mods::DifficultyAdjustCatch;
+        let mut mods = rosu_mods::GameMods::new();
+        mods.insert(rosu_mods::GameMod::DifficultyAdjustCatch(
+            DifficultyAdjustCatch {
+                approach_rate: Some(6.0),
+                circle_size: Some(3.0),
+                drain_rate: Some(4.0),
+                overall_difficulty: Some(7.0),
+                ..Default::default()
+            },
+        ));
+        let (ar, od, cs, hp) =
+            apply_mod_adjustment_to_stats(GameMode::Catch, 5.0, 5.0, 5.0, 5.0, &mods);
+        assert!((ar - 6.0).abs() < 0.01, "catch ar={ar}, expected 6.0");
+        assert!((od - 7.0).abs() < 0.01, "catch od={od}, expected 7.0");
+        assert!((cs - 3.0).abs() < 0.01, "catch cs={cs}, expected 3.0");
+        assert!((hp - 4.0).abs() < 0.01, "catch hp={hp}, expected 4.0");
     }
 
     #[test]
@@ -2525,7 +3020,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_retries must be <= 30")]
     fn test_retry_on_401_rejects_large_max_retries() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let oauth = OauthTokenCache::new("test".to_string(), "test".to_string());
             let _ = retry_on_401(&oauth, 31, || async { Ok(42) }).await;
@@ -2535,7 +3032,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_retries must be <= 30")]
     fn test_retry_on_transient_rejects_large_max_retries() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _ = retry_on_transient(31, || async { Ok(42) }).await;
         });

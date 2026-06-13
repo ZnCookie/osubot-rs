@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use rand::Rng;
+use rand::RngExt;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
@@ -83,12 +83,12 @@ impl UpstreamBindingProvider for YumuUpstream {
             .map_err(|_| "rate limited")?;
 
         let group_id: i64 = {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1000000000..9999999999i64)
+            let mut rng = rand::rng();
+            rng.random_range(1000000000..9999999999i64)
         };
         let message_id: i32 = {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1..i32::MAX)
+            let mut rng = rand::rng();
+            rng.random_range(1..i32::MAX)
         };
 
         let mut request = match self.url.as_str().into_client_request() {
@@ -99,12 +99,18 @@ impl UpstreamBindingProvider for YumuUpstream {
             }
         };
 
-        request
-            .headers_mut()
-            .insert("X-Client-Role", "Universal".parse().unwrap());
-        request
-            .headers_mut()
-            .insert("X-Self-ID", qq.to_string().parse().unwrap());
+        if let Ok(val) = "Universal".parse() {
+            request.headers_mut().insert("X-Client-Role", val);
+        } else {
+            warn!("yumu: invalid X-Client-Role header value");
+            return Ok(None);
+        }
+        if let Ok(val) = qq.to_string().parse() {
+            request.headers_mut().insert("X-Self-ID", val);
+        } else {
+            warn!("yumu: invalid X-Self-ID header value");
+            return Ok(None);
+        }
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,
@@ -131,8 +137,6 @@ impl UpstreamBindingProvider for YumuUpstream {
         });
 
         let lifecycle_str = lifecycle.to_string();
-        #[cfg(test)]
-        eprintln!("[yumu] send lifecycle: {}", lifecycle_str);
         if timeout(self.timeout, write.send(lifecycle_str.into()))
             .await
             .is_err()
@@ -171,9 +175,6 @@ impl UpstreamBindingProvider for YumuUpstream {
         });
 
         let event_str = event.to_string();
-        #[cfg(test)]
-        eprintln!("[yumu] send event: {}", event_str);
-
         if timeout(self.timeout, write.send(event_str.into()))
             .await
             .is_err()
@@ -208,9 +209,6 @@ impl UpstreamBindingProvider for YumuUpstream {
             };
 
             debug!(target: "yumu_upstream", %text, "received message");
-
-            #[cfg(test)]
-            eprintln!("[yumu] recv: {}", text);
 
             if let Some(resp_text) = parse_send_msg_action(&text) {
                 debug!(target: "yumu_upstream", resp = %resp_text, "parsed send action");
@@ -313,10 +311,10 @@ mod integration_tests {
         );
         let binding = result.unwrap();
         if binding.is_none() {
-            eprintln!("NOTE: no binding found for QQ 3628905173 (expected for test)");
+            tracing::info!("NOTE: no binding found for QQ 3628905173 (expected for test)");
         } else {
             let (osu_id, username) = binding.unwrap();
-            eprintln!("BINDING FOUND: {osu_id} {username}");
+            tracing::info!("BINDING FOUND: {osu_id} {username}");
         }
     }
 }

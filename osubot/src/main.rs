@@ -1,9 +1,12 @@
 mod config;
 mod constants;
 mod last_beatmap_cache;
+mod reload;
 mod scheduler;
 mod xfs_upstream;
 mod yumu_upstream;
+
+use reload::ReloadHandle;
 
 use config::Config;
 use futures_util::{future::join_all, SinkExt, StreamExt};
@@ -21,6 +24,9 @@ use osubot_core::{
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
+use osubot_plugin::{
+    HostServices, PluginActionResult, PluginDispatchPanic, PluginDispatchResult, PluginManager,
+};
 use osubot_render::cache as render_cache;
 use osubot_render::PROFILE_VIEWPORT_WIDTH;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
@@ -30,7 +36,7 @@ use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, OnceLock,
     },
     time::Duration,
@@ -39,10 +45,14 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
-use xfs_upstream::XfsUpstream;
-use yumu_upstream::YumuUpstream;
 
-use constants::*;
+struct InFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct QQMessage {
@@ -71,12 +81,14 @@ struct PendingEntry {
 
 struct OneBotApi {
     pending: Mutex<HashMap<String, PendingEntry>>,
+    timeout: Arc<AtomicU64>,
 }
 
 impl OneBotApi {
-    fn new() -> Self {
+    fn new(timeout_secs: Arc<AtomicU64>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
+            timeout: timeout_secs,
         }
     }
 }
@@ -180,11 +192,12 @@ struct BotContext {
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
     command_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>>,
-    groups_config: Arc<config::GroupsConfig>,
+    config: Arc<tokio::sync::RwLock<Config>>,
     write: Arc<Mutex<WriteSink>>,
     onebot_api: Arc<OneBotApi>,
     last_beatmap: LastBeatmapCache,
-    upstream_chain: Arc<UpstreamChain>,
+    upstream_chain: Arc<tokio::sync::RwLock<UpstreamChain>>,
+    plugin_manager: Arc<tokio::sync::Mutex<Option<PluginManager>>>,
 }
 
 fn api_error_msg(e: &ApiError) -> String {
@@ -206,7 +219,7 @@ impl BotContext {
         match self.storage.get_binding(qq) {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
-                let binding = self.upstream_chain.try_query(qq).await?;
+                let binding = self.upstream_chain.read().await.try_query(qq).await?;
                 if let Err(e) = self.storage.set_user_id(&binding.1, binding.0) {
                     warn!("failed to persist user_id from upstream: {e}");
                 }
@@ -228,19 +241,39 @@ impl BotContext {
         resp_tx: &mpsc::Sender<String>,
         log_label: &str,
     ) {
-        self.scheduler.trigger_update(user_id, mode);
+        self.scheduler.trigger_update(user_id, mode).await;
         match api::fetch_user_stats_by_user_id(&self.rate_limiter, &self.oauth, user_id, mode).await
         {
             Ok(stats) => {
                 if stats.username != username {
-                    self.storage
-                        .update_binding_username(qq, &stats.username)
-                        .ok();
+                    if let Err(e) = self.storage.update_binding_username(qq, &stats.username) {
+                        tracing::warn!(
+                            qq = qq,
+                            username = %stats.username,
+                            error = %e,
+                            "Failed to update binding username"
+                        );
+                    }
                 }
-                self.storage.set_user_id(&stats.username, user_id).ok();
+                if let Err(e) = self.storage.set_user_id(&stats.username, user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 let change = self
                     .storage
                     .calculate_change(user_id, mode, &stats)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            user_id = user_id,
+                            mode = ?mode,
+                            error = %e,
+                            "Failed to calculate change"
+                        )
+                    })
                     .ok()
                     .flatten();
                 info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{log_label} success");
@@ -304,7 +337,14 @@ async fn resolve_score_user(
         tracing::trace!("resolve_score_user: looking up by username '{}'", name);
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 Some((stats.user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -353,7 +393,14 @@ async fn resolve_score_user(
         tracing::info!("resolve_score_user: fetching stats for user_id={}", user_id);
         match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 Some((user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -405,7 +452,7 @@ async fn handle_score_query(
             uid,
             name
         );
-        ctx.scheduler.trigger_update(uid, params.mode);
+        ctx.scheduler.trigger_update(uid, params.mode).await;
 
         let limit = params.limit;
         let mode = params.mode;
@@ -449,7 +496,14 @@ async fn handle_score_query(
 
         let user_stats = match stats_result {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
                 stats
             }
             Err(e) => {
@@ -481,7 +535,7 @@ async fn handle_score_query(
                 }
             };
 
-        ctx.scheduler.trigger_update(uid, params.mode);
+        ctx.scheduler.trigger_update(uid, params.mode).await;
         let dedup_key = (uid, params.is_pass, params.limit, params.mode);
         let dedup_rate_limiter = ctx.rate_limiter.clone();
         let dedup_oauth = ctx.oauth.clone();
@@ -634,6 +688,14 @@ async fn handle_score_query(
                 let change = ctx
                     .storage
                     .calculate_change(user_id, params.mode, &user_stats)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            user_id = user_id,
+                            mode = ?params.mode,
+                            error = %e,
+                            "Failed to calculate change"
+                        )
+                    })
                     .ok()
                     .flatten();
                 let pp_change = change.as_ref().and_then(|c| c.pp_change);
@@ -771,8 +833,15 @@ async fn handle_beatmap_score_query(
         .await
         {
             Ok(stats) => {
-                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
-                ctx.scheduler.trigger_update(user_id, mode);
+                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "Failed to cache user_id"
+                    );
+                }
+                ctx.scheduler.trigger_update(user_id, mode).await;
                 stats
             }
             Err(e) => {
@@ -825,7 +894,7 @@ async fn handle_beatmap_score_query(
         None => return,
     };
 
-    ctx.scheduler.trigger_update(_user_id, mode);
+    ctx.scheduler.trigger_update(_user_id, mode).await;
 
     if is_all {
         let api_limit = if limit > 1 { Some(limit) } else { None };
@@ -1003,8 +1072,9 @@ async fn render_and_send_single_score(
             mode,
             mods: score.mods.clone(),
         };
+        let ur_timeout = Duration::from_secs(ctx.config.read().await.bot.ur_timeout_secs);
         match tokio::time::timeout(
-            Duration::from_secs(UR_TIMEOUT_SECS),
+            ur_timeout,
             osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
         )
         .await
@@ -1079,8 +1149,9 @@ async fn render_and_send_single_score(
     let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
     let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
 
+    let render_timeout = Duration::from_secs(ctx.config.read().await.bot.render_timeout_secs);
     let render_result = tokio::time::timeout(
-        Duration::from_secs(RENDER_TIMEOUT_SECS),
+        render_timeout,
         render_score_card(osubot_render::ScoreCardParams {
             score: &score,
             username: &user_stats.username,
@@ -1203,6 +1274,14 @@ async fn render_and_send_score_list(
     let change = ctx
         .storage
         .calculate_change(user_stats.user_id, mode, user_stats)
+        .inspect_err(|e| {
+            tracing::warn!(
+                user_id = user_stats.user_id,
+                mode = ?mode,
+                error = %e,
+                "Failed to calculate change"
+            )
+        })
         .ok()
         .flatten();
     let pp_change = change.as_ref().and_then(|c| c.pp_change);
@@ -1257,21 +1336,211 @@ async fn render_and_send_score_list(
     }
 }
 
+/// Build a JSON payload for the plugin command dispatch.
+fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_json::Value {
+    let mode = match cmd {
+        Command::QuerySelf { mode }
+        | Command::QueryUser { mode, .. }
+        | Command::QueryMentionedUser { mode, .. }
+        | Command::Pass { mode, .. }
+        | Command::Recent { mode, .. }
+        | Command::Highlight { mode, .. }
+        | Command::ScoreOnBeatmap { mode, .. } => Some(match mode {
+            GameMode::Osu => 0,
+            GameMode::Taiko => 1,
+            GameMode::Catch => 2,
+            GameMode::Mania => 3,
+        }),
+        Command::ProfileCard { .. } | Command::Bind { .. } | Command::Unbind => None,
+    };
+    let username = match cmd {
+        Command::QueryUser { username, .. } => Some(username.as_str()),
+        Command::Bind { username, .. } => Some(username.as_str()),
+        Command::ScoreOnBeatmap { username, .. }
+        | Command::Pass { username, .. }
+        | Command::Recent { username, .. }
+        | Command::ProfileCard { username, .. } => username.as_deref(),
+        _ => None,
+    };
+    serde_json::json!({
+        "command_type": cmd_name,
+        "group_id": msg.group_id,
+        "user_id": msg.user_id,
+        "message": msg.message,
+        "mentioned_user_id": msg.mentioned_user_id,
+        "mode": mode,
+        "username": username,
+        "qq": match cmd {
+            Command::QueryMentionedUser { qq, .. } => Some(qq),
+            _ => None,
+        },
+        "beatmap_id": match cmd {
+            Command::ScoreOnBeatmap { beatmap_id, .. } => *beatmap_id,
+            _ => None,
+        },
+        "score_id": match cmd {
+            Command::ScoreOnBeatmap { score_id, .. } => *score_id,
+            _ => None,
+        },
+        "mods": match cmd {
+            Command::ScoreOnBeatmap { mods, .. } => {
+                mods.as_ref().map(|m| m.iter().map(|m| m.to_string()).collect::<Vec<_>>())
+            }
+            _ => None,
+        },
+        "limit": match cmd {
+            Command::ScoreOnBeatmap { limit, .. } | Command::Pass { limit, .. } | Command::Recent { limit, .. } => Some(*limit),
+            _ => None,
+        },
+    })
+}
+
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
-async fn handle_command(
-    ctx: BotContext,
-    msg: QQMessage,
-    resp_tx: mpsc::Sender<String>,
-    irc_nickname: Option<String>,
-) {
-    let cmd = match parse_command(&msg.message, msg.mentioned_user_id) {
-        Some(cmd) => cmd,
-        None => return,
+async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
+    // ==== Plugin on_message dispatch (brief locks, never across .await) ====
+    let msg_indices: Vec<usize> = {
+        let pm_guard = ctx.plugin_manager.lock().await;
+        pm_guard
+            .as_ref()
+            .map(|pm| pm.sorted_message_indices())
+            .unwrap_or_default()
     };
+    if !msg_indices.is_empty() {
+        let msg_payload = serde_json::json!({
+            "group_id": msg.group_id,
+            "user_id": msg.user_id,
+            "message": msg.message,
+            "mentioned_user_id": msg.mentioned_user_id,
+        });
+        let msg_payload_str = msg_payload.to_string();
+        for idx in msg_indices {
+            // Take instance (brief lock, no .await)
+            let (mut instance, pname, ptimeout) = {
+                let mut pm_guard = ctx.plugin_manager.lock().await;
+                match pm_guard.as_mut().and_then(|pm| {
+                    let inst = pm.take_instance(idx)?;
+                    let params = pm.instance_params(idx)?;
+                    Some((inst, params.name.clone(), params.timeout))
+                }) {
+                    Some(v) => v,
+                    None => continue,
+                }
+            };
+            let payload = msg_payload_str.clone();
+            let timeout = ptimeout;
+            let exec_result = tokio::time::timeout(
+                timeout,
+                tokio::task::spawn_blocking(move || {
+                    let r = instance.on_message(&payload);
+                    (r, instance)
+                }),
+            )
+            .await;
+            // Wrap result for complete_exec
+            let (wrapped, instance_opt) = match exec_result {
+                Ok(Ok((Ok(action), inst))) => (Ok(PluginDispatchResult::Ok(action)), Some(inst)),
+                Ok(Ok((Err(e), inst))) => (Ok(PluginDispatchResult::PluginError(e)), Some(inst)),
+                Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
+                Err(_) => (Err(PluginDispatchPanic::Timeout), None),
+            };
+            // Complete (brief lock, no .await)
+            let action = {
+                let mut pm_guard = ctx.plugin_manager.lock().await;
+                match pm_guard.as_mut() {
+                    Some(pm) => pm.complete_exec(idx, &pname, instance_opt, "on_message", wrapped),
+                    None => PluginActionResult::Next,
+                }
+            };
+            match action {
+                PluginActionResult::Handled(response) => {
+                    let _ = resp_tx.send(response).await;
+                    return;
+                }
+                PluginActionResult::Intercepted => return,
+                PluginActionResult::Next => {}
+            }
+        }
+    }
+
+    // ==== Plugin on_command dispatch (brief locks, never across .await) ====
+    let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
+    if let Some(ref cmd) = cmd_opt {
+        let cmd_name = cmd.command_name();
+        let cmd_indices: Vec<usize> = {
+            let pm_guard = ctx.plugin_manager.lock().await;
+            pm_guard
+                .as_ref()
+                .map(|pm| pm.command_indices(cmd_name))
+                .unwrap_or_default()
+        };
+        if !cmd_indices.is_empty() {
+            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg);
+            let cmd_payload_str = cmd_payload.to_string();
+            for idx in cmd_indices {
+                let (mut instance, pname, ptimeout) = {
+                    let mut pm_guard = ctx.plugin_manager.lock().await;
+                    match pm_guard.as_mut().and_then(|pm| {
+                        let inst = pm.take_instance(idx)?;
+                        let params = pm.instance_params(idx)?;
+                        Some((inst, params.name.clone(), params.timeout))
+                    }) {
+                        Some(v) => v,
+                        None => continue,
+                    }
+                };
+                let payload = cmd_payload_str.clone();
+                let timeout = ptimeout;
+                let exec_result = tokio::time::timeout(
+                    timeout,
+                    tokio::task::spawn_blocking(move || {
+                        let r = instance.on_command(&payload);
+                        (r, instance)
+                    }),
+                )
+                .await;
+                let (wrapped, instance_opt) = match exec_result {
+                    Ok(Ok((Ok(action), inst))) => {
+                        (Ok(PluginDispatchResult::Ok(action)), Some(inst))
+                    }
+                    Ok(Ok((Err(e), inst))) => {
+                        (Ok(PluginDispatchResult::PluginError(e)), Some(inst))
+                    }
+                    Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
+                    Err(_) => (Err(PluginDispatchPanic::Timeout), None),
+                };
+                let action = {
+                    let mut pm_guard = ctx.plugin_manager.lock().await;
+                    match pm_guard.as_mut() {
+                        Some(pm) => pm.complete_exec(idx, &pname, instance_opt, "command", wrapped),
+                        None => PluginActionResult::Next,
+                    }
+                };
+                match action {
+                    PluginActionResult::Handled(response) => {
+                        let _ = resp_tx.send(response).await;
+                        return;
+                    }
+                    PluginActionResult::Intercepted => return,
+                    PluginActionResult::Next => {}
+                }
+            }
+        }
+    }
+
+    // ==== Fallback: old text dispatch (native commands) ====
+
+    // 未识别命令 — 插件已拒绝，直接结束
+    if cmd_opt.is_none() {
+        return;
+    }
+    let cmd = cmd_opt.expect("guarded by cmd_opt.is_none() early-return");
 
     // 命令开关检查
-    let group_cfg = ctx.groups_config.get_group_config(msg.group_id);
+    let group_cfg = {
+        let cfg = ctx.config.read().await;
+        cfg.groups.get_group_config(msg.group_id)
+    };
     if !group_cfg.is_enabled(cmd.group_name()) {
         debug!(group_id = msg.group_id, command = ?cmd.group_name(), "命令已禁用，跳过");
         return;
@@ -1362,14 +1631,36 @@ async fn handle_command(
             {
                 Ok(stats) => {
                     // Cache user_id for future lookups (even for unbound users)
-                    ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
-                    if stats.username != username {
-                        ctx.storage.set_user_id(&username, stats.user_id).ok();
+                    if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                        tracing::warn!(
+                            username = %stats.username,
+                            user_id = stats.user_id,
+                            error = %e,
+                            "Failed to cache user_id"
+                        );
                     }
-                    ctx.scheduler.trigger_update(stats.user_id, mode);
+                    if stats.username != username {
+                        if let Err(e) = ctx.storage.set_user_id(&username, stats.user_id) {
+                            tracing::warn!(
+                                username = %username,
+                                user_id = stats.user_id,
+                                error = %e,
+                                "Failed to cache user_id"
+                            );
+                        }
+                    }
+                    ctx.scheduler.trigger_update(stats.user_id, mode).await;
                     let change = ctx
                         .storage
                         .calculate_change(stats.user_id, mode, &stats)
+                        .inspect_err(|e| {
+                            tracing::warn!(
+                                user_id = stats.user_id,
+                                mode = ?mode,
+                                error = %e,
+                                "Failed to calculate change"
+                            )
+                        })
                         .ok()
                         .flatten();
                     let has_change = change.is_some();
@@ -1441,6 +1732,14 @@ async fn handle_command(
                         .await;
                 }
                 Ok(None) => {
+                    let irc_nickname = {
+                        let cfg = ctx.config.read().await;
+                        if cfg.irc.enabled {
+                            Some(cfg.irc.nickname.clone())
+                        } else {
+                            None
+                        }
+                    };
                     if let Some(nickname) = irc_nickname {
                         match ctx.storage.has_pending_bind(msg.user_id) {
                             Ok(true) => {
@@ -1577,7 +1876,13 @@ async fn handle_command(
                     // Execute unbind and clear pending
                     match ctx.storage.unbind(msg.user_id) {
                         Ok(_) => {
-                            ctx.storage.remove_pending_unbind(msg.user_id).ok();
+                            if let Err(e) = ctx.storage.remove_pending_unbind(msg.user_id) {
+                                tracing::warn!(
+                                    user_id = msg.user_id,
+                                    error = %e,
+                                    "Failed to remove pending unbind"
+                                );
+                            }
                             info!(user_id = msg.user_id, "Unbind success");
                             let _ = resp_tx
                                 .send(format!("[CQ:at,qq={}] 解绑成功", msg.user_id))
@@ -1595,7 +1900,13 @@ async fn handle_command(
                     // Ask for confirmation and set pending
                     match ctx.storage.get_binding(msg.user_id) {
                         Ok(Some((_, current_username))) => {
-                            ctx.storage.set_pending_unbind(msg.user_id).ok();
+                            if let Err(e) = ctx.storage.set_pending_unbind(msg.user_id) {
+                                tracing::warn!(
+                                    user_id = msg.user_id,
+                                    error = %e,
+                                    "Failed to set pending unbind"
+                                );
+                            }
                             info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
                             let _ = resp_tx
                                 .send(format!(
@@ -1705,7 +2016,16 @@ async fn handle_command(
                         {
                             Ok(stats) => {
                                 info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
-                                ctx.storage.set_user_id(&stats.username, stats.user_id).ok();
+                                if let Err(e) =
+                                    ctx.storage.set_user_id(&stats.username, stats.user_id)
+                                {
+                                    tracing::warn!(
+                                        username = %stats.username,
+                                        user_id = stats.user_id,
+                                        error = %e,
+                                        "Failed to cache user_id"
+                                    );
+                                }
                                 stats.user_id
                             }
                             Err(e) => {
@@ -1816,20 +2136,27 @@ async fn handle_command(
                         hue = profile.profile_hue,
                         "ProfileCard HTML fetched"
                     );
-                    render_profile_card(
+                    let profile_render = render_profile_card(
                         &profile.html,
                         profile.profile_hue,
                         &profile.avatar_url,
                         &profile.username,
                         PROFILE_VIEWPORT_WIDTH,
                         1200,
-                    )
-                    .await
-                    .map(Arc::new)
-                    .map_err(|e| {
-                        warn!(user_id = target_user_id, error = %e, "render failed");
-                        "渲染失败，请稍后重试".to_string()
-                    })
+                    );
+                    let render_timeout =
+                        Duration::from_secs(ctx.config.read().await.bot.render_timeout_secs);
+                    tokio::time::timeout(render_timeout, profile_render)
+                        .await
+                        .map_err(|_| {
+                            warn!(user_id = target_user_id, "ProfileCard render timed out");
+                            "渲染超时，请稍后重试".to_string()
+                        })?
+                        .map(Arc::new)
+                        .map_err(|e| {
+                            warn!(user_id = target_user_id, error = %e, "render failed");
+                            "渲染失败，请稍后重试".to_string()
+                        })
                 })
                 .await;
 
@@ -1915,7 +2242,7 @@ async fn handle_command(
     }
 }
 
-use tokio_tungstenite::tungstenite::Message as WsMsg;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMsg};
 use tracing_subscriber::fmt::time::LocalTime;
 type WriteSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -1942,7 +2269,7 @@ async fn send_group_msg_with_image(
     write: &Arc<Mutex<WriteSink>>,
     group_id: i64,
     image_data: &[u8],
-) -> Result<(), ()> {
+) -> Result<(), WsError> {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
     let segments = serde_json::json!([
@@ -1963,7 +2290,7 @@ async fn send_group_msg_with_image(
     let mut sink = write.lock().await;
     sink.send(WsMsg::Text(json.to_string().into()))
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
             warn!(error = %e, group_id = group_id, "Failed to send group image message");
         })
 }
@@ -1998,7 +2325,8 @@ async fn call_onebot_api(
             .map_err(|e| e.to_string())?;
     }
 
-    let result = tokio::time::timeout(Duration::from_secs(ONEBOT_API_TIMEOUT_SECS), rx).await;
+    let timeout_dur = Duration::from_secs(api.timeout.load(Ordering::Relaxed));
+    let result = tokio::time::timeout(timeout_dur, rx).await;
     api.pending.lock().await.remove(&echo);
 
     match result {
@@ -2054,7 +2382,9 @@ async fn handle_irc_message(
     };
 
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
-        storage.remove_pending_bind(code).ok();
+        if let Err(e) = storage.remove_pending_bind(code) {
+            tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (username mismatch)");
+        }
         let msg = format!(
             "[CQ:at,qq={}] 绑定失败（绑定的不是本人）",
             pending.qq_user_id
@@ -2073,7 +2403,9 @@ async fn handle_irc_message(
             }
             match storage.bind(pending.qq_user_id, info.id, &info.username) {
                 Ok(Ok(())) => {
-                    storage.remove_pending_bind(code).ok();
+                    if let Err(e) = storage.remove_pending_bind(code) {
+                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (bind success)");
+                    }
                     info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
                     let msg = format!(
                         "[CQ:at,qq={}] 成功绑定为{}",
@@ -2082,7 +2414,9 @@ async fn handle_irc_message(
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Ok(Err(_)) => {
-                    storage.remove_pending_bind(code).ok();
+                    if let Err(e) = storage.remove_pending_bind(code) {
+                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (already bound)");
+                    }
                     let msg = format!(
                         "[CQ:at,qq={}] 绑定失败（该 osu! 用户已绑定其他 QQ）",
                         pending.qq_user_id
@@ -2090,20 +2424,26 @@ async fn handle_irc_message(
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Err(_) => {
-                    storage.remove_pending_bind(code).ok();
+                    if let Err(e) = storage.remove_pending_bind(code) {
+                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (db error)");
+                    }
                     let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
             }
         }
         Ok(None) => {
-            storage.remove_pending_bind(code).ok();
+            if let Err(e) = storage.remove_pending_bind(code) {
+                tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (user not found)");
+            }
             warn!("User {} not found during IRC bind", pending.target_username);
             let msg = format!("[CQ:at,qq={}] 绑定失败（用户不存在）", pending.qq_user_id);
             send_group_msg(&write, pending.group_id, &msg).await;
         }
         Err(e) => {
-            storage.remove_pending_bind(code).ok();
+            if let Err(e2) = storage.remove_pending_bind(code) {
+                tracing::warn!(code = %code, error = %e2, "Failed to remove pending bind (api error)");
+            }
             warn!(
                 "Failed to fetch user info for {} during IRC bind: {e}",
                 pending.target_username
@@ -2134,44 +2474,40 @@ async fn main() {
     osubot_render::ensure_cache_dir().await;
 
     let config = Config::from_path("osubot.toml").expect("Failed to load config");
+    let config = Arc::new(tokio::sync::RwLock::new(config));
 
     info!("osubot starting...");
-    info!("OneBot URL: {}", config.bot.onebot_url);
+    info!("OneBot URL: {}", config.read().await.bot.onebot_url);
 
-    let storage = Arc::new(Storage::new(&config.database.path).expect("Failed to open database"));
+    let db_path = config.read().await.database.path.clone();
+    let storage = Arc::new(Storage::new(&db_path).expect("Failed to open database"));
 
-    let oauth = Arc::new(OauthTokenCache::new(
-        config.osu.client_id.clone(),
-        config.osu.api_key.clone(),
-    ));
+    let (client_id, client_secret) = {
+        let cfg = config.read().await;
+        (cfg.osu.client_id.clone(), cfg.osu.client_secret.clone())
+    };
+    let oauth = Arc::new(OauthTokenCache::new(client_id, client_secret));
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
-    let upstream_chain = Arc::new({
-        if config.upstream.enabled {
-            let mut providers: Vec<Box<dyn osubot_core::UpstreamBindingProvider>> = Vec::new();
-            for p_cfg in &config.upstream.providers {
-                match p_cfg.provider_type.as_str() {
-                    "xfs" => {
-                        providers.push(Box::new(XfsUpstream::from_config(
-                            p_cfg,
-                            oauth.clone(),
-                            rate_limiter.clone(),
-                        )));
-                    }
-                    "yumu" => {
-                        providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
-                    }
-                    other => {
-                        tracing::warn!("unknown upstream provider type: {other}");
-                    }
-                }
-            }
-            UpstreamChain::new(providers)
-        } else {
-            UpstreamChain::new(Vec::new())
-        }
-    });
+    // Trigger lazy initialization of the shared reqwest HTTP client early, so any
+    // build failure (e.g. missing TLS backend) is surfaced at startup rather than
+    // crashing the process mid-flight on the first API call.
+    let _ = osubot_core::api::http_client();
+
+    let onebot_api_timeout = {
+        let cfg = config.read().await;
+        Arc::new(AtomicU64::new(cfg.bot.onebot_api_timeout_secs))
+    };
+
+    let upstream_chain = {
+        let cfg = config.read().await;
+        Arc::new(tokio::sync::RwLock::new(reload::build_upstream_chain(
+            &cfg.upstream,
+            &oauth,
+            &rate_limiter,
+        )))
+    };
 
     match storage.get_users_without_ids() {
         Ok(users) if !users.is_empty() => {
@@ -2202,7 +2538,7 @@ async fn main() {
         storage.clone(),
         oauth.clone(),
         rate_limiter.clone(),
-        config.scheduler.clone(),
+        config.clone(),
     );
 
     let scheduler_clone = scheduler.clone();
@@ -2210,41 +2546,47 @@ async fn main() {
         scheduler_clone.run().await;
     });
 
-    let irc_enabled = config.irc.enabled;
-
-    if irc_enabled && (config.irc.nickname.is_empty() || config.irc.password.is_empty()) {
-        panic!("IRC is enabled but nickname or password is not set in osubot.toml");
-    }
-
-    let irc_nickname = if irc_enabled {
-        Some(config.irc.nickname.clone())
-    } else {
-        None
-    };
-
     let (irc_tx, mut irc_rx) = mpsc::channel::<osubot_core::irc::IrcPrivateMessage>(100);
 
-    if irc_enabled {
-        let irc_config = osubot_core::IrcConfig::new(
-            config.irc.enabled,
-            &config.irc.server,
-            config.irc.port,
-            &config.irc.nickname,
-            &config.irc.password,
-        );
-        let irc_client = osubot_core::irc::IrcClient::new(irc_config, irc_tx);
-        tokio::spawn(async move {
-            if let Err(e) = irc_client.run().await {
-                error!(error = %e, "IRC client error");
-            }
-        });
+    let irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    let irc_tx_for_reload = irc_tx.clone();
+    let irc_handle_for_reload = irc_handle.clone();
+
+    {
+        let cfg = config.read().await;
+        let irc_enabled = cfg.irc.enabled;
+
+        if irc_enabled && (cfg.irc.nickname.is_empty() || cfg.irc.password.is_empty()) {
+            panic!("IRC is enabled but nickname or password is not set in osubot.toml");
+        }
+
+        if irc_enabled {
+            let irc_config = osubot_core::IrcConfig::new(
+                cfg.irc.enabled,
+                &cfg.irc.server,
+                cfg.irc.port,
+                &cfg.irc.nickname,
+                &cfg.irc.password,
+            );
+            let irc_client = osubot_core::irc::IrcClient::new(irc_config, irc_tx);
+            *irc_handle.lock().unwrap() = Some(tokio::spawn(async move {
+                if let Err(e) = irc_client.run().await {
+                    error!(error = %e, "IRC client error");
+                }
+            }));
+        }
+    };
+
+    {
+        let cfg = config.read().await;
+        if cfg.osu.client_secret.is_empty() || cfg.osu.client_secret == "your-client-secret-here" {
+            warn!("osu! API v2 client_secret not configured. Please set osu.client_secret in osubot.toml");
+        }
     }
 
-    if config.osu.api_key.is_empty() || config.osu.api_key == "your-api-key-here" {
-        warn!("API Key not configured. Please set osu.api_key in osubot.toml");
-    }
-
-    let onebot_api = Arc::new(OneBotApi::new());
+    let onebot_api = Arc::new(OneBotApi::new(onebot_api_timeout.clone()));
 
     let onebot_cleanup = onebot_api.clone();
     tokio::spawn(async move {
@@ -2261,9 +2603,49 @@ async fn main() {
         }
     });
 
+    // Ensure plugin directory exists
+    let plugin_dir = {
+        let cfg = config.read().await;
+        let dir = cfg.plugin.dir.clone();
+        std::fs::create_dir_all(&dir).ok();
+        dir
+    };
+
+    // Create ReloadHandle (pm starts as None, updated in reconnect loop)
+    let pm: Arc<tokio::sync::Mutex<Option<PluginManager>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let reload_handle = ReloadHandle::new(
+        config.clone(),
+        pm.clone(),
+        onebot_api_timeout,
+        upstream_chain.clone(),
+        oauth.clone(),
+        rate_limiter.clone(),
+        scheduler.clone(),
+        irc_handle_for_reload,
+        Some(irc_tx_for_reload),
+    );
+
+    // Extract drain/in_flight/force_reconnect refs for message loop
+    let drain = reload_handle.drain.clone();
+    let in_flight = reload_handle.in_flight.clone();
+    let force_reconnect = reload_handle.force_reconnect.clone();
+
+    // Start file watcher coordinator
+    let coordinator = reload::ReloadCoordinator::new(
+        reload_handle,
+        std::path::PathBuf::from("osubot.toml"),
+        std::path::PathBuf::from(plugin_dir),
+    );
+    // Coordinator::start() 内部已通过 error! 日志处理异常退出
+    let watcher_monitor_handle = coordinator.start();
+    tokio::spawn(async move {
+        let _ = watcher_monitor_handle.await;
+        warn!("文件监控任务已退出，热重载功能不可用");
+    });
+
     let user_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>> =
         Arc::new(dashmap::DashMap::new());
-    let groups_config_arc = Arc::new(config.groups.clone());
 
     // Shared write handle: the IRC bridge reads from this on each message,
     // and the reconnection loop updates it when a new connection is established.
@@ -2304,8 +2686,9 @@ async fn main() {
             tracing::info!("正在关闭，不再重连");
             break;
         }
-        info!(url = %config.bot.onebot_url, "正在连接 OneBot WebSocket");
-        let ws_stream = match connect_async(&config.bot.onebot_url).await {
+        let onebot_url = config.read().await.bot.onebot_url.clone();
+        info!(url = %onebot_url, "正在连接 OneBot WebSocket");
+        let ws_stream = match connect_async(&onebot_url).await {
             Ok((stream, _)) => {
                 reconnect_delay = 1;
                 stream
@@ -2342,7 +2725,8 @@ async fn main() {
         let ping_shutdown = shutdown.clone();
         let ping_connection_alive = connection_alive.clone();
         let ping_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(constants::PING_INTERVAL_SECS));
             loop {
                 interval.tick().await;
                 if ping_shutdown.load(std::sync::atomic::Ordering::Relaxed)
@@ -2360,9 +2744,214 @@ async fn main() {
 
         let last_beatmap = last_beatmap_cache::LastBeatmapCache::new();
 
+        let plugin_cfg = {
+            let cfg = config.read().await;
+            cfg.plugin.clone()
+        };
+
+        let new_pm = if plugin_cfg.instances.iter().any(|p| p.enabled) {
+            let (plugin_tx, mut plugin_rx) = mpsc::channel::<(i64, serde_json::Value)>(256);
+
+            let write_consumer = write.clone();
+            tokio::spawn(async move {
+                while let Some((group_id, message)) = plugin_rx.recv().await {
+                    let json = serde_json::json!({
+                        "action": "send_group_msg",
+                        "params": {
+                            "group_id": group_id,
+                            "message": message
+                        }
+                    });
+                    let mut sink = write_consumer.lock().await;
+                    if let Err(e) = sink.send(Message::Text(json.to_string().into())).await {
+                        tracing::debug!(error = %e, "plugin send channel closed");
+                    }
+                }
+            });
+
+            let msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
+                Arc::new(move |group_id, message| {
+                    plugin_tx
+                        .try_send((group_id, message))
+                        .map_err(|e| format!("plugin message channel busy: {e}"))
+                });
+
+            let services = HostServices {
+                http_client: reqwest::Client::new(),
+                blocking_http_client: reqwest::blocking::Client::new(),
+                rate_limiter: rate_limiter.clone(),
+                oauth: oauth.clone(),
+                storage: storage.clone(),
+                send_msg_fn: msg_fn,
+                runtime_handle: tokio::runtime::Handle::current(),
+                instance_idx: 0,
+                tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),
+                tick_id_counter: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                instance_config: None,
+                limiter: osubot_plugin::StoreLimitsBuilder::new()
+                    .memory_size(100 * 1024 * 1024)
+                    .build(),
+            };
+
+            match PluginManager::new(&plugin_cfg, services).await {
+                Ok(mgr) => {
+                    info!("Plugin manager initialized with {} plugins", mgr.len());
+                    Some(mgr)
+                }
+                Err(e) => {
+                    warn!("Plugin initialization failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Update shared pm (same Arc as coordinator)
+        {
+            let mut guard = pm.lock().await;
+            *guard = new_pm;
+        }
+
+        // Spawn plugin tick loop
+        let pm_for_tick = pm.clone();
+        let tick_drain = drain.clone();
+        let tick_in_flight = in_flight.clone();
+        let mut tick_handle = tokio::spawn(async move {
+            let mut last_fired: HashMap<(usize, u32), std::time::Instant> = HashMap::new();
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                // 热重载 drain 期间暂停 tick 分派，避免 phase 1 收集的索引
+                // 在 phase 2 使用前被 reload_all()→compact() 重映射
+                if tick_drain.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let now = std::time::Instant::now();
+                // 第一阶段：收集到期 tick（短暂持锁，读取后立即释放）
+                let due_ticks: Vec<(usize, u32)> = {
+                    let mut guard = pm_for_tick.lock().await;
+                    guard
+                        .as_mut()
+                        .map(|pm| {
+                            let all_ticks = pm.get_ticks();
+                            let valid_keys: std::collections::HashSet<_> =
+                                all_ticks.iter().map(|(idx, _, tid)| (*idx, *tid)).collect();
+                            last_fired.retain(|k, _| valid_keys.contains(k));
+                            all_ticks
+                                .into_iter()
+                                .filter(|(idx, interval_secs, tid)| {
+                                    let key = (*idx, *tid);
+                                    last_fired.get(&key).is_none_or(|last| {
+                                        now.duration_since(*last)
+                                            >= Duration::from_secs(*interval_secs)
+                                    })
+                                })
+                                .map(|(idx, _, tid)| (idx, tid))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                // 第二阶段：逐个触发 tick
+                // 采用 take → execute（无锁）→ put 模式：
+                // dispatch 内部有 spawn_blocking + timeout 的 .await 点，
+                // 若在此期间持有 pm 锁，会阻塞消息分发和热重载。
+                for (plugin_idx, tick_id) in due_ticks {
+                    if tick_drain.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    // 取出实例（短暂持锁），同时注册 in_flight 防止 reload_all()→compact()
+                    // 在 spawn_blocking 执行期间重排索引导致 put_instance 用旧 idx 污染其他槽位。
+                    // InFlightGuard 确保 wait_drain() 等待 tick 完成后再执行 compact()。
+                    //
+                    // phase 1 收集 due_ticks 后释放锁，在 phase 2 获取锁前 compact() 可能
+                    // 已完成并重映射索引。通过 has_tick 验证 (plugin_idx, tick_id) 仍注册在
+                    // 该索引，防止对错误插件分派 tick。
+                    let (instance, _tick_guard) = {
+                        let mut guard = pm_for_tick.lock().await;
+                        // 验证 tick 仍注册在该索引（compact 可能已重映射）
+                        let tick_valid = guard.as_ref().is_some_and(|pm| {
+                            pm.has_instance(plugin_idx) && pm.has_tick(plugin_idx, tick_id)
+                        });
+                        if !tick_valid {
+                            continue;
+                        }
+                        let inst = guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx));
+                        if tick_drain.load(Ordering::SeqCst) {
+                            // 放回实例，热重载会接管
+                            if let Some(inst) = inst {
+                                if let Some(ref mut pm) = *guard {
+                                    pm.put_instance(plugin_idx, inst);
+                                }
+                            }
+                            break; // 跳出 for 循环，不再处理后续到期 tick
+                        }
+                        tick_in_flight.fetch_add(1, Ordering::SeqCst);
+                        let tick_guard = InFlightGuard(tick_in_flight.clone());
+                        (inst, tick_guard)
+                    };
+
+                    let Some(mut inst) = instance else {
+                        continue;
+                    };
+
+                    // 检查导出（不持锁）
+                    if !inst.has_export("on_tick") {
+                        let mut guard = pm_for_tick.lock().await;
+                        if let Some(ref mut pm) = *guard {
+                            pm.put_instance(plugin_idx, inst);
+                        }
+                        last_fired.insert((plugin_idx, tick_id), now);
+                        continue;
+                    }
+
+                    // 执行 tick（不持锁，允许消息分发/热重载在此期间获取 pm）
+                    let timeout_dur = inst.timeout;
+                    let result = tokio::time::timeout(
+                        timeout_dur,
+                        tokio::task::spawn_blocking(move || {
+                            let res = inst.on_tick(tick_id);
+                            (res, inst)
+                        }),
+                    )
+                    .await;
+
+                    // 处理结果并放回实例
+                    {
+                        let mut guard = pm_for_tick.lock().await;
+                        if let Some(ref mut pm) = *guard {
+                            match result {
+                                Ok(Ok((Ok(()), inst))) | Ok(Ok((Err(_), inst))) => {
+                                    // 成功或插件错误：放回实例
+                                    // （handle_tick 原本也忽略 PluginError，
+                                    //   lost_instances 跟踪由其他 dispatch 路径处理）
+                                    pm.put_instance(plugin_idx, inst);
+                                }
+                                Ok(Err(_)) | Err(_) => {
+                                    // spawn_blocking join error 或 timeout：实例已丢失，重载
+                                    let _ = pm.reload_instance(plugin_idx);
+                                }
+                            }
+                        }
+                    }
+
+                    last_fired.insert((plugin_idx, tick_id), now);
+                }
+            }
+        });
+
         // Message loop
         loop {
+            const SPAWN_COUNT: usize = 2; // 必须与下方两个 tokio::spawn 中各持有的 InFlightGuard 数量一致
+                                          // 编译期断言：若编译失败，请更新 SPAWN_COUNT
+            const _: [(); SPAWN_COUNT] = [(); 2];
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            // onebot_url hot-reload triggers a forced reconnect
+            if force_reconnect.load(Ordering::SeqCst) {
+                info!("强制重连：onebot_url 已热重载变更");
                 break;
             }
             match read.next().await {
@@ -2383,16 +2972,35 @@ async fn main() {
 
                     if let Some(qq_msg) = parse_onebot_message(&text) {
                         // 群黑白名单检查
-                        if !config.group_filter.is_group_allowed(qq_msg.group_id) {
-                            debug!(group_id = qq_msg.group_id, mode = ?config.group_filter.mode, "群被过滤，跳过");
-                            continue;
+                        {
+                            let cfg = config.read().await;
+                            if !cfg.group_filter.is_group_allowed(qq_msg.group_id) {
+                                debug!(group_id = qq_msg.group_id, mode = ?cfg.group_filter.mode, "群被过滤，跳过");
+                                continue;
+                            }
                         }
 
                         let (resp_tx, mut resp_rx) = mpsc::channel::<String>(1);
 
+                        // 原子操作：检查 drain 并增加 in_flight（消除 TOCTOU 窗口）
+                        let increment_result =
+                            in_flight.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                                if drain.load(Ordering::SeqCst) {
+                                    None // drain 为 true，不增加
+                                } else {
+                                    Some(current + SPAWN_COUNT) // 两个任务各 +1
+                                }
+                            });
+                        if increment_result.is_err() {
+                            info!(group_id = qq_msg.group_id, "热重载中，跳过消息");
+                            continue;
+                        }
+
                         let write_clone = write.clone();
                         let group_id = qq_msg.group_id;
+                        let in_flight1 = in_flight.clone();
                         tokio::spawn(async move {
+                            let _guard = InFlightGuard(in_flight1);
                             if let Some(response) = resp_rx.recv().await {
                                 send_group_msg(&write_clone, group_id, &response).await;
                             }
@@ -2404,22 +3012,27 @@ async fn main() {
                             oauth: oauth.clone(),
                             rate_limiter: rate_limiter.clone(),
                             command_rate_limits: user_rate_limits.clone(),
-                            groups_config: groups_config_arc.clone(),
+                            config: config.clone(),
                             write: write.clone(),
                             onebot_api: onebot_api.clone(),
                             last_beatmap: last_beatmap.clone(),
                             upstream_chain: upstream_chain.clone(),
+                            plugin_manager: pm.clone(),
                         };
-                        let irc_nickname = irc_nickname.clone();
+                        let in_flight2 = in_flight.clone();
                         tokio::spawn(async move {
+                            let _guard = InFlightGuard(in_flight2);
+                            let command_timeout = Duration::from_secs(
+                                ctx.config.read().await.bot.command_timeout_secs,
+                            );
                             if tokio::time::timeout(
-                                Duration::from_secs(COMMAND_TIMEOUT_SECS),
-                                handle_command(ctx, qq_msg, resp_tx.clone(), irc_nickname),
+                                command_timeout,
+                                handle_command(ctx, qq_msg, resp_tx.clone()),
                             )
                             .await
                             .is_err()
                             {
-                                tracing::warn!("命令处理超时（120秒）");
+                                tracing::warn!("命令处理超时（{}秒）", command_timeout.as_secs());
                                 let _ = resp_tx.send("命令处理超时，请稍后重试".to_string()).await;
                             }
                         });
@@ -2442,7 +3055,18 @@ async fn main() {
         }
 
         connection_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        force_reconnect.store(false, Ordering::SeqCst);
         ping_handle.abort();
+        // 等待 tick 完成（插件 dispatch 超时 10s，留足余量），超时后强制 abort
+        if tokio::time::timeout(
+            Duration::from_secs(constants::TICK_HANDLE_SHUTDOWN_SECS),
+            &mut tick_handle,
+        )
+        .await
+        .is_err()
+        {
+            tick_handle.abort();
+        }
 
         // Clear the write handle so the IRC bridge doesn't use a stale connection
         {
@@ -2450,8 +3074,25 @@ async fn main() {
             *cw = None;
         }
 
+        // Shutdown plugin instances for this connection
+        {
+            let mut guard = pm.lock().await;
+            if let Some(ref mut mgr) = *guard {
+                mgr.shutdown().await;
+            }
+        }
+
         tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
         reconnect_delay = (reconnect_delay * 2).min(60);
     }
+
+    // Shutdown plugin instances on SIGINT (calls on_unload hooks)
+    {
+        let mut guard = pm.lock().await;
+        if let Some(ref mut mgr) = *guard {
+            mgr.shutdown().await;
+        }
+    }
+
     scheduler.shutdown();
 }

@@ -2,7 +2,8 @@ pub use osubot_types::{
     format_length, format_play_datetime, GameMode, Score, ScoreStatistics, ScoreUser,
 };
 
-#[derive(Debug, Clone)]
+/// Snapshot of a user's osu! profile statistics.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct UserStats {
     pub user_id: i64,
     pub username: String,
@@ -20,6 +21,7 @@ pub struct UserStats {
     pub cover_url: Option<String>,
 }
 
+/// Group category of a command, used for per-group enable/disable in config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandGroup {
     Query,
@@ -29,6 +31,7 @@ pub enum CommandGroup {
     Bind,
 }
 
+/// Parsed command from user input, with all extracted parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     QuerySelf {
@@ -80,6 +83,7 @@ pub enum Command {
 }
 
 impl Command {
+    /// Returns the [`CommandGroup`] this command belongs to.
     pub fn group_name(&self) -> CommandGroup {
         match self {
             Command::QuerySelf { .. }
@@ -92,8 +96,25 @@ impl Command {
             Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
         }
     }
+
+    /// Returns the canonical command trigger string (e.g. `"~"`, `"where"`, `"绑定"`).
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Command::QuerySelf { .. } => "~",
+            Command::QueryUser { .. } => "where",
+            Command::QueryMentionedUser { .. } => "where",
+            Command::Bind { .. } => "绑定",
+            Command::Unbind => "解绑",
+            Command::Highlight { .. } => "今日高光",
+            Command::ProfileCard { .. } => "!profile",
+            Command::Pass { .. } => "!p",
+            Command::Recent { .. } => "!r",
+            Command::ScoreOnBeatmap { .. } => "!s",
+        }
+    }
 }
 
+/// Delta between two snapshots of a user's statistics.
 #[derive(Debug, Clone)]
 pub struct UserChange {
     pub rank_change: Option<i64>,
@@ -106,6 +127,7 @@ pub struct UserChange {
 }
 
 impl UserChange {
+    /// Returns true if any field has a non-zero change.
     pub fn has_changes(&self) -> bool {
         self.rank_change.is_some_and(|c| c != 0)
             || self.country_rank_change.is_some_and(|c| c != 0)
@@ -117,6 +139,7 @@ impl UserChange {
     }
 }
 
+/// Activity level classification used by the scheduler to determine update intervals.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserActivity {
     SemiActive,
@@ -126,6 +149,7 @@ pub enum UserActivity {
     UserNotExists,
 }
 
+/// Result of a scheduled update operation, carrying the user's new activity level.
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub activity: UserActivity,

@@ -112,10 +112,22 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             if mode_str.is_empty() {
                 GameMode::Osu
             } else {
-                GameMode::from_mode_str(mode_str).unwrap_or(GameMode::Osu)
+                GameMode::from_mode_str(mode_str).unwrap_or_else(|| {
+                    tracing::debug!(
+                        mode_str,
+                        "今日高光: failed to parse mode, falling back to osu"
+                    );
+                    GameMode::Osu
+                })
             }
         } else {
-            GameMode::from_mode_str(rest).unwrap_or(GameMode::Osu)
+            GameMode::from_mode_str(rest).unwrap_or_else(|| {
+                tracing::debug!(
+                    mode_str = rest,
+                    "今日高光: failed to parse mode, falling back to osu"
+                );
+                GameMode::Osu
+            })
         };
         return Some(Command::Highlight { mode });
     }

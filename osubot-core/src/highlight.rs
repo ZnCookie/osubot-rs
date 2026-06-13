@@ -62,7 +62,7 @@ fn get_baseline_snapshot(
     }
 
     let now = Utc::now();
-    let target = now - chrono::Duration::hours(24);
+    let target = now - chrono::TimeDelta::hours(24);
 
     let closest = all
         .into_iter()
@@ -97,7 +97,15 @@ pub async fn get_highlight(
             let baseline = match get_baseline_snapshot(&storage, user_id, mode) {
                 Ok(Some(s)) => s,
                 Ok(None) => return None,
-                Err(_) => return None,
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        user_id,
+                        ?mode,
+                        "baseline snapshot query failed, excluding user from highlight"
+                    );
+                    return None;
+                }
             };
 
             let _permit = sem.acquire().await.expect("semaphore unexpectedly closed");

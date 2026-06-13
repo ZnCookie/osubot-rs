@@ -1,4 +1,5 @@
 use osubot_core::types::CommandGroup;
+use osubot_plugin::config::PluginConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -19,17 +20,45 @@ pub struct Config {
     pub groups: GroupsConfig,
     #[serde(default)]
     pub upstream: UpstreamConfig,
+    #[serde(default)]
+    pub plugin: PluginConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct OsuConfig {
-    pub api_key: String,
+    #[serde(alias = "api_key")]
+    pub client_secret: String,
     pub client_id: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct BotConfig {
     pub onebot_url: String,
+    /// 命令处理超时（秒），默认 120
+    #[serde(default = "default_command_timeout_secs")]
+    pub command_timeout_secs: u64,
+    /// 渲染超时（秒），默认 30
+    #[serde(default = "default_render_timeout_secs")]
+    pub render_timeout_secs: u64,
+    /// OneBot API 请求超时（秒），默认 5
+    #[serde(default = "default_onebot_api_timeout_secs")]
+    pub onebot_api_timeout_secs: u64,
+    /// UR 计算超时（秒），默认 10
+    #[serde(default = "default_ur_timeout_secs")]
+    pub ur_timeout_secs: u64,
+}
+
+fn default_command_timeout_secs() -> u64 {
+    120
+}
+fn default_render_timeout_secs() -> u64 {
+    30
+}
+fn default_onebot_api_timeout_secs() -> u64 {
+    5
+}
+fn default_ur_timeout_secs() -> u64 {
+    10
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -270,6 +299,30 @@ pub struct UpstreamConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
+/// 热重载时会从新 TOML 解析的部分，遗留字段（database）保持旧值不变。
+/// osu/irc/bot 用 Option 区分"未写 section"（None，继承旧值）和"写了 section"（Some，使用新值）。
+/// scheduler 也用 Option 避免无 section 时用默认值覆盖用户配置。
+/// 每新增一个可重载字段，或新增遗留不可变字段时，需同步更新 reload.rs 中的构造。
+#[derive(Debug, Deserialize, Clone)]
+pub struct MutableConfig {
+    #[serde(default)]
+    pub osu: Option<OsuConfig>,
+    #[serde(default)]
+    pub scheduler: Option<SchedulerConfig>,
+    #[serde(default)]
+    pub group_filter: GroupFilterConfig,
+    #[serde(default)]
+    pub groups: GroupsConfig,
+    #[serde(default)]
+    pub upstream: UpstreamConfig,
+    #[serde(default)]
+    pub plugin: PluginConfig,
+    #[serde(default)]
+    pub bot: Option<BotConfig>,
+    #[serde(default)]
+    pub irc: Option<IrcConfig>,
+}
+
 impl Config {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
@@ -282,12 +335,18 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             osu: OsuConfig {
-                api_key: std::env::var("OSU_API_KEY").unwrap_or_default(),
+                client_secret: std::env::var("OSU_CLIENT_SECRET")
+                    .or_else(|_| std::env::var("OSU_API_KEY"))
+                    .unwrap_or_default(),
                 client_id: std::env::var("OSU_CLIENT_ID").unwrap_or_default(),
             },
             bot: BotConfig {
                 onebot_url: std::env::var("ONEBOT_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
+                command_timeout_secs: 120,
+                render_timeout_secs: 30,
+                onebot_api_timeout_secs: 5,
+                ur_timeout_secs: 10,
             },
             database: DatabaseConfig {
                 path: std::env::var("DATABASE_PATH").unwrap_or_else(|_| "osubot.db".to_string()),
@@ -297,6 +356,7 @@ impl Default for Config {
             group_filter: GroupFilterConfig::default(),
             groups: GroupsConfig::default(),
             upstream: UpstreamConfig::default(),
+            plugin: PluginConfig::default(),
         }
     }
 }
@@ -518,5 +578,36 @@ mod tests {
         "#;
         let result: Result<Config, _> = toml::from_str(toml_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_accepts_client_secret_canonical_name() {
+        let toml_str = r#"
+            [osu]
+            client_secret = "my-secret"
+            client_id = "my-id"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.osu.client_secret, "my-secret");
+        assert_eq!(config.osu.client_id, "my-id");
+    }
+
+    #[test]
+    fn test_config_accepts_api_key_as_alias() {
+        let toml_str = r#"
+            [osu]
+            api_key = "old-api-key"
+            client_id = "my-id"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.osu.client_secret, "old-api-key");
     }
 }

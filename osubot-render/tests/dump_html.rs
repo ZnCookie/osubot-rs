@@ -76,6 +76,8 @@ fn make_max_score(mode: GameMode) -> Score {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
             };
             if !is_mania {
                 s.count_geki = 0;
@@ -315,6 +317,8 @@ fn make_varied_score(idx: usize) -> Score {
             osu_large_tick_hits: 0,
             osu_small_tick_hits: 0,
             osu_slider_tail_hits: 0,
+            osu_large_tick_misses: 0,
+            osu_small_tick_misses: 0,
         },
         cover_url: format!(
             "https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg",

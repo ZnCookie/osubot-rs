@@ -6,7 +6,8 @@ osubot.toml
 *.key
 *.pem
 .claude/
-docs/
+docs/superpowers/
 .superpowers/
 .opencode/
+.omo/
 osubot-render/tests/dump/

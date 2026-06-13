@@ -5,6 +5,7 @@ use osubot_types::{
 };
 use phf::phf_map;
 
+/// 将用户统计数据格式化为中文个人信息文本，包含 pp、排名、国家排名、准确率、游玩次数等。
 pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     let username = &stats.username;
     let mode_name = mode.name();
@@ -102,6 +103,7 @@ fn compute_display_fields(score: &Score) -> ScoreDisplayFields {
     }
 }
 
+/// 将单条成绩格式化为包含谱面信息、成绩详情和排名的中文文本。
 pub fn format_score(
     score: &Score,
     username: &str,
@@ -188,6 +190,7 @@ pub fn format_score(
     )
 }
 
+/// 将多条成绩格式化为带序号的并列中文成绩列表文本。
 pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, is_pass: bool) -> String {
     let label = if is_pass {
         "最近通过"
@@ -533,6 +536,7 @@ fn country_name(code: &str) -> &'static str {
     COUNTRY_NAMES.get(code).copied().unwrap_or("Unknown")
 }
 
+/// 将用户统计数据与变化量格式化为带变化标注（↑↓/加减）的中文个人信息文本。
 pub fn format_stats_with_change(
     stats: &UserStats,
     change: &Option<UserChange>,
@@ -681,6 +685,8 @@ mod tests {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
             },
             cover_url: String::new(),
             user: ScoreUser {
@@ -808,6 +814,8 @@ mod tests {
             osu_large_tick_hits: 0,
             osu_small_tick_hits: 0,
             osu_slider_tail_hits: 0,
+            osu_large_tick_misses: 0,
+            osu_small_tick_misses: 0,
         };
         let output = format_score(&score, "TestUser", GameMode::Mania, None, true);
         assert!(output.contains("100/200/50/30/10/5"));

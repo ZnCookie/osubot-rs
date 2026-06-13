@@ -38,7 +38,7 @@ pub fn render_html_to_image(
             if let Ok(resource) = result {
                 cb_resources
                     .lock()
-                    .expect("loaded_resources lock poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .push(resource);
                 let _ = resource_tx.send(());
             }
@@ -64,13 +64,13 @@ pub fn render_html_to_image(
     );
 
     for _ in 0..MAX_RESOURCE_ITERATIONS {
-        if cancelled.load(Ordering::Relaxed) {
+        if cancelled.load(Ordering::Acquire) {
             return Err(RenderError::Render("render cancelled".into()));
         }
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources
             .lock()
-            .expect("loaded_resources lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .drain(..)
             .collect();
         for resource in resources {
@@ -101,7 +101,7 @@ pub fn render_html_to_image(
     let render_width = width;
     let total_physical_height = needed_logical_height as u32;
 
-    if cancelled.load(Ordering::Relaxed) {
+    if cancelled.load(Ordering::Acquire) {
         return Err(RenderError::Render("render cancelled".into()));
     }
     if total_physical_height <= MAX_TILE_HEIGHT {
@@ -147,7 +147,7 @@ pub fn render_html_to_image(
         );
 
         for tile_idx in 0..num_tiles {
-            if cancelled.load(Ordering::Relaxed) {
+            if cancelled.load(Ordering::Acquire) {
                 return Err(RenderError::Render("render cancelled".into()));
             }
             let y_offset_css = tile_idx as f64 * tile_logical_height;

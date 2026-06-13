@@ -494,7 +494,10 @@ fn render_detail_cards(data: &ScoreCardData) -> String {
     }
 
     if has_breakdown {
-        let breakdown = score.pp_breakdown.as_ref().unwrap();
+        let breakdown = score
+            .pp_breakdown
+            .as_ref()
+            .expect("guarded by has_breakdown check above");
         html.push_str(r#"<div class="subcard-breakdown">"#);
         if let Some(aim) = breakdown.aim.filter(|&v| v > 0.0) {
             html.push_str(&format!(
@@ -702,6 +705,8 @@ mod tests {
                 osu_large_tick_hits: 0,
                 osu_small_tick_hits: 0,
                 osu_slider_tail_hits: 0,
+                osu_large_tick_misses: 0,
+                osu_small_tick_misses: 0,
             },
             cover_url: "https://example.com/cover.jpg".to_string(),
             user: osubot_types::ScoreUser {
@@ -1128,6 +1133,8 @@ mod tests {
                     osu_large_tick_hits: 0,
                     osu_small_tick_hits: 0,
                     osu_slider_tail_hits: 0,
+                    osu_large_tick_misses: 0,
+                    osu_small_tick_misses: 0,
                 },
                 cover_url: String::new(),
                 user: ScoreUser {

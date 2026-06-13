@@ -9,8 +9,7 @@ mod style;
 use base64::Engine;
 use image::{imageops, GenericImageView};
 use parley::FontContext;
-use std::sync::{Arc, OnceLock};
-use tokio::sync::Semaphore;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 pub use cache::{cleanup_expired, ensure_cache_dir};
 pub use error::RenderError;
@@ -26,12 +25,19 @@ fn get_font_context() -> &'static FontContext {
     FONT_CTX.get_or_init(FontContext::new)
 }
 
-const MAX_CONCURRENT_RENDERS: usize = 1;
+/// Global render mutex ensures only one render runs at a time.
+/// Unlike tokio::sync::Semaphore (which releases on timeout even if the
+/// spawn_blocking task is still running), a std::sync::Mutex held inside
+/// the blocking closure stays locked until the task finishes — even after
+/// a timeout cancels the outer async await.
+static RENDER_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
 
-static RENDER_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+fn render_lock() -> &'static StdMutex<()> {
+    RENDER_LOCK.get_or_init(|| StdMutex::new(()))
+}
 
-fn render_semaphore() -> &'static Semaphore {
-    RENDER_SEMAPHORE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_RENDERS))
+fn locked_render() -> std::sync::MutexGuard<'static, ()> {
+    render_lock().lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn extract_panic_message(e: tokio::task::JoinError) -> String {
@@ -253,29 +259,26 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     let html = score_style::wrap_score_html(&data);
     tracing::debug!("HTML generated, starting render...");
 
-    let _permit = render_semaphore()
-        .acquire()
-        .await
-        .expect("render semaphore never closed");
     let font_ctx = get_font_context();
     let cancel =
         external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
     let cancel_flag = cancel.clone();
 
-    let render_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::task::spawn_blocking(move || {
-            render::render_html_to_image(&html, font_ctx, 2560, 1440, &cancel_flag)
-        }),
-    )
-    .await;
+    let join_handle = tokio::task::spawn_blocking(move || {
+        let _guard = locked_render();
+        render::render_html_to_image(&html, font_ctx, 2560, 1440, &cancel_flag)
+    });
+    let abort_handle = join_handle.abort_handle();
+
+    let render_result = tokio::time::timeout(std::time::Duration::from_secs(60), join_handle).await;
 
     let (pixels, w, h) = match render_result {
         Ok(Ok(result)) => result?,
         Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
         Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::warn!("score card render timed out after 60s");
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+            abort_handle.abort();
+            tracing::warn!("score card render timed out after 60s, blocking task aborted");
             return Err(RenderError::Render("render timed out after 60s".into()));
         }
     };
@@ -293,29 +296,27 @@ pub async fn render_profile_card(
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
     let html_with_inlined_images = cache::inline_external_images(html).await;
-    let _permit = render_semaphore()
-        .acquire()
-        .await
-        .expect("render semaphore never closed");
     let wrapped_html =
         style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue, avatar_url, username);
     let font_ctx = get_font_context();
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel_flag = cancel.clone();
-    let render_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::task::spawn_blocking(move || {
-            render::render_html_to_image(&wrapped_html, font_ctx, width, height, &cancel_flag)
-        }),
-    )
-    .await;
+
+    let join_handle = tokio::task::spawn_blocking(move || {
+        let _guard = locked_render();
+        render::render_html_to_image(&wrapped_html, font_ctx, width, height, &cancel_flag)
+    });
+    let abort_handle = join_handle.abort_handle();
+
+    let render_result = tokio::time::timeout(std::time::Duration::from_secs(60), join_handle).await;
 
     let (mut pixels, mut w, mut h) = match render_result {
         Ok(Ok(result)) => result?,
         Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
         Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::warn!("render timed out after 60s, background task may still be running");
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+            abort_handle.abort();
+            tracing::warn!("profile card render timed out after 60s, blocking task aborted");
             return Err(RenderError::Render("render timed out after 60s".into()));
         }
     };
@@ -461,22 +462,33 @@ pub async fn render_score_list_card(
     let rows = (scores.len() as u32).div_ceil(4);
     let estimated_height = 640 + 36 + rows * 400;
 
-    let _permit = render_semaphore()
-        .acquire()
-        .await
-        .expect("render semaphore never closed");
     let font_ctx = get_font_context();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_flag = cancel.clone();
 
-    let render_result = tokio::task::spawn_blocking(move || {
-        let cancel_flag = std::sync::atomic::AtomicBool::new(false);
+    let join_handle = tokio::task::spawn_blocking(move || {
+        let _guard = locked_render();
         render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
-    })
+    });
+    let abort_handle = join_handle.abort_handle();
+
+    let render_result = tokio::time::timeout(
+        std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
+        join_handle,
+    )
     .await;
 
     let (pixels, w, h) = match render_result {
-        Ok(Ok(rendered)) => rendered,
-        Ok(Err(e)) => return Err(e),
-        Err(e) => return Err(RenderError::Render(extract_panic_message(e))),
+        Ok(Ok(result)) => result?,
+        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
+        Err(_) => {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+            abort_handle.abort();
+            tracing::warn!("score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s");
+            return Err(RenderError::Render(format!(
+                "score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s",
+            )));
+        }
     };
 
     let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;

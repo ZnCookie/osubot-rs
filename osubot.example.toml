@@ -1,6 +1,7 @@
 [osu]
-# osu! API v2 credentials (https://osu.ppy.sh/home/account/edit#oauth)
-api_key = "your-api-key-here"
+# osu! API v2 OAuth client credentials (https://osu.ppy.sh/home/account/edit#oauth)
+# client_secret (previously "api_key" — old configs still work)
+client_secret = "your-client-secret-here"
 client_id = "your-client-id-here"
 
 [bot]
@@ -69,3 +70,18 @@ path = "osubot.db"
 # rate_per_minute = 10
 # burst = 20
 # yumu 无需 access_token 和 self_id，直接伪装目标 QQ 连接
+
+[plugin]
+# Directory containing .wasm plugin files
+dir = "./plugins"
+
+# Plugin instances to load
+[[plugin.instances]]
+name = "hello"
+path = "hello_plugin.wasm"
+enabled = false    # 默认禁用，改为 true 启用
+priority = 50
+
+# 可选：插件自定义配置（通过 get_plugin_config() 访问）
+# [plugin.instances.config]
+# endpoint = "https://api.example.com"
