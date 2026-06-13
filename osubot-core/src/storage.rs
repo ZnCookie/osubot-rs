@@ -990,7 +990,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_baseline_deduplicates_user_ids_and_handles_empty_input() {
+    async fn batch_baseline_tolerates_duplicate_user_ids_and_handles_empty_input() {
         let storage = test_storage().await;
         let now = Utc::now();
         let mode = GameMode::Osu;
@@ -1013,7 +1013,7 @@ mod tests {
         let baselines = storage
             .get_baseline_snapshots_for_users(&[404, 404, 404], mode, 24, 36)
             .await
-            .expect("deduplicated batch query succeeds");
+            .expect("duplicate user IDs batch query succeeds");
 
         assert_eq!(baselines.len(), 1);
         assert_eq!(baselines.get(&404).expect("user 404 baseline").hits, 4_040);
