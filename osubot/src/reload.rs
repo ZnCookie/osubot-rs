@@ -159,10 +159,14 @@ impl ReloadCoordinator {
         self.handle.drain.store(true, Ordering::SeqCst);
         self.wait_drain().await;
 
+        // 保存旧配置，插件重载失败时回滚
+        let old_config = self.handle.config.read().await.clone();
+
         match self.reload_config(watcher, plugin_dir).await {
             Ok(()) => {
                 if let Err(e) = self.reload_plugins().await {
-                    error!("插件重载失败: {e}");
+                    error!("插件重载失败，回滚配置: {e}");
+                    *self.handle.config.write().await = old_config;
                 }
             }
             Err(e) => {

@@ -63,7 +63,7 @@ pub struct PluginManager {
 
 impl Drop for PluginManager {
     fn drop(&mut self) {
-        self.epoch_running.store(false, Ordering::Relaxed);
+        self.epoch_running.store(false, Ordering::SeqCst);
         self.epoch_handle.abort();
     }
 }
@@ -101,7 +101,7 @@ impl PluginManager {
         let epoch_flag = epoch_running.clone();
         let epoch_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_micros(500));
-            while epoch_flag.load(Ordering::Relaxed) {
+            while epoch_flag.load(Ordering::SeqCst) {
                 interval.tick().await;
                 epoch_engine.increment_epoch();
             }
@@ -248,6 +248,12 @@ impl PluginManager {
         let lost_instances = vec![0u32; instances.len()];
         let reload_failures = vec![0u32; instances.len()];
 
+        for indices in command_map.values_mut() {
+            indices.sort_by_key(|&i| {
+                std::cmp::Reverse(instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+            });
+        }
+
         Ok(Self {
             instances,
             command_map,
@@ -268,13 +274,10 @@ impl PluginManager {
     }
 
     pub async fn handle_command(&mut self, cmd_name: &str, cmd_json: &str) -> PluginAction {
-        let mut indices = match self.command_map.get(cmd_name) {
+        let indices = match self.command_map.get(cmd_name) {
             Some(indices) => indices.clone(),
             None => return PluginAction::Next,
         };
-        indices.sort_by_key(|&i| {
-            std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
-        });
 
         for &idx in &indices {
             let cmd_owned = cmd_json.to_owned();
@@ -484,27 +487,20 @@ impl PluginManager {
             .get(idx)
             .ok_or_else(|| format!("params not found for idx {idx}"))?;
 
-        // 保存旧 tick 注册快照，new() 或 on_load 失败时恢复
+        // 原子操作：保存旧 tick 注册快照并清除旧注册（防止 TOCTOU 竞争）
         let old_ticks: Vec<_> = {
-            let registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
-                e.into_inner()
-            });
-            registry
-                .iter()
-                .filter(|(pi, _, _, _)| *pi == idx)
-                .cloned()
-                .collect()
-        };
-
-        // 清除旧的 tick 注册，防止重复注册和内存泄漏
-        {
             let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
                 tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
                 e.into_inner()
             });
+            let snapshot: Vec<_> = registry
+                .iter()
+                .filter(|(pi, _, _, _)| *pi == idx)
+                .cloned()
+                .collect();
             registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
-        }
+            snapshot
+        };
 
         let store = self.create_reload_store(idx, params.plugin_config.clone());
         let mut instance =
@@ -528,7 +524,7 @@ impl PluginManager {
         instance.set_instance_idx(idx);
 
         if let Err(e) = instance.on_load() {
-            // on_load 中可能已注册 tick，失败后需清理残留并恢复旧 tick
+            // on_load 中可能已注册 tick，失败后原子清理残留并恢复旧 tick
             {
                 let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
                     tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
@@ -555,6 +551,11 @@ impl PluginManager {
         let metadata = instance.metadata();
         for cmd in metadata.commands.iter() {
             self.command_map.entry(cmd.clone()).or_default().push(idx);
+        }
+        for indices in self.command_map.values_mut() {
+            indices.sort_by_key(|&i| {
+                std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+            });
         }
 
         self.instances[idx] = Some(instance);
@@ -955,6 +956,12 @@ impl PluginManager {
             }
         }
 
+        for indices in self.command_map.values_mut() {
+            indices.sort_by_key(|&i| {
+                std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+            });
+        }
+
         self.compact();
         Ok(())
     }
@@ -1006,6 +1013,12 @@ impl PluginManager {
                 }
             }
             *indices = retained;
+        }
+
+        for indices in self.command_map.values_mut() {
+            indices.sort_by_key(|&i| {
+                std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+            });
         }
 
         // Remove empty entries from command_map
