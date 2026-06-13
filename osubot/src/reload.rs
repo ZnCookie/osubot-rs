@@ -159,20 +159,25 @@ impl ReloadCoordinator {
         self.handle.drain.store(true, Ordering::SeqCst);
         self.wait_drain().await;
 
-        // 保存旧配置，插件重载失败时回滚
         let old_config = self.handle.config.read().await.clone();
 
-        match self.reload_config(watcher, plugin_dir).await {
-            Ok(()) => {
-                if let Err(e) = self.reload_plugins().await {
-                    error!("插件重载失败，回滚配置: {e}");
-                    *self.handle.config.write().await = old_config;
-                }
-            }
+        let new_config = match self.reload_config(watcher, plugin_dir, &old_config).await {
+            Ok(cfg) => cfg,
             Err(e) => {
                 error!("配置重载失败，保留旧配置并跳过插件重载: {e}");
+                self.handle.drain.store(false, Ordering::SeqCst);
+                return;
             }
+        };
+
+        if let Err(e) = self.reload_plugins().await {
+            error!("插件重载失败，回滚配置: {e}");
+            *self.handle.config.write().await = old_config;
+            self.handle.drain.store(false, Ordering::SeqCst);
+            return;
         }
+
+        self.apply_side_effects(&old_config, &new_config).await;
 
         self.handle.drain.store(false, Ordering::SeqCst);
     }
@@ -181,11 +186,9 @@ impl ReloadCoordinator {
         &self,
         watcher: &mut RecommendedWatcher,
         plugin_dir: &Arc<std::sync::RwLock<PathBuf>>,
-    ) -> Result<(), String> {
-        let (old_onebot_url, old_osu, old_irc) = {
-            let old = self.handle.config.read().await;
-            (old.bot.onebot_url.clone(), old.osu.clone(), old.irc.clone())
-        };
+        old_config: &Config,
+    ) -> Result<Config, String> {
+        let (old_osu, old_irc) = (old_config.osu.clone(), old_config.irc.clone());
 
         let content = tokio::fs::read_to_string(&self.config_path)
             .await
@@ -196,20 +199,18 @@ impl ReloadCoordinator {
 
         let new_osu = mutable.osu.unwrap_or(old_osu.clone());
         let new_irc = mutable.irc.unwrap_or(old_irc.clone());
+        let new_scheduler = mutable.scheduler.unwrap_or(old_config.scheduler.clone());
 
-        let new_config = {
-            let old = self.handle.config.read().await;
-            Config {
-                osu: new_osu.clone(),
-                bot: mutable.bot,
-                database: old.database.clone(),
-                irc: new_irc.clone(),
-                scheduler: mutable.scheduler,
-                group_filter: mutable.group_filter,
-                groups: mutable.groups,
-                upstream: mutable.upstream,
-                plugin: mutable.plugin,
-            }
+        let new_config = Config {
+            osu: new_osu.clone(),
+            bot: mutable.bot,
+            database: old_config.database.clone(),
+            irc: new_irc.clone(),
+            scheduler: new_scheduler,
+            group_filter: mutable.group_filter,
+            groups: mutable.groups,
+            upstream: mutable.upstream,
+            plugin: mutable.plugin,
         };
 
         // validate
@@ -272,13 +273,21 @@ impl ReloadCoordinator {
         }
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
-        {
-            let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
-            if *cur_dir != new_plugin_dir {
+        let dir_changed = {
+            let cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
+            *cur_dir != new_plugin_dir
+        };
+        if dir_changed {
+            {
+                let cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
                 watcher
                     .unwatch(cur_dir.as_path())
                     .map_err(|e| format!("unwatch old plugin dir failed: {e}"))?;
-                std::fs::create_dir_all(&new_plugin_dir).ok();
+            }
+            tokio::fs::create_dir_all(&new_plugin_dir).await.ok();
+            {
+                #[allow(unused_mut)]
+                let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
                 watcher
                     .watch(&new_plugin_dir, RecursiveMode::NonRecursive)
                     .map_err(|e| format!("watch new plugin dir failed: {e}"))?;
@@ -291,14 +300,24 @@ impl ReloadCoordinator {
             }
         }
 
-        let onebot_api_timeout_secs = new_config.bot.onebot_api_timeout_secs;
-        let new_onebot_url = new_config.bot.onebot_url.clone();
-        let upstream_config = new_config.upstream.clone();
-
         {
             let mut cfg = self.handle.config.write().await;
-            *cfg = new_config;
+            *cfg = new_config.clone();
         }
+
+        info!("配置验证通过，等待插件重载...");
+        Ok(new_config)
+    }
+
+    async fn apply_side_effects(&self, old_config: &Config, new_config: &Config) {
+        let old_osu = &old_config.osu;
+        let old_irc = &old_config.irc;
+        let old_onebot_url = &old_config.bot.onebot_url;
+        let new_osu = &new_config.osu;
+        let new_irc = &new_config.irc;
+        let new_onebot_url = &new_config.bot.onebot_url;
+        let onebot_api_timeout_secs = new_config.bot.onebot_api_timeout_secs;
+        let upstream_config = &new_config.upstream;
 
         self.handle
             .onebot_api_timeout
@@ -310,7 +329,7 @@ impl ReloadCoordinator {
             info!("osu! API 凭据已变更，正在更新 OAuth 缓存");
             self.handle
                 .oauth
-                .update_credentials(new_osu.client_id, new_osu.client_secret)
+                .update_credentials(new_osu.client_id.clone(), new_osu.client_secret.clone())
                 .await;
         }
 
@@ -322,7 +341,7 @@ impl ReloadCoordinator {
             || new_irc.password != old_irc.password
         {
             info!("IRC 配置已变更，正在重启连接");
-            self.restart_irc(&new_irc).await;
+            self.restart_irc(new_irc).await;
         }
 
         if old_onebot_url != new_onebot_url {
@@ -337,7 +356,7 @@ impl ReloadCoordinator {
         self.handle.scheduler.reschedule_all().await;
 
         let new_chain = build_upstream_chain(
-            &upstream_config,
+            upstream_config,
             &self.handle.oauth,
             &self.handle.rate_limiter,
         );
@@ -346,8 +365,7 @@ impl ReloadCoordinator {
             *chain = new_chain;
         }
 
-        info!("配置热重载成功");
-        Ok(())
+        info!("配置热重载成功（含副作用应用）");
     }
 
     async fn reload_plugins(&self) -> Result<(), String> {

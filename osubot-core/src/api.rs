@@ -1337,19 +1337,28 @@ impl OauthTokenCache {
     }
 
     pub fn is_configured(&self) -> bool {
-        let cid = self.client_id.read().unwrap_or_else(|e| e.into_inner());
-        let cs = self.client_secret.read().unwrap_or_else(|e| e.into_inner());
+        let cid = self.client_id.read().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        });
+        let cs = self.client_secret.read().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        });
         !cid.is_empty() && !cs.is_empty()
     }
 
     /// 热重载时更新 API 凭据，同时清空已缓存的 token（旧凭据的 token 已失效）。
     pub async fn update_credentials(&self, client_id: String, client_secret: String) {
         let _guard = self.refresh_lock.lock().await;
-        *self.client_id.write().unwrap_or_else(|e| e.into_inner()) = client_id;
-        *self
-            .client_secret
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = client_secret;
+        *self.client_id.write().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        }) = client_id;
+        *self.client_secret.write().unwrap_or_else(|e| {
+            tracing::warn!("RwLock poisoned, recovering");
+            e.into_inner()
+        }) = client_secret;
         let mut cache = self.cache.lock().await;
         *cache = None;
     }
@@ -1387,8 +1396,14 @@ impl OauthTokenCache {
         // 缓存过期，发 HTTP 请求（不持有锁）
         let client = http_client();
         let (cid, cs) = {
-            let cid = self.client_id.read().unwrap_or_else(|e| e.into_inner());
-            let cs = self.client_secret.read().unwrap_or_else(|e| e.into_inner());
+            let cid = self.client_id.read().unwrap_or_else(|e| {
+                tracing::warn!("RwLock poisoned, recovering");
+                e.into_inner()
+            });
+            let cs = self.client_secret.read().unwrap_or_else(|e| {
+                tracing::warn!("RwLock poisoned, recovering");
+                e.into_inner()
+            });
             (cid.clone(), cs.clone())
         };
         let params = [

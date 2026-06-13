@@ -2865,6 +2865,7 @@ async fn main() {
 
         // Message loop
         loop {
+            const SPAWN_COUNT: usize = 2; // 必须与下方两个 tokio::spawn 中各持有的 InFlightGuard 数量一致
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
@@ -2907,7 +2908,7 @@ async fn main() {
                                 if drain.load(Ordering::SeqCst) {
                                     None // drain 为 true，不增加
                                 } else {
-                                    Some(current + 2) // 两个任务各 +1
+                                    Some(current + SPAWN_COUNT) // 两个任务各 +1
                                 }
                             });
                         if increment_result.is_err() {

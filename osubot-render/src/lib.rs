@@ -272,7 +272,7 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
         Ok(Ok(result)) => result?,
         Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
         Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            cancel.store(true, std::sync::atomic::Ordering::Release);
             abort_handle.abort();
             tracing::warn!("score card render timed out after 60s, blocking task aborted");
             return Err(RenderError::Render("render timed out after 60s".into()));
@@ -310,7 +310,7 @@ pub async fn render_profile_card(
         Ok(Ok(result)) => result?,
         Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
         Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            cancel.store(true, std::sync::atomic::Ordering::Release);
             abort_handle.abort();
             tracing::warn!("profile card render timed out after 60s, blocking task aborted");
             return Err(RenderError::Render("render timed out after 60s".into()));
@@ -478,7 +478,7 @@ pub async fn render_score_list_card(
         Ok(Ok(result)) => result?,
         Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
         Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            cancel.store(true, std::sync::atomic::Ordering::Release);
             abort_handle.abort();
             tracing::warn!("score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s");
             return Err(RenderError::Render(format!(

@@ -207,8 +207,10 @@ fn extract_raw_replay_frames(osr_bytes: &[u8]) -> Option<Vec<(i32, f32, f32, u32
     let compressed = &osr_bytes[pos..pos + replay_len];
 
     // LZMA decompress
+    const MAX_DECOMPRESSED_SIZE: u64 = 100 * 1024 * 1024;
     let mut buffer = Vec::new();
     liblzma::read::XzDecoder::new_multi_decoder(compressed)
+        .take(MAX_DECOMPRESSED_SIZE)
         .read_to_end(&mut buffer)
         .ok()?;
 

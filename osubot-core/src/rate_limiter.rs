@@ -139,8 +139,7 @@ impl RateLimiter {
 
 impl Drop for RateLimiter {
     fn drop(&mut self) {
-        if let Ok(guard) = self.refill_handle.lock() {
-            guard.abort();
-        }
+        let guard = self.refill_handle.lock().unwrap_or_else(|e| e.into_inner());
+        guard.abort();
     }
 }
