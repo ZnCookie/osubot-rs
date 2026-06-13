@@ -1,4 +1,5 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use turso::{params, Connection, Result as DbResult};
 
@@ -383,6 +384,86 @@ impl Storage {
             }
         }
         Ok(results)
+    }
+
+    pub async fn get_baseline_snapshots_for_users(
+        &self,
+        user_ids: &[i64],
+        mode: GameMode,
+        target_hours_ago: i64,
+        max_lookback: i64,
+    ) -> DbResult<HashMap<i64, UserStats>> {
+        let unique_user_ids: Vec<i64> = user_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if unique_user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let now = Utc::now();
+        let target = now - chrono::TimeDelta::hours(target_hours_ago);
+        let cutoff = now - chrono::TimeDelta::hours(max_lookback);
+        let cutoff_str = cutoff.to_rfc3339();
+        let placeholders = std::iter::repeat_n("?", unique_user_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT user_id, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
+             FROM user_stats_history
+             WHERE mode = ? AND recorded_at >= ? AND user_id IN ({placeholders})
+             ORDER BY user_id, recorded_at ASC"
+        );
+
+        let mut args: Vec<turso::Value> = Vec::with_capacity(unique_user_ids.len() + 2);
+        args.push((mode as i32).into());
+        args.push(cutoff_str.into());
+        for user_id in unique_user_ids {
+            args.push(user_id.into());
+        }
+
+        let mut rows = self.conn.query(&sql, args).await?;
+        let mut closest: HashMap<i64, (u64, UserStats)> = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let user_id: i64 = row.get(0)?;
+            let recorded_str: String = row.get(1)?;
+            let Ok(recorded_at) = DateTime::parse_from_rfc3339(&recorded_str) else {
+                continue;
+            };
+            let distance = (recorded_at.with_timezone(&Utc) - target)
+                .num_seconds()
+                .unsigned_abs();
+            let stats = UserStats {
+                user_id: 0,
+                username: String::new(),
+                pp: row.get(2)?,
+                rank: row.get(3)?,
+                country_rank: row.get(4)?,
+                country_code: "XX".to_string(),
+                ranked_score: row.get(5)?,
+                accuracy: row.get(6)?,
+                playcount: row.get(7)?,
+                hits: row.get(8)?,
+                playtime: row.get(9)?,
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+            };
+
+            match closest.get(&user_id) {
+                Some((best_distance, _)) if *best_distance <= distance => {}
+                _ => {
+                    closest.insert(user_id, (distance, stats));
+                }
+            }
+        }
+
+        Ok(closest
+            .into_iter()
+            .map(|(user_id, (_, stats))| (user_id, stats))
+            .collect())
     }
 
     pub async fn get_closest_snapshot_to_hours_ago(
@@ -860,5 +941,162 @@ impl Storage {
         } else {
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_stats(pp: f64, hits: i64, playtime: i64) -> UserStats {
+        UserStats {
+            user_id: 0,
+            username: String::new(),
+            pp,
+            rank: 0,
+            country_rank: 0,
+            country_code: "XX".to_string(),
+            ranked_score: 0,
+            accuracy: 0.0,
+            playcount: 0,
+            hits,
+            playtime,
+            rank_change: None,
+            country_rank_change: None,
+            cover_url: None,
+        }
+    }
+
+    async fn test_storage() -> Storage {
+        let id = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "osubot-storage-batch-baseline-{}-{id}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Storage::new(path.to_str().expect("temp db path is valid UTF-8"))
+            .await
+            .expect("create test storage")
+    }
+
+    async fn insert_snapshot(
+        storage: &Storage,
+        user_id: i64,
+        mode: GameMode,
+        recorded_at: DateTime<Utc>,
+        stats: UserStats,
+    ) {
+        storage
+            .conn
+            .execute(
+                "INSERT INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    user_id,
+                    mode as i32,
+                    recorded_at.to_rfc3339(),
+                    stats.pp,
+                    stats.rank,
+                    stats.country_rank,
+                    stats.ranked_score,
+                    stats.accuracy,
+                    stats.playcount,
+                    stats.hits,
+                    stats.playtime,
+                ],
+            )
+            .await
+            .expect("insert snapshot");
+    }
+
+    #[tokio::test]
+    async fn batch_baseline_returns_closest_snapshot_for_each_user() {
+        let storage = test_storage().await;
+        let now = Utc::now();
+        let mode = GameMode::Osu;
+
+        insert_snapshot(
+            &storage,
+            101,
+            mode,
+            now - chrono::TimeDelta::hours(30),
+            test_stats(101.30, 1_030, 10_130),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            101,
+            mode,
+            now - chrono::TimeDelta::hours(23),
+            test_stats(101.23, 1_023, 10_123),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            202,
+            mode,
+            now - chrono::TimeDelta::hours(25),
+            test_stats(202.25, 2_025, 20_225),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            202,
+            GameMode::Taiko,
+            now - chrono::TimeDelta::hours(24),
+            test_stats(999.0, 9_999, 99_999),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            303,
+            mode,
+            now - chrono::TimeDelta::hours(40),
+            test_stats(303.40, 3_040, 30_340),
+        )
+        .await;
+
+        let baselines = storage
+            .get_baseline_snapshots_for_users(&[101, 202, 303], mode, 24, 36)
+            .await
+            .expect("batch baseline query succeeds");
+
+        assert_eq!(baselines.len(), 2);
+        assert_eq!(baselines.get(&101).expect("user 101 baseline").pp, 101.23);
+        assert_eq!(baselines.get(&202).expect("user 202 baseline").pp, 202.25);
+        assert!(!baselines.contains_key(&303));
+    }
+
+    #[tokio::test]
+    async fn batch_baseline_tolerates_duplicate_user_ids_and_handles_empty_input() {
+        let storage = test_storage().await;
+        let now = Utc::now();
+        let mode = GameMode::Osu;
+
+        let empty = storage
+            .get_baseline_snapshots_for_users(&[], mode, 24, 36)
+            .await
+            .expect("empty batch query succeeds");
+        assert!(empty.is_empty());
+
+        insert_snapshot(
+            &storage,
+            404,
+            mode,
+            now - chrono::TimeDelta::hours(24),
+            test_stats(404.0, 4_040, 40_400),
+        )
+        .await;
+
+        let baselines = storage
+            .get_baseline_snapshots_for_users(&[404, 404, 404], mode, 24, 36)
+            .await
+            .expect("duplicate user IDs batch query succeeds");
+
+        assert_eq!(baselines.len(), 1);
+        assert_eq!(baselines.get(&404).expect("user 404 baseline").hits, 4_040);
     }
 }
