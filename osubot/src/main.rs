@@ -216,14 +216,14 @@ fn api_error_msg(e: &ApiError) -> String {
 
 impl BotContext {
     async fn resolve_binding(&self, qq: i64) -> Option<(i64, String)> {
-        match self.storage.get_binding(qq) {
+        match self.storage.get_binding(qq).await {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
                 let binding = self.upstream_chain.read().await.try_query(qq).await?;
-                if let Err(e) = self.storage.set_user_id(&binding.1, binding.0) {
+                if let Err(e) = self.storage.set_user_id(&binding.1, binding.0).await {
                     warn!("failed to persist user_id from upstream: {e}");
                 }
-                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1) {
+                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1).await {
                     warn!("failed to persist binding from upstream: {e}");
                 }
                 Some(binding)
@@ -246,7 +246,11 @@ impl BotContext {
         {
             Ok(stats) => {
                 if stats.username != username {
-                    if let Err(e) = self.storage.update_binding_username(qq, &stats.username) {
+                    if let Err(e) = self
+                        .storage
+                        .update_binding_username(qq, &stats.username)
+                        .await
+                    {
                         tracing::warn!(
                             qq = qq,
                             username = %stats.username,
@@ -255,7 +259,7 @@ impl BotContext {
                         );
                     }
                 }
-                if let Err(e) = self.storage.set_user_id(&stats.username, user_id) {
+                if let Err(e) = self.storage.set_user_id(&stats.username, user_id).await {
                     tracing::warn!(
                         username = %stats.username,
                         user_id = user_id,
@@ -266,6 +270,7 @@ impl BotContext {
                 let change = self
                     .storage
                     .calculate_change(user_id, mode, &stats)
+                    .await
                     .inspect_err(|e| {
                         tracing::warn!(
                             user_id = user_id,
@@ -337,7 +342,11 @@ async fn resolve_score_user(
         tracing::trace!("resolve_score_user: looking up by username '{}'", name);
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
-                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                if let Err(e) = ctx
+                    .storage
+                    .set_user_id(&stats.username, stats.user_id)
+                    .await
+                {
                     tracing::warn!(
                         username = %stats.username,
                         user_id = stats.user_id,
@@ -393,7 +402,11 @@ async fn resolve_score_user(
         tracing::info!("resolve_score_user: fetching stats for user_id={}", user_id);
         match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
             Ok(stats) => {
-                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                if let Err(e) = ctx
+                    .storage
+                    .set_user_id(&stats.username, stats.user_id)
+                    .await
+                {
                     tracing::warn!(
                         username = %stats.username,
                         user_id = stats.user_id,
@@ -496,7 +509,11 @@ async fn handle_score_query(
 
         let user_stats = match stats_result {
             Ok(stats) => {
-                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                if let Err(e) = ctx
+                    .storage
+                    .set_user_id(&stats.username, stats.user_id)
+                    .await
+                {
                     tracing::warn!(
                         username = %stats.username,
                         user_id = stats.user_id,
@@ -688,6 +705,7 @@ async fn handle_score_query(
                 let change = ctx
                     .storage
                     .calculate_change(user_id, params.mode, &user_stats)
+                    .await
                     .inspect_err(|e| {
                         tracing::warn!(
                             user_id = user_id,
@@ -833,7 +851,11 @@ async fn handle_beatmap_score_query(
         .await
         {
             Ok(stats) => {
-                if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                if let Err(e) = ctx
+                    .storage
+                    .set_user_id(&stats.username, stats.user_id)
+                    .await
+                {
                     tracing::warn!(
                         username = %stats.username,
                         user_id = stats.user_id,
@@ -1143,6 +1165,7 @@ async fn render_and_send_single_score(
     let change = ctx
         .storage
         .calculate_change(user_stats.user_id, mode, user_stats)
+        .await
         .ok()
         .flatten();
     let pp_change = change.as_ref().and_then(|c| c.pp_change);
@@ -1274,6 +1297,7 @@ async fn render_and_send_score_list(
     let change = ctx
         .storage
         .calculate_change(user_stats.user_id, mode, user_stats)
+        .await
         .inspect_err(|e| {
             tracing::warn!(
                 user_id = user_stats.user_id,
@@ -1587,7 +1611,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
     match cmd {
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
-            match ctx.storage.get_binding(msg.user_id) {
+            match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
                         msg.user_id,
@@ -1631,7 +1655,11 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             {
                 Ok(stats) => {
                     // Cache user_id for future lookups (even for unbound users)
-                    if let Err(e) = ctx.storage.set_user_id(&stats.username, stats.user_id) {
+                    if let Err(e) = ctx
+                        .storage
+                        .set_user_id(&stats.username, stats.user_id)
+                        .await
+                    {
                         tracing::warn!(
                             username = %stats.username,
                             user_id = stats.user_id,
@@ -1640,7 +1668,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         );
                     }
                     if stats.username != username {
-                        if let Err(e) = ctx.storage.set_user_id(&username, stats.user_id) {
+                        if let Err(e) = ctx.storage.set_user_id(&username, stats.user_id).await {
                             tracing::warn!(
                                 username = %username,
                                 user_id = stats.user_id,
@@ -1653,6 +1681,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     let change = ctx
                         .storage
                         .calculate_change(stats.user_id, mode, &stats)
+                        .await
                         .inspect_err(|e| {
                             tracing::warn!(
                                 user_id = stats.user_id,
@@ -1679,7 +1708,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         }
         Command::QueryMentionedUser { qq, mode } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
-            match ctx.storage.get_binding(qq) {
+            match ctx.storage.get_binding(qq).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
                         qq,
@@ -1721,7 +1750,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         }
         Command::Bind { username } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "Bind command");
-            match ctx.storage.get_binding(msg.user_id) {
+            match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((_, existing_username))) => {
                     info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
                     let _ = resp_tx
@@ -1741,7 +1770,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         }
                     };
                     if let Some(nickname) = irc_nickname {
-                        match ctx.storage.has_pending_bind(msg.user_id) {
+                        match ctx.storage.has_pending_bind(msg.user_id).await {
                             Ok(true) => {
                                 let _ = resp_tx
                                     .send(format!(
@@ -1766,6 +1795,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         match ctx
                             .storage
                             .add_pending_bind(msg.user_id, msg.group_id, &username)
+                            .await
                         {
                             Ok(code) => {
                                 info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
@@ -1789,14 +1819,16 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     } else {
                         match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, &username).await {
                             Ok(Some(user_info)) => {
-                                if let Err(e) = ctx.storage.set_user_id(&username, user_info.id) {
+                                if let Err(e) =
+                                    ctx.storage.set_user_id(&username, user_info.id).await
+                                {
                                     warn!("Failed to cache user_id for {username}: {e}");
                                 }
-                                match ctx.storage.bind(
-                                    msg.user_id,
-                                    user_info.id,
-                                    &user_info.username,
-                                ) {
+                                match ctx
+                                    .storage
+                                    .bind(msg.user_id, user_info.id, &user_info.username)
+                                    .await
+                                {
                                     Ok(Ok(())) => {
                                         info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
                                         let _ = resp_tx
@@ -1871,12 +1903,12 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 "Unbind command"
             );
             // Check if user has pending unbind confirmation (within 5 minutes)
-            match ctx.storage.get_pending_unbind(msg.user_id) {
+            match ctx.storage.get_pending_unbind(msg.user_id).await {
                 Ok(Some(_)) => {
                     // Execute unbind and clear pending
-                    match ctx.storage.unbind(msg.user_id) {
+                    match ctx.storage.unbind(msg.user_id).await {
                         Ok(_) => {
-                            if let Err(e) = ctx.storage.remove_pending_unbind(msg.user_id) {
+                            if let Err(e) = ctx.storage.remove_pending_unbind(msg.user_id).await {
                                 tracing::warn!(
                                     user_id = msg.user_id,
                                     error = %e,
@@ -1898,9 +1930,9 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
                 Ok(None) => {
                     // Ask for confirmation and set pending
-                    match ctx.storage.get_binding(msg.user_id) {
+                    match ctx.storage.get_binding(msg.user_id).await {
                         Ok(Some((_, current_username))) => {
-                            if let Err(e) = ctx.storage.set_pending_unbind(msg.user_id) {
+                            if let Err(e) = ctx.storage.set_pending_unbind(msg.user_id).await {
                                 tracing::warn!(
                                     user_id = msg.user_id,
                                     error = %e,
@@ -1955,7 +1987,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     }
                 };
 
-            let all_bindings = match ctx.storage.get_all_user_bindings() {
+            let all_bindings = match ctx.storage.get_all_user_bindings().await {
                 Ok(bindings) => bindings,
                 Err(_) => {
                     error!("Highlight failed to get bindings");
@@ -2002,7 +2034,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {
-                    if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name) {
+                    if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name).await {
                         info!(username = %name, user_id = cached_id, "ProfileCard resolved from local cache");
                         cached_id
                     } else {
@@ -2016,8 +2048,10 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         {
                             Ok(stats) => {
                                 info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
-                                if let Err(e) =
-                                    ctx.storage.set_user_id(&stats.username, stats.user_id)
+                                if let Err(e) = ctx
+                                    .storage
+                                    .set_user_id(&stats.username, stats.user_id)
+                                    .await
                                 {
                                     tracing::warn!(
                                         username = %stats.username,
@@ -2053,7 +2087,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
                 None => {
                     match qq {
-                        Some(mentioned_qq) => match ctx.storage.get_binding(mentioned_qq) {
+                        Some(mentioned_qq) => match ctx.storage.get_binding(mentioned_qq).await {
                             Ok(Some((user_id, current_username))) => {
                                 info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "ProfileCard mention");
                                 user_id
@@ -2077,7 +2111,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                 return;
                             }
                         },
-                        None => match ctx.storage.get_binding(msg.user_id) {
+                        None => match ctx.storage.get_binding(msg.user_id).await {
                             Ok(Some((user_id, current_username))) => {
                                 info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "ProfileCard self");
                                 user_id
@@ -2369,7 +2403,7 @@ async fn handle_irc_message(
 ) {
     let code = irc_msg.message.trim();
 
-    let pending = match storage.get_pending_bind(code) {
+    let pending = match storage.get_pending_bind(code).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             warn!(code = code, sender = %irc_msg.sender, "No matching pending bind for IRC code");
@@ -2382,7 +2416,7 @@ async fn handle_irc_message(
     };
 
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
-        if let Err(e) = storage.remove_pending_bind(code) {
+        if let Err(e) = storage.remove_pending_bind(code).await {
             tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (username mismatch)");
         }
         let msg = format!(
@@ -2395,15 +2429,18 @@ async fn handle_irc_message(
 
     match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
         Ok(Some(info)) => {
-            if let Err(e) = storage.set_user_id(&pending.target_username, info.id) {
+            if let Err(e) = storage.set_user_id(&pending.target_username, info.id).await {
                 warn!(
                     "Failed to cache user_id for {}: {e}",
                     pending.target_username
                 );
             }
-            match storage.bind(pending.qq_user_id, info.id, &info.username) {
+            match storage
+                .bind(pending.qq_user_id, info.id, &info.username)
+                .await
+            {
                 Ok(Ok(())) => {
-                    if let Err(e) = storage.remove_pending_bind(code) {
+                    if let Err(e) = storage.remove_pending_bind(code).await {
                         tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (bind success)");
                     }
                     info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
@@ -2414,7 +2451,7 @@ async fn handle_irc_message(
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Ok(Err(_)) => {
-                    if let Err(e) = storage.remove_pending_bind(code) {
+                    if let Err(e) = storage.remove_pending_bind(code).await {
                         tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (already bound)");
                     }
                     let msg = format!(
@@ -2424,7 +2461,7 @@ async fn handle_irc_message(
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Err(_) => {
-                    if let Err(e) = storage.remove_pending_bind(code) {
+                    if let Err(e) = storage.remove_pending_bind(code).await {
                         tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (db error)");
                     }
                     let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
@@ -2433,7 +2470,7 @@ async fn handle_irc_message(
             }
         }
         Ok(None) => {
-            if let Err(e) = storage.remove_pending_bind(code) {
+            if let Err(e) = storage.remove_pending_bind(code).await {
                 tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (user not found)");
             }
             warn!("User {} not found during IRC bind", pending.target_username);
@@ -2441,7 +2478,7 @@ async fn handle_irc_message(
             send_group_msg(&write, pending.group_id, &msg).await;
         }
         Err(e) => {
-            if let Err(e2) = storage.remove_pending_bind(code) {
+            if let Err(e2) = storage.remove_pending_bind(code).await {
                 tracing::warn!(code = %code, error = %e2, "Failed to remove pending bind (api error)");
             }
             warn!(
@@ -2480,7 +2517,11 @@ async fn main() {
     info!("OneBot URL: {}", config.read().await.bot.onebot_url);
 
     let db_path = config.read().await.database.path.clone();
-    let storage = Arc::new(Storage::new(&db_path).expect("Failed to open database"));
+    let storage = Arc::new(
+        Storage::new(&db_path)
+            .await
+            .expect("Failed to open database"),
+    );
 
     let (client_id, client_secret) = {
         let cfg = config.read().await;
@@ -2509,13 +2550,13 @@ async fn main() {
         )))
     };
 
-    match storage.get_users_without_ids() {
+    match storage.get_users_without_ids().await {
         Ok(users) if !users.is_empty() => {
             info!("Backfilling user IDs for {} users...", users.len());
             for username in &users {
                 match api::get_user_info(&rate_limiter, &oauth, username).await {
                     Ok(Some(info)) => {
-                        if let Err(e) = storage.set_user_id(username, info.id) {
+                        if let Err(e) = storage.set_user_id(username, info.id).await {
                             warn!("Failed to cache user_id for {username}: {e}");
                         } else {
                             info!("Cached user_id for {username}: {}", info.id);

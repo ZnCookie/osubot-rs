@@ -1,9 +1,9 @@
 use crate::api::{self, ApiError};
 use crate::storage::Storage;
-use crate::types::{GameMode, UserStats};
+use crate::types::GameMode;
 use crate::OauthTokenCache;
 use crate::RateLimiter;
-use chrono::Utc;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Highlight result for a single user
@@ -33,7 +33,7 @@ pub struct HighlightResult {
 #[derive(Debug)]
 pub enum HighlightError {
     Api(ApiError),
-    Storage(rusqlite::Error),
+    Storage(turso::Error),
     NoData,
 }
 
@@ -43,32 +43,10 @@ impl From<ApiError> for HighlightError {
     }
 }
 
-impl From<rusqlite::Error> for HighlightError {
-    fn from(e: rusqlite::Error) -> Self {
+impl From<turso::Error> for HighlightError {
+    fn from(e: turso::Error) -> Self {
         HighlightError::Storage(e)
     }
-}
-
-/// Get the snapshot closest to 24 hours ago (within 36 hour window) for a user
-fn get_baseline_snapshot(
-    storage: &Storage,
-    user_id: i64,
-    mode: GameMode,
-) -> Result<Option<UserStats>, rusqlite::Error> {
-    let all = storage.get_snapshots_within_hours(user_id, mode, 36)?;
-
-    if all.is_empty() {
-        return Ok(None);
-    }
-
-    let now = Utc::now();
-    let target = now - chrono::TimeDelta::hours(24);
-
-    let closest = all
-        .into_iter()
-        .min_by_key(|(dt, _)| (*dt - target).num_seconds().unsigned_abs() as i64);
-
-    Ok(closest.map(|(_, stats)| stats))
 }
 
 /// Calculate today's highlights for given users
@@ -82,11 +60,35 @@ pub async fn get_highlight(
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
 
-    let semaphore = Arc::new(Semaphore::new(8)); // max 8 concurrent API calls
+    let user_ids: Vec<i64> = user_data.iter().map(|(_, user_id, _)| *user_id).collect();
+    let baselines = match storage
+        .get_baseline_snapshots_for_users(&user_ids, mode, 24, 36)
+        .await
+    {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                ?mode,
+                user_count = user_ids.len(),
+                "batch baseline snapshot query failed, falling back to per-user queries"
+            );
+            let mut map = HashMap::new();
+            for (_, user_id, _) in user_data {
+                if let Ok(Some(s)) = storage.get_baseline_snapshot(*user_id, mode).await {
+                    map.insert(*user_id, s);
+                }
+            }
+            map
+        }
+    };
 
+    let semaphore = Arc::new(Semaphore::new(8)); // max 8 concurrent API calls
     let mut join_set = JoinSet::new();
     for (_qq, user_id, username) in user_data {
-        let storage = storage.clone();
+        let Some(baseline) = baselines.get(user_id).cloned() else {
+            continue;
+        };
         let sem = semaphore.clone();
         let rate_limiter = rate_limiter.clone();
         let oauth = oauth.clone();
@@ -94,20 +96,6 @@ pub async fn get_highlight(
         let username = username.clone();
 
         join_set.spawn(async move {
-            let baseline = match get_baseline_snapshot(&storage, user_id, mode) {
-                Ok(Some(s)) => s,
-                Ok(None) => return None,
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        user_id,
-                        ?mode,
-                        "baseline snapshot query failed, excluding user from highlight"
-                    );
-                    return None;
-                }
-            };
-
             let _permit = sem.acquire().await.expect("semaphore unexpectedly closed");
             let result =
                 api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await;

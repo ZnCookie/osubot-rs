@@ -209,7 +209,7 @@ cargo run --release
 
 - **语言**: Rust (stable, edition 2021)
 - **异步运行时**: Tokio 多线程事件循环
-- **存储**: SQLite (rusqlite)，存储用户绑定、数据快照和游玩记录
+- **存储**: Turso (libsql)，存储用户绑定、数据快照和游玩记录
 - **WebSocket**: tokio-tungstenite 连接 OneBot 11 正向 WebSocket
 - **API**: osu! API v2，OAuth client credentials 认证
 - **PP 计算**: rosu-pp v4，支持 PP 分解（aim/speed/acc/flashlight/difficulty）、准确率推测（95%~100% + IF FC）、转换谱面星级计算（osu! → taiko/catch/mania）、NF/CL 快速路径
@@ -237,7 +237,7 @@ osubot-rs/
 │   └── src/
 │       ├── commands.rs  # 命令解析
 │       ├── api.rs       # osu! API v2 调用 + OAuth 缓存
-│       ├── storage.rs   # SQLite 存储
+│       ├── storage.rs   # Turso/libsql 存储
 │       ├── response.rs  # 响应格式化
 │       ├── highlight.rs # 今日高光业务逻辑
 │       ├── ur.rs        # 回放解析 + UR 计算

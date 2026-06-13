@@ -55,7 +55,11 @@ impl Scheduler {
             }
         }
 
-        match self.storage.prune_old_records(scheduler_cfg.retention_days) {
+        match self
+            .storage
+            .prune_old_records(scheduler_cfg.retention_days)
+            .await
+        {
             Ok((stats, plays, next)) => {
                 info!(
                     deleted_stats = stats,
@@ -70,7 +74,7 @@ impl Scheduler {
         }
 
         // Also prune expired pending binds
-        match self.storage.prune_expired_pending_binds() {
+        match self.storage.prune_expired_pending_binds().await {
             Ok(deleted) if deleted > 0 => {
                 info!(deleted, "pruned expired pending binds");
             }
@@ -81,7 +85,7 @@ impl Scheduler {
         }
 
         // Prune expired pending unbinds
-        match self.storage.prune_expired_pending_unbinds() {
+        match self.storage.prune_expired_pending_unbinds().await {
             Ok(deleted) if deleted > 0 => {
                 info!(deleted, "pruned expired pending unbinds");
             }
@@ -123,7 +127,7 @@ impl Scheduler {
 
     /// Process all due users/modes (next_update <= now), then set new next_update
     async fn process_due_users(&self) {
-        let due = match self.storage.get_due_users() {
+        let due = match self.storage.get_due_users().await {
             Ok(d) => d,
             Err(e) => {
                 error!("get_due_users failed: {:?}", e);
@@ -138,7 +142,13 @@ impl Scheduler {
                 self.update_next_time(user_id, mode, result.activity).await;
             } else {
                 // Retry on next tick — rate limiter naturally throttles persistent failures
-                let _ = self.storage.set_next_update(user_id, mode, Utc::now());
+                if let Err(e) = self
+                    .storage
+                    .set_next_update(user_id, mode, Utc::now())
+                    .await
+                {
+                    warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+                }
             }
         }
     }
@@ -169,6 +179,7 @@ impl Scheduler {
                     if let Ok(updated) = self
                         .storage
                         .update_binding_username_by_user_id(user_id, &stats.username)
+                        .await
                     {
                         if updated > 0 {
                             info!(
@@ -180,7 +191,10 @@ impl Scheduler {
                         }
                     }
                     // Refresh username→user_id cache
-                    self.storage.set_user_id(&stats.username, user_id).ok();
+                    self.storage
+                        .set_user_id(&stats.username, user_id)
+                        .await
+                        .ok();
                     stats
                 }
                 Err(ApiError::NotFound) => {
@@ -211,22 +225,22 @@ impl Scheduler {
             };
 
         // Save snapshot only when stats changed (rank or playcount differ)
-        match self.storage.get_latest_snapshot(user_id, mode) {
+        match self.storage.get_latest_snapshot(user_id, mode).await {
             Ok(Some(prev)) => {
                 if prev.rank != current.rank || prev.playcount != current.playcount {
-                    if let Err(e) = self.storage.save_stats(user_id, mode, &current) {
+                    if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
                         warn!("save_stats error for {user_id}/{mode:?}: {e}");
                     }
                 }
             }
             Ok(None) => {
-                if let Err(e) = self.storage.save_stats(user_id, mode, &current) {
+                if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
                     warn!("save_stats error for {user_id}/{mode:?}: {e}");
                 }
             }
             Err(e) => {
                 warn!("get_latest_snapshot error for {user_id}/{mode:?}: {e}");
-                if let Err(e) = self.storage.save_stats(user_id, mode, &current) {
+                if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
                     warn!("save_stats error for {user_id}/{mode:?}: {e}");
                 }
             }
@@ -255,7 +269,11 @@ impl Scheduler {
             })
             .collect();
 
-        if let Err(e) = self.storage.save_play_records(user_id, mode, &records) {
+        if let Err(e) = self
+            .storage
+            .save_play_records(user_id, mode, &records)
+            .await
+        {
             error!("Failed to save play records for {user_id}/{mode:?}: {e}");
         }
 
@@ -263,11 +281,13 @@ impl Scheduler {
         let has_recent = self
             .storage
             .has_play_since(user_id, mode, (now - Duration::hours(4)).timestamp())
+            .await
             .unwrap_or(false);
 
         let has_today = self
             .storage
             .has_play_since(user_id, mode, today_0am_utc())
+            .await
             .unwrap_or(false);
 
         let activity = if has_recent {
@@ -280,6 +300,7 @@ impl Scheduler {
             let last_update = self
                 .storage
                 .get_last_update(user_id, mode)
+                .await
                 .unwrap_or_default();
             let hours_since = last_update
                 .map(|t| (now - t).num_hours())
@@ -297,7 +318,7 @@ impl Scheduler {
         // Update last_update only for actual play activity (not stale fallback Normal),
         // so the fallback branches can measure time-since-last-activity correctly.
         if activity == UserActivity::SemiActive || (activity == UserActivity::Normal && has_today) {
-            if let Err(e) = self.storage.set_last_update(user_id, mode, now) {
+            if let Err(e) = self.storage.set_last_update(user_id, mode, now).await {
                 warn!("Failed to set last update for {user_id}/{mode:?}: {e}");
             }
         }
@@ -324,18 +345,26 @@ impl Scheduler {
     async fn update_next_time(&self, user_id: i64, mode: GameMode, activity: UserActivity) {
         let interval = self.get_update_interval(activity).await;
         let next = Utc::now() + interval;
-        let _ = self.storage.set_next_update(user_id, mode, next);
+        if let Err(e) = self.storage.set_next_update(user_id, mode, next).await {
+            warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+        }
     }
 
     /// Trigger update for user (single mode only)
     pub async fn trigger_update(&self, user_id: i64, mode: GameMode) {
         if !self.is_in_cooldown(user_id, mode).await {
-            let _ = self.storage.set_next_update(user_id, mode, Utc::now());
+            if let Err(e) = self
+                .storage
+                .set_next_update(user_id, mode, Utc::now())
+                .await
+            {
+                warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+            }
         }
     }
 
     pub async fn reschedule_all(&self) {
-        match self.storage.reset_all_next_updates() {
+        match self.storage.reset_all_next_updates().await {
             Ok(0) => {}
             Ok(count) => info!(count, "配置变更，已重置所有用户更新排程"),
             Err(e) => warn!("重置排程失败: {e}"),
@@ -344,7 +373,7 @@ impl Scheduler {
 
     /// Check if user/mode is in cooldown
     pub async fn is_in_cooldown(&self, user_id: i64, mode: GameMode) -> bool {
-        if let Ok(Some(last_update)) = self.storage.get_last_update(user_id, mode) {
+        if let Ok(Some(last_update)) = self.storage.get_last_update(user_id, mode).await {
             let cooldown = {
                 let cfg = self.config.read().await;
                 Duration::hours(cfg.scheduler.group_trigger_cooldown_hours)

@@ -1313,7 +1313,8 @@ mod tests {
                 String::new(),
             )),
             storage: Arc::new(
-                osubot_core::Storage::new(":memory:").expect("failed to create in-memory storage"),
+                rt.block_on(osubot_core::Storage::new(":memory:"))
+                    .expect("failed to create in-memory storage"),
             ),
             send_msg_fn: Arc::new(|_group_id, _text| Ok(())),
             runtime_handle: rt.handle().clone(),
