@@ -7,16 +7,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PluginMetadata {
     /// Human-readable plugin name.
-    pub name: &'static str,
+    pub name: String,
     /// Plugin version string (e.g. "1.0.0").
-    pub version: &'static str,
+    pub version: String,
     /// Plugin author (e.g. "YourName").
-    pub author: &'static str,
+    pub author: String,
     /// Short description of what the plugin does.
-    pub description: &'static str,
+    pub description: String,
     /// Command names this plugin handles (with `!` prefix, e.g. `"!ping"`).
     /// The host dispatches matching commands to this plugin.
-    pub commands: Vec<&'static str>,
+    pub commands: Vec<String>,
 }
 
 /// Return value from `on_message` / `on_command` lifecycle hooks.

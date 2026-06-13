@@ -172,11 +172,16 @@ impl ReloadCoordinator {
 
         if let Err(e) = self.reload_plugins().await {
             error!("插件重载失败，回滚配置: {e}");
+            // 即使插件失败，也要应用 side effects（如 IRC 重连）
+            // apply_side_effects 比较 old_config 和 new_config，用 new_config 的值触发副作用
+            self.apply_side_effects(&old_config, &new_config).await;
             *self.handle.config.write().await = old_config;
             self.handle.drain.store(false, Ordering::SeqCst);
             return;
         }
 
+        // 插件重载成功，写入新配置
+        *self.handle.config.write().await = new_config.clone();
         self.apply_side_effects(&old_config, &new_config).await;
 
         self.handle.drain.store(false, Ordering::SeqCst);
@@ -203,7 +208,7 @@ impl ReloadCoordinator {
 
         let new_config = Config {
             osu: new_osu.clone(),
-            bot: mutable.bot,
+            bot: mutable.bot.unwrap_or(old_config.bot.clone()),
             database: old_config.database.clone(),
             irc: new_irc.clone(),
             scheduler: new_scheduler,
@@ -298,11 +303,6 @@ impl ReloadCoordinator {
                 );
                 *cur_dir = new_plugin_dir;
             }
-        }
-
-        {
-            let mut cfg = self.handle.config.write().await;
-            *cfg = new_config.clone();
         }
 
         info!("配置验证通过，等待插件重载...");

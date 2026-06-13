@@ -159,7 +159,7 @@ fn skip_osu_string(data: &[u8], pos: usize) -> Option<usize> {
                     break;
                 }
                 shift += 7;
-                if shift >= 64 {
+                if shift >= usize::BITS as usize {
                     return None;
                 }
             }

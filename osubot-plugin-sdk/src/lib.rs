@@ -64,6 +64,15 @@ impl PluginContext {
         host_call("send_group_msg", &payload.to_string()).map(|_| ())
     }
 
+    pub fn send_group_msg_segments(
+        &self,
+        group_id: i64,
+        segments: serde_json::Value,
+    ) -> Result<(), String> {
+        let payload = serde_json::json!({"group_id": group_id, "segments": segments});
+        host_call("send_group_msg", &payload.to_string()).map(|_| ())
+    }
+
     pub fn send_image(&self, group_id: i64, jpeg_b64: &str) -> Result<(), String> {
         let payload = serde_json::json!({"group_id": group_id, "jpeg_base64": jpeg_b64});
         host_call("send_image", &payload.to_string()).map(|_| ())
@@ -71,6 +80,19 @@ impl PluginContext {
 
     pub fn http_request(&self, url: &str) -> Result<String, String> {
         let payload = serde_json::json!({"url": url});
+        host_call("http_request", &payload.to_string())
+    }
+
+    pub fn http_request_with_method(
+        &self,
+        url: &str,
+        method: &str,
+        body: Option<&str>,
+    ) -> Result<String, String> {
+        let payload = match body {
+            Some(b) => serde_json::json!({"url": url, "method": method, "body": b}),
+            None => serde_json::json!({"url": url, "method": method}),
+        };
         host_call("http_request", &payload.to_string())
     }
 
@@ -115,9 +137,8 @@ impl PluginContext {
 /// The caller must ensure the returned pointer is later freed via [`dealloc`]
 /// with the same size. The memory is uninitialized.
 pub unsafe fn alloc(size: u32) -> *mut u8 {
-    let Ok(layout) = alloc::alloc::Layout::array::<u8>(size as usize) else {
-        return core::ptr::null_mut();
-    };
+    let layout = alloc::alloc::Layout::from_size_align(size as usize, 4)
+        .unwrap_or_else(|_| alloc::alloc::Layout::array::<u8>(size as usize).unwrap());
     alloc::alloc::alloc(layout)
 }
 
@@ -128,9 +149,8 @@ pub unsafe fn alloc(size: u32) -> *mut u8 {
 /// `ptr` must have been returned by a previous call to [`alloc`] and `size`
 /// must match the size passed to that call.
 pub unsafe fn dealloc(ptr: *mut u8, size: u32) {
-    let Ok(layout) = alloc::alloc::Layout::array::<u8>(size as usize) else {
-        return;
-    };
+    let layout = alloc::alloc::Layout::from_size_align(size as usize, 4)
+        .unwrap_or_else(|_| alloc::alloc::Layout::array::<u8>(size as usize).unwrap());
     alloc::alloc::dealloc(ptr, layout);
 }
 
@@ -151,10 +171,8 @@ pub fn serialize_return<T: serde::Serialize>(val: &T) -> *const u8 {
     let bytes = json.into_bytes();
     let len = bytes.len();
     let total = 4 + len;
-    let layout = match alloc::alloc::Layout::array::<u8>(total) {
-        Ok(l) => l,
-        Err(_) => return core::ptr::null(),
-    };
+    let layout = alloc::alloc::Layout::from_size_align(total, 4)
+        .unwrap_or_else(|_| alloc::alloc::Layout::array::<u8>(total).unwrap());
     let ptr = unsafe { alloc::alloc::alloc(layout) };
     if ptr.is_null() {
         return core::ptr::null();

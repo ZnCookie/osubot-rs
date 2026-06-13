@@ -68,11 +68,11 @@ osubot 插件是编译为 WebAssembly 的模块（`wasm32-unknown-unknown` 或 `
 
 ```rust
 pub struct PluginMetadata {
-    pub name: &'static str,        // 插件名，唯一标识
-    pub version: &'static str,     // 语义化版本号
-    pub author: &'static str,      // 作者
-    pub description: &'static str, // 描述
-    pub commands: Vec<&'static str>, // 注册的命令列表，如 ["!hello", "!ping"]
+    pub name: String,        // 插件名，唯一标识
+    pub version: String,     // 语义化版本号
+    pub author: String,      // 作者
+    pub description: String, // 描述
+    pub commands: Vec<String>, // 注册的命令列表，如 ["!hello", "!ping"]
 }
 ```
 
@@ -213,6 +213,8 @@ let tick_id = ctx.register_tick("check-update", 3600)?;
 // 每小时触发一次 on_tick，传入 {"tick_id": tick_id}
 ```
 
+> **注意：** 插件重载（`reload_instance` 或 `reload_all`）会**清除所有 tick 注册**。重载后，插件需要在 `on_load` 中重新调用 `register_tick` 来重新注册定时任务。这是设计如此——重载后的插件实例索引可能变化，旧的 tick 注册不再有效。
+
 ### `get_plugin_config()`
 
 获取插件配置（来自 `osubot.toml` 的 `config` 字段）。
@@ -319,6 +321,12 @@ ls target/wasm32-unknown-unknown/release/my_plugin.wasm
 ```toml
 [plugin]
 dir = "./plugins"
+
+# 插件连续错误/panic 多少次后自动重载（默认 5）
+lost_instances_threshold = 5
+
+# 插件连续重载失败多少次后停止自动重载（默认 3）
+reload_failures_threshold = 3
 
 [[plugin.instances]]
 name = "my-plugin"

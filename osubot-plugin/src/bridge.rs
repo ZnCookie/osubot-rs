@@ -115,12 +115,24 @@ pub fn register_host_functions(linker: &mut Linker<HostServices>) -> Result<(), 
                 .call(&mut caller, (alloc_total,))
                 .map_err(|e| wasmtime::format_err!("alloc call: {e}"))?;
 
-            memory
-                .write(&mut caller, result_ptr as usize, &result_len.to_le_bytes())
-                .map_err(|e| wasmtime::format_err!("write length: {e}"))?;
-            memory
-                .write(&mut caller, (result_ptr + 4) as usize, &result_bytes)
-                .map_err(|e| wasmtime::format_err!("write data: {e}"))?;
+            if let Err(e) =
+                memory.write(&mut caller, result_ptr as usize, &result_len.to_le_bytes())
+            {
+                if let Some(dealloc_fn) = caller.get_export("dealloc").and_then(|e| e.into_func()) {
+                    let _ = dealloc_fn
+                        .typed::<(u32, u32), ()>(&caller)
+                        .and_then(|f| f.call(&mut caller, (result_ptr, alloc_total)));
+                }
+                return Err(wasmtime::format_err!("write length: {e}"));
+            }
+            if let Err(e) = memory.write(&mut caller, (result_ptr + 4) as usize, &result_bytes) {
+                if let Some(dealloc_fn) = caller.get_export("dealloc").and_then(|e| e.into_func()) {
+                    let _ = dealloc_fn
+                        .typed::<(u32, u32), ()>(&caller)
+                        .and_then(|f| f.call(&mut caller, (result_ptr, alloc_total)));
+                }
+                return Err(wasmtime::format_err!("write data: {e}"));
+            }
 
             Ok(result_ptr)
         },
@@ -181,11 +193,19 @@ fn dispatch_host_call(
             let group_id = v["group_id"]
                 .as_i64()
                 .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
-            let text = get_field(&v, "text")?;
+            // 支持两种格式:
+            // 1. 纯文本: {"group_id": 123, "text": "hello"}
+            // 2. 富文本(segments): {"group_id": 123, "segments": [{"type": "text", "data": {"text": "hello"}}, ...]}
+            let message = if let Some(segments) = v.get("segments").and_then(|s| s.as_array()) {
+                serde_json::Value::Array(segments.clone())
+            } else {
+                let text = get_field(&v, "text")?;
+                serde_json::Value::String(text)
+            };
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
             }
-            send_msg_with_timeout(services, group_id, serde_json::Value::String(text))?;
+            send_msg_with_timeout(services, group_id, message)?;
             Ok("{}".to_string())
         }
         "send_image" => {
@@ -209,15 +229,22 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
+            let method_str = v["method"].as_str().unwrap_or("GET");
+            let method = reqwest::Method::from_bytes(method_str.as_bytes())
+                .map_err(|e| BridgeError::HttpRequest(format!("invalid HTTP method: {e}")))?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
                     "请求过于频繁，请稍后再试".to_string(),
                 ));
             }
-            let mut response = services
+            let mut req = services
                 .blocking_http_client
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(30))
+                .request(method, &url)
+                .timeout(std::time::Duration::from_secs(30));
+            if let Some(body) = v.get("body").and_then(|b| b.as_str()) {
+                req = req.body(body.to_string());
+            }
+            let mut response = req
                 .send()
                 .map_err(|e| BridgeError::HttpRequest(format!("HTTP request failed: {e}")))?;
 

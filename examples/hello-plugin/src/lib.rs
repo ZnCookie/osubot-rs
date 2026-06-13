@@ -17,11 +17,11 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, size: u32) {
 #[no_mangle]
 pub extern "C" fn plugin_metadata() -> *const u8 {
     let meta = PluginMetadata {
-        name: "hello",
-        version: "0.1.0",
-        author: "osubot",
-        description: "A simple hello plugin for testing, demonstrating CTX and host calls",
-        commands: vec!["!hello", "!ping"],
+        name: "hello".to_string(),
+        version: "0.1.0".to_string(),
+        author: "osubot".to_string(),
+        description: "A simple hello plugin for testing, demonstrating CTX and host calls".to_string(),
+        commands: vec!["!hello".to_string(), "!ping".to_string()],
     };
     serialize_return(&meta)
 }

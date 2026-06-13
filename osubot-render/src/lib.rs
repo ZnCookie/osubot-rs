@@ -36,6 +36,10 @@ fn render_lock() -> &'static StdMutex<()> {
     RENDER_LOCK.get_or_init(|| StdMutex::new(()))
 }
 
+fn locked_render() -> std::sync::MutexGuard<'static, ()> {
+    render_lock().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn extract_panic_message(e: tokio::task::JoinError) -> String {
     if e.is_panic() {
         let payload = e.into_panic();
@@ -261,7 +265,7 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     let cancel_flag = cancel.clone();
 
     let join_handle = tokio::task::spawn_blocking(move || {
-        let _guard = render_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = locked_render();
         render::render_html_to_image(&html, font_ctx, 2560, 1440, &cancel_flag)
     });
     let abort_handle = join_handle.abort_handle();
@@ -299,7 +303,7 @@ pub async fn render_profile_card(
     let cancel_flag = cancel.clone();
 
     let join_handle = tokio::task::spawn_blocking(move || {
-        let _guard = render_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = locked_render();
         render::render_html_to_image(&wrapped_html, font_ctx, width, height, &cancel_flag)
     });
     let abort_handle = join_handle.abort_handle();
@@ -463,7 +467,7 @@ pub async fn render_score_list_card(
     let cancel_flag = cancel.clone();
 
     let join_handle = tokio::task::spawn_blocking(move || {
-        let _guard = render_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = locked_render();
         render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
     });
     let abort_handle = join_handle.abort_handle();

@@ -50,6 +50,8 @@ pub struct PluginManager {
     on_message_indices: HashSet<usize>,
     lost_instances: Vec<u32>,
     reload_failures: Vec<u32>,
+    lost_instances_threshold: u32,
+    reload_failures_threshold: u32,
     engine: Engine,
     linker: Linker<HostServices>,
     modules: Vec<Module>,
@@ -261,6 +263,8 @@ impl PluginManager {
             on_message_indices,
             lost_instances,
             reload_failures,
+            lost_instances_threshold: config.lost_instances_threshold,
+            reload_failures_threshold: config.reload_failures_threshold,
             engine,
             linker,
             modules,
@@ -374,7 +378,7 @@ impl PluginManager {
             Ok(Ok((Err(e), instance))) => {
                 self.instances[idx] = Some(instance);
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if self.lost_instances[idx] >= 5 {
+                if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
                         plugin = %name,
                         consecutive = self.lost_instances[idx],
@@ -390,7 +394,7 @@ impl PluginManager {
             Ok(Err(join_err)) => {
                 tracing::error!(plugin = %name, "Plugin {operation} panicked: {join_err}");
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if self.lost_instances[idx] >= 5 {
+                if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
                         plugin = %name,
                         consecutive = self.lost_instances[idx],
@@ -468,7 +472,7 @@ impl PluginManager {
     pub fn reload_instance(&mut self, idx: usize) -> Result<(), String> {
         // 连续重载失败保护：超过阈值则拒绝重载，需手动干预
         let consecutive = self.reload_failures.get(idx).copied().unwrap_or(0);
-        if consecutive >= 3 {
+        if consecutive >= self.reload_failures_threshold {
             warn!(
                 idx,
                 consecutive, "plugin reload failed too many times, manual reload required"
@@ -920,7 +924,7 @@ impl PluginManager {
 
                 // 连续重载失败保护：超过阈值则跳过，需手动干预
                 let consecutive = self.reload_failures[*idx];
-                if consecutive >= 3 {
+                if consecutive >= self.reload_failures_threshold {
                     warn!(
                         idx = *idx,
                         consecutive,
@@ -1222,6 +1226,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1282,6 +1287,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1330,6 +1336,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1380,6 +1387,7 @@ mod tests {
                     config: None,
                 },
             ],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1447,6 +1455,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1503,6 +1512,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1529,6 +1539,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         rt.block_on(pm.reload_all(&same_config))
@@ -1577,6 +1588,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1602,6 +1614,7 @@ mod tests {
                     config: None,
                 },
             ],
+            ..Default::default()
         };
 
         rt.block_on(pm.reload_all(&config2))
@@ -1650,6 +1663,7 @@ mod tests {
                     config: None,
                 },
             ],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1666,6 +1680,7 @@ mod tests {
                 priority: 10,
                 config: None,
             }],
+            ..Default::default()
         };
 
         rt.block_on(pm.reload_all(&config2))
@@ -1711,6 +1726,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1721,6 +1737,7 @@ mod tests {
         let config_empty = PluginConfigInput {
             dir: ".".to_string(),
             instances: vec![],
+            ..Default::default()
         };
 
         rt.block_on(pm.reload_all(&config_empty))
@@ -1765,6 +1782,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1787,6 +1805,7 @@ mod tests {
                 priority: 99,
                 config: None,
             }],
+            ..Default::default()
         };
 
         rt.block_on(pm.reload_all(&config2))
@@ -1836,6 +1855,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -1864,6 +1884,7 @@ mod tests {
                     config: None,
                 },
             ],
+            ..Default::default()
         };
         rt.block_on(pm.reload_all(&config_add))
             .expect("reload_all add should succeed");
@@ -1887,6 +1908,7 @@ mod tests {
                 priority: 5,
                 config: None,
             }],
+            ..Default::default()
         };
         rt.block_on(pm.reload_all(&config_remove))
             .expect("reload_all remove should succeed");
@@ -1910,6 +1932,7 @@ mod tests {
                 priority: 50,
                 config: None,
             }],
+            ..Default::default()
         };
         rt.block_on(pm.reload_all(&config_reload))
             .expect("reload_all reload should succeed");
@@ -1949,6 +1972,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
@@ -2017,6 +2041,7 @@ mod tests {
                 priority: 0,
                 config: None,
             }],
+            ..Default::default()
         };
 
         let mut pm = rt
