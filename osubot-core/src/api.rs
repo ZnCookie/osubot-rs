@@ -925,7 +925,13 @@ fn get_stable_rank(
     }
 
     let great = stats.count_300;
-    let count_100 = stats.count_100;
+    // osu! API v2 now returns lazer-style field names (ok instead of count_100)
+    // for all scores including stable. Fall back to stats.ok when count_100 is 0.
+    let count_100 = if stats.count_100 != 0 {
+        stats.count_100
+    } else {
+        stats.ok
+    };
     let meh = stats.count_50;
     let miss = stats.count_miss;
 
@@ -1047,7 +1053,13 @@ fn get_stable_rank(
 /// 返回 0.0 表示无法计算（例如 fail 成绩无 max stats），此时应回退到 API 的 accuracy。
 fn get_stable_accuracy(stats: &OsuApiScoreStatistics, mode: GameMode, passed: bool) -> f64 {
     let great = stats.count_300 as f64;
-    let count_100 = stats.count_100 as f64;
+    // osu! API v2 now returns lazer-style field names (ok instead of count_100)
+    // for all scores including stable. Fall back to stats.ok when count_100 is 0.
+    let count_100 = if stats.count_100 != 0 {
+        stats.count_100 as f64
+    } else {
+        stats.ok as f64
+    };
     let meh = stats.count_50 as f64;
     let miss = stats.count_miss as f64;
 
