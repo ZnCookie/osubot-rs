@@ -1,4 +1,5 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use turso::{params, Connection, Result as DbResult};
 
@@ -383,6 +384,86 @@ impl Storage {
             }
         }
         Ok(results)
+    }
+
+    pub async fn get_baseline_snapshots_for_users(
+        &self,
+        user_ids: &[i64],
+        mode: GameMode,
+        target_hours_ago: i64,
+        max_lookback: i64,
+    ) -> DbResult<HashMap<i64, UserStats>> {
+        let unique_user_ids: Vec<i64> = user_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if unique_user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let now = Utc::now();
+        let target = now - chrono::TimeDelta::hours(target_hours_ago);
+        let cutoff = now - chrono::TimeDelta::hours(max_lookback);
+        let cutoff_str = cutoff.to_rfc3339();
+        let placeholders = std::iter::repeat_n("?", unique_user_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT user_id, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
+             FROM user_stats_history
+             WHERE mode = ? AND recorded_at >= ? AND user_id IN ({placeholders})
+             ORDER BY user_id, recorded_at ASC"
+        );
+
+        let mut args: Vec<turso::Value> = Vec::with_capacity(unique_user_ids.len() + 2);
+        args.push((mode as i32).into());
+        args.push(cutoff_str.into());
+        for user_id in unique_user_ids {
+            args.push(user_id.into());
+        }
+
+        let mut rows = self.conn.query(&sql, args).await?;
+        let mut closest: HashMap<i64, (u64, UserStats)> = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let user_id: i64 = row.get(0)?;
+            let recorded_str: String = row.get(1)?;
+            let Ok(recorded_at) = DateTime::parse_from_rfc3339(&recorded_str) else {
+                continue;
+            };
+            let distance = (recorded_at.with_timezone(&Utc) - target)
+                .num_seconds()
+                .unsigned_abs();
+            let stats = UserStats {
+                user_id: 0,
+                username: String::new(),
+                pp: row.get(2)?,
+                rank: row.get(3)?,
+                country_rank: row.get(4)?,
+                country_code: "XX".to_string(),
+                ranked_score: row.get(5)?,
+                accuracy: row.get(6)?,
+                playcount: row.get(7)?,
+                hits: row.get(8)?,
+                playtime: row.get(9)?,
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+            };
+
+            match closest.get(&user_id) {
+                Some((best_distance, _)) if *best_distance <= distance => {}
+                _ => {
+                    closest.insert(user_id, (distance, stats));
+                }
+            }
+        }
+
+        Ok(closest
+            .into_iter()
+            .map(|(user_id, (_, stats))| (user_id, stats))
+            .collect())
     }
 
     pub async fn get_closest_snapshot_to_hours_ago(
