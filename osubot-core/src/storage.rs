@@ -862,3 +862,160 @@ impl Storage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_stats(pp: f64, hits: i64, playtime: i64) -> UserStats {
+        UserStats {
+            user_id: 0,
+            username: String::new(),
+            pp,
+            rank: 0,
+            country_rank: 0,
+            country_code: "XX".to_string(),
+            ranked_score: 0,
+            accuracy: 0.0,
+            playcount: 0,
+            hits,
+            playtime,
+            rank_change: None,
+            country_rank_change: None,
+            cover_url: None,
+        }
+    }
+
+    async fn test_storage() -> Storage {
+        let id = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "osubot-storage-batch-baseline-{}-{id}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Storage::new(path.to_str().expect("temp db path is valid UTF-8"))
+            .await
+            .expect("create test storage")
+    }
+
+    async fn insert_snapshot(
+        storage: &Storage,
+        user_id: i64,
+        mode: GameMode,
+        recorded_at: DateTime<Utc>,
+        stats: UserStats,
+    ) {
+        storage
+            .conn
+            .execute(
+                "INSERT INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    user_id,
+                    mode as i32,
+                    recorded_at.to_rfc3339(),
+                    stats.pp,
+                    stats.rank,
+                    stats.country_rank,
+                    stats.ranked_score,
+                    stats.accuracy,
+                    stats.playcount,
+                    stats.hits,
+                    stats.playtime,
+                ],
+            )
+            .await
+            .expect("insert snapshot");
+    }
+
+    #[tokio::test]
+    async fn batch_baseline_returns_closest_snapshot_for_each_user() {
+        let storage = test_storage().await;
+        let now = Utc::now();
+        let mode = GameMode::Osu;
+
+        insert_snapshot(
+            &storage,
+            101,
+            mode,
+            now - chrono::TimeDelta::hours(30),
+            test_stats(101.30, 1_030, 10_130),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            101,
+            mode,
+            now - chrono::TimeDelta::hours(23),
+            test_stats(101.23, 1_023, 10_123),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            202,
+            mode,
+            now - chrono::TimeDelta::hours(25),
+            test_stats(202.25, 2_025, 20_225),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            202,
+            GameMode::Taiko,
+            now - chrono::TimeDelta::hours(24),
+            test_stats(999.0, 9_999, 99_999),
+        )
+        .await;
+        insert_snapshot(
+            &storage,
+            303,
+            mode,
+            now - chrono::TimeDelta::hours(40),
+            test_stats(303.40, 3_040, 30_340),
+        )
+        .await;
+
+        let baselines = storage
+            .get_baseline_snapshots_for_users(&[101, 202, 303], mode, 24, 36)
+            .await
+            .expect("batch baseline query succeeds");
+
+        assert_eq!(baselines.len(), 2);
+        assert_eq!(baselines.get(&101).expect("user 101 baseline").pp, 101.23);
+        assert_eq!(baselines.get(&202).expect("user 202 baseline").pp, 202.25);
+        assert!(!baselines.contains_key(&303));
+    }
+
+    #[tokio::test]
+    async fn batch_baseline_deduplicates_user_ids_and_handles_empty_input() {
+        let storage = test_storage().await;
+        let now = Utc::now();
+        let mode = GameMode::Osu;
+
+        let empty = storage
+            .get_baseline_snapshots_for_users(&[], mode, 24, 36)
+            .await
+            .expect("empty batch query succeeds");
+        assert!(empty.is_empty());
+
+        insert_snapshot(
+            &storage,
+            404,
+            mode,
+            now - chrono::TimeDelta::hours(24),
+            test_stats(404.0, 4_040, 40_400),
+        )
+        .await;
+
+        let baselines = storage
+            .get_baseline_snapshots_for_users(&[404, 404, 404], mode, 24, 36)
+            .await
+            .expect("deduplicated batch query succeeds");
+
+        assert_eq!(baselines.len(), 1);
+        assert_eq!(baselines.get(&404).expect("user 404 baseline").hits, 4_040);
+    }
+}
