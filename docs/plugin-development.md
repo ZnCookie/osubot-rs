@@ -137,13 +137,12 @@ pub struct QQMessage {
 
 > **输入限制：** 每次宿主函数调用中，函数名和 JSON payload 各不能超过 **1MB**（通过 `host_call_impl` 的 `name_len`/`payload_len` 参数校验）。传参过大将收到错误返回。
 
-### `send_group_msg(group_id, text)`
+### `send_group_msg(group_id, text)` / `send_group_msg(group_id, segments)`
 
-向指定群发送文本消息。
+向指定群发送消息。支持两种格式：
 
-```rust
-ctx.send_group_msg(123456789, "Hello!")?;
-```
+- **纯文本**：`ctx.send_group_msg(123456789, "Hello!")?;`
+- **富文本（segments）**：`ctx.send_group_msg(123456789, serde_json::json!([{"type":"text","data":{"text":"Hello!"}}]))?;`
 
 ### `send_image(group_id, jpeg_base64)`
 
@@ -154,12 +153,16 @@ ctx.send_group_msg(123456789, "Hello!")?;
 ctx.send_image(123456789, &jpeg_base64)?;
 ```
 
-### `http_request(url)`
+### `http_request(url)` / `http_request(url, method, body)`
 
-发起 HTTP GET 请求，返回响应体文本。
+发起 HTTP 请求，返回响应体文本。支持自定义 HTTP 方法和请求体。
 
 ```rust
+// GET 请求（默认）
 let json = ctx.http_request("https://api.example.com/data")?;
+
+// POST 请求
+let json = ctx.http_request_with_method("https://api.example.com/data", "POST", Some(r#"{"key":"value"}"#))?;
 ```
 
 ### `db_get_binding(qq)`
@@ -471,7 +474,7 @@ osubot 使用文件监控（`notify` crate）自动检测以下变更：
 
 ## 测试插件
 
-osubot 的 `osubot-plugin` crate 提供了集成测试框架，可用于验证插件行为。参考 `osubot-plugin/src/lib.rs` 中的 `#[cfg(test)]` 模块，其中包含 19 个测试覆盖了：
+osubot 的 `osubot-plugin` crate 提供了集成测试框架，可用于验证插件行为。参考 `osubot-plugin/src/lib.rs` 中的 `#[cfg(test)]` 模块，其中包含 20 个测试覆盖了：
 
 - 元数据解析
 - 命令/消息分发（Handled / Next / Intercepted 三种返回值）

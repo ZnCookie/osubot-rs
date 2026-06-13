@@ -151,6 +151,18 @@ enabled = false     # 默认禁用，需显式启用
 priority = 50       # 优先级（数字越大越先执行）
 ```
 
+### 超时配置
+
+`[bot]` 段支持以下超时字段（均可热重载）：
+
+```toml
+[bot]
+# command_timeout_secs = 120   # 命令处理超时（秒）
+# render_timeout_secs = 30     # 渲染超时（秒）
+# onebot_api_timeout_secs = 5  # OneBot API 请求超时（秒）
+# ur_timeout_secs = 10         # UR 计算超时（秒）
+```
+
 ## 用户安装要求
 
 发行包自带所有 C 运行时库（librsvg、cairo、glib2、pango），无需手动安装。唯一需要的是字体：
