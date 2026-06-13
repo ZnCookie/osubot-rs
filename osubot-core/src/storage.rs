@@ -266,9 +266,9 @@ impl Storage {
 
     // ==================== Snapshot Operations ====================
 
-    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> DbResult<()> {
-        self.with_conn(|conn| {
-            conn.execute(
+    pub async fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> DbResult<()> {
+        self.conn
+            .execute(
                 "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
@@ -284,69 +284,75 @@ impl Storage {
                     stats.hits,
                     stats.playtime,
                 ],
-            )?;
-            Ok(())
-        })
+            )
+            .await?;
+        Ok(())
     }
 
-    pub fn get_latest_snapshot(
+    pub async fn get_latest_snapshot(
         &self,
         user_id: i64,
         mode: GameMode,
     ) -> DbResult<Option<UserStats>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+        let mut rows = self
+            .conn
+            .query(
                 "SELECT pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
                  FROM user_stats_history
                  WHERE user_id = ?1 AND mode = ?2
                  ORDER BY recorded_at DESC
                  LIMIT 1",
-            )?;
-            let mut rows = stmt.query(params![user_id, mode as i32])?;
-            if let Some(row) = rows.next()? {
-                Ok(Some(UserStats {
-                    user_id: 0,
-                    username: String::new(),
-                    pp: row.get(0)?,
-                    rank: row.get(1)?,
-                    country_rank: row.get(2)?,
-                    country_code: "XX".to_string(),
-                    ranked_score: row.get(3)?,
-                    accuracy: row.get(4)?,
-                    playcount: row.get(5)?,
-                    hits: row.get(6)?,
-                    playtime: row.get(7)?,
-                    rank_change: None,
-                    country_rank_change: None,
-                    cover_url: None,
-                }))
-            } else {
-                Ok(None)
-            }
-        })
+                params![user_id, mode as i32],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(UserStats {
+                user_id: 0,
+                username: String::new(),
+                pp: row.get(0)?,
+                rank: row.get(1)?,
+                country_rank: row.get(2)?,
+                country_code: "XX".to_string(),
+                ranked_score: row.get(3)?,
+                accuracy: row.get(4)?,
+                playcount: row.get(5)?,
+                hits: row.get(6)?,
+                playtime: row.get(7)?,
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub fn get_snapshots_within_hours(
+    pub async fn get_snapshots_within_hours(
         &self,
         user_id: i64,
         mode: GameMode,
         hours: i64,
     ) -> DbResult<Vec<(DateTime<Utc>, UserStats)>> {
-        self.with_conn(|conn| {
-            let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
-            let cutoff_str = cutoff.to_rfc3339();
+        let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
+        let cutoff_str = cutoff.to_rfc3339();
 
-            let mut stmt = conn.prepare(
+        let mut rows = self
+            .conn
+            .query(
                 "SELECT recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
                  FROM user_stats_history
                  WHERE user_id = ?1 AND mode = ?2 AND recorded_at >= ?3
                  ORDER BY recorded_at ASC",
-            )?;
+                params![user_id, mode as i32, cutoff_str],
+            )
+            .await?;
 
-            let rows = stmt.query_map(params![user_id, mode as i32, cutoff_str], |row| {
-                let recorded_str: String = row.get(0)?;
-                Ok((
-                    recorded_str,
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let recorded_str: String = row.get(0)?;
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&recorded_str) {
+                results.push((
+                    dt.with_timezone(&Utc),
                     UserStats {
                         user_id: 0,
                         username: String::new(),
@@ -363,23 +369,13 @@ impl Storage {
                         country_rank_change: None,
                         cover_url: None,
                     },
-                ))
-            })?;
-
-            let mut results = Vec::new();
-            for row in rows {
-                let (recorded_str, mut stats) = row?;
-                if let Ok(dt) = DateTime::parse_from_rfc3339(&recorded_str) {
-                    stats.rank_change = None;
-                    stats.country_rank_change = None;
-                    results.push((dt.with_timezone(&Utc), stats));
-                }
+                ));
             }
-            Ok(results)
-        })
+        }
+        Ok(results)
     }
 
-    pub fn get_closest_snapshot_to_hours_ago(
+    pub async fn get_closest_snapshot_to_hours_ago(
         &self,
         user_id: i64,
         mode: GameMode,
@@ -390,7 +386,9 @@ impl Storage {
         let target_time = now - chrono::TimeDelta::hours(target_hours_ago);
         let earliest = now - chrono::TimeDelta::hours(max_lookback);
 
-        let all = self.get_snapshots_within_hours(user_id, mode, max_lookback)?;
+        let all = self
+            .get_snapshots_within_hours(user_id, mode, max_lookback)
+            .await?;
 
         let candidates: Vec<_> = all.into_iter().filter(|(dt, _)| *dt >= earliest).collect();
 
@@ -409,47 +407,51 @@ impl Storage {
 
     // ==================== Play Records Operations ====================
 
-    pub fn save_play_records(
+    pub async fn save_play_records(
         &self,
         user_id: i64,
         mode: GameMode,
         timestamps: &[i64],
     ) -> DbResult<i32> {
-        self.with_conn(|conn| {
-            let mut inserted = 0i32;
-            for &timestamp in timestamps {
-                let result = conn.execute(
+        let mut inserted = 0i32;
+        for &timestamp in timestamps {
+            let result = self
+                .conn
+                .execute(
                     "INSERT OR IGNORE INTO user_play_records (user_id, mode, played_at) VALUES (?1, ?2, ?3)",
                     params![user_id, mode as i32, timestamp],
-                );
-                if let Ok(count) = result {
-                    inserted += count as i32;
-                }
+                )
+                .await;
+            if let Ok(count) = result {
+                inserted += count as i32;
             }
-            Ok(inserted)
-        })
+        }
+        Ok(inserted)
     }
 
     /// Check if user has any play records since the given UTC timestamp
-    pub fn has_play_since(&self, user_id: i64, mode: GameMode, since_ts: i64) -> DbResult<bool> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+    pub async fn has_play_since(&self, user_id: i64, mode: GameMode, since_ts: i64) -> DbResult<bool> {
+        let mut rows = self
+            .conn
+            .query(
                 "SELECT 1 FROM user_play_records WHERE user_id = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
-            )?;
-            let exists = stmt.query_row(params![user_id, mode as i32, since_ts], |_| Ok(()));
-            Ok(exists.is_ok())
-        })
+                params![user_id, mode as i32, since_ts],
+            )
+            .await?;
+        Ok(rows.next().await?.is_some())
     }
 
     // ==================== Change Calculation ====================
 
-    pub fn calculate_change(
+    pub async fn calculate_change(
         &self,
         user_id: i64,
         mode: GameMode,
         current: &UserStats,
     ) -> DbResult<Option<UserChange>> {
-        let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)?;
+        let snapshot = self
+            .get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)
+            .await?;
 
         match snapshot {
             None => Ok(None),
