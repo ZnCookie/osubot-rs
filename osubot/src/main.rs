@@ -24,7 +24,9 @@ use osubot_core::{
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
-use osubot_plugin::{HostServices, PluginManager};
+use osubot_plugin::{
+    HostServices, PluginActionResult, PluginDispatchPanic, PluginDispatchResult, PluginManager,
+};
 use osubot_render::cache as render_cache;
 use osubot_render::PROFILE_VIEWPORT_WIDTH;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
@@ -1334,123 +1336,199 @@ async fn render_and_send_score_list(
     }
 }
 
+/// Build a JSON payload for the plugin command dispatch.
+fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_json::Value {
+    let mode = match cmd {
+        Command::QuerySelf { mode }
+        | Command::QueryUser { mode, .. }
+        | Command::QueryMentionedUser { mode, .. }
+        | Command::Pass { mode, .. }
+        | Command::Recent { mode, .. }
+        | Command::Highlight { mode, .. }
+        | Command::ScoreOnBeatmap { mode, .. } => Some(match mode {
+            GameMode::Osu => 0,
+            GameMode::Taiko => 1,
+            GameMode::Catch => 2,
+            GameMode::Mania => 3,
+        }),
+        Command::ProfileCard { .. } | Command::Bind { .. } | Command::Unbind => None,
+    };
+    let username = match cmd {
+        Command::QueryUser { username, .. } => Some(username.as_str()),
+        Command::Bind { username, .. } => Some(username.as_str()),
+        Command::ScoreOnBeatmap { username, .. }
+        | Command::Pass { username, .. }
+        | Command::Recent { username, .. }
+        | Command::ProfileCard { username, .. } => username.as_deref(),
+        _ => None,
+    };
+    serde_json::json!({
+        "command_type": cmd_name,
+        "group_id": msg.group_id,
+        "user_id": msg.user_id,
+        "message": msg.message,
+        "mentioned_user_id": msg.mentioned_user_id,
+        "mode": mode,
+        "username": username,
+        "qq": match cmd {
+            Command::QueryMentionedUser { qq, .. } => Some(qq),
+            _ => None,
+        },
+        "beatmap_id": match cmd {
+            Command::ScoreOnBeatmap { beatmap_id, .. } => *beatmap_id,
+            _ => None,
+        },
+        "score_id": match cmd {
+            Command::ScoreOnBeatmap { score_id, .. } => *score_id,
+            _ => None,
+        },
+        "mods": match cmd {
+            Command::ScoreOnBeatmap { mods, .. } => {
+                mods.as_ref().map(|m| m.iter().map(|m| m.to_string()).collect::<Vec<_>>())
+            }
+            _ => None,
+        },
+        "limit": match cmd {
+            Command::ScoreOnBeatmap { limit, .. } | Command::Pass { limit, .. } | Command::Recent { limit, .. } => Some(*limit),
+            _ => None,
+        },
+    })
+}
+
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
 async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
-    // 插件分发：on_message + on_command 统一持锁，避免重复获取 Mutex
-    {
-        let mut pm_guard = ctx.plugin_manager.lock().await;
-        if let Some(ref mut pm) = *pm_guard {
-            if !pm.is_empty() {
-                // on_message 分发
-                let msg_payload = serde_json::json!({
-                    "group_id": msg.group_id,
-                    "user_id": msg.user_id,
-                    "message": msg.message,
-                    "mentioned_user_id": msg.mentioned_user_id,
-                });
-                match pm.handle_message(&msg_payload.to_string()).await {
-                    osubot_plugin::PluginActionResult::Handled(response) => {
+    // ==== Plugin on_message dispatch (brief locks, never across .await) ====
+    let msg_indices: Vec<usize> = {
+        let pm_guard = ctx.plugin_manager.lock().await;
+        pm_guard
+            .as_ref()
+            .map(|pm| pm.sorted_message_indices())
+            .unwrap_or_default()
+    };
+    if !msg_indices.is_empty() {
+        let msg_payload = serde_json::json!({
+            "group_id": msg.group_id,
+            "user_id": msg.user_id,
+            "message": msg.message,
+            "mentioned_user_id": msg.mentioned_user_id,
+        });
+        let msg_payload_str = msg_payload.to_string();
+        for idx in msg_indices {
+            // Take instance (brief lock, no .await)
+            let (mut instance, pname, ptimeout) = {
+                let mut pm_guard = ctx.plugin_manager.lock().await;
+                match pm_guard.as_mut().and_then(|pm| {
+                    let inst = pm.take_instance(idx)?;
+                    let params = pm.instance_params(idx)?;
+                    Some((inst, params.name.clone(), params.timeout))
+                }) {
+                    Some(v) => v,
+                    None => continue,
+                }
+            };
+            let payload = msg_payload_str.clone();
+            let timeout = ptimeout;
+            let exec_result = tokio::time::timeout(
+                timeout,
+                tokio::task::spawn_blocking(move || {
+                    let r = instance.on_message(&payload);
+                    (r, instance)
+                }),
+            )
+            .await;
+            // Wrap result for complete_exec
+            let (wrapped, instance_opt) = match exec_result {
+                Ok(Ok((Ok(action), inst))) => (Ok(PluginDispatchResult::Ok(action)), Some(inst)),
+                Ok(Ok((Err(e), inst))) => (Ok(PluginDispatchResult::PluginError(e)), Some(inst)),
+                Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
+                Err(_) => (Err(PluginDispatchPanic::Timeout), None),
+            };
+            // Complete (brief lock, no .await)
+            let action = {
+                let mut pm_guard = ctx.plugin_manager.lock().await;
+                match pm_guard.as_mut() {
+                    Some(pm) => pm.complete_exec(idx, &pname, instance_opt, "on_message", wrapped),
+                    None => PluginActionResult::Next,
+                }
+            };
+            match action {
+                PluginActionResult::Handled(response) => {
+                    let _ = resp_tx.send(response).await;
+                    return;
+                }
+                PluginActionResult::Intercepted => return,
+                PluginActionResult::Next => {}
+            }
+        }
+    }
+
+    // ==== Plugin on_command dispatch (brief locks, never across .await) ====
+    let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
+    if let Some(ref cmd) = cmd_opt {
+        let cmd_name = cmd.command_name();
+        let cmd_indices: Vec<usize> = {
+            let pm_guard = ctx.plugin_manager.lock().await;
+            pm_guard
+                .as_ref()
+                .map(|pm| pm.command_indices(cmd_name))
+                .unwrap_or_default()
+        };
+        if !cmd_indices.is_empty() {
+            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg);
+            let cmd_payload_str = cmd_payload.to_string();
+            for idx in cmd_indices {
+                let (mut instance, pname, ptimeout) = {
+                    let mut pm_guard = ctx.plugin_manager.lock().await;
+                    match pm_guard.as_mut().and_then(|pm| {
+                        let inst = pm.take_instance(idx)?;
+                        let params = pm.instance_params(idx)?;
+                        Some((inst, params.name.clone(), params.timeout))
+                    }) {
+                        Some(v) => v,
+                        None => continue,
+                    }
+                };
+                let payload = cmd_payload_str.clone();
+                let timeout = ptimeout;
+                let exec_result = tokio::time::timeout(
+                    timeout,
+                    tokio::task::spawn_blocking(move || {
+                        let r = instance.on_command(&payload);
+                        (r, instance)
+                    }),
+                )
+                .await;
+                let (wrapped, instance_opt) = match exec_result {
+                    Ok(Ok((Ok(action), inst))) => {
+                        (Ok(PluginDispatchResult::Ok(action)), Some(inst))
+                    }
+                    Ok(Ok((Err(e), inst))) => {
+                        (Ok(PluginDispatchResult::PluginError(e)), Some(inst))
+                    }
+                    Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
+                    Err(_) => (Err(PluginDispatchPanic::Timeout), None),
+                };
+                let action = {
+                    let mut pm_guard = ctx.plugin_manager.lock().await;
+                    match pm_guard.as_mut() {
+                        Some(pm) => pm.complete_exec(idx, &pname, instance_opt, "command", wrapped),
+                        None => PluginActionResult::Next,
+                    }
+                };
+                match action {
+                    PluginActionResult::Handled(response) => {
                         let _ = resp_tx.send(response).await;
                         return;
                     }
-                    osubot_plugin::PluginActionResult::Intercepted => {
-                        return;
-                    }
-                    osubot_plugin::PluginActionResult::Next => {}
-                }
-
-                // on_command 分发
-                let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
-                let cmd_name = match &cmd_opt {
-                    Some(cmd) => cmd.command_name(),
-                    None => msg.message.split_whitespace().next().unwrap_or(""),
-                };
-                if !cmd_name.is_empty() {
-                    let cmd_payload = match &cmd_opt {
-                        Some(cmd) => {
-                            let mode = match cmd {
-                                Command::QuerySelf { mode }
-                                | Command::QueryUser { mode, .. }
-                                | Command::QueryMentionedUser { mode, .. }
-                                | Command::Pass { mode, .. }
-                                | Command::Recent { mode, .. }
-                                | Command::Highlight { mode, .. }
-                                | Command::ScoreOnBeatmap { mode, .. } => Some(match mode {
-                                    GameMode::Osu => 0,
-                                    GameMode::Taiko => 1,
-                                    GameMode::Catch => 2,
-                                    GameMode::Mania => 3,
-                                }),
-                                Command::ProfileCard { .. }
-                                | Command::Bind { .. }
-                                | Command::Unbind => None,
-                            };
-                            let username = match cmd {
-                                Command::QueryUser { username, .. } => Some(username.as_str()),
-                                Command::Bind { username, .. } => Some(username.as_str()),
-                                Command::ScoreOnBeatmap { username, .. }
-                                | Command::Pass { username, .. }
-                                | Command::Recent { username, .. }
-                                | Command::ProfileCard { username, .. } => username.as_deref(),
-                                _ => None,
-                            };
-                            serde_json::json!({
-                                "command_type": cmd_name,
-                                "group_id": msg.group_id,
-                                "user_id": msg.user_id,
-                                "message": msg.message,
-                                "mentioned_user_id": msg.mentioned_user_id,
-                                "mode": mode,
-                                "username": username,
-                                "qq": match cmd {
-                                    Command::QueryMentionedUser { qq, .. } => Some(qq),
-                                    _ => None,
-                                },
-                                "beatmap_id": match cmd {
-                                    Command::ScoreOnBeatmap { beatmap_id, .. } => *beatmap_id,
-                                    _ => None,
-                                },
-                                "score_id": match cmd {
-                                    Command::ScoreOnBeatmap { score_id, .. } => *score_id,
-                                    _ => None,
-                                },
-                                "mods": match cmd {
-                                    Command::ScoreOnBeatmap { mods, .. } => {
-                                        mods.as_ref().map(|m| m.iter().map(|m| m.to_string()).collect::<Vec<_>>())
-                                    }
-                                    _ => None,
-                                },
-                                "limit": match cmd {
-                                    Command::ScoreOnBeatmap { limit, .. } | Command::Pass { limit, .. } | Command::Recent { limit, .. } => Some(*limit),
-                                    _ => None,
-                                },
-                            })
-                        }
-                        None => serde_json::json!({
-                            "command_type": cmd_name,
-                            "group_id": msg.group_id,
-                            "user_id": msg.user_id,
-                            "message": msg.message,
-                            "mentioned_user_id": msg.mentioned_user_id,
-                        }),
-                    };
-                    match pm.handle_command(cmd_name, &cmd_payload.to_string()).await {
-                        osubot_plugin::PluginActionResult::Handled(response) => {
-                            let _ = resp_tx.send(response).await;
-                            return;
-                        }
-                        osubot_plugin::PluginActionResult::Intercepted => {
-                            return;
-                        }
-                        osubot_plugin::PluginActionResult::Next => {}
-                    }
+                    PluginActionResult::Intercepted => return,
+                    PluginActionResult::Next => {}
                 }
             }
         }
     }
 
-    let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
+    // ==== Fallback: old text dispatch (native commands) ====
 
     // 未识别命令 — 插件已拒绝，直接结束
     if cmd_opt.is_none() {

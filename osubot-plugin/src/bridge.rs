@@ -167,18 +167,9 @@ fn send_msg_with_timeout(
     message: serde_json::Value,
 ) -> Result<(), BridgeError> {
     let send_fn = services.send_msg_fn.clone();
-    let rt = services.runtime_handle.clone();
     tokio::task::block_in_place(|| {
-        rt.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                tokio::task::spawn_blocking(move || send_fn(group_id, message)),
-            )
-            .await
-            .map_err(|_| BridgeError::SendMsg("消息发送超时 (5s)".into()))?
-            .map_err(|join_err| BridgeError::SendMsg(format!("send_msg_fn panicked: {join_err}")))?
-            .map_err(BridgeError::SendMsg)
-        })
+        // 已在 spawn_blocking 上下文中；直接同步调用避免嵌套 spawn_blocking
+        send_fn(group_id, message).map_err(BridgeError::SendMsg)
     })
 }
 
@@ -374,7 +365,7 @@ fn dispatch_host_call(
             }
             let tick_id = services
                 .tick_id_counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             registry.push((services.instance_idx, tick_name, interval_secs, tick_id));
             Ok(tick_id.to_string())
         }

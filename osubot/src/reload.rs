@@ -157,7 +157,7 @@ impl ReloadCoordinator {
         info!("收到文件变更，开始热重载...");
 
         self.handle.drain.store(true, Ordering::SeqCst);
-        self.wait_drain().await;
+        let drained = self.wait_drain().await;
 
         let old_config = self.handle.config.read().await.clone();
 
@@ -169,6 +169,14 @@ impl ReloadCoordinator {
                 return;
             }
         };
+
+        if !drained {
+            error!("任务超时未排空，跳过插件重载以避免实例索引混乱");
+            self.apply_side_effects(&old_config, &new_config).await;
+            *self.handle.config.write().await = new_config.clone();
+            self.handle.drain.store(false, Ordering::SeqCst);
+            return;
+        }
 
         if let Err(e) = self.reload_plugins().await {
             error!("插件重载失败，回滚配置: {e}");
@@ -389,20 +397,20 @@ impl ReloadCoordinator {
         Ok(())
     }
 
-    async fn wait_drain(&self) {
+    async fn wait_drain(&self) -> bool {
         let start = tokio::time::Instant::now();
         let timeout = Duration::from_secs(DRAIN_TIMEOUT_SECS);
         loop {
             let count = self.handle.in_flight.load(Ordering::SeqCst);
             if count == 0 {
-                return;
+                return true;
             }
             if start.elapsed() >= timeout {
                 warn!(
                     in_flight = count,
                     "等待进行中任务超时 ({DRAIN_TIMEOUT_SECS}s)，强制切换"
                 );
-                return;
+                return false;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

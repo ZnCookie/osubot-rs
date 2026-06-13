@@ -247,6 +247,7 @@ osubot-rs/
 │   │   └── error.rs     # 错误类型
 │   └── styles/
 │       ├── score.css    # 分数卡片样式（MD3）
+│       ├── score_list.css # 成绩列表卡片样式
 │       └── profile.css  # 个人主页样式
 ├── osubot-plugin/      # WASM 插件运行时
 │   └── src/

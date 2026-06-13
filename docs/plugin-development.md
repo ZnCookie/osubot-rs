@@ -471,7 +471,7 @@ osubot 使用文件监控（`notify` crate）自动检测以下变更：
 
 ## 测试插件
 
-osubot 的 `osubot-plugin` crate 提供了集成测试框架，可用于验证插件行为。参考 `osubot-plugin/src/lib.rs` 中的 `#[cfg(test)]` 模块，其中包含 18 个测试覆盖了：
+osubot 的 `osubot-plugin` crate 提供了集成测试框架，可用于验证插件行为。参考 `osubot-plugin/src/lib.rs` 中的 `#[cfg(test)]` 模块，其中包含 19 个测试覆盖了：
 
 - 元数据解析
 - 命令/消息分发（Handled / Next / Intercepted 三种返回值）

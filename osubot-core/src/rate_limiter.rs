@@ -15,6 +15,7 @@ pub struct RateLimiter {
     per_minute: u32,
     refill_handle: StdMutex<tokio::task::JoinHandle<()>>,
     refill_respawning: Arc<AtomicBool>,
+    dropped: AtomicBool,
 }
 
 struct State {
@@ -80,27 +81,39 @@ impl RateLimiter {
             per_minute,
             refill_handle,
             refill_respawning: Arc::new(AtomicBool::new(false)),
+            dropped: AtomicBool::new(false),
         }
     }
 
     /// Check if the refill task is alive and respawn if it panicked.
     fn ensure_refill_alive(&self) {
-        if let Ok(mut guard) = self.refill_handle.lock() {
-            if guard.is_finished()
-                && self
-                    .refill_respawning
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-            {
-                tracing::error!("rate limiter refill task panicked, respawning");
-                *guard = spawn_refill(
-                    self.state.clone(),
-                    self.notify.clone(),
-                    self.burst as f64,
-                    self.per_minute,
-                );
-                self.refill_respawning.store(false, Ordering::Release);
+        if self.dropped.load(Ordering::Acquire) {
+            return;
+        }
+        let mut guard = self.refill_handle.lock().unwrap_or_else(|e| {
+            tracing::warn!("rate limiter refill handle mutex 被污染，强制恢复");
+            e.into_inner()
+        });
+        if guard.is_finished()
+            && self
+                .refill_respawning
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            tracing::error!("rate limiter refill task panicked, respawning");
+            let new_handle = spawn_refill(
+                self.state.clone(),
+                self.notify.clone(),
+                self.burst as f64,
+                self.per_minute,
+            );
+            // Drop 可能在 spawn 期间设置了 dropped=true；若已执行则立即停止新任务
+            if self.dropped.load(Ordering::Acquire) {
+                new_handle.abort();
+            } else {
+                *guard = new_handle;
             }
+            self.refill_respawning.store(false, Ordering::Release);
         }
     }
 
@@ -139,6 +152,7 @@ impl RateLimiter {
 
 impl Drop for RateLimiter {
     fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Release);
         let guard = self.refill_handle.lock().unwrap_or_else(|e| e.into_inner());
         guard.abort();
     }
