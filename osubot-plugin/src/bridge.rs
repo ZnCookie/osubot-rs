@@ -277,10 +277,20 @@ fn dispatch_host_call(
             let qq = v["qq"]
                 .as_i64()
                 .ok_or_else(|| BridgeError::MissingField("qq".into()))?;
-            let binding = services
-                .runtime_handle
-                .block_on(services.storage.get_binding(qq))
-                .map_err(|e| BridgeError::Database(e.to_string()))?;
+            let binding = tokio::task::block_in_place(|| {
+                services.runtime_handle.block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        services.storage.get_binding(qq),
+                    )
+                    .await
+                })
+            })
+            .map_err(|e| BridgeError::Database(e.to_string()))?;
+            let binding = match binding {
+                Ok(result) => result,
+                Err(_) => return Err(BridgeError::Database("database query timed out".into())),
+            };
             let result = match binding {
                 Some((uid, uname)) => serde_json::json!({"user_id": uid, "username": uname}),
                 None => serde_json::Value::Null,

@@ -142,10 +142,13 @@ impl Scheduler {
                 self.update_next_time(user_id, mode, result.activity).await;
             } else {
                 // Retry on next tick — rate limiter naturally throttles persistent failures
-                let _ = self
+                if let Err(e) = self
                     .storage
                     .set_next_update(user_id, mode, Utc::now())
-                    .await;
+                    .await
+                {
+                    warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+                }
             }
         }
     }
@@ -342,16 +345,21 @@ impl Scheduler {
     async fn update_next_time(&self, user_id: i64, mode: GameMode, activity: UserActivity) {
         let interval = self.get_update_interval(activity).await;
         let next = Utc::now() + interval;
-        let _ = self.storage.set_next_update(user_id, mode, next).await;
+        if let Err(e) = self.storage.set_next_update(user_id, mode, next).await {
+            warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+        }
     }
 
     /// Trigger update for user (single mode only)
     pub async fn trigger_update(&self, user_id: i64, mode: GameMode) {
         if !self.is_in_cooldown(user_id, mode).await {
-            let _ = self
+            if let Err(e) = self
                 .storage
                 .set_next_update(user_id, mode, Utc::now())
-                .await;
+                .await
+            {
+                warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+            }
         }
     }
 
