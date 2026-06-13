@@ -288,29 +288,26 @@ impl ReloadCoordinator {
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
         let dir_changed = {
             let cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
-            *cur_dir != new_plugin_dir
-        };
-        if dir_changed {
-            {
-                let cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
+            let changed = *cur_dir != new_plugin_dir;
+            if changed {
                 watcher
                     .unwatch(cur_dir.as_path())
                     .map_err(|e| format!("unwatch old plugin dir failed: {e}"))?;
             }
+            changed
+        };
+        if dir_changed {
             tokio::fs::create_dir_all(&new_plugin_dir).await.ok();
-            {
-                #[allow(unused_mut)]
-                let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
-                watcher
-                    .watch(&new_plugin_dir, RecursiveMode::NonRecursive)
-                    .map_err(|e| format!("watch new plugin dir failed: {e}"))?;
-                info!(
-                    "插件目录监控已更新: {} → {}",
-                    cur_dir.display(),
-                    new_plugin_dir.display()
-                );
-                *cur_dir = new_plugin_dir;
-            }
+            let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
+            watcher
+                .watch(&new_plugin_dir, RecursiveMode::NonRecursive)
+                .map_err(|e| format!("watch new plugin dir failed: {e}"))?;
+            info!(
+                "插件目录监控已更新: {} → {}",
+                cur_dir.display(),
+                new_plugin_dir.display()
+            );
+            *cur_dir = new_plugin_dir;
         }
 
         info!("配置验证通过，等待插件重载...");

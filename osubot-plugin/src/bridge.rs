@@ -155,22 +155,22 @@ fn parse_payload(payload: &str) -> Result<serde_json::Value, BridgeError> {
 fn acquire_rate_limiter(services: &HostServices) -> bool {
     let rl = services.rate_limiter.clone();
     tokio::task::block_in_place(|| {
-        services
-            .runtime_handle
-            .block_on(async { rl.acquire().await.is_ok() })
+        services.runtime_handle.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), rl.acquire())
+                .await
+                .map(|r| r.is_ok())
+                .unwrap_or(false)
+        })
     })
 }
 
-fn send_msg_with_timeout(
+fn send_msg_sync(
     services: &HostServices,
     group_id: i64,
     message: serde_json::Value,
 ) -> Result<(), BridgeError> {
     let send_fn = services.send_msg_fn.clone();
-    tokio::task::block_in_place(|| {
-        // 已在 spawn_blocking 上下文中；直接同步调用避免嵌套 spawn_blocking
-        send_fn(group_id, message).map_err(BridgeError::SendMsg)
-    })
+    tokio::task::block_in_place(|| send_fn(group_id, message).map_err(BridgeError::SendMsg))
 }
 
 fn dispatch_host_call(
@@ -196,7 +196,7 @@ fn dispatch_host_call(
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
             }
-            send_msg_with_timeout(services, group_id, message)?;
+            send_msg_sync(services, group_id, message)?;
             Ok("{}".to_string())
         }
         "send_image" => {
@@ -214,7 +214,7 @@ fn dispatch_host_call(
                     "file": format!("base64://{}", jpeg_b64)
                 }
             }]);
-            send_msg_with_timeout(services, group_id, image_segment)?;
+            send_msg_sync(services, group_id, image_segment)?;
             Ok("{}".to_string())
         }
         "http_request" => {

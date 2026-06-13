@@ -20,6 +20,9 @@ pub use wasmtime::StoreLimitsBuilder;
 
 const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 10;
 
+/// WASM Store 内存上限（字节）
+const WASM_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
+
 /// WASM 插件系统运行时宿主。
 ///
 /// # 信任模型
@@ -278,7 +281,7 @@ impl PluginManager {
                     tick_id_counter: tick_id_counter.clone(),
                     instance_config: blueprint.config.config.clone(),
                     limiter: StoreLimitsBuilder::new()
-                        .memory_size(100 * 1024 * 1024)
+                        .memory_size(WASM_MEMORY_LIMIT)
                         .build(),
                 },
             );
@@ -339,7 +342,7 @@ impl PluginManager {
             tick_id_counter: tick_id_counter.clone(),
             instance_config: None,
             limiter: StoreLimitsBuilder::new()
-                .memory_size(100 * 1024 * 1024)
+                .memory_size(WASM_MEMORY_LIMIT)
                 .build(),
         };
 
@@ -373,6 +376,7 @@ impl PluginManager {
         })
     }
 
+    #[cfg(test)]
     pub async fn handle_command(&mut self, cmd_name: &str, cmd_json: &str) -> PluginAction {
         let indices = match self.command_map.get(cmd_name) {
             Some(indices) => indices.clone(),
@@ -464,6 +468,7 @@ impl PluginManager {
         PluginAction::Next
     }
 
+    #[cfg(test)]
     /// Dispatch a raw message to all plugins that have on_message export.
     /// Returns the first non-Next action from any plugin.
     pub async fn handle_message(&mut self, msg_json: &str) -> PluginAction {
@@ -570,7 +575,7 @@ impl PluginManager {
         host_services.tick_registry = self.tick_registry.clone();
         host_services.instance_config = instance_config;
         host_services.limiter = StoreLimitsBuilder::new()
-            .memory_size(100 * 1024 * 1024)
+            .memory_size(WASM_MEMORY_LIMIT)
             .build();
         let mut store = Store::new(&self.engine, host_services);
         store.limiter(|state| &mut state.limiter);
@@ -828,76 +833,80 @@ impl PluginManager {
         }
     }
 
+    async fn unload_single_instance(&mut self, idx: usize, context: &str) {
+        let has = self.instances[idx]
+            .as_mut()
+            .map(|i| i.has_export("on_unload"))
+            .unwrap_or(false);
+        if !has {
+            return;
+        }
+
+        let mut instance = match self.take_instance(idx) {
+            Some(inst) => inst,
+            None => return,
+        };
+        let unload_name = instance.name.clone();
+        let timeout_dur = instance.timeout;
+
+        let result = tokio::time::timeout(
+            timeout_dur,
+            tokio::task::spawn_blocking(move || {
+                let r = instance.on_unload();
+                (r, instance)
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(Ok((Ok(()), instance))) => {
+                self.put_instance(idx, instance);
+            }
+            Ok(Ok((Err(e), instance))) => {
+                self.put_instance(idx, instance);
+                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
+                if self.lost_instances[idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        plugin = %unload_name,
+                        consecutive = self.lost_instances[idx],
+                        "Plugin on_unload 连续错误，自动重载"
+                    );
+                    if let Err(re) = self.reload_instance(idx) {
+                        tracing::error!(plugin = %unload_name, "重载失败: {re}");
+                    }
+                }
+                tracing::warn!(plugin = %unload_name, error = %e, "Plugin on_unload error");
+            }
+            Ok(Err(join_err)) => {
+                tracing::error!(plugin = %unload_name, "Plugin on_unload panicked: {join_err}");
+                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
+                if self.lost_instances[idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        plugin = %unload_name,
+                        consecutive = self.lost_instances[idx],
+                        "Plugin on_unload 连续 panic，自动重载"
+                    );
+                    if let Err(e) = self.reload_instance(idx) {
+                        tracing::error!(plugin = %unload_name, "Failed to reload after panic: {e}");
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!(plugin = %unload_name, "Plugin on_unload timed out, proceeding with {context}");
+                self.engine.increment_epoch();
+            }
+        }
+    }
+
     pub async fn shutdown(&mut self) {
         self.epoch_running.store(false, Ordering::Relaxed);
         self.epoch_handle.abort();
-        // epoch task 通过 epoch_running 标志自行退出，无需 join。
-        // abort() 确保在极少数情况下（如任务卡在 interval tick 中）强制终止。
 
         for idx in 0..self.instances.len() {
-            let has = self.instances[idx]
-                .as_mut()
-                .map(|i| i.has_export("on_unload"))
-                .unwrap_or(false);
-            if !has {
-                continue;
-            }
-
-            let mut instance = match self.take_instance(idx) {
-                Some(inst) => inst,
-                None => continue,
-            };
-            let unload_name = instance.name.clone();
-            let timeout_dur = instance.timeout;
-
-            let result = tokio::time::timeout(
-                timeout_dur,
-                tokio::task::spawn_blocking(move || {
-                    let r = instance.on_unload();
-                    (r, instance)
-                }),
-            )
-            .await;
-
-            match result {
-                Ok(Ok((Ok(()), instance))) => {
-                    self.put_instance(idx, instance);
-                    let name = self.instances[idx].as_ref().map(|i| &i.name).cloned();
-                    tracing::info!(plugin = ?name, "Plugin unloaded");
-                }
-                Ok(Ok((Err(e), instance))) => {
-                    self.put_instance(idx, instance);
-                    self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                    if self.lost_instances[idx] >= self.lost_instances_threshold {
-                        tracing::warn!(
-                            plugin = %unload_name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin on_unload 连续错误，自动重载"
-                        );
-                        if let Err(re) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %unload_name, "重载失败: {re}");
-                        }
-                    }
-                    tracing::warn!(plugin = %unload_name, error = %e, "Plugin on_unload error");
-                }
-                Ok(Err(join_err)) => {
-                    tracing::error!(plugin = %unload_name, "Plugin on_unload panicked: {join_err}");
-                    self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                    if self.lost_instances[idx] >= self.lost_instances_threshold {
-                        tracing::warn!(
-                            plugin = %unload_name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin on_unload 连续 panic，自动重载"
-                        );
-                        if let Err(e) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %unload_name, "Failed to reload after panic: {e}");
-                        }
-                    }
-                }
-                Err(_) => {
-                    tracing::warn!(plugin = %unload_name, "Plugin on_unload timed out, proceeding with unload");
-                    self.engine.increment_epoch();
-                }
+            self.unload_single_instance(idx, "unload").await;
+            if self.instances[idx].is_some() {
+                let name = self.instances[idx].as_ref().map(|i| &i.name).cloned();
+                tracing::info!(plugin = ?name, "Plugin unloaded");
             }
         }
         self.instances.clear();
@@ -995,65 +1004,7 @@ impl PluginManager {
         );
 
         for idx in to_remove.iter().rev() {
-            let has_unload = self.instances[*idx]
-                .as_mut()
-                .map(|i| i.has_export("on_unload"))
-                .unwrap_or(false);
-
-            if has_unload {
-                if let Some(mut instance) = self.take_instance(*idx) {
-                    let unload_name = instance.name.clone();
-                    let timeout_dur = instance.timeout;
-
-                    let result = tokio::time::timeout(
-                        timeout_dur,
-                        tokio::task::spawn_blocking(move || {
-                            let r = instance.on_unload();
-                            (r, instance)
-                        }),
-                    )
-                    .await;
-
-                    match result {
-                        Ok(Ok((Ok(()), instance))) => {
-                            self.put_instance(*idx, instance);
-                        }
-                        Ok(Ok((Err(e), instance))) => {
-                            self.put_instance(*idx, instance);
-                            self.lost_instances[*idx] = self.lost_instances[*idx].saturating_add(1);
-                            if self.lost_instances[*idx] >= self.lost_instances_threshold {
-                                tracing::warn!(
-                                    plugin = %unload_name,
-                                    consecutive = self.lost_instances[*idx],
-                                    "Plugin on_unload 连续错误，自动重载"
-                                );
-                                if let Err(re) = self.reload_instance(*idx) {
-                                    tracing::error!(plugin = %unload_name, "重载失败: {re}");
-                                }
-                            }
-                            tracing::warn!(plugin = %unload_name, error = %e, "Plugin on_unload error");
-                        }
-                        Ok(Err(join_err)) => {
-                            tracing::error!(plugin = %unload_name, "Plugin on_unload panicked: {join_err}");
-                            self.lost_instances[*idx] = self.lost_instances[*idx].saturating_add(1);
-                            if self.lost_instances[*idx] >= self.lost_instances_threshold {
-                                tracing::warn!(
-                                    plugin = %unload_name,
-                                    consecutive = self.lost_instances[*idx],
-                                    "Plugin on_unload 连续 panic，自动重载"
-                                );
-                                if let Err(e) = self.reload_instance(*idx) {
-                                    tracing::error!(plugin = %unload_name, "Failed to reload after panic: {e}");
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            tracing::warn!(plugin = %unload_name, "Plugin on_unload timed out, proceeding with reload");
-                            self.engine.increment_epoch();
-                        }
-                    }
-                }
-            }
+            self.unload_single_instance(*idx, "reload").await;
 
             for indices in self.command_map.values_mut() {
                 indices.retain(|i| *i != *idx);
@@ -1165,66 +1116,7 @@ impl PluginManager {
                     }
                 };
 
-                let has_unload = self.instances[*idx]
-                    .as_mut()
-                    .map(|i| i.has_export("on_unload"))
-                    .unwrap_or(false);
-                if has_unload {
-                    if let Some(mut instance) = self.take_instance(*idx) {
-                        let unload_name = instance.name.clone();
-                        let timeout_dur = instance.timeout;
-
-                        let result = tokio::time::timeout(
-                            timeout_dur,
-                            tokio::task::spawn_blocking(move || {
-                                let r = instance.on_unload();
-                                (r, instance)
-                            }),
-                        )
-                        .await;
-
-                        match result {
-                            Ok(Ok((Ok(()), instance))) => {
-                                self.put_instance(*idx, instance);
-                            }
-                            Ok(Ok((Err(e), instance))) => {
-                                self.put_instance(*idx, instance);
-                                self.lost_instances[*idx] =
-                                    self.lost_instances[*idx].saturating_add(1);
-                                if self.lost_instances[*idx] >= self.lost_instances_threshold {
-                                    tracing::warn!(
-                                        plugin = %unload_name,
-                                        consecutive = self.lost_instances[*idx],
-                                        "Plugin on_unload 连续错误，自动重载"
-                                    );
-                                    if let Err(re) = self.reload_instance(*idx) {
-                                        tracing::error!(plugin = %unload_name, "重载失败: {re}");
-                                    }
-                                }
-                                tracing::warn!(plugin = %unload_name, error = %e, "Plugin on_unload error");
-                            }
-                            Ok(Err(join_err)) => {
-                                tracing::error!(plugin = %unload_name, "Plugin on_unload panicked: {join_err}");
-                                self.lost_instances[*idx] =
-                                    self.lost_instances[*idx].saturating_add(1);
-                                if self.lost_instances[*idx] >= self.lost_instances_threshold {
-                                    tracing::warn!(
-                                        plugin = %unload_name,
-                                        consecutive = self.lost_instances[*idx],
-                                        "Plugin on_unload 连续 panic，自动重载"
-                                    );
-                                    if let Err(e) = self.reload_instance(*idx) {
-                                        tracing::error!(plugin = %unload_name, "Failed to reload after panic: {e}");
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                tracing::warn!(plugin = %unload_name, "Plugin on_unload timed out, proceeding with reload");
-                                self.engine.increment_epoch();
-                            }
-                        }
-                    }
-                }
+                self.unload_single_instance(*idx, "reload").await;
 
                 // 保存旧 tick 注册快照，on_load 失败时恢复
                 let old_ticks: Vec<_> = {
@@ -1335,13 +1227,14 @@ impl PluginManager {
 
         macro_rules! filter_by_mask {
             ($v:expr) => {{
-                let taken = std::mem::take($v);
+                let mut taken = std::mem::take($v);
+                let mut i = 0;
+                taken.retain(|_| {
+                    let keep = old_to_new[i].is_some();
+                    i += 1;
+                    keep
+                });
                 taken
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(i, _)| old_to_new[*i].is_some())
-                    .map(|(_, x)| x)
-                    .collect()
             }};
         }
 

@@ -2944,6 +2944,8 @@ async fn main() {
         // Message loop
         loop {
             const SPAWN_COUNT: usize = 2; // 必须与下方两个 tokio::spawn 中各持有的 InFlightGuard 数量一致
+                                          // 编译期断言：若编译失败，请更新 SPAWN_COUNT
+            const _: [(); SPAWN_COUNT] = [(); 2];
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }

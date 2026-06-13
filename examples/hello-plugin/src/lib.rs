@@ -30,10 +30,9 @@ pub extern "C" fn plugin_metadata() -> *const u8 {
 pub extern "C" fn on_load() -> *const u8 {
     // Register a tick every 3600 seconds (1 hour) as a demo
     if let Err(e) = CTX.register_tick("hello_tick", 3600) {
-        // WASM 环境无标准日志系统；返回错误给宿主记录
-        return serialize_return(&serde_json::json!({"error": e}));
+        return serialize_return(&e);
     }
-    serialize_return(&serde_json::json!({"ok": true}))
+    serialize_return(&"")
 }
 
 #[no_mangle]
