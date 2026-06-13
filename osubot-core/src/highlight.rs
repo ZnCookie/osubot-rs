@@ -33,7 +33,7 @@ pub struct HighlightResult {
 #[derive(Debug)]
 pub enum HighlightError {
     Api(ApiError),
-    Storage(rusqlite::Error),
+    Storage(turso::Error),
     NoData,
 }
 
@@ -43,19 +43,19 @@ impl From<ApiError> for HighlightError {
     }
 }
 
-impl From<rusqlite::Error> for HighlightError {
-    fn from(e: rusqlite::Error) -> Self {
+impl From<turso::Error> for HighlightError {
+    fn from(e: turso::Error) -> Self {
         HighlightError::Storage(e)
     }
 }
 
 /// Get the snapshot closest to 24 hours ago (within 36 hour window) for a user
-fn get_baseline_snapshot(
+async fn get_baseline_snapshot(
     storage: &Storage,
     user_id: i64,
     mode: GameMode,
-) -> Result<Option<UserStats>, rusqlite::Error> {
-    let all = storage.get_snapshots_within_hours(user_id, mode, 36)?;
+) -> Result<Option<UserStats>, turso::Error> {
+    let all = storage.get_snapshots_within_hours(user_id, mode, 36).await?;
 
     if all.is_empty() {
         return Ok(None);
@@ -94,7 +94,7 @@ pub async fn get_highlight(
         let username = username.clone();
 
         join_set.spawn(async move {
-            let baseline = match get_baseline_snapshot(&storage, user_id, mode) {
+            let baseline = match get_baseline_snapshot(&storage, user_id, mode).await {
                 Ok(Some(s)) => s,
                 Ok(None) => return None,
                 Err(e) => {
