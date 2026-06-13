@@ -278,8 +278,8 @@ fn dispatch_host_call(
                 .as_i64()
                 .ok_or_else(|| BridgeError::MissingField("qq".into()))?;
             let binding = services
-                .storage
-                .get_binding(qq)
+                .runtime_handle
+                .block_on(services.storage.get_binding(qq))
                 .map_err(|e| BridgeError::Database(e.to_string()))?;
             let result = match binding {
                 Some((uid, uname)) => serde_json::json!({"user_id": uid, "username": uname}),

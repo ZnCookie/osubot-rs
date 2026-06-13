@@ -55,7 +55,9 @@ async fn get_baseline_snapshot(
     user_id: i64,
     mode: GameMode,
 ) -> Result<Option<UserStats>, turso::Error> {
-    let all = storage.get_snapshots_within_hours(user_id, mode, 36).await?;
+    let all = storage
+        .get_snapshots_within_hours(user_id, mode, 36)
+        .await?;
 
     if all.is_empty() {
         return Ok(None);

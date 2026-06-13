@@ -1,7 +1,6 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
-use std::path::Path;
 use std::time::Duration;
-use turso::{params, Connection, Error, Result as DbResult};
+use turso::{params, Connection, Result as DbResult};
 
 use crate::types::{GameMode, UserChange, UserStats};
 
@@ -114,7 +113,10 @@ impl Storage {
     ) -> DbResult<std::result::Result<(), i64>> {
         let mut rows = self
             .conn
-            .query("SELECT qq FROM user_bindings WHERE user_id = ?1", params![user_id])
+            .query(
+                "SELECT qq FROM user_bindings WHERE user_id = ?1",
+                params![user_id],
+            )
             .await?;
         if let Some(row) = rows.next().await? {
             let existing_qq: i64 = row.get(0)?;
@@ -132,9 +134,12 @@ impl Storage {
     }
 
     pub async fn unbind(&self, qq: i64) -> DbResult<()> {
-        let rows = self
+        let mut rows = self
             .conn
-            .query("SELECT user_id FROM user_bindings WHERE qq = ?1", params![qq])
+            .query(
+                "SELECT user_id FROM user_bindings WHERE qq = ?1",
+                params![qq],
+            )
             .await?;
         let user_id: Option<i64> = rows.next().await?.map(|row| row.get(0)).transpose()?;
 
@@ -266,7 +271,12 @@ impl Storage {
 
     // ==================== Snapshot Operations ====================
 
-    pub async fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> DbResult<()> {
+    pub async fn save_stats(
+        &self,
+        user_id: i64,
+        mode: GameMode,
+        stats: &UserStats,
+    ) -> DbResult<()> {
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
@@ -430,7 +440,12 @@ impl Storage {
     }
 
     /// Check if user has any play records since the given UTC timestamp
-    pub async fn has_play_since(&self, user_id: i64, mode: GameMode, since_ts: i64) -> DbResult<bool> {
+    pub async fn has_play_since(
+        &self,
+        user_id: i64,
+        mode: GameMode,
+        since_ts: i64,
+    ) -> DbResult<bool> {
         let mut rows = self
             .conn
             .query(
@@ -549,17 +564,15 @@ impl Storage {
             .await?;
         if let Some(row) = rows.next().await? {
             let ts: i64 = row.get(0)?;
-            return Ok(Some(
-                Utc.timestamp_opt(ts, 0)
-                    .single()
-                    .unwrap_or_else(|| {
-                        tracing::warn!(
-                            ts,
-                            "failed to parse next_update timestamp, falling back to now"
-                        );
-                        Utc::now()
-                    }),
-            ));
+            return Ok(Some(Utc.timestamp_opt(ts, 0).single().unwrap_or_else(
+                || {
+                    tracing::warn!(
+                        ts,
+                        "failed to parse next_update timestamp, falling back to now"
+                    );
+                    Utc::now()
+                },
+            )));
         }
         Ok(None)
     }
@@ -595,7 +608,10 @@ impl Storage {
     pub async fn get_all_user_bindings(&self) -> DbResult<Vec<(i64, i64, String)>> {
         let mut rows = self
             .conn
-            .query("SELECT qq, user_id, current_username FROM user_bindings", ())
+            .query(
+                "SELECT qq, user_id, current_username FROM user_bindings",
+                (),
+            )
             .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -663,7 +679,10 @@ impl Storage {
     pub async fn get_pending_unbind(&self, qq: i64) -> DbResult<Option<DateTime<Utc>>> {
         let mut rows = self
             .conn
-            .query("SELECT created_at FROM pending_unbind WHERE qq = ?1", params![qq])
+            .query(
+                "SELECT created_at FROM pending_unbind WHERE qq = ?1",
+                params![qq],
+            )
             .await?;
         if let Some(row) = rows.next().await? {
             let created_at: String = row.get(0)?;
@@ -689,7 +708,10 @@ impl Storage {
     pub async fn prune_expired_pending_unbinds(&self) -> DbResult<u64> {
         let cutoff = (Utc::now() - chrono::TimeDelta::minutes(5)).to_rfc3339();
         self.conn
-            .execute("DELETE FROM pending_unbind WHERE created_at < ?1", params![cutoff])
+            .execute(
+                "DELETE FROM pending_unbind WHERE created_at < ?1",
+                params![cutoff],
+            )
             .await
     }
 
@@ -708,8 +730,7 @@ impl Storage {
             )
             .await?;
 
-        let cutoff_plays_ts =
-            (Utc::now() - chrono::TimeDelta::days(retention_i64)).timestamp();
+        let cutoff_plays_ts = (Utc::now() - chrono::TimeDelta::days(retention_i64)).timestamp();
 
         let deleted_plays = self
             .conn
@@ -750,11 +771,13 @@ impl Storage {
         group_id: i64,
         target_username: &str,
     ) -> DbResult<String> {
-        use rand::RngExt;
-        let mut rng = rand::rng();
-        let code: String = (0..6)
-            .map(|_| rng.random_range(0..10).to_string())
-            .collect();
+        let code: String = {
+            use rand::RngExt;
+            let mut rng = rand::rng();
+            (0..6)
+                .map(|_| rng.random_range(0..10).to_string())
+                .collect()
+        };
 
         let now = Utc::now();
         let expires_at = now.timestamp() + 120;
@@ -762,7 +785,7 @@ impl Storage {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO pending_binds (code, qq_user_id, group_id, target_username, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![code, qq_user_id, group_id, target_username, now.to_rfc3339(), expires_at],
+                params![code.clone(), qq_user_id, group_id, target_username, now.to_rfc3339(), expires_at],
             )
             .await?;
         Ok(code)
@@ -814,7 +837,10 @@ impl Storage {
     pub async fn prune_expired_pending_binds(&self) -> DbResult<u64> {
         let now_ts = Utc::now().timestamp();
         self.conn
-            .execute("DELETE FROM pending_binds WHERE expires_at < ?1", params![now_ts])
+            .execute(
+                "DELETE FROM pending_binds WHERE expires_at < ?1",
+                params![now_ts],
+            )
             .await
     }
 
