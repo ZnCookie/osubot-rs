@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
-use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
-use std::sync::Mutex;
+use std::time::Duration;
+use turso::{params, Connection, Error, Result as DbResult};
 
 use crate::types::{GameMode, UserChange, UserStats};
 
@@ -28,27 +28,23 @@ pub fn today_0am_utc() -> i64 {
 }
 
 pub struct Storage {
-    conn: Mutex<Connection>,
+    conn: Connection,
 }
 
 impl Storage {
-    pub fn new<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
-        let conn = Connection::open(path)?;
+    pub async fn new(path: &str) -> DbResult<Self> {
+        let db = turso::Builder::new_local(path).build().await?;
+        let conn = db.connect()?;
+        conn.busy_timeout(Duration::from_secs(5))?;
 
-        // Schema: user_bindings (qq → user_id, current_username)
-        conn.execute(
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS user_bindings (
                 qq INTEGER PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 current_username TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )",
-            [],
-        )?;
-
-        // user_stats_history (user_id, mode, recorded_at → stats)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS user_stats_history (
+            );
+            CREATE TABLE IF NOT EXISTS user_stats_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
@@ -62,253 +58,215 @@ impl Storage {
                 hits INTEGER,
                 playtime INTEGER,
                 UNIQUE(user_id, mode, recorded_at)
-            )",
-            [],
-        )?;
-
-        // user_play_records (user_id, mode, played_at)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS user_play_records (
+            );
+            CREATE TABLE IF NOT EXISTS user_play_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 played_at INTEGER NOT NULL,
                 UNIQUE(user_id, mode, played_at)
-            )",
-            [],
-        )?;
-
-        // user_next_update (user_id, mode → next_update)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS user_next_update (
+            );
+            CREATE TABLE IF NOT EXISTS user_next_update (
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 next_update INTEGER NOT NULL,
                 PRIMARY KEY(user_id, mode)
-            )",
-            [],
-        )?;
-
-        // user_last_update (user_id, mode → last_update)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS user_last_update (
+            );
+            CREATE TABLE IF NOT EXISTS user_last_update (
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 last_update TEXT NOT NULL,
                 PRIMARY KEY(user_id, mode)
-            )",
-            [],
-        )?;
-
-        // Unchanged tables...
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS pending_unbind (
+            );
+            CREATE TABLE IF NOT EXISTS pending_unbind (
                 qq INTEGER PRIMARY KEY,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS pending_binds (
+            );
+            CREATE TABLE IF NOT EXISTS pending_binds (
                 code TEXT PRIMARY KEY,
                 qq_user_id INTEGER NOT NULL,
                 group_id INTEGER NOT NULL,
                 target_username TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at INTEGER NOT NULL
-            )",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS osu_user_ids (
+            );
+            CREATE TABLE IF NOT EXISTS osu_user_ids (
                 username TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL
-            )",
-            [],
-        )?;
+            );
+            CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode);
+            CREATE INDEX IF NOT EXISTS idx_history_recorded ON user_stats_history(recorded_at);
+            CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(user_id, mode);",
+        )
+        .await?;
 
-        // New indexes on user_id (drop old username indexes)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_recorded ON user_stats_history(recorded_at)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(user_id, mode)",
-            [],
-        )?;
-
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
-    }
-
-    /// Execute a closure with a database connection, recovering from poisoned mutex.
-    fn with_conn<F, R>(&self, f: F) -> SqlResult<R>
-    where
-        F: FnOnce(&Connection) -> SqlResult<R>,
-    {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        f(&conn)
+        Ok(Self { conn })
     }
 
     // ==================== Binding Query ====================
 
     /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
-    pub fn bind(
+    pub async fn bind(
         &self,
         qq: i64,
         user_id: i64,
         current_username: &str,
-    ) -> SqlResult<Result<(), i64>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare("SELECT qq FROM user_bindings WHERE user_id = ?1")?;
-            let mut rows = stmt.query(params![user_id])?;
-            if let Some(row) = rows.next()? {
-                let existing_qq: i64 = row.get(0)?;
-                if existing_qq != qq {
-                    return Ok(Err(existing_qq));
-                }
+    ) -> DbResult<std::result::Result<(), i64>> {
+        let mut rows = self
+            .conn
+            .query("SELECT qq FROM user_bindings WHERE user_id = ?1", params![user_id])
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let existing_qq: i64 = row.get(0)?;
+            if existing_qq != qq {
+                return Ok(Err(existing_qq));
             }
-            drop(rows);
-            drop(stmt);
-            conn.execute(
+        }
+        self.conn
+            .execute(
                 "INSERT OR REPLACE INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
                 params![qq, user_id, current_username],
-            )?;
-            Ok(Ok(()))
-        })
+            )
+            .await?;
+        Ok(Ok(()))
     }
 
-    pub fn unbind(&self, qq: i64) -> SqlResult<()> {
-        self.with_conn(|conn| {
-            let user_id: Option<i64> = conn
-                .query_row(
-                    "SELECT user_id FROM user_bindings WHERE qq = ?1",
-                    params![qq],
-                    |row| row.get(0),
-                )
-                .ok();
+    pub async fn unbind(&self, qq: i64) -> DbResult<()> {
+        let rows = self
+            .conn
+            .query("SELECT user_id FROM user_bindings WHERE qq = ?1", params![qq])
+            .await?;
+        let user_id: Option<i64> = rows.next().await?.map(|row| row.get(0)).transpose()?;
 
-            conn.execute("DELETE FROM user_bindings WHERE qq = ?1", params![qq])?;
+        self.conn
+            .execute("DELETE FROM user_bindings WHERE qq = ?1", params![qq])
+            .await?;
 
-            if let Some(uid) = user_id {
-                let count: i64 = conn.query_row(
+        if let Some(uid) = user_id {
+            let mut rows = self
+                .conn
+                .query(
                     "SELECT COUNT(*) FROM user_bindings WHERE user_id = ?1",
                     params![uid],
-                    |row| row.get(0),
-                )?;
+                )
+                .await?;
+            if let Some(row) = rows.next().await? {
+                let count: i64 = row.get(0)?;
                 if count == 0 {
-                    conn.execute(
-                        "DELETE FROM user_next_update WHERE user_id = ?1",
-                        params![uid],
-                    )?;
+                    self.conn
+                        .execute(
+                            "DELETE FROM user_next_update WHERE user_id = ?1",
+                            params![uid],
+                        )
+                        .await?;
                 }
             }
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    pub fn set_user_id(&self, username: &str, user_id: i64) -> SqlResult<()> {
-        self.with_conn(|conn| {
-            conn.execute(
+    pub async fn set_user_id(&self, username: &str, user_id: i64) -> DbResult<()> {
+        self.conn
+            .execute(
                 "INSERT OR REPLACE INTO osu_user_ids (username, user_id) VALUES (LOWER(?1), ?2)",
                 params![username, user_id],
-            )?;
-            Ok(())
-        })
+            )
+            .await?;
+        Ok(())
     }
 
     /// Get cached osu! user ID (case-insensitive username lookup)
-    pub fn get_user_id(&self, username: &str) -> SqlResult<Option<i64>> {
-        self.with_conn(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)")?;
-            let mut rows = stmt.query(params![username])?;
-            if let Some(row) = rows.next()? {
-                Ok(Some(row.get(0)?))
-            } else {
-                Ok(None)
-            }
-        })
+    pub async fn get_user_id(&self, username: &str) -> DbResult<Option<i64>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)",
+                params![username],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Bound usernames that don't have a cached user_id yet
-    pub fn get_users_without_ids(&self) -> SqlResult<Vec<String>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+    pub async fn get_users_without_ids(&self) -> DbResult<Vec<String>> {
+        let mut rows = self
+            .conn
+            .query(
                 "SELECT b.current_username FROM user_bindings b
                  WHERE NOT EXISTS (
                      SELECT 1 FROM osu_user_ids o WHERE LOWER(o.username) = LOWER(b.current_username)
                  )",
-            )?;
-            let rows = stmt.query_map([], |row| row.get(0))?;
-            let mut result = Vec::new();
-            for row in rows {
-                result.push(row?);
-            }
-            Ok(result)
-        })
+                (),
+            )
+            .await?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().await? {
+            result.push(row.get(0)?);
+        }
+        Ok(result)
     }
 
-    pub fn get_binding(&self, qq: i64) -> SqlResult<Option<(i64, String)>> {
-        self.with_conn(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT user_id, current_username FROM user_bindings WHERE qq = ?1")?;
-            let mut rows = stmt.query(params![qq])?;
-            if let Some(row) = rows.next()? {
-                Ok(Some((row.get(0)?, row.get(1)?)))
-            } else {
-                Ok(None)
-            }
-        })
+    pub async fn get_binding(&self, qq: i64) -> DbResult<Option<(i64, String)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT user_id, current_username FROM user_bindings WHERE qq = ?1",
+                params![qq],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub fn update_binding_username(&self, qq: i64, new_username: &str) -> SqlResult<()> {
-        self.with_conn(|conn| {
-            conn.execute(
+    pub async fn update_binding_username(&self, qq: i64, new_username: &str) -> DbResult<()> {
+        self.conn
+            .execute(
                 "UPDATE user_bindings SET current_username = ?1 WHERE qq = ?2",
                 params![new_username, qq],
-            )?;
-            Ok(())
-        })
+            )
+            .await?;
+        Ok(())
     }
 
     /// Update current_username for all QQs bound to a given user_id (username change detection).
     /// Returns the number of bindings updated.
-    pub fn update_binding_username_by_user_id(
+    pub async fn update_binding_username_by_user_id(
         &self,
         user_id: i64,
         new_username: &str,
-    ) -> SqlResult<usize> {
-        self.with_conn(|conn| {
-            let current: Option<String> = conn
-                .query_row(
-                    "SELECT current_username FROM user_bindings WHERE user_id = ?1 LIMIT 1",
-                    params![user_id],
-                    |row| row.get(0),
-                )
-                .ok();
-            if current.as_deref() == Some(new_username) {
-                return Ok(0);
-            }
-            let count = conn.execute(
+    ) -> DbResult<u64> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT current_username FROM user_bindings WHERE user_id = ?1 LIMIT 1",
+                params![user_id],
+            )
+            .await?;
+        let current: Option<String> = rows.next().await?.map(|row| row.get(0)).transpose()?;
+        if current.as_deref() == Some(new_username) {
+            return Ok(0);
+        }
+        let count = self
+            .conn
+            .execute(
                 "UPDATE user_bindings SET current_username = ?1 WHERE user_id = ?2",
                 params![new_username, user_id],
-            )?;
-            Ok(count)
-        })
+            )
+            .await?;
+        Ok(count)
     }
 
     // ==================== Snapshot Operations ====================
 
-    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> SqlResult<()> {
+    pub fn save_stats(&self, user_id: i64, mode: GameMode, stats: &UserStats) -> DbResult<()> {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
@@ -335,7 +293,7 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
-    ) -> SqlResult<Option<UserStats>> {
+    ) -> DbResult<Option<UserStats>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
@@ -373,7 +331,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         hours: i64,
-    ) -> SqlResult<Vec<(DateTime<Utc>, UserStats)>> {
+    ) -> DbResult<Vec<(DateTime<Utc>, UserStats)>> {
         self.with_conn(|conn| {
             let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
             let cutoff_str = cutoff.to_rfc3339();
@@ -427,7 +385,7 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
-    ) -> SqlResult<Option<(DateTime<Utc>, UserStats)>> {
+    ) -> DbResult<Option<(DateTime<Utc>, UserStats)>> {
         let now = Utc::now();
         let target_time = now - chrono::TimeDelta::hours(target_hours_ago);
         let earliest = now - chrono::TimeDelta::hours(max_lookback);
@@ -456,7 +414,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         timestamps: &[i64],
-    ) -> SqlResult<i32> {
+    ) -> DbResult<i32> {
         self.with_conn(|conn| {
             let mut inserted = 0i32;
             for &timestamp in timestamps {
@@ -473,7 +431,7 @@ impl Storage {
     }
 
     /// Check if user has any play records since the given UTC timestamp
-    pub fn has_play_since(&self, user_id: i64, mode: GameMode, since_ts: i64) -> SqlResult<bool> {
+    pub fn has_play_since(&self, user_id: i64, mode: GameMode, since_ts: i64) -> DbResult<bool> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT 1 FROM user_play_records WHERE user_id = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
@@ -490,7 +448,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         current: &UserStats,
-    ) -> SqlResult<Option<UserChange>> {
+    ) -> DbResult<Option<UserChange>> {
         let snapshot = self.get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)?;
 
         match snapshot {
@@ -541,7 +499,7 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
-    ) -> SqlResult<Option<DateTime<Utc>>> {
+    ) -> DbResult<Option<DateTime<Utc>>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT last_update FROM user_last_update WHERE user_id = ?1 AND mode = ?2",
@@ -562,7 +520,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         time: DateTime<Utc>,
-    ) -> SqlResult<()> {
+    ) -> DbResult<()> {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO user_last_update (user_id, mode, last_update) VALUES (?1, ?2, ?3)",
@@ -578,7 +536,7 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
-    ) -> SqlResult<Option<DateTime<Utc>>> {
+    ) -> DbResult<Option<DateTime<Utc>>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2",
@@ -605,7 +563,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         time: DateTime<Utc>,
-    ) -> SqlResult<()> {
+    ) -> DbResult<()> {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO user_next_update (user_id, mode, next_update) VALUES (?1, ?2, ?3)",
@@ -617,7 +575,7 @@ impl Storage {
 
     /// Reset all user next_update timestamps to now, so they are re-evaluated
     /// on the next scheduler tick with the new config intervals.
-    pub fn reset_all_next_updates(&self) -> SqlResult<usize> {
+    pub fn reset_all_next_updates(&self) -> DbResult<usize> {
         self.with_conn(|conn| {
             let now_ts = Utc::now().timestamp();
             conn.execute(
@@ -628,7 +586,7 @@ impl Storage {
     }
 
     /// Get all user bindings (qq -> user_id, current_username mappings)
-    pub fn get_all_user_bindings(&self) -> SqlResult<Vec<(i64, i64, String)>> {
+    pub fn get_all_user_bindings(&self) -> DbResult<Vec<(i64, i64, String)>> {
         self.with_conn(|conn| {
             let mut stmt =
                 conn.prepare("SELECT qq, user_id, current_username FROM user_bindings")?;
@@ -643,7 +601,7 @@ impl Storage {
 
     // ==================== Due Users Query ====================
 
-    pub fn get_due_users(&self) -> SqlResult<Vec<(i64, GameMode)>> {
+    pub fn get_due_users(&self) -> DbResult<Vec<(i64, GameMode)>> {
         self.with_conn(|conn| {
             let now_ts = Utc::now().timestamp();
 
@@ -687,7 +645,7 @@ impl Storage {
     // ==================== Pending Unbind Operations ====================
 
     /// Set a pending unbind confirmation for a user (expires in 5 minutes)
-    pub fn set_pending_unbind(&self, qq: i64) -> SqlResult<()> {
+    pub fn set_pending_unbind(&self, qq: i64) -> DbResult<()> {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO pending_unbind (qq, created_at) VALUES (?1, ?2)",
@@ -698,7 +656,7 @@ impl Storage {
     }
 
     /// Get pending unbind timestamp if exists (returns None if expired or not exists)
-    pub fn get_pending_unbind(&self, qq: i64) -> SqlResult<Option<DateTime<Utc>>> {
+    pub fn get_pending_unbind(&self, qq: i64) -> DbResult<Option<DateTime<Utc>>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare("SELECT created_at FROM pending_unbind WHERE qq = ?1")?;
             let mut rows = stmt.query(params![qq])?;
@@ -716,7 +674,7 @@ impl Storage {
     }
 
     /// Remove pending unbind record
-    pub fn remove_pending_unbind(&self, qq: i64) -> SqlResult<()> {
+    pub fn remove_pending_unbind(&self, qq: i64) -> DbResult<()> {
         self.with_conn(|conn| {
             conn.execute("DELETE FROM pending_unbind WHERE qq = ?1", params![qq])?;
             Ok(())
@@ -724,7 +682,7 @@ impl Storage {
     }
 
     /// Prune expired pending unbind records (older than 5 minutes).
-    pub fn prune_expired_pending_unbinds(&self) -> SqlResult<usize> {
+    pub fn prune_expired_pending_unbinds(&self) -> DbResult<usize> {
         self.with_conn(|conn| {
             let cutoff = (Utc::now() - chrono::TimeDelta::minutes(5)).to_rfc3339();
             let deleted = conn.execute(
@@ -737,7 +695,7 @@ impl Storage {
 
     /// Prune records older than retention_days from stats history and play records.
     /// Returns (deleted_stats, deleted_play_records).
-    pub fn prune_old_records(&self, retention_days: u64) -> SqlResult<(u64, u64, u64)> {
+    pub fn prune_old_records(&self, retention_days: u64) -> DbResult<(u64, u64, u64)> {
         self.with_conn(|conn| {
             let retention_i64 = retention_days as i64;
             let cutoff_stats = Utc::now() - chrono::TimeDelta::days(retention_i64);
@@ -784,7 +742,7 @@ impl Storage {
         qq_user_id: i64,
         group_id: i64,
         target_username: &str,
-    ) -> SqlResult<String> {
+    ) -> DbResult<String> {
         use rand::RngExt;
         let mut rng = rand::rng();
         let code: String = (0..6)
@@ -804,7 +762,7 @@ impl Storage {
     }
 
     /// Get pending bind by code if not expired
-    pub fn get_pending_bind(&self, code: &str) -> SqlResult<Option<PendingBind>> {
+    pub fn get_pending_bind(&self, code: &str) -> DbResult<Option<PendingBind>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT code, qq_user_id, group_id, target_username, created_at, expires_at FROM pending_binds WHERE code = ?1"
@@ -837,7 +795,7 @@ impl Storage {
     }
 
     /// Remove pending bind by code
-    pub fn remove_pending_bind(&self, code: &str) -> SqlResult<()> {
+    pub fn remove_pending_bind(&self, code: &str) -> DbResult<()> {
         self.with_conn(|conn| {
             conn.execute("DELETE FROM pending_binds WHERE code = ?1", params![code])?;
             Ok(())
@@ -845,7 +803,7 @@ impl Storage {
     }
 
     /// Prune expired pending binds
-    pub fn prune_expired_pending_binds(&self) -> SqlResult<u64> {
+    pub fn prune_expired_pending_binds(&self) -> DbResult<u64> {
         self.with_conn(|conn| {
             let now_ts = Utc::now().timestamp();
             let deleted = conn.execute(
@@ -857,7 +815,7 @@ impl Storage {
     }
 
     /// Check if a QQ user already has an active (non-expired) pending bind
-    pub fn has_pending_bind(&self, qq_user_id: i64) -> SqlResult<bool> {
+    pub fn has_pending_bind(&self, qq_user_id: i64) -> DbResult<bool> {
         self.with_conn(|conn| {
             let now_ts = Utc::now().timestamp();
             let mut stmt = conn.prepare(
