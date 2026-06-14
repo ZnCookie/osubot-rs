@@ -159,8 +159,8 @@ fn parse_scores_args(
                 if !has_bid_sid {
                     if num >= 10_000_000 {
                         sid = Some(num);
-                    } else {
-                        bid = Some(num as u32);
+                    } else if let Ok(b) = u32::try_from(num) {
+                        bid = Some(b);
                     }
                     has_bid_sid = true;
                 }
@@ -225,13 +225,20 @@ fn parse_range(s: &str, summary: bool) -> ScoreRange {
         } else {
             ScoreRange {
                 offset: 0,
-                count: s.max(e),
+                count: 1,
             }
         }
     } else if s.is_empty() {
-        ScoreRange {
-            offset: 0,
-            count: 0,
+        if summary {
+            ScoreRange {
+                offset: 0,
+                count: 0,
+            }
+        } else {
+            ScoreRange {
+                offset: 0,
+                count: 1,
+            }
         }
     } else if let Ok(n) = s.parse::<usize>() {
         if summary && n > 0 {
@@ -473,7 +480,6 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 score_id: parsed.sid,
                 mods: parsed.mods,
                 range: parsed.range,
-                is_all: parsed.range.is_all(),
             });
         }
     }
@@ -490,23 +496,21 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 score_id: parsed.sid,
                 mods: parsed.mods,
                 range: parsed.range,
-                is_all: false,
             });
         }
     }
 
-    for (prefix, is_pass, default_limit) in [
-        ("!ps", true, 20u32),
-        ("!rs", false, 20u32),
-        ("!p", true, 1u32),
-        ("!r", false, 1u32),
+    for (prefix, is_pass, is_summary) in [
+        ("!ps", true, true),
+        ("!rs", false, true),
+        ("!p", true, false),
+        ("!r", false, false),
     ] {
         if let Some(rest) = msg.strip_prefix(prefix) {
             if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
                 continue;
             }
             let rest = rest.trim();
-            let is_summary = default_limit > 1;
             let parsed =
                 parse_scores_args(rest, is_summary, false, false, true, mentioned_user_id)?;
             let cmd = if is_pass {
@@ -1212,7 +1216,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1233,7 +1236,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1254,7 +1256,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1275,7 +1276,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1296,7 +1296,6 @@ mod tests {
                     offset: 0,
                     count: 0
                 },
-                is_all: true,
             }
         );
     }
@@ -1317,7 +1316,6 @@ mod tests {
                     offset: 0,
                     count: 0
                 },
-                is_all: true,
             }
         );
     }
@@ -1344,7 +1342,6 @@ mod tests {
                     offset: 4,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1365,7 +1362,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1397,7 +1393,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1418,7 +1413,6 @@ mod tests {
                     offset: 2,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1439,7 +1433,6 @@ mod tests {
                     offset: 0,
                     count: 1
                 },
-                is_all: false,
             }
         );
     }
@@ -1632,7 +1625,6 @@ mod tests {
                     offset: 0,
                     count: 3
                 },
-                is_all: false,
             }
         );
     }

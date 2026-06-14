@@ -472,7 +472,11 @@ async fn handle_score_query(
         let api_limit = if params.range.count == 0 {
             100
         } else {
-            (params.range.offset + params.range.count) as u32
+            (params
+                .range
+                .offset
+                .saturating_add(params.range.count)
+                .min(u32::MAX as usize)) as u32
         };
         let mode = params.mode;
         let is_pass = params.is_pass;
@@ -562,7 +566,11 @@ async fn handle_score_query(
         let api_limit = if params.range.count == 0 {
             100
         } else {
-            (params.range.offset + params.range.count) as u32
+            (params
+                .range
+                .offset
+                .saturating_add(params.range.count)
+                .min(u32::MAX as usize)) as u32
         };
         let dedup_key = (uid, params.is_pass, api_limit, params.mode);
         let dedup_rate_limiter = ctx.rate_limiter.clone();
@@ -799,7 +807,6 @@ async fn handle_beatmap_score_query(
             score_id,
             mods,
             range,
-            is_all,
         } => (
             *mode,
             username.as_deref(),
@@ -809,7 +816,7 @@ async fn handle_beatmap_score_query(
             mods.clone(),
             range.count as u32,
             range.offset,
-            *is_all,
+            range.is_all(),
         ),
         _ => return,
     };
@@ -1020,7 +1027,7 @@ async fn handle_beatmap_score_query(
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
             .await;
     } else {
-        let fetch_limit = Some(limit + range_offset as u32);
+        let fetch_limit = Some(limit.saturating_add(range_offset as u32));
         let key = (_user_id, resolved_bid as i64, mode, fetch_limit);
         let dedup_rscores = ctx.rate_limiter.clone();
         let dedup_oscores = ctx.oauth.clone();

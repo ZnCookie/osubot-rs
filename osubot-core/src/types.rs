@@ -32,7 +32,7 @@ pub enum CommandGroup {
 }
 
 /// #N 范围选择结果
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScoreRange {
     /// 0-based offset（#1 → offset=0 后修正）
     pub offset: usize,
@@ -75,7 +75,7 @@ impl ScoreRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConditionOp {
     Eq,  // =, ≈
     XEq, // ==, ≌
@@ -86,7 +86,7 @@ pub enum ConditionOp {
     Le,  // <=, ≤
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Condition {
     pub field: String,
     pub operator: ConditionOp,
@@ -126,7 +126,6 @@ pub enum Command {
         score_id: Option<u64>,
         mods: Option<Vec<String>>,
         range: ScoreRange,
-        is_all: bool,
     },
     Pass {
         mode: GameMode,

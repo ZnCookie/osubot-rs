@@ -1,4 +1,4 @@
-use chrono::{Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{Duration, Months, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use regex::Regex;
 use std::sync::LazyLock;
 use thiserror::Error;
@@ -38,7 +38,7 @@ pub struct TimeDuration {
 }
 
 static RELATIVE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^-?\s*(\d+)\s*(y|year|years|mo|month|months|w|week|weeks|d|day|days|h|hour|hours|m|min|minute|minutes|s|sec|second|seconds)(\s+\d+\s*(y|year|years|mo|month|months|w|week|weeks|d|day|days|h|hour|hours|m|min|minute|minutes|s|sec|second|seconds))*$").unwrap()
+    Regex::new(r"(?i)^-?(\d+)\s*(y|year|years|mo|month|months|w|week|weeks|d|day|days|h|hour|hours|m|min|minute|minutes|s|sec|second|seconds)(\s+\d+\s*(y|year|years|mo|month|months|w|week|weeks|d|day|days|h|hour|hours|m|min|minute|minutes|s|sec|second|seconds))*$").unwrap()
 });
 
 static ABSOLUTE_PATTERN_DATE: LazyLock<Regex> =
@@ -139,6 +139,7 @@ impl TimeParser {
 
                     if let Some(caps) = SINGLE_TOKEN_RELATIVE.captures(part) {
                         let n: i64 = caps[1].parse().unwrap();
+                        let n = n.unsigned_abs() as i64;
                         let unit_str = &caps[2];
                         match UNIT_MAP.get(unit_str.to_lowercase().as_str()) {
                             Some(&"y") => period.years += n,
@@ -178,6 +179,7 @@ impl TimeParser {
 
             if let Some(caps) = SINGLE_TOKEN_RELATIVE.captures(part) {
                 let n: i64 = caps[1].parse().unwrap();
+                let n = n.unsigned_abs() as i64;
                 let unit_str = &caps[2];
                 match UNIT_MAP.get(unit_str.to_lowercase().as_str()) {
                     Some(&"y") => period.years += n,
@@ -198,10 +200,20 @@ impl TimeParser {
 
         let mut result = now;
 
-        if period.years != 0 || period.months != 0 || period.days != 0 {
+        if period.days != 0 {
             result -= Duration::days(period.days);
-            result -= Duration::days(period.months * 30);
-            result -= Duration::days(period.years * 365);
+        }
+
+        if period.years != 0 || period.months != 0 {
+            let total_months = period.years * 12 + period.months;
+            let naive = result.naive_utc().date();
+            if let Some(new_date) = naive.checked_sub_months(Months::new(total_months as u32)) {
+                result = Utc.from_utc_datetime(
+                    &new_date
+                        .and_hms_opt(result.hour(), result.minute(), result.second())
+                        .expect("valid time from existing DateTime"),
+                );
+            }
         }
 
         if duration.hours != 0 || duration.minutes != 0 || duration.seconds != 0 {
@@ -360,8 +372,9 @@ mod tests {
         let result = TimeParser::process("1mo").unwrap();
         assert!(result.is_relative);
         let now = TimeParser::now_timestamp();
-        assert!(result.timestamp > now - 31 * 86400);
-        assert!(result.timestamp < now - 29 * 86400);
+        // 1 calendar month = 28-31 days
+        assert!(result.timestamp > now - 32 * 86400);
+        assert!(result.timestamp < now - 27 * 86400);
     }
 
     #[test]

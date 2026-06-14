@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use tracing::warn;
 
 use crate::time_parser::TimeParser;
 use crate::types::{Condition, ConditionOp};
@@ -56,9 +57,9 @@ fn extract_field(score: &Score, field: &str) -> Option<FieldValue> {
         )),
         // statistics 字段
         "miss" => Some(FieldValue::Num(score.statistics.count_miss as f64)),
-        "perfect" => Some(FieldValue::Num(score.statistics.count_geki as f64)),
+        "perfect" | "geki" | "rainbow" => Some(FieldValue::Num(score.statistics.count_geki as f64)),
         "great" => Some(FieldValue::Num(score.statistics.count_300 as f64)),
-        "good" => Some(FieldValue::Num(score.statistics.count_katu as f64)),
+        "good" | "katu" => Some(FieldValue::Num(score.statistics.count_katu as f64)),
         "ok" | "bad" | "large droplet" => Some(FieldValue::Num(score.statistics.count_100 as f64)),
         "meh" | "poor" | "small droplet" => Some(FieldValue::Num(score.statistics.count_50 as f64)),
         "missed_fruit" | "miss fruit" => Some(FieldValue::Num(
@@ -77,16 +78,16 @@ fn extract_field(score: &Score, field: &str) -> Option<FieldValue> {
                 + score.statistics.count_miss;
             Some(FieldValue::Num(total as f64))
         }
-        // 新增可计算字段
-        "convert" => Some(FieldValue::Num(0.0)),
-        "sliders" | "long note" => Some(FieldValue::Num(
+        // 可计算字段
+        "convert" => None,
+        "sliders" | "slider_end" => Some(FieldValue::Num(
             score.statistics.osu_slider_tail_hits as f64,
         )),
-        "spinners" | "rattle" => Some(FieldValue::Num(score.statistics.osu_large_tick_hits as f64)),
+        "slider_tick" | "tick" => {
+            Some(FieldValue::Num(score.statistics.osu_large_tick_hits as f64))
+        }
         "rate" => {
-            let total = score.statistics.count_geki
-                + score.statistics.count_300
-                + score.statistics.count_katu
+            let total = score.statistics.count_300
                 + score.statistics.count_100
                 + score.statistics.count_50
                 + score.statistics.count_miss;
@@ -151,10 +152,13 @@ fn compare_num(actual: f64, op: &ConditionOp, expected: &str) -> bool {
 }
 
 fn parse_timestamp(created_at: &str) -> i64 {
-    created_at
-        .parse::<DateTime<Utc>>()
-        .map(|dt| dt.timestamp())
-        .unwrap_or(0)
+    match created_at.parse::<DateTime<Utc>>() {
+        Ok(dt) => dt.timestamp(),
+        Err(_) => {
+            warn!(created_at, "Failed to parse score timestamp, using 0");
+            0
+        }
+    }
 }
 
 fn fit_time(op: &ConditionOp, score_timestamp: i64, time_str: &str) -> bool {
