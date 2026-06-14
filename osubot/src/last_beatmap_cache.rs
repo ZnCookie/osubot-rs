@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 群最近查询的谱面缓存，6 小时 TTL
+/// 群最近查询的谱面缓存，24 小时 TTL
 #[derive(Clone)]
 pub struct LastBeatmapCache {
     inner: Arc<Mutex<HashMap<i64, (u32, Instant)>>>,
@@ -20,7 +20,7 @@ impl LastBeatmapCache {
     pub fn get(&self, group_id: i64) -> Option<u32> {
         let map = self.inner.lock().ok()?;
         map.get(&group_id).and_then(|(bid, time)| {
-            if time.elapsed() < Duration::from_secs(21600) {
+            if time.elapsed() < Duration::from_secs(86400) {
                 Some(*bid)
             } else {
                 None

@@ -16,11 +16,12 @@ use osubot_core::enrich_score_with_pp;
 use osubot_core::{
     api::{self, ApiError},
     dedup::RequestDedup,
+    filter as filter_mod,
     highlight::{format_highlight, get_highlight, HighlightError},
     parse_command,
     response::{format_score, format_scores, format_stats_with_change},
     storage::Storage,
-    types::{format_play_datetime, Command, GameMode, Score, UserStats},
+    types::{format_play_datetime, Command, Condition, GameMode, Score, ScoreRange, UserStats},
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
@@ -432,8 +433,9 @@ struct ScoreQueryParams<'a> {
     username: &'a Option<String>,
     qq: &'a Option<i64>,
     is_pass: bool,
-    limit: u32,
+    range: ScoreRange,
     is_single: bool,
+    filters: &'a [Condition],
 }
 
 async fn handle_score_query(
@@ -467,7 +469,11 @@ async fn handle_score_query(
         );
         ctx.scheduler.trigger_update(uid, params.mode).await;
 
-        let limit = params.limit;
+        let api_limit = if params.range.count == 0 {
+            100
+        } else {
+            (params.range.offset + params.range.count) as u32
+        };
         let mode = params.mode;
         let is_pass = params.is_pass;
         let rate_limiter = ctx.rate_limiter.clone();
@@ -477,11 +483,11 @@ async fn handle_score_query(
 
         let (stats_result, scores) = tokio::join!(
             api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, uid, mode),
-            score_dedup().run_or_wait((uid, is_pass, limit, mode), move || {
+            score_dedup().run_or_wait((uid, is_pass, api_limit, mode), move || {
                 let rate_limiter = rl2.clone();
                 let oauth = oa2.clone();
                 async move {
-                    api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, limit)
+                    api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, api_limit)
                         .await
                         .map(Arc::new)
                         .map_err(|e| {
@@ -553,7 +559,12 @@ async fn handle_score_query(
             };
 
         ctx.scheduler.trigger_update(uid, params.mode).await;
-        let dedup_key = (uid, params.is_pass, params.limit, params.mode);
+        let api_limit = if params.range.count == 0 {
+            100
+        } else {
+            (params.range.offset + params.range.count) as u32
+        };
+        let dedup_key = (uid, params.is_pass, api_limit, params.mode);
         let dedup_rate_limiter = ctx.rate_limiter.clone();
         let dedup_oauth = ctx.oauth.clone();
         let dedup_mode = params.mode;
@@ -562,7 +573,7 @@ async fn handle_score_query(
             "Fetching scores for user_id={}, mode={:?}, limit={}",
             uid,
             params.mode,
-            params.limit
+            api_limit
         );
         let scores: Result<Arc<Vec<Score>>, String> = score_dedup()
             .run_or_wait(dedup_key, move || {
@@ -575,7 +586,7 @@ async fn handle_score_query(
                         uid,
                         dedup_mode,
                         include_fails,
-                        params.limit,
+                        api_limit,
                     )
                     .await
                     .map(Arc::new)
@@ -606,7 +617,16 @@ async fn handle_score_query(
     let dedup_username = resolved_username.clone();
 
     match score_result {
-        Ok(mut scores) => {
+        Ok(score_arc) => {
+            let mut scores = score_arc.to_vec();
+            filter_mod::apply_conditions(&mut scores, params.filters);
+            let offset = params.range.offset.min(scores.len());
+            if offset > 0 {
+                scores.drain(0..offset);
+            }
+            if params.range.count > 0 && scores.len() > params.range.count {
+                scores.truncate(params.range.count);
+            }
             if scores.is_empty() {
                 let empty_msg = if include_fails {
                     "最近没有游玩记录（包括失败）"
@@ -619,18 +639,7 @@ async fn handle_score_query(
             ctx.last_beatmap
                 .set(msg.group_id, scores[0].beatmap_id as u32);
             if params.is_single {
-                let index = (params.limit - 1) as usize;
-                if index >= scores.len() {
-                    let _ = resp_tx
-                        .send(format!(
-                            "没有第{}条记录，只有{}条",
-                            params.limit,
-                            scores.len()
-                        ))
-                        .await;
-                    return;
-                }
-                let score = &scores[index];
+                let score = &scores[0];
                 render_and_send_single_score(
                     ctx,
                     msg,
@@ -638,7 +647,7 @@ async fn handle_score_query(
                     score,
                     params.mode,
                     &user_stats,
-                    Some(index),
+                    Some(params.range.offset),
                     params.is_pass,
                 )
                 .await;
@@ -678,12 +687,10 @@ async fn handle_score_query(
                     }))
                     .await;
 
-                let scores_mut = Arc::make_mut(&mut scores);
-                let mut cover_images: Vec<Option<image::DynamicImage>> =
-                    vec![None; scores_mut.len()];
+                let mut cover_images: Vec<Option<image::DynamicImage>> = vec![None; scores.len()];
                 for (i, enriched, cover) in results {
                     if let Some(new_s) = enriched {
-                        scores_mut[i] = new_s;
+                        scores[i] = new_s;
                     }
                     cover_images[i] = cover;
                 }
@@ -783,7 +790,7 @@ async fn handle_beatmap_score_query(
     resp_tx: &mpsc::Sender<String>,
     cmd: &Command,
 ) {
-    let (mode, username, qq, beatmap_id, score_id, mods, limit, is_all) = match cmd {
+    let (mode, username, qq, beatmap_id, score_id, mods, limit, range_offset, is_all) = match cmd {
         Command::ScoreOnBeatmap {
             mode,
             username,
@@ -791,7 +798,7 @@ async fn handle_beatmap_score_query(
             beatmap_id,
             score_id,
             mods,
-            limit,
+            range,
             is_all,
         } => (
             *mode,
@@ -800,7 +807,8 @@ async fn handle_beatmap_score_query(
             *beatmap_id,
             *score_id,
             mods.clone(),
-            *limit,
+            range.count as u32,
+            range.offset,
             *is_all,
         ),
         _ => return,
@@ -960,7 +968,7 @@ async fn handle_beatmap_score_query(
         }
         render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
             .await;
-    } else if limit == 1 {
+    } else if limit == 1 && range_offset == 0 {
         let key = (_user_id, resolved_bid as i64, mode, mods.clone());
         let dedup_rscore = ctx.rate_limiter.clone();
         let dedup_oscore = ctx.oauth.clone();
@@ -1012,8 +1020,8 @@ async fn handle_beatmap_score_query(
         render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
             .await;
     } else {
-        let n = limit as usize;
-        let key = (_user_id, resolved_bid as i64, mode, Some(limit));
+        let fetch_limit = Some(limit + range_offset as u32);
+        let key = (_user_id, resolved_bid as i64, mode, fetch_limit);
         let dedup_rscores = ctx.rate_limiter.clone();
         let dedup_oscores = ctx.oauth.clone();
         let scores_result = beatmap_scores_dedup()
@@ -1027,7 +1035,7 @@ async fn handle_beatmap_score_query(
                         resolved_bid as i64,
                         _user_id,
                         mode,
-                        Some(limit),
+                        fetch_limit,
                     )
                     .await
                     .map_err(|e| match e {
@@ -1040,20 +1048,26 @@ async fn handle_beatmap_score_query(
                 }
             })
             .await;
-        let scores = match scores_result {
+        let mut scores = match scores_result {
             Ok(s) => s,
             Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
                 return;
             }
         };
-        if scores.len() < n {
-            let _ = resp_tx
-                .send(format!("没有第{}条成绩，仅有{}条", n, scores.len()))
-                .await;
+        let offset = range_offset.min(scores.len());
+        if offset > 0 {
+            scores.drain(0..offset);
+        }
+        let count = limit as usize;
+        if count > 0 && scores.len() > count {
+            scores.truncate(count);
+        }
+        if scores.is_empty() {
+            let _ = resp_tx.send("该玩家在此谱面上没有成绩".to_string()).await;
             return;
         }
-        let score = scores.into_iter().nth(n - 1).expect("len checked above");
+        let score = scores.into_iter().next().expect("non-empty after slice");
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
         render_and_send_single_score(
             ctx,
@@ -1062,7 +1076,7 @@ async fn handle_beatmap_score_query(
             &score,
             mode,
             &user_stats,
-            Some(n - 1),
+            Some(range_offset),
             true,
         )
         .await;
@@ -1413,7 +1427,7 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
             _ => None,
         },
         "limit": match cmd {
-            Command::ScoreOnBeatmap { limit, .. } | Command::Pass { limit, .. } | Command::Recent { limit, .. } => Some(*limit),
+            Command::ScoreOnBeatmap { range, .. } | Command::Pass { range, .. } | Command::Recent { range, .. } => Some(range.count as u32),
             _ => None,
         },
     })
@@ -2231,10 +2245,12 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             mode,
             username,
             qq,
-            limit,
+            range,
             is_summary,
+            filters,
+            ..
         } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "Pass command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = range.count, "Pass command");
             handle_score_query(
                 &ctx,
                 &msg,
@@ -2244,8 +2260,9 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     username: &username,
                     qq: &qq,
                     is_pass: true,
-                    limit,
+                    range,
                     is_single: !is_summary,
+                    filters: &filters,
                 },
             )
             .await;
@@ -2254,10 +2271,12 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             mode,
             username,
             qq,
-            limit,
+            range,
             is_summary,
+            filters,
+            ..
         } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "Recent command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = range.count, "Recent command");
             handle_score_query(
                 &ctx,
                 &msg,
@@ -2267,8 +2286,9 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     username: &username,
                     qq: &qq,
                     is_pass: false,
-                    limit,
+                    range,
                     is_single: !is_summary,
+                    filters: &filters,
                 },
             )
             .await;

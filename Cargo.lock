@@ -4821,6 +4821,7 @@ dependencies = [
  "osubot-types",
  "phf 0.13.1",
  "rand 0.10.1",
+ "regex",
  "reqwest",
  "rosu-mods",
  "rosu-pp",

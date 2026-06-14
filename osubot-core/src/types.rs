@@ -31,6 +31,68 @@ pub enum CommandGroup {
     Bind,
 }
 
+/// #N 范围选择结果
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScoreRange {
+    /// 0-based offset（#1 → offset=0 后修正）
+    pub offset: usize,
+    /// 数量（0 = 取到末尾）
+    pub count: usize,
+}
+
+impl ScoreRange {
+    /// 单条：第 N 条
+    pub fn single(n: usize) -> Self {
+        Self {
+            offset: n.saturating_sub(1),
+            count: 1,
+        }
+    }
+    /// 默认数量（!p/!r 默认为 1，!ps/!rs 默认为 20，!s 默认为 1，!ss 默认为 0）
+    pub fn default_count(summary: bool) -> Self {
+        if summary {
+            Self {
+                offset: 0,
+                count: 20,
+            }
+        } else {
+            Self {
+                offset: 0,
+                count: 1,
+            }
+        }
+    }
+    /// !ss 用：取全部
+    pub fn all() -> Self {
+        Self {
+            offset: 0,
+            count: 0,
+        }
+    }
+    /// 是否取全部
+    pub fn is_all(&self) -> bool {
+        self.count == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConditionOp {
+    Eq,  // =, ≈
+    XEq, // ==, ≌
+    Ne,  // !=, <>, ≠
+    Gt,  // >
+    Ge,  // >=, ≥
+    Lt,  // <
+    Le,  // <=, ≤
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Condition {
+    pub field: String,
+    pub operator: ConditionOp,
+    pub value: String,
+}
+
 /// Parsed command from user input, with all extracted parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -63,22 +125,24 @@ pub enum Command {
         beatmap_id: Option<u32>,
         score_id: Option<u64>,
         mods: Option<Vec<String>>,
-        limit: u32,
+        range: ScoreRange,
         is_all: bool,
     },
     Pass {
         mode: GameMode,
         username: Option<String>,
         qq: Option<i64>,
-        limit: u32,
+        range: ScoreRange,
         is_summary: bool,
+        filters: Vec<Condition>,
     },
     Recent {
         mode: GameMode,
         username: Option<String>,
         qq: Option<i64>,
-        limit: u32,
+        range: ScoreRange,
         is_summary: bool,
+        filters: Vec<Condition>,
     },
 }
 
