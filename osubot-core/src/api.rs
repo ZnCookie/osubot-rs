@@ -379,18 +379,30 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         if matches!(params.mode, GameMode::Osu) {
             if let Some(s) = params.statistics {
                 let total = (s.count_300 + s.count_100 + s.count_50 + s.count_miss) as u32;
-                // Explicit hit counts for consistency with calculate_pp_breakdown
-                // accuracy = (n300 + n100/3) / total  (n50=0 for optimal distribution)
-                // n300 = (3*total*acc - total + misses) / 2
-                let n300_f = (3.0 * total as f64 * acc - total as f64 + misses as f64) / 2.0;
-                let n300 = n300_f.max(0.0).round() as u32;
-                let n300 = n300.min(total - misses);
-                let n100 = total - n300 - misses;
+                // A higher accuracy target requires fewer misses.
+                // Cap effective misses at the maximum that still allows the target acc.
+                // max_misses = floor(total * (1 - acc))  (all remaining hits must be 300s)
+                let max_misses = (total as f64 * (1.0 - acc)) as u32;
+                let eff_misses = misses.min(max_misses);
+                // If all misses are "fixed" (eff_misses == 0), combo must be FC.
+                // Otherwise, proportionally improve combo for the fixed misses.
+                let eff_combo = if eff_misses == 0 {
+                    bm_combo
+                } else if misses > 0 {
+                    let fixed = misses - eff_misses;
+                    let gap = bm_combo.saturating_sub(combo);
+                    (combo + (gap as u64 * fixed as u64 / misses as u64) as u32).min(bm_combo)
+                } else {
+                    combo
+                };
+                let n300_f = (3.0 * total as f64 * acc - total as f64 + eff_misses as f64) / 2.0;
+                let n300 = (n300_f.max(0.0).round() as u32).min(total - eff_misses);
+                let n100 = total - n300 - eff_misses;
                 let perf = match base_perf.clone() {
                     Some(p) => p,
                     None => return 0.0,
                 };
-                perf.combo(combo)
+                perf.combo(eff_combo)
                     .n300(n300)
                     .n100(n100)
                     .n50(0u32)
@@ -399,7 +411,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
                     .large_tick_hits(s.osu_large_tick_hits as u32)
                     .small_tick_hits(s.osu_small_tick_hits as u32)
                     .slider_end_hits(s.osu_slider_tail_hits as u32)
-                    .misses(misses)
+                    .misses(eff_misses)
                     .calculate()
                     .pp()
             } else {
@@ -659,8 +671,7 @@ struct OsuApiScore {
     #[serde(default)]
     total_score: Option<i64>,
     #[serde(default)]
-    #[allow(dead_code)] // is_lazer now determined from build_id > 0 (aligned with yumu-bot)
-    is_lazer: bool,
+    is_lazer: Option<bool>,
     #[serde(default)]
     build_id: Option<i64>,
     #[serde(default)]
@@ -1135,7 +1146,9 @@ fn get_stable_accuracy(stats: &OsuApiScoreStatistics, mode: GameMode, passed: bo
 
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
     let bmap = api.beatmap.as_ref();
-    let is_lazer = api.build_id.is_some_and(|id| id > 0);
+    let is_lazer = api
+        .is_lazer
+        .unwrap_or_else(|| api.build_id.is_some_and(|id| id > 0));
     let has_hidden = api.mods.iter().any(|m| {
         let acronym = match m {
             OsuApiMod::String(s) => s.as_str(),
@@ -2474,7 +2487,7 @@ mod tests {
             passed: true,
             perfect: false,
             ended_at: "2024-01-01T00:00:00Z".to_string(),
-            is_lazer: false,
+            is_lazer: None,
             build_id: None,
             has_replay: true,
             legacy_score_id: None,
@@ -2811,8 +2824,25 @@ mod tests {
     #[test]
     fn test_api_score_to_score_lazer_by_build_id() {
         let mut api = make_full_score();
-        api.is_lazer = false;
         api.build_id = Some(12345);
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert!(score.is_lazer);
+    }
+
+    #[test]
+    fn test_api_score_to_score_stable_when_api_is_lazer_false() {
+        let mut api = make_full_score();
+        api.is_lazer = Some(false);
+        api.build_id = Some(12345);
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert!(!score.is_lazer);
+    }
+
+    #[test]
+    fn test_api_score_to_score_lazer_when_api_is_lazer_true() {
+        let mut api = make_full_score();
+        api.is_lazer = Some(true);
+        api.build_id = None;
         let score = api_score_to_score(api, GameMode::Osu);
         assert!(score.is_lazer);
     }
@@ -2820,7 +2850,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_lazer_by_legacy_total_score_zero() {
         let mut api = make_full_score();
-        api.is_lazer = false;
+        api.is_lazer = None;
         api.build_id = None;
         api.legacy_total_score = Some(0);
         let score = api_score_to_score(api, GameMode::Osu);
@@ -2833,7 +2863,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_not_lazer_when_build_id_zero() {
         let mut api = make_full_score();
-        api.is_lazer = false;
+        api.is_lazer = None;
         api.build_id = Some(0);
         api.legacy_total_score = Some(5000);
         let score = api_score_to_score(api, GameMode::Osu);
@@ -2843,7 +2873,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_not_lazer_all_conditions_false() {
         let mut api = make_full_score();
-        api.is_lazer = false;
+        api.is_lazer = None;
         api.build_id = None;
         api.legacy_total_score = None;
         let score = api_score_to_score(api, GameMode::Osu);
