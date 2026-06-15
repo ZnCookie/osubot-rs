@@ -63,40 +63,48 @@ fn extract_plus_suffix(rest: &str) -> (String, Option<Vec<String>>, Option<Vec<S
         return (new_rest.to_string(), None, None);
     }
 
-    let parts: Vec<&str> = suffix.split(',').collect();
-    let mut mods = Vec::new();
-    let mut filters = Vec::new();
-    let mut found_filter = false;
+    // Split at first comma
+    let (first, rest_str) = match suffix.find(',') {
+        Some(p) => (&suffix[..p], &suffix[p + 1..]),
+        None => (suffix, ""),
+    };
 
-    for part in &parts {
-        if part.contains('=') {
-            found_filter = true;
-            filters.push(part.to_string());
-        } else if !found_filter {
-            let chars: Vec<char> = part.chars().collect();
-            if !chars.len().is_multiple_of(2) {
-                // Odd-length mod token — invalid, ignore entire + suffix
-                return (new_rest.to_string(), None, None);
-            }
-            for chunk in chars.chunks(2) {
-                let mod_str: String = chunk.iter().collect();
-                mods.push(mod_str.to_uppercase());
-            }
-        } else {
-            // Already in filter region, but this token has no '='
+    // If first part contains '=', everything is filters
+    let filter_str = if first.contains('=') {
+        suffix
+    } else {
+        rest_str
+    };
+
+    let mods = if !first.is_empty() && !first.contains('=') {
+        let chars: Vec<char> = first.chars().collect();
+        if !chars.len().is_multiple_of(2) {
             return (new_rest.to_string(), None, None);
         }
-    }
+        let mut mods = Vec::new();
+        for chunk in chars.chunks(2) {
+            let m: String = chunk.iter().collect();
+            if !m.chars().all(|c| c.is_ascii_alphabetic()) {
+                return (new_rest.to_string(), None, None);
+            }
+            mods.push(m.to_uppercase());
+        }
+        Some(mods)
+    } else {
+        None
+    };
 
-    (
-        new_rest.to_string(),
-        if mods.is_empty() { None } else { Some(mods) },
-        if filters.is_empty() {
-            None
-        } else {
-            Some(filters)
-        },
-    )
+    let filters = if filter_str.is_empty() {
+        None
+    } else {
+        let f: Vec<String> = filter_str.split(',').map(|s| s.to_string()).collect();
+        if f.is_empty() || f.iter().any(|s| !s.contains('=')) {
+            return (new_rest.to_string(), None, None);
+        }
+        Some(f)
+    };
+
+    (new_rest.to_string(), mods, filters)
 }
 
 /// Convert `+MODS` from extract_plus_suffix into "mod=MODS" filter
@@ -116,10 +124,10 @@ fn merge_mods_into_filters(
     };
     let mut filters = filters.unwrap_or_default();
 
-    // Don't add mod= if filters already have mod= or mod==
+    // Don't add mod= if filters already have mod=, mod==, or mod!=
     if !filters
         .iter()
-        .any(|s| s.starts_with("mod=") || s.starts_with("mod=="))
+        .any(|s| s.starts_with("mod=") || s.starts_with("mod==") || s.starts_with("mod!="))
     {
         filters.push(format!("mod={}", mod_str));
     }
@@ -129,6 +137,347 @@ fn merge_mods_into_filters(
     } else {
         Some(filters)
     }
+}
+
+/// Parse `!s`/`!ss` score-on-beatmap commands.
+/// Returns `Some(Some(Command))` on success,
+/// `Some(None)` if the prefix matched but parsing failed,
+/// `None` if no `!s`/`!ss` prefix matched.
+fn parse_score_on_beatmap(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option<Command>> {
+    let s_cmds: &[(&str, bool)] = &[("!ss", true), ("!s", false)];
+    for &(prefix, is_all) in s_cmds {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let rest = rest.trim();
+
+            if rest.is_empty() {
+                return Some(Some(Command::ScoreOnBeatmap {
+                    mode: GameMode::Osu,
+                    username: None,
+                    qq: mentioned_user_id,
+                    beatmap_id: None,
+                    score_id: None,
+                    mods: None,
+                    filters: None,
+                    limit: if is_all { 20 } else { 1 },
+                    limit_end: None,
+                    is_all,
+                }));
+            }
+
+            // Step 1: Extract +mods,conditions suffix
+            let (rest, raw_mods, mut filters) = extract_plus_suffix(rest);
+
+            // Step 2: Extract :mode suffix
+            let (rest, mode) = extract_mode(&rest);
+
+            // Step 3: Extract #N or #N-M suffix from rest or from last filter
+            let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                let (l, le) = parse_limit(num_str);
+                (rest[..hash_pos].trim().to_string(), Some(l), le)
+            } else if let Some(last_filter) = filters.as_mut().and_then(|f| f.last_mut()) {
+                if let Some(hash_pos) = last_filter.rfind('#') {
+                    let num_str = &last_filter[hash_pos + 1..];
+                    let (l, le) = parse_limit(num_str);
+                    *last_filter = last_filter[..hash_pos].trim().to_string();
+                    if last_filter.is_empty() {
+                        filters.as_mut().map(|f| f.pop());
+                    }
+                    (rest.to_string(), Some(l), le)
+                } else {
+                    (rest.to_string(), None, None)
+                }
+            } else {
+                (rest.to_string(), None, None)
+            };
+
+            // Merge +MODS into filters for client-side consistency (after #N extraction)
+            filters = merge_mods_into_filters(raw_mods, filters);
+
+            // Step 4: Parse rest → beatmap_id/score_id + username + inline filters
+            let rest = rest.trim();
+            let (beatmap_id, score_id, username, qq, filters, implicit_limit) = if rest.is_empty() {
+                (None, None, None, mentioned_user_id, filters, None)
+            } else {
+                let tokens: Vec<&str> = rest.split_whitespace().collect();
+                let mut bid: Option<u32> = None;
+                let mut sid: Option<u64> = None;
+                let mut uname_parts: Vec<&str> = Vec::new();
+                let mut qq_id: Option<i64> = None;
+                let mut found_eq = false;
+                let mut passed_numeric = false;
+                let mut extra_filters: Vec<String> = Vec::new();
+                let mut implicit_limit: Option<u32> = None;
+                let mut has_invalid_mention = false;
+
+                for token in &tokens {
+                    if token.contains('=') {
+                        found_eq = true;
+                        for part in token.split(',') {
+                            extra_filters.push(part.to_string());
+                        }
+                        continue;
+                    }
+                    if let Some(at) = token.strip_prefix('@') {
+                        if let Ok(parsed) = at.parse::<i64>() {
+                            qq_id = Some(parsed);
+                        } else {
+                            has_invalid_mention = true;
+                        }
+                        continue;
+                    }
+                    if let Ok(num) = token.parse::<u64>() {
+                        if !found_eq {
+                            if num >= SCORE_ID_THRESHOLD {
+                                sid = Some(num);
+                            } else if bid.is_none() {
+                                bid = Some(num as u32);
+                            } else {
+                                implicit_limit = Some(num.clamp(1, MAX_LIMIT as u64) as u32);
+                            }
+                        }
+                        passed_numeric = true;
+                    } else if !found_eq && passed_numeric {
+                        uname_parts.push(token);
+                    }
+                }
+
+                let uname = if uname_parts.is_empty() {
+                    None
+                } else {
+                    Some(uname_parts.join(" "))
+                };
+
+                let all_filters = match filters {
+                    Some(mut f) => {
+                        f.extend(extra_filters);
+                        if f.is_empty() {
+                            None
+                        } else {
+                            Some(f)
+                        }
+                    }
+                    None => {
+                        if extra_filters.is_empty() {
+                            None
+                        } else {
+                            Some(extra_filters)
+                        }
+                    }
+                };
+
+                if has_invalid_mention {
+                    return Some(None);
+                }
+
+                if qq_id.is_some() && uname.is_none() {
+                    (bid, sid, None, qq_id, all_filters, implicit_limit)
+                } else if qq_id.is_none() {
+                    (
+                        bid,
+                        sid,
+                        uname,
+                        mentioned_user_id,
+                        all_filters,
+                        implicit_limit,
+                    )
+                } else {
+                    return Some(None);
+                }
+            };
+
+            let final_limit = limit
+                .or(implicit_limit)
+                .unwrap_or(if is_all { 20 } else { 1 });
+
+            return Some(Some(Command::ScoreOnBeatmap {
+                mode,
+                username,
+                qq,
+                beatmap_id,
+                score_id,
+                mods: None,
+                filters,
+                limit: final_limit,
+                limit_end,
+                is_all,
+            }));
+        }
+    }
+    None
+}
+
+/// Parse `!p`/`!r`/`!ps`/`!rs` pass/recent score commands.
+/// Returns `Some(Some(Command))` on success,
+/// `Some(None)` if the prefix matched but parsing failed,
+/// `None` if no pass/recent prefix matched.
+fn parse_pass_recent(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option<Command>> {
+    for (prefix, is_pass, default_limit) in [
+        ("!ps", true, 20u32),
+        ("!rs", false, 20u32),
+        ("!p", true, 1u32),
+        ("!r", false, 1u32),
+    ] {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let rest = rest.trim();
+
+            let is_summary = default_limit > 1;
+
+            if rest.is_empty() {
+                return Some(Some(if is_pass {
+                    Command::Pass {
+                        mode: GameMode::Osu,
+                        username: None,
+                        qq: mentioned_user_id,
+                        limit: default_limit,
+                        limit_end: None,
+                        is_summary,
+                        filters: None,
+                    }
+                } else {
+                    Command::Recent {
+                        mode: GameMode::Osu,
+                        username: None,
+                        qq: mentioned_user_id,
+                        limit: default_limit,
+                        limit_end: None,
+                        is_summary,
+                        filters: None,
+                    }
+                }));
+            }
+
+            // Step 1: Extract +mods,conditions suffix
+            let (rest, mods, filters) = extract_plus_suffix(rest);
+            let filters = merge_mods_into_filters(mods, filters);
+
+            // Step 2: Extract #N or #N-M suffix (or implicit number)
+            let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                let (l, le) = parse_limit(num_str);
+                (rest[..hash_pos].trim().to_string(), l, le)
+            } else {
+                let tokens: Vec<&str> = rest.split_whitespace().collect();
+                if let Some(last) = tokens.last() {
+                    if let Ok(n) = last.parse::<u32>() {
+                        let (l, _) = parse_limit(&n.to_string());
+                        let without_last = tokens[..tokens.len() - 1].join(" ");
+                        (without_last, l, None)
+                    } else {
+                        (rest.to_string(), default_limit, None)
+                    }
+                } else {
+                    (rest.to_string(), default_limit, None)
+                }
+            };
+
+            // Step 3: Extract :mode suffix
+            let (rest, mode) = extract_mode(&rest);
+
+            // Step 4: Parse rest → username + inline filters
+            let rest = rest.trim();
+            let (username, qq, filters) = if rest.is_empty() {
+                (None, mentioned_user_id, filters)
+            } else {
+                let tokens: Vec<&str> = rest.split_whitespace().collect();
+                let mut name_parts: Vec<&str> = Vec::new();
+                let mut qq_id: Option<i64> = None;
+                let mut found_eq = false;
+                let mut extra_filters: Vec<String> = Vec::new();
+                let mut has_invalid_mention = false;
+
+                for token in &tokens {
+                    if let Some(at) = token.strip_prefix('@') {
+                        if let Ok(parsed) = at.parse::<i64>() {
+                            qq_id = Some(parsed);
+                        } else {
+                            has_invalid_mention = true;
+                        }
+                        continue;
+                    }
+                    if token.contains('=') {
+                        found_eq = true;
+                        for part in token.split(',') {
+                            extra_filters.push(part.to_string());
+                        }
+                    } else if !found_eq {
+                        name_parts.push(token);
+                    }
+                }
+
+                if has_invalid_mention {
+                    return Some(None);
+                }
+
+                let uname = if name_parts.is_empty() {
+                    None
+                } else {
+                    Some(name_parts.join(" "))
+                };
+
+                let all_filters = match filters {
+                    Some(mut f) => {
+                        f.extend(extra_filters);
+                        if f.is_empty() {
+                            None
+                        } else {
+                            Some(f)
+                        }
+                    }
+                    None => {
+                        if extra_filters.is_empty() {
+                            None
+                        } else {
+                            Some(extra_filters)
+                        }
+                    }
+                };
+
+                if qq_id.is_some() && uname.is_none() {
+                    (None, qq_id, all_filters)
+                } else if qq_id.is_none() {
+                    (uname, mentioned_user_id, all_filters)
+                } else {
+                    return Some(None);
+                }
+            };
+
+            let (final_limit, final_limit_end) = if default_limit == 1 {
+                (limit, None)
+            } else {
+                (limit, limit_end)
+            };
+
+            return Some(Some(if is_pass {
+                Command::Pass {
+                    mode,
+                    username,
+                    qq,
+                    limit: final_limit,
+                    limit_end: final_limit_end,
+                    is_summary,
+                    filters,
+                }
+            } else {
+                Command::Recent {
+                    mode,
+                    username,
+                    qq,
+                    limit: final_limit,
+                    limit_end: final_limit_end,
+                    is_summary,
+                    filters,
+                }
+            }));
+        }
+    }
+    None
 }
 
 /// 解析用户消息为命令
@@ -296,356 +645,13 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         });
     }
 
-    // Beatmap score commands: !s, !ss
-    // New unified format:
-    //   !s  [:<mode>] [<beatmap_id>|<score_id>] [<user>] [<conditions>] [#<N>]
-    //   !ss [:<mode>] [<beatmap_id>] [<user>] [<conditions>] [<range>]
-    // Negative lookahead: command must NOT be immediately followed by word char
-    let s_cmds: &[(&str, bool)] = &[("!ss", true), ("!s", false)];
-    for &(prefix, is_all) in s_cmds {
-        if let Some(rest) = msg.strip_prefix(prefix) {
-            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                continue;
-            }
-            let rest = rest.trim();
-
-            if rest.is_empty() {
-                // bare command like "!s" or "!ss"
-                return Some(Command::ScoreOnBeatmap {
-                    mode: GameMode::Osu,
-                    username: None,
-                    qq: mentioned_user_id,
-                    beatmap_id: None,
-                    score_id: None,
-                    mods: None,
-                    filters: None,
-                    limit: if is_all { 20 } else { 1 },
-                    limit_end: None,
-                    is_all,
-                });
-            }
-
-            // Step 1: Extract +mods,conditions suffix
-            let (rest, mods, filters) = extract_plus_suffix(rest);
-            let mut filters = filters;
-
-            // Step 2: Extract :mode suffix
-            let (rest, mode) = extract_mode(&rest);
-
-            // Step 3: Extract #N or #N-M suffix from rest or from last filter
-            let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
-                let num_str = &rest[hash_pos + 1..];
-                let (l, le) = parse_limit(num_str);
-                (rest[..hash_pos].trim().to_string(), Some(l), le)
-            } else if let Some(last_filter) = filters.as_mut().and_then(|f| f.last_mut()) {
-                if let Some(hash_pos) = last_filter.rfind('#') {
-                    let num_str = &last_filter[hash_pos + 1..];
-                    let (l, le) = parse_limit(num_str);
-                    *last_filter = last_filter[..hash_pos].trim().to_string();
-                    if last_filter.is_empty() {
-                        filters.as_mut().map(|f| f.pop());
-                    }
-                    (rest.to_string(), Some(l), le)
-                } else {
-                    (rest.to_string(), None, None)
-                }
-            } else {
-                (rest.to_string(), None, None)
-            };
-
-            // Step 4: Parse rest → beatmap_id/score_id + username + inline filters
-            // Format: <beatmap_id> [<user>] [<filters>]
-            // Username comes AFTER beatmap_id
-            let rest = rest.trim();
-            let (beatmap_id, score_id, username, qq, filters, implicit_limit) = if rest.is_empty() {
-                (None, None, None, mentioned_user_id, filters, None)
-            } else {
-                let tokens: Vec<&str> = rest.split_whitespace().collect();
-                let mut bid: Option<u32> = None;
-                let mut sid: Option<u64> = None;
-                let mut uname_parts: Vec<&str> = Vec::new();
-                let mut qq_id: Option<i64> = None;
-                let mut found_eq = false;
-                let mut passed_numeric = false;
-                let mut extra_filters: Vec<String> = Vec::new();
-                let mut implicit_limit: Option<u32> = None;
-                let mut has_invalid_mention = false;
-
-                for token in &tokens {
-                    if token.contains('=') {
-                        found_eq = true;
-                        // Split by comma to support "miss=1,combo=500"
-                        for part in token.split(',') {
-                            extra_filters.push(part.to_string());
-                        }
-                        continue;
-                    }
-                    if let Some(at) = token.strip_prefix('@') {
-                        if let Ok(parsed) = at.parse::<i64>() {
-                            qq_id = Some(parsed);
-                        } else {
-                            has_invalid_mention = true;
-                        }
-                        continue;
-                    }
-                    if let Ok(num) = token.parse::<u64>() {
-                        if !found_eq {
-                            if num >= SCORE_ID_THRESHOLD {
-                                sid = Some(num);
-                            } else if bid.is_none() {
-                                bid = Some(num as u32);
-                            } else {
-                                // Second numeric token after beatmap_id = implicit limit
-                                implicit_limit = Some(num.clamp(1, MAX_LIMIT as u64) as u32);
-                            }
-                        }
-                        passed_numeric = true;
-                    } else if !found_eq && passed_numeric {
-                        // Collect username tokens AFTER numeric token
-                        uname_parts.push(token);
-                    }
-                }
-
-                let uname = if uname_parts.is_empty() {
-                    None
-                } else {
-                    Some(uname_parts.join(" "))
-                };
-
-                // Merge filters from +suffix and inline
-                let all_filters = match filters {
-                    Some(mut f) => {
-                        f.extend(extra_filters);
-                        if f.is_empty() {
-                            None
-                        } else {
-                            Some(f)
-                        }
-                    }
-                    None => {
-                        if extra_filters.is_empty() {
-                            None
-                        } else {
-                            Some(extra_filters)
-                        }
-                    }
-                };
-
-                if has_invalid_mention {
-                    return None;
-                }
-
-                if qq_id.is_some() && uname.is_none() {
-                    (bid, sid, None, qq_id, all_filters, implicit_limit)
-                } else if qq_id.is_none() {
-                    (
-                        bid,
-                        sid,
-                        uname,
-                        mentioned_user_id,
-                        all_filters,
-                        implicit_limit,
-                    )
-                } else {
-                    // Both qq and username — invalid
-                    return None;
-                }
-            };
-
-            // Use implicit limit if no #N was specified
-            let final_limit = limit
-                .or(implicit_limit)
-                .unwrap_or(if is_all { 20 } else { 1 });
-
-            return Some(Command::ScoreOnBeatmap {
-                mode,
-                username,
-                qq,
-                beatmap_id,
-                score_id,
-                mods,
-                filters,
-                limit: final_limit,
-                limit_end,
-                is_all,
-            });
-        }
+    // Dispatch to sub-parsers for score commands
+    if let Some(cmd) = parse_score_on_beatmap(&msg, mentioned_user_id) {
+        return cmd;
     }
 
-    // Pass/Recent score commands: !p, !r, !ps, !rs
-    // Unified format: [!p|!r|!ps|!rs] [:<mode>] [<user>] [<conditions>] [#<N>]
-    // Conditions: key=value or +mods,key=value (mixed)
-    // # can be omitted — pure number token after conditions = #N
-    // Negative lookahead: command letter must NOT be followed by word char
-    for (prefix, is_pass, default_limit) in [
-        ("!ps", true, 20u32),
-        ("!rs", false, 20u32),
-        ("!p", true, 1u32),
-        ("!r", false, 1u32),
-    ] {
-        if let Some(rest) = msg.strip_prefix(prefix) {
-            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                continue;
-            }
-            let rest = rest.trim();
-
-            let is_summary = default_limit > 1;
-
-            if rest.is_empty() {
-                // bare command like "!p"
-                return Some(if is_pass {
-                    Command::Pass {
-                        mode: GameMode::Osu,
-                        username: None,
-                        qq: mentioned_user_id,
-                        limit: default_limit,
-                        limit_end: None,
-                        is_summary,
-                        filters: None,
-                    }
-                } else {
-                    Command::Recent {
-                        mode: GameMode::Osu,
-                        username: None,
-                        qq: mentioned_user_id,
-                        limit: default_limit,
-                        limit_end: None,
-                        is_summary,
-                        filters: None,
-                    }
-                });
-            }
-
-            // Step 1: Extract +mods,conditions suffix
-            let (rest, mods, filters) = extract_plus_suffix(rest);
-            let filters = merge_mods_into_filters(mods, filters);
-
-            // Step 2: Extract #N or #N-M suffix (or implicit number)
-            let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
-                let num_str = &rest[hash_pos + 1..];
-                let (l, le) = parse_limit(num_str);
-                (rest[..hash_pos].trim().to_string(), l, le)
-            } else {
-                // Check if last token is a pure number (implicit #N)
-                let tokens: Vec<&str> = rest.split_whitespace().collect();
-                if let Some(last) = tokens.last() {
-                    if let Ok(n) = last.parse::<u32>() {
-                        let (l, _) = parse_limit(&n.to_string());
-                        let without_last = tokens[..tokens.len() - 1].join(" ");
-                        (without_last, l, None)
-                    } else {
-                        (rest.to_string(), default_limit, None)
-                    }
-                } else {
-                    (rest.to_string(), default_limit, None)
-                }
-            };
-
-            // Step 3: Extract :mode suffix
-            let (rest, mode) = extract_mode(&rest);
-
-            // Step 4: Parse rest → username + inline filters
-            let rest = rest.trim();
-            let (username, qq, filters) = if rest.is_empty() {
-                (None, mentioned_user_id, filters)
-            } else {
-                let tokens: Vec<&str> = rest.split_whitespace().collect();
-                let mut name_parts: Vec<&str> = Vec::new();
-                let mut qq_id: Option<i64> = None;
-                let mut found_eq = false;
-                let mut extra_filters: Vec<String> = Vec::new();
-                let mut has_invalid_mention = false;
-
-                for token in &tokens {
-                    if let Some(at) = token.strip_prefix('@') {
-                        if let Ok(parsed) = at.parse::<i64>() {
-                            qq_id = Some(parsed);
-                        } else {
-                            // Invalid QQ mention (e.g., @ZnCookie)
-                            has_invalid_mention = true;
-                        }
-                        continue;
-                    }
-                    if token.contains('=') {
-                        found_eq = true;
-                        // Split by comma to support "miss=1,combo=500"
-                        for part in token.split(',') {
-                            extra_filters.push(part.to_string());
-                        }
-                    } else if !found_eq {
-                        name_parts.push(token);
-                    }
-                }
-
-                // If there was an invalid @ mention, return None
-                if has_invalid_mention {
-                    return None;
-                }
-
-                let uname = if name_parts.is_empty() {
-                    None
-                } else {
-                    Some(name_parts.join(" "))
-                };
-
-                // Merge filters from +suffix and inline
-                let all_filters = match filters {
-                    Some(mut f) => {
-                        f.extend(extra_filters);
-                        if f.is_empty() {
-                            None
-                        } else {
-                            Some(f)
-                        }
-                    }
-                    None => {
-                        if extra_filters.is_empty() {
-                            None
-                        } else {
-                            Some(extra_filters)
-                        }
-                    }
-                };
-
-                if qq_id.is_some() && uname.is_none() {
-                    (None, qq_id, all_filters)
-                } else if qq_id.is_none() {
-                    (uname, mentioned_user_id, all_filters)
-                } else {
-                    // Both qq and username provided — invalid
-                    return None;
-                }
-            };
-
-            // For !p/!r: range format is silently ignored (limit_end = None)
-            let (final_limit, final_limit_end) = if default_limit == 1 {
-                (limit, None)
-            } else {
-                (limit, limit_end)
-            };
-
-            return Some(if is_pass {
-                Command::Pass {
-                    mode,
-                    username,
-                    qq,
-                    limit: final_limit,
-                    limit_end: final_limit_end,
-                    is_summary,
-                    filters,
-                }
-            } else {
-                Command::Recent {
-                    mode,
-                    username,
-                    qq,
-                    limit: final_limit,
-                    limit_end: final_limit_end,
-                    is_summary,
-                    filters,
-                }
-            });
-        }
+    if let Some(cmd) = parse_pass_recent(&msg, mentioned_user_id) {
+        return cmd;
     }
 
     None
@@ -1346,10 +1352,10 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: Some(vec!["HD".to_string(), "DT".to_string()]),
+                mods: None,
+                filters: Some(vec!["mod=HDDT".to_string()]),
                 limit: 1,
                 is_all: false,
-                filters: None,
                 limit_end: None,
             }
         );
@@ -1503,10 +1509,10 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: Some(vec!["HD".to_string()]),
+                mods: None,
+                filters: Some(vec!["mod=HD".to_string()]),
                 limit: 3,
                 is_all: false,
-                filters: None,
                 limit_end: None,
             }
         );
@@ -1859,8 +1865,8 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: Some(vec!["HD".to_string(), "HR".to_string()]),
-                filters: Some(vec!["miss=1".to_string()]),
+                mods: None,
+                filters: Some(vec!["miss=1".to_string(), "mod=HDHR".to_string()]),
                 limit: 5,
                 limit_end: None,
                 is_all: false,
@@ -1920,8 +1926,8 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: Some(vec!["DT".to_string()]),
-                filters: Some(vec!["miss=1".to_string()]),
+                mods: None,
+                filters: Some(vec!["miss=1".to_string(), "mod=DT".to_string()]),
                 limit: 1,
                 limit_end: None,
                 is_all: false,

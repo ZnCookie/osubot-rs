@@ -1157,7 +1157,11 @@ async fn handle_beatmap_score_query(
     ctx.scheduler.trigger_update(_user_id, mode).await;
 
     if is_all {
-        let api_limit = limit_end.or(if limit > 1 { Some(limit) } else { None });
+        let raw_api_limit = limit_end.or(if limit > 1 { Some(limit) } else { None });
+        let api_limit = match (raw_api_limit, filters.is_some_and(|f| !f.is_empty())) {
+            (Some(n), true) => Some(n.max(SCORE_API_FETCH_LIMIT)),
+            (other, _) => other,
+        };
         let key = (_user_id, resolved_bid as i64, mode, api_limit);
         let dedup_rall = ctx.rate_limiter.clone();
         let dedup_oall = ctx.oauth.clone();
@@ -1223,64 +1227,123 @@ async fn handle_beatmap_score_query(
         render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
             .await;
     } else if limit == 1 && limit_end.is_none() {
-        let key = (_user_id, resolved_bid as i64, mode, mods.clone());
-        let dedup_rscore = ctx.rate_limiter.clone();
-        let dedup_oscore = ctx.oauth.clone();
-        let dedup_mods = mods.clone();
-        let score_result = beatmap_score_dedup()
-            .run_or_wait(key, move || {
-                let rate_limiter = dedup_rscore.clone();
-                let oauth = dedup_oscore.clone();
-                let mods = dedup_mods.clone();
-                async move {
-                    api::get_user_beatmap_score(
-                        &rate_limiter,
-                        &oauth,
-                        resolved_bid as i64,
-                        _user_id,
-                        mode,
-                        &mods,
-                    )
-                    .await
-                    .map_err(|e| match e {
-                        ApiError::NotFound => {
-                            if mods.is_some() {
-                                "未找到符合该 mod 条件的成绩".to_string()
-                            } else {
-                                "该玩家在此谱面上没有成绩".to_string()
+        if filters.is_some_and(|f| !f.is_empty()) {
+            // With filters: boost API limit, filter client-side, take first
+            let api_limit = SCORE_API_FETCH_LIMIT;
+            let key = (_user_id, resolved_bid as i64, mode, Some(api_limit));
+            let dedup_rscores = ctx.rate_limiter.clone();
+            let dedup_oscores = ctx.oauth.clone();
+            let scores_result = beatmap_scores_dedup()
+                .run_or_wait(key, move || {
+                    let rate_limiter = dedup_rscores.clone();
+                    let oauth = dedup_oscores.clone();
+                    async move {
+                        api::get_user_beatmap_scores_all(
+                            &rate_limiter,
+                            &oauth,
+                            resolved_bid as i64,
+                            _user_id,
+                            mode,
+                            Some(api_limit),
+                        )
+                        .await
+                        .map_err(|e| match e {
+                            ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                            e => {
+                                warn!(error = ?e, "get_user_beatmap_scores_all failed");
+                                "获取成绩失败，请稍后再试".to_string()
                             }
-                        }
-                        e => {
-                            warn!(
-                                error = ?e,
-                                beatmap_id = resolved_bid,
-                                ?mods,
-                                "get_user_beatmap_score failed"
-                            );
-                            "获取成绩失败，请稍后再试".to_string()
-                        }
-                    })
+                        })
+                    }
+                })
+                .await;
+            let mut scores = match scores_result {
+                Ok(s) => s,
+                Err(err_msg) => {
+                    let _ = resp_tx.send(err_msg).await;
+                    return;
                 }
-            })
-            .await;
-        let score = match score_result {
-            Ok(s) => s,
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
+            };
+            if scores.is_empty() {
+                let _ = resp_tx.send("该玩家在此谱面上没有成绩".to_string()).await;
                 return;
             }
-        };
-        if let Some(filters) = filters {
-            if !score_matches_filters(&score, filters) {
+            // SAFETY: checked is_some_and(!is_empty) above
+            scores.retain(|s| score_matches_filters(s, filters.unwrap()));
+            if scores.is_empty() {
                 let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
                 return;
             }
+            let score = scores.swap_remove(0);
+            ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+            render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
+                .await;
+        } else {
+            // No filters: use existing single-score API
+            let key = (_user_id, resolved_bid as i64, mode, mods.clone());
+            let dedup_rscore = ctx.rate_limiter.clone();
+            let dedup_oscore = ctx.oauth.clone();
+            let dedup_mods = mods.clone();
+            let score_result = beatmap_score_dedup()
+                .run_or_wait(key, move || {
+                    let rate_limiter = dedup_rscore.clone();
+                    let oauth = dedup_oscore.clone();
+                    let mods = dedup_mods.clone();
+                    async move {
+                        api::get_user_beatmap_score(
+                            &rate_limiter,
+                            &oauth,
+                            resolved_bid as i64,
+                            _user_id,
+                            mode,
+                            &mods,
+                        )
+                        .await
+                        .map_err(|e| match e {
+                            ApiError::NotFound => {
+                                if mods.is_some() {
+                                    "未找到符合该 mod 条件的成绩".to_string()
+                                } else {
+                                    "该玩家在此谱面上没有成绩".to_string()
+                                }
+                            }
+                            e => {
+                                warn!(
+                                    error = ?e,
+                                    beatmap_id = resolved_bid,
+                                    ?mods,
+                                    "get_user_beatmap_score failed"
+                                );
+                                "获取成绩失败，请稍后再试".to_string()
+                            }
+                        })
+                    }
+                })
+                .await;
+            let score = match score_result {
+                Ok(s) => s,
+                Err(err_msg) => {
+                    let _ = resp_tx.send(err_msg).await;
+                    return;
+                }
+            };
+            if let Some(filters) = filters {
+                if !score_matches_filters(&score, filters) {
+                    let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
+                    return;
+                }
+            }
+            ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+            render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
+                .await;
         }
-        ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
-            .await;
     } else {
-        let api_limit = limit_end.unwrap_or(limit);
+        let raw_limit = limit_end.unwrap_or(limit);
+        let api_limit = if filters.is_some_and(|f| !f.is_empty()) {
+            raw_limit.max(SCORE_API_FETCH_LIMIT)
+        } else {
+            raw_limit
+        };
         let n = limit as usize;
         let key = (_user_id, resolved_bid as i64, mode, Some(api_limit));
         let dedup_rscores = ctx.rate_limiter.clone();
@@ -1319,6 +1382,10 @@ async fn handle_beatmap_score_query(
 
         if let Some(filters) = filters {
             scores.retain(|s| score_matches_filters(s, filters));
+            if scores.is_empty() {
+                let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
+                return;
+            }
         }
 
         if let Some(end) = limit_end {
