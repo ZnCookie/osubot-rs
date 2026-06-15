@@ -1779,42 +1779,9 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
 const HELP_TEXT: &str = "\
-!help — 显示此帮助\n\
+绑定/解绑/~/查/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!help\n\
 \n\
-绑定 <osu!用户名>\n\
-  绑定osu!账号到对应QQ号\n\
-解绑\n\
-  解除绑定\n\
-\n\
-~[:<模式>]\n\
-  查自己\n\
-where <osu!用户名>/@<QQ用户>[,<模式>]\n\
-  查指定用户\n\
-查@<QQ用户>[,<模式>]\n\
-  同上\n\
-\n\
-!p [:<模式>] [<用户>] [+<模组>,<条件>] [#<序号>]\n\
-  最近通过\n\
-!r [:<模式>] [<用户>] [+<模组>,<条件>] [#<序号>]\n\
-  最近游玩(含失败)\n\
-!ps [:<模式>] [<用户>] [+<模组>,<条件>] [#<范围>]\n\
-  通过汇总\n\
-!rs [:<模式>] [<用户>] [+<模组>,<条件>] [#<范围>]\n\
-  游玩汇总(含失败)\n\
-\n\
-!s [:<模式>] <成绩ID/谱面ID> [<用户>] [+<MODS>,<条件>] [#<序号>]\n\
-  谱面最佳\n\
-!ss [:<模式>] <成绩ID/谱面ID> [<用户>] [+<MODS>,<条件>] [#<范围>]\n\
-  谱面全部\n\
-\n\
-!profile [<osu!用户名>|@<QQ用户>]\n\
-  个人信息\n\
-\n\
-今日高光[,<模式>]\n\
-  每日高光\n\
-\n\
-模式: 0=std / 1=taiko / 2=catch / 3=mania\n\
-详情: github.com/ZnCookie/osubot-rs/docs/commands.md";
+更多细节请移步 https://github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅";
 async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
     // ==== Plugin on_message dispatch (brief locks, never across .await) ====
     let msg_indices: Vec<usize> = {
