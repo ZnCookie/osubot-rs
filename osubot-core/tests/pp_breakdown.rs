@@ -732,12 +732,12 @@ fn if_acc_ignores_passed_field_and_assumes_full_play() {
 // User reports: !p/!r SS score with EZ+HD shows total_pp=177 but acc_100=206.
 // Both should be equal for a 100% accuracy SS score.
 //
-// After fix: acc_100 now assumes FC (0 misses, max combo) because
-// 100% accuracy implies a perfect play. total_pp uses the actual
-// player combo (which may be lower due to slider breaks).
+// After fix: acc_100 now uses rosu-pp's Fast hitresult generator (full-map SS),
+// while total_pp uses the actual player combo from breakdown.
+// acc_100 (full-map SS) >= total_pp (actual play).
 
 #[test]
-fn ss_ezhd_acc_100_equals_if_fc() {
+fn ss_ezhd_acc_100_gte_total_pp() {
     // simulate SS: all 300s, no 100s/50s, zero misses, 100% acc
     let stats = ScoreStatistics {
         count_geki: 0,
@@ -793,8 +793,9 @@ fn ss_ezhd_acc_100_equals_if_fc() {
     eprintln!("  breakdown total_pp = {}", pp.total_pp);
     eprintln!("  acc_100            = {}", if_acc.acc_100);
     eprintln!("  if_fc              = {}", if_acc.if_fc);
+    eprintln!("  perfect_pp         = {}", if_acc.perfect_pp);
 
-    // acc_100 (SS, FC) should be >= total_pp (actual combo)
+    // acc_100 = full-map SS PP, should be >= any partial-play PP
     assert!(
         if_acc.acc_100 >= pp.total_pp - 0.5,
         "SS EZHD: acc_100 ({}) should be >= total_pp ({})",
@@ -802,22 +803,28 @@ fn ss_ezhd_acc_100_equals_if_fc() {
         pp.total_pp
     );
 
-    // acc_100 should equal if_fc for SS with 0 misses
-    let diff = (if_acc.acc_100 - if_acc.if_fc).abs();
+    // acc_100 (full-map SS) should be >= if_fc (partial-object FC)
     assert!(
-        diff < 0.5,
-        "SS EZHD: acc_100 ({}) should equal if_fc ({}), diff={}",
+        if_acc.acc_100 >= if_acc.if_fc - 0.5,
+        "SS EZHD: acc_100 ({}) should be >= if_fc ({})",
         if_acc.acc_100,
-        if_acc.if_fc,
-        diff
+        if_acc.if_fc
+    );
+
+    // perfect_pp and acc_100 are both full-map SS values
+    assert!(
+        (if_acc.acc_100 - if_acc.perfect_pp).abs() < 0.5,
+        "SS EZHD: acc_100 ({}) should equal perfect_pp ({})",
+        if_acc.acc_100,
+        if_acc.perfect_pp
     );
 }
 
 #[test]
-fn ss_ezhd_slider_tick_miss_acc_100_is_ss_pp() {
+fn ss_ezhd_slider_tick_miss_acc_100_is_full_map_ss() {
     // SS score but combo broke due to slider tick miss, not circle miss.
-    // acc_100 should be the theoretical SS PP (ignoring tick misses),
-    // not capped by the broken combo.
+    // acc_100 should be the full-map theoretical SS PP,
+    // not capped by the broken combo or partial object count.
     let stats = ScoreStatistics {
         count_geki: 0,
         count_300: 400,
@@ -873,27 +880,25 @@ fn ss_ezhd_slider_tick_miss_acc_100_is_ss_pp() {
     eprintln!("  acc_100            = {}", if_acc.acc_100);
     eprintln!("  if_fc              = {}", if_acc.if_fc);
 
-    // acc_100 should be close to if_fc (both are SS-like predictions)
-    let fc_diff = (if_acc.acc_100 - if_acc.if_fc).abs();
-    assert!(
-        fc_diff < 0.5,
-        "SS tick-miss EZHD: acc_100 ({}) should equal if_fc ({}), diff={}",
-        if_acc.acc_100,
-        if_acc.if_fc,
-        fc_diff
-    );
-
-    // acc_100 (SS PP) should be >= total_pp (broken-combo PP)
+    // acc_100 (full-map SS PP) should be >= total_pp (broken-combo PP)
     assert!(
         if_acc.acc_100 >= pp.total_pp - 0.5,
         "SS tick-miss EZHD: acc_100 ({}) should be >= total_pp ({})",
         if_acc.acc_100,
         pp.total_pp
     );
+
+    // acc_100 (full-map SS) should be >= if_fc (partial-object FC)
+    assert!(
+        if_acc.acc_100 >= if_acc.if_fc - 0.5,
+        "SS tick-miss EZHD: acc_100 ({}) should be >= if_fc ({})",
+        if_acc.acc_100,
+        if_acc.if_fc
+    );
 }
 
 #[test]
-fn ss_ezhd_acc100_vs_if_fc() {
+fn ss_ezhd_acc100_equals_perfect_pp() {
     let stats = ScoreStatistics {
         count_geki: 0,
         count_300: 400,
@@ -931,16 +936,30 @@ fn ss_ezhd_acc100_vs_if_fc() {
     .expect("SS EZHD should return if-acc");
 
     eprintln!("SS EZHD FC scenario:");
-    eprintln!("  acc_100 = {}", if_acc.acc_100);
-    eprintln!("  if_fc   = {}", if_acc.if_fc);
-    eprintln!("  perfect = {}", if_acc.perfect_pp);
+    eprintln!("  acc_100   = {}", if_acc.acc_100);
+    eprintln!("  if_fc     = {}", if_acc.if_fc);
+    eprintln!("  perfect   = {}", if_acc.perfect_pp);
 
-    let diff = (if_acc.acc_100 - if_acc.if_fc).abs();
+    // All acc targets are monotonically increasing
+    assert!(if_acc.acc_95 <= if_acc.acc_97, "acc_95 <= acc_97");
+    assert!(if_acc.acc_97 <= if_acc.acc_98, "acc_97 <= acc_98");
+    assert!(if_acc.acc_98 <= if_acc.acc_99, "acc_98 <= acc_99");
+    assert!(if_acc.acc_99 <= if_acc.acc_100, "acc_99 <= acc_100");
+
+    // All values should be positive
+    assert!(if_acc.acc_95 > 0.0);
+    assert!(if_acc.acc_100 > 0.0);
+    assert!(if_acc.if_fc > 0.0);
+    assert!(if_acc.perfect_pp > 0.0);
+
+    // acc_100 (full-map SS via rosu-pp Fast) should equal perfect_pp (SS via IgnoreAccuracy)
+    // Both represent the theoretical maximum PP for the full map.
+    let diff = (if_acc.acc_100 - if_acc.perfect_pp).abs();
     assert!(
         diff < 0.5,
-        "SS EZHD FC: acc_100 ({}) should == if_fc ({}), diff={}",
+        "SS EZHD FC: acc_100 ({}) should == perfect_pp ({}), diff={}",
         if_acc.acc_100,
-        if_acc.if_fc,
+        if_acc.perfect_pp,
         diff
     );
 }

@@ -378,40 +378,16 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
     let calc_acc = |acc: f64| -> f64 {
         if matches!(params.mode, GameMode::Osu) {
             if let Some(s) = params.statistics {
-                let total = (s.count_300 + s.count_100 + s.count_50 + s.count_miss) as u32;
-                // A higher accuracy target requires fewer misses.
-                // Cap effective misses at the maximum that still allows the target acc.
-                // max_misses = floor(total * (1 - acc))  (all remaining hits must be 300s)
-                let max_misses = (total as f64 * (1.0 - acc)) as u32;
-                let eff_misses = misses.min(max_misses);
-                // If all misses are "fixed" (eff_misses == 0), combo must be FC.
-                // Otherwise, proportionally improve combo for the fixed misses.
-                let eff_combo = if eff_misses == 0 {
-                    bm_combo
-                } else if misses > 0 {
-                    let fixed = misses - eff_misses;
-                    let gap = bm_combo.saturating_sub(combo);
-                    (combo + (gap as u64 * fixed as u64 / misses as u64) as u32).min(bm_combo)
-                } else {
-                    combo
-                };
-                let n300_f = (3.0 * total as f64 * acc - total as f64 + eff_misses as f64) / 2.0;
-                let n300 = (n300_f.max(0.0).round() as u32).min(total - eff_misses);
-                let n100 = total - n300 - eff_misses;
                 let perf = match base_perf.clone() {
                     Some(p) => p,
                     None => return 0.0,
                 };
-                perf.combo(eff_combo)
-                    .n300(n300)
-                    .n100(n100)
-                    .n50(0u32)
-                    .n_geki(s.count_geki as u32)
-                    .n_katu(s.count_katu as u32)
+                perf.accuracy(acc * 100.0)
+                    .combo(bm_combo)
+                    .misses(0)
                     .large_tick_hits(s.osu_large_tick_hits as u32)
                     .small_tick_hits(s.osu_small_tick_hits as u32)
                     .slider_end_hits(s.osu_slider_tail_hits as u32)
-                    .misses(eff_misses)
                     .calculate()
                     .pp()
             } else {
@@ -431,46 +407,16 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         let Some(perf) = base_perf.clone() else {
             break 'fc 0.0;
         };
-        let fc_counts = ScoreStatistics {
-            count_geki: s.count_geki,
-            count_300: s.count_300 + s.count_miss,
-            count_katu: s.count_katu,
-            count_100: s.count_100,
-            count_50: s.count_50,
-            count_miss: 0,
-            osu_large_tick_hits: s.osu_large_tick_hits,
-            osu_small_tick_hits: s.osu_small_tick_hits,
-            osu_slider_tail_hits: s.osu_slider_tail_hits,
-            osu_large_tick_misses: 0,
-            osu_small_tick_misses: 0,
-        };
-        match params.mode {
-            GameMode::Mania => perf
-                .n_geki(fc_counts.count_geki as u32)
-                .n300(fc_counts.count_300 as u32)
-                .n_katu(fc_counts.count_katu as u32)
-                .n100(fc_counts.count_100 as u32)
-                .n50(fc_counts.count_50 as u32)
-                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
-                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
-                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
-                .misses(fc_counts.count_miss as u32)
-                .calculate()
-                .pp(),
-            _ => perf
-                .n_geki(fc_counts.count_geki as u32)
-                .n300(fc_counts.count_300 as u32)
-                .n_katu(fc_counts.count_katu as u32)
-                .n100(fc_counts.count_100 as u32)
-                .n50(fc_counts.count_50 as u32)
-                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
-                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
-                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
-                .misses(fc_counts.count_miss as u32)
-                .combo(bm_combo)
-                .calculate()
-                .pp(),
+        let mut p = perf
+            .accuracy(params.accuracy * 100.0)
+            .misses(0)
+            .large_tick_hits(s.osu_large_tick_hits as u32)
+            .small_tick_hits(s.osu_small_tick_hits as u32)
+            .slider_end_hits(s.osu_slider_tail_hits as u32);
+        if !matches!(params.mode, GameMode::Mania) {
+            p = p.combo(bm_combo);
         }
+        p.calculate().pp()
     };
 
     Some(PpIfAcc {
