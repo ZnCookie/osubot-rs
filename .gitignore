@@ -11,3 +11,5 @@ docs/superpowers/
 .opencode/
 .omo/
 osubot-render/tests/dump/
+osubot.db
+osubot.db-wal

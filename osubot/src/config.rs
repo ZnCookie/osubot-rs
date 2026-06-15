@@ -212,6 +212,7 @@ pub struct GroupConfig {
     pub profile: Option<bool>,
     pub highlight: Option<bool>,
     pub bind: Option<bool>,
+    pub help: Option<bool>,
 }
 
 impl GroupConfig {
@@ -223,6 +224,7 @@ impl GroupConfig {
             CommandGroup::Profile => self.profile.unwrap_or(default),
             CommandGroup::Highlight => self.highlight.unwrap_or(default),
             CommandGroup::Bind => self.bind.unwrap_or(default),
+            CommandGroup::Help => self.help.unwrap_or(default),
         }
     }
 }
@@ -246,6 +248,7 @@ impl GroupsConfig {
                 profile: override_cfg.profile.or(self.default.profile),
                 highlight: override_cfg.highlight.or(self.default.highlight),
                 bind: override_cfg.bind.or(self.default.bind),
+                help: override_cfg.help.or(self.default.help),
             }
         } else {
             self.default.clone()
@@ -403,6 +406,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
+        assert!(cfg.is_enabled(CommandGroup::Help));
     }
 
     #[test]
@@ -413,12 +417,14 @@ mod tests {
             profile: None,
             highlight: Some(false),
             bind: None,
+            help: None,
         };
         assert!(cfg.is_enabled(CommandGroup::Query));
         assert!(!cfg.is_enabled(CommandGroup::Score));
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(!cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
+        assert!(cfg.is_enabled(CommandGroup::Help));
     }
 
     #[test]

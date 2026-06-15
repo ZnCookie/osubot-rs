@@ -29,6 +29,7 @@ pub enum CommandGroup {
     Profile,
     Highlight,
     Bind,
+    Help,
 }
 
 /// Parsed command from user input, with all extracted parameters.
@@ -85,6 +86,7 @@ pub enum Command {
         is_summary: bool,
         filters: Option<Vec<String>>,
     },
+    Help,
 }
 
 impl Command {
@@ -99,6 +101,7 @@ impl Command {
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
             Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
+            Command::Help => CommandGroup::Help,
         }
     }
 
@@ -115,6 +118,7 @@ impl Command {
             Command::Pass { .. } => "!p",
             Command::Recent { .. } => "!r",
             Command::ScoreOnBeatmap { .. } => "!s",
+            Command::Help => "!help",
         }
     }
 }

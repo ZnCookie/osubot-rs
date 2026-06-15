@@ -56,6 +56,7 @@ path = "osubot.db"
 # profile = true            # !profile
 # highlight = true          # 今日高光
 # bind = true               # 绑定、解绑
+# help = true               # !help
 
 # [groups.123456789]
 # 特定群的覆盖配置（可选，节名 = 群号）

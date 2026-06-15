@@ -620,6 +620,11 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         return Some(Command::Highlight { mode });
     }
 
+    // 帮助: !help
+    if msg == "!help" {
+        return Some(Command::Help);
+    }
+
     // 个人主页卡片: !profile [用户名] or !profile + @mention
     // Must be checked before !p/!r to avoid "!profile" being matched as "!p" + "rofile"
     if let Some(rest) = msg.strip_prefix("!profile") {
@@ -745,6 +750,12 @@ mod tests {
     #[test]
     fn test_profile_qq_in_text_non_numeric_returns_none() {
         assert!(parse_command("!profile @ZnCookie", None).is_none());
+    }
+
+    #[test]
+    fn test_help_command() {
+        let cmd = parse_command("!help", None).unwrap();
+        assert_eq!(cmd, Command::Help);
     }
 
     #[test]
