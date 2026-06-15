@@ -317,7 +317,7 @@ fn score_by_id_dedup() -> &'static ScoreByIdDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
-type BeatmapScoreDedup = RequestDedup<(i64, i64, GameMode, Option<Vec<String>>), Score, String>;
+type BeatmapScoreDedup = RequestDedup<(i64, i64, GameMode), Score, String>;
 
 fn beatmap_score_dedup() -> &'static BeatmapScoreDedup {
     static DEDUP: OnceLock<BeatmapScoreDedup> = OnceLock::new();
@@ -1277,7 +1277,7 @@ async fn handle_beatmap_score_query(
                 .await;
         } else {
             // No filters: use existing single-score API (mods are in filters when present)
-            let key = (_user_id, resolved_bid as i64, mode, None::<Vec<String>>);
+            let key = (_user_id, resolved_bid as i64, mode);
             let dedup_rscore = ctx.rate_limiter.clone();
             let dedup_oscore = ctx.oauth.clone();
             let score_result = beatmap_score_dedup()
