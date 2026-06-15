@@ -27,3 +27,6 @@ notify = { version = "8", default-features = false, features = ["macos_kqueue"] 
 
 [features]
 integration-tests = []
+
+[dev-dependencies]
+rosu-mods = { version = "0.4", features = ["serde"] }

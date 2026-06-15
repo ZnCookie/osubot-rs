@@ -357,4 +357,15 @@ mod tests {
         assert_eq!(format_accuracy(0.0), "0%");
         assert_eq!(format_accuracy(0.0001), "0.01%");
     }
+
+    #[test]
+    fn test_from_mode_str_invalid_returns_none() {
+        assert_eq!(GameMode::from_mode_str("99"), None);
+        assert_eq!(GameMode::from_mode_str("xyz"), None);
+        assert_eq!(GameMode::from_mode_str("osu!"), None);
+        assert_eq!(GameMode::from_mode_str("std"), None);
+        assert_eq!(GameMode::from_mode_str("taiko"), None);
+        assert_eq!(GameMode::from_mode_str("catch"), None);
+        assert_eq!(GameMode::from_mode_str("mania"), None);
+    }
 }

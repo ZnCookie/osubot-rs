@@ -63,7 +63,9 @@ pub enum Command {
         beatmap_id: Option<u32>,
         score_id: Option<u64>,
         mods: Option<Vec<String>>,
+        filters: Option<Vec<String>>,
         limit: u32,
+        limit_end: Option<u32>,
         is_all: bool,
     },
     Pass {
@@ -71,14 +73,18 @@ pub enum Command {
         username: Option<String>,
         qq: Option<i64>,
         limit: u32,
+        limit_end: Option<u32>,
         is_summary: bool,
+        filters: Option<Vec<String>>,
     },
     Recent {
         mode: GameMode,
         username: Option<String>,
         qq: Option<i64>,
         limit: u32,
+        limit_end: Option<u32>,
         is_summary: bool,
+        filters: Option<Vec<String>>,
     },
 }
 

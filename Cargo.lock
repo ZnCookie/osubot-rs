@@ -4798,6 +4798,7 @@ dependencies = [
  "osubot-render",
  "rand 0.10.1",
  "reqwest",
+ "rosu-mods",
  "serde",
  "serde_json",
  "time",
