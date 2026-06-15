@@ -1224,8 +1224,8 @@ async fn handle_beatmap_score_query(
         render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
             .await;
     } else if limit == 1 && limit_end.is_none() {
-        if filters.is_some_and(|f| !f.is_empty()) {
-            // With filters: boost API limit, filter client-side, take first
+        let active_filters = filters.filter(|f| !f.is_empty());
+        if let Some(filters) = active_filters {
             let api_limit = SCORE_API_FETCH_LIMIT;
             let key = (_user_id, resolved_bid as i64, mode, Some(api_limit));
             let dedup_rscores = ctx.rate_limiter.clone();
@@ -1265,8 +1265,7 @@ async fn handle_beatmap_score_query(
                 let _ = resp_tx.send("该玩家在此谱面上没有成绩".to_string()).await;
                 return;
             }
-            // SAFETY: checked is_some_and(!is_empty) above
-            scores.retain(|s| score_matches_filters(s, filters.unwrap()));
+            scores.retain(|s| score_matches_filters(s, filters));
             if scores.is_empty() {
                 let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
                 return;
@@ -1276,7 +1275,6 @@ async fn handle_beatmap_score_query(
             render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
                 .await;
         } else {
-            // No filters: use existing single-score API (mods are in filters when present)
             let key = (_user_id, resolved_bid as i64, mode);
             let dedup_rscore = ctx.rate_limiter.clone();
             let dedup_oscore = ctx.oauth.clone();
@@ -1315,12 +1313,6 @@ async fn handle_beatmap_score_query(
                     return;
                 }
             };
-            if let Some(filters) = filters {
-                if !score_matches_filters(&score, filters) {
-                    let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
-                    return;
-                }
-            }
             ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
             render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
                 .await;
