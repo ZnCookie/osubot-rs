@@ -37,7 +37,7 @@ pub struct BotConfig {
     /// 命令处理超时（秒），默认 120
     #[serde(default = "default_command_timeout_secs")]
     pub command_timeout_secs: u64,
-    /// 渲染超时（秒），默认 30
+    /// 渲染超时（秒），默认 60
     #[serde(default = "default_render_timeout_secs")]
     pub render_timeout_secs: u64,
     /// OneBot API 请求超时（秒），默认 5
@@ -52,7 +52,7 @@ fn default_command_timeout_secs() -> u64 {
     120
 }
 fn default_render_timeout_secs() -> u64 {
-    30
+    60
 }
 fn default_onebot_api_timeout_secs() -> u64 {
     5
@@ -212,6 +212,7 @@ pub struct GroupConfig {
     pub profile: Option<bool>,
     pub highlight: Option<bool>,
     pub bind: Option<bool>,
+    pub help: Option<bool>,
 }
 
 impl GroupConfig {
@@ -223,6 +224,7 @@ impl GroupConfig {
             CommandGroup::Profile => self.profile.unwrap_or(default),
             CommandGroup::Highlight => self.highlight.unwrap_or(default),
             CommandGroup::Bind => self.bind.unwrap_or(default),
+            CommandGroup::Help => self.help.unwrap_or(default),
         }
     }
 }
@@ -246,6 +248,7 @@ impl GroupsConfig {
                 profile: override_cfg.profile.or(self.default.profile),
                 highlight: override_cfg.highlight.or(self.default.highlight),
                 bind: override_cfg.bind.or(self.default.bind),
+                help: override_cfg.help.or(self.default.help),
             }
         } else {
             self.default.clone()
@@ -344,7 +347,7 @@ impl Default for Config {
                 onebot_url: std::env::var("ONEBOT_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
                 command_timeout_secs: 120,
-                render_timeout_secs: 30,
+                render_timeout_secs: 60,
                 onebot_api_timeout_secs: 5,
                 ur_timeout_secs: 10,
             },
@@ -403,6 +406,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
+        assert!(cfg.is_enabled(CommandGroup::Help));
     }
 
     #[test]
@@ -413,12 +417,14 @@ mod tests {
             profile: None,
             highlight: Some(false),
             bind: None,
+            help: None,
         };
         assert!(cfg.is_enabled(CommandGroup::Query));
         assert!(!cfg.is_enabled(CommandGroup::Score));
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(!cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
+        assert!(cfg.is_enabled(CommandGroup::Help));
     }
 
     #[test]

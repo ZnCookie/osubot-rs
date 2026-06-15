@@ -1,18 +1,30 @@
 [osu]
-# osu! API v2 OAuth client credentials (https://osu.ppy.sh/home/account/edit#oauth)
-# client_secret (previously "api_key" — old configs still work)
+# osu! API v2 OAuth 客户端凭证（https://osu.ppy.sh/home/account/edit#oauth）
+# client_secret 曾用字段名 "api_key"——旧配置仍兼容
 client_secret = "your-client-secret-here"
 client_id = "your-client-id-here"
 
 [bot]
-# OneBot 11 WebSocket URL
+# OneBot 11 WebSocket 地址
 onebot_url = "ws://127.0.0.1:8080"
+
+# 命令处理总超时（秒），默认 120
+# command_timeout_secs = 120
+
+# profile 渲染超时（秒），默认 60
+# render_timeout_secs = 60
+
+# OneBot API 请求超时（秒），默认 5
+# onebot_api_timeout_secs = 5
+
+# UR 计算超时（秒），默认 10
+# ur_timeout_secs = 10
 
 [database]
 path = "osubot.db"
 
 # [scheduler]
-# All fields have defaults — optional, only override if needed.
+# 所有字段均有默认值——可选，有需要才覆盖。
 # interval_minutes = 1
 # semi_active_interval_hours = 4      # 4h内有游玩记录
 # normal_interval_hours = 8           # 当日有游玩记录
@@ -44,6 +56,7 @@ path = "osubot.db"
 # profile = true            # !profile
 # highlight = true          # 今日高光
 # bind = true               # 绑定、解绑
+# help = true               # !help
 
 # [groups.123456789]
 # 特定群的覆盖配置（可选，节名 = 群号）
@@ -72,10 +85,16 @@ path = "osubot.db"
 # yumu 无需 access_token 和 self_id，直接伪装目标 QQ 连接
 
 [plugin]
-# Directory containing .wasm plugin files
+# .wasm 插件文件存放目录
 dir = "./plugins"
 
-# Plugin instances to load
+# 插件实例连续错误计数超过此值则自动重载，默认 5
+# lost_instances_threshold = 5
+
+# 插件重载连续失败计数超过此值则要求手动干预，默认 3
+# reload_failures_threshold = 3
+
+# 插件实例列表
 [[plugin.instances]]
 name = "hello"
 path = "hello_plugin.wasm"

@@ -1,5 +1,493 @@
 use crate::types::{Command, GameMode};
 
+const MAX_LIMIT: u32 = 100;
+const SCORE_ID_THRESHOLD: u64 = 10_000_000;
+
+/// Extract `:mode` suffix from rest. Returns (rest_without_mode, mode).
+/// Finds the rightmost colon and extracts only the first token after it as mode.
+/// The rest of the content (before and after the mode token) is preserved.
+/// Invalid mode strings silently fall back to GameMode::Osu.
+fn extract_mode(rest: &str) -> (String, GameMode) {
+    if let Some(colon_pos) = rest.rfind(':') {
+        let after_colon = &rest[colon_pos + 1..];
+        let mode_token = after_colon.split_whitespace().next().unwrap_or("");
+        let mode = GameMode::from_mode_str(mode_token).unwrap_or(GameMode::Osu);
+
+        // Reconstruct the rest without the :mode part
+        let before_colon = &rest[..colon_pos];
+        let after_mode_token = &rest[colon_pos + 1 + mode_token.len()..];
+        let new_rest = format!("{} {}", before_colon.trim(), after_mode_token.trim())
+            .trim()
+            .to_string();
+
+        (new_rest, mode)
+    } else {
+        (rest.to_string(), GameMode::Osu)
+    }
+}
+
+/// Parse a limit string like "5" or "2-10" into (limit, limit_end).
+/// Values are clamped to [1, MAX_LIMIT].
+fn parse_limit(num_str: &str) -> (u32, Option<u32>) {
+    if let Some(dash_pos) = num_str.find('-') {
+        let start = num_str[..dash_pos]
+            .parse::<u32>()
+            .unwrap_or(1)
+            .clamp(1, MAX_LIMIT);
+        let end = num_str[dash_pos + 1..]
+            .parse::<u32>()
+            .unwrap_or(start)
+            .clamp(start, MAX_LIMIT);
+        (start, Some(end))
+    } else {
+        let n = num_str.parse::<u32>().unwrap_or(1).clamp(1, MAX_LIMIT);
+        (n, None)
+    }
+}
+
+/// Extract `+mods,conditions` suffix from rest.
+/// Returns (rest_without_plus, mods, filters).
+/// Parsing failure returns (original_rest, None, None) — caller ignores the + suffix.
+/// Format: +MOD1MOD2,key=value,...
+/// - mods are pairs of uppercase letters before any '=' token
+/// - filters are key=value tokens after the first '=' token
+///
+/// Only tokens starting with `+` are treated as plus-suffix tokens.
+fn extract_plus_suffix(rest: &str) -> (String, Option<Vec<String>>, Option<Vec<String>>) {
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let plus_idx = match tokens.iter().rposition(|t| t.starts_with('+')) {
+        Some(i) => i,
+        None => return (rest.to_string(), None, None),
+    };
+    let token = tokens[plus_idx];
+    let suffix = &token[1..];
+    let new_rest: Vec<&str> = tokens
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != plus_idx)
+        .map(|(_, t)| *t)
+        .collect();
+    let new_rest = new_rest.join(" ");
+
+    if suffix.is_empty() {
+        return (new_rest.to_string(), None, None);
+    }
+
+    // Split at first comma
+    let (first, rest_str) = match suffix.find(',') {
+        Some(p) => (&suffix[..p], &suffix[p + 1..]),
+        None => (suffix, ""),
+    };
+
+    // If first part contains '=', everything is filters
+    let filter_str = if first.contains('=') {
+        suffix
+    } else {
+        rest_str
+    };
+
+    let mods = if !first.is_empty() && !first.contains('=') {
+        let chars: Vec<char> = first.chars().collect();
+        if !chars.len().is_multiple_of(2) {
+            return (new_rest.to_string(), None, None);
+        }
+        let mut mods = Vec::new();
+        for chunk in chars.chunks(2) {
+            let m: String = chunk.iter().collect();
+            if !m.chars().all(|c| c.is_ascii_alphabetic()) {
+                return (new_rest.to_string(), None, None);
+            }
+            mods.push(m.to_uppercase());
+        }
+        Some(mods)
+    } else {
+        None
+    };
+
+    let filters = if filter_str.is_empty() {
+        None
+    } else {
+        let f: Vec<String> = filter_str.split(',').map(|s| s.to_string()).collect();
+        if f.is_empty() || f.iter().any(|s| !s.contains('=')) {
+            return (new_rest.to_string(), None, None);
+        }
+        Some(f)
+    };
+
+    (new_rest.to_string(), mods, filters)
+}
+
+/// Convert `+MODS` from extract_plus_suffix into "mod=MODS" filter
+/// and merge with existing filters.
+/// If filters already contain a `mod=` or `mod==` entry, skip adding.
+fn merge_mods_into_filters(
+    mods: Option<Vec<String>>,
+    filters: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    let mod_str = match mods {
+        Some(m) if !m.is_empty() => Some(m.join("")),
+        _ => None,
+    };
+    let mod_str = match mod_str {
+        Some(s) => s,
+        None => return filters.filter(|f| !f.is_empty()),
+    };
+    let mut filters = filters.unwrap_or_default();
+
+    // Don't add mod= if filters already have mod=, mod==, or mod!=
+    if !filters
+        .iter()
+        .any(|s| s.starts_with("mod=") || s.starts_with("mod==") || s.starts_with("mod!="))
+    {
+        filters.push(format!("mod={}", mod_str));
+    }
+
+    if filters.is_empty() {
+        None
+    } else {
+        Some(filters)
+    }
+}
+
+/// Parse `!s`/`!ss` score-on-beatmap commands.
+/// Returns `Some(Some(Command))` on success,
+/// `Some(None)` if the prefix matched but parsing failed,
+/// `None` if no `!s`/`!ss` prefix matched.
+fn parse_score_on_beatmap(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option<Command>> {
+    let s_cmds: &[(&str, bool)] = &[("!ss", true), ("!s", false)];
+    for &(prefix, is_all) in s_cmds {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let rest = rest.trim();
+
+            if rest.is_empty() {
+                return Some(Some(Command::ScoreOnBeatmap {
+                    mode: GameMode::Osu,
+                    username: None,
+                    qq: mentioned_user_id,
+                    beatmap_id: None,
+                    score_id: None,
+                    filters: None,
+                    limit: if is_all { 20 } else { 1 },
+                    limit_end: None,
+                    is_all,
+                }));
+            }
+
+            // Step 1: Extract +mods,conditions suffix
+            let (rest, raw_mods, mut filters) = extract_plus_suffix(rest);
+
+            // Step 2: Extract :mode suffix
+            let (rest, mode) = extract_mode(&rest);
+
+            // Step 3: Extract #N or #N-M suffix from rest or from last filter
+            let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                let (l, le) = parse_limit(num_str);
+                (rest[..hash_pos].trim().to_string(), Some(l), le)
+            } else if let Some(last_filter) = filters.as_mut().and_then(|f| f.last_mut()) {
+                if let Some(hash_pos) = last_filter.rfind('#') {
+                    let num_str = &last_filter[hash_pos + 1..];
+                    let (l, le) = parse_limit(num_str);
+                    *last_filter = last_filter[..hash_pos].trim().to_string();
+                    if last_filter.is_empty() {
+                        filters.as_mut().map(|f| f.pop());
+                    }
+                    (rest.to_string(), Some(l), le)
+                } else {
+                    (rest.to_string(), None, None)
+                }
+            } else {
+                (rest.to_string(), None, None)
+            };
+
+            // Merge +MODS into filters for client-side consistency (after #N extraction)
+            filters = merge_mods_into_filters(raw_mods, filters);
+
+            // Step 4: Parse rest → beatmap_id/score_id + username + inline filters
+            let rest = rest.trim();
+            let (beatmap_id, score_id, username, qq, filters, implicit_limit) = if rest.is_empty() {
+                (None, None, None, mentioned_user_id, filters, None)
+            } else {
+                let tokens: Vec<&str> = rest.split_whitespace().collect();
+                let mut bid: Option<u32> = None;
+                let mut sid: Option<u64> = None;
+                let mut uname_parts: Vec<&str> = Vec::new();
+                let mut qq_id: Option<i64> = None;
+                let mut found_eq = false;
+                let mut passed_numeric = false;
+                let mut extra_filters: Vec<String> = Vec::new();
+                let mut implicit_limit: Option<u32> = None;
+                let mut has_invalid_mention = false;
+
+                for token in &tokens {
+                    if token.contains('=') {
+                        found_eq = true;
+                        for part in token.split(',') {
+                            extra_filters.push(part.to_string());
+                        }
+                        continue;
+                    }
+                    if let Some(at) = token.strip_prefix('@') {
+                        if let Ok(parsed) = at.parse::<i64>() {
+                            qq_id = Some(parsed);
+                        } else {
+                            has_invalid_mention = true;
+                        }
+                        continue;
+                    }
+                    if let Ok(num) = token.parse::<u64>() {
+                        if !found_eq {
+                            if num >= SCORE_ID_THRESHOLD {
+                                sid = Some(num);
+                            } else if bid.is_none() {
+                                bid = Some(num as u32);
+                            } else {
+                                implicit_limit = Some(num.clamp(1, MAX_LIMIT as u64) as u32);
+                            }
+                        }
+                        passed_numeric = true;
+                    } else if !found_eq && passed_numeric {
+                        uname_parts.push(token);
+                    }
+                }
+
+                let uname = if uname_parts.is_empty() {
+                    None
+                } else {
+                    Some(uname_parts.join(" "))
+                };
+
+                let all_filters = match filters {
+                    Some(mut f) => {
+                        f.extend(extra_filters);
+                        if f.is_empty() {
+                            None
+                        } else {
+                            Some(f)
+                        }
+                    }
+                    None => {
+                        if extra_filters.is_empty() {
+                            None
+                        } else {
+                            Some(extra_filters)
+                        }
+                    }
+                };
+
+                if has_invalid_mention {
+                    return Some(None);
+                }
+
+                if qq_id.is_some() && uname.is_none() {
+                    (bid, sid, None, qq_id, all_filters, implicit_limit)
+                } else if qq_id.is_none() {
+                    (
+                        bid,
+                        sid,
+                        uname,
+                        mentioned_user_id,
+                        all_filters,
+                        implicit_limit,
+                    )
+                } else {
+                    return Some(None);
+                }
+            };
+
+            let final_limit = limit
+                .or(implicit_limit)
+                .unwrap_or(if is_all { 20 } else { 1 });
+
+            return Some(Some(Command::ScoreOnBeatmap {
+                mode,
+                username,
+                qq,
+                beatmap_id,
+                score_id,
+                filters,
+                limit: final_limit,
+                limit_end,
+                is_all,
+            }));
+        }
+    }
+    None
+}
+
+/// Parse `!p`/`!r`/`!ps`/`!rs` pass/recent score commands.
+/// Returns `Some(Some(Command))` on success,
+/// `Some(None)` if the prefix matched but parsing failed,
+/// `None` if no pass/recent prefix matched.
+fn parse_pass_recent(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option<Command>> {
+    for (prefix, is_pass, default_limit) in [
+        ("!ps", true, 20u32),
+        ("!rs", false, 20u32),
+        ("!p", true, 1u32),
+        ("!r", false, 1u32),
+    ] {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                continue;
+            }
+            let rest = rest.trim();
+
+            let is_summary = default_limit > 1;
+
+            if rest.is_empty() {
+                return Some(Some(if is_pass {
+                    Command::Pass {
+                        mode: GameMode::Osu,
+                        username: None,
+                        qq: mentioned_user_id,
+                        limit: default_limit,
+                        limit_end: None,
+                        is_summary,
+                        filters: None,
+                    }
+                } else {
+                    Command::Recent {
+                        mode: GameMode::Osu,
+                        username: None,
+                        qq: mentioned_user_id,
+                        limit: default_limit,
+                        limit_end: None,
+                        is_summary,
+                        filters: None,
+                    }
+                }));
+            }
+
+            // Step 1: Extract +mods,conditions suffix
+            let (rest, mods, filters) = extract_plus_suffix(rest);
+            let filters = merge_mods_into_filters(mods, filters);
+
+            // Step 2: Extract #N or #N-M suffix (or implicit number)
+            let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
+                let num_str = &rest[hash_pos + 1..];
+                let (l, le) = parse_limit(num_str);
+                (rest[..hash_pos].trim().to_string(), l, le)
+            } else {
+                let tokens: Vec<&str> = rest.split_whitespace().collect();
+                if let Some(last) = tokens.last() {
+                    if let Ok(n) = last.parse::<u32>() {
+                        let (l, _) = parse_limit(&n.to_string());
+                        let without_last = tokens[..tokens.len() - 1].join(" ");
+                        (without_last, l, None)
+                    } else {
+                        (rest.to_string(), default_limit, None)
+                    }
+                } else {
+                    (rest.to_string(), default_limit, None)
+                }
+            };
+
+            // Step 3: Extract :mode suffix
+            let (rest, mode) = extract_mode(&rest);
+
+            // Step 4: Parse rest → username + inline filters
+            let rest = rest.trim();
+            let (username, qq, filters) = if rest.is_empty() {
+                (None, mentioned_user_id, filters)
+            } else {
+                let tokens: Vec<&str> = rest.split_whitespace().collect();
+                let mut name_parts: Vec<&str> = Vec::new();
+                let mut qq_id: Option<i64> = None;
+                let mut found_eq = false;
+                let mut extra_filters: Vec<String> = Vec::new();
+                let mut has_invalid_mention = false;
+
+                for token in &tokens {
+                    if let Some(at) = token.strip_prefix('@') {
+                        if let Ok(parsed) = at.parse::<i64>() {
+                            qq_id = Some(parsed);
+                        } else {
+                            has_invalid_mention = true;
+                        }
+                        continue;
+                    }
+                    if token.contains('=') {
+                        found_eq = true;
+                        for part in token.split(',') {
+                            extra_filters.push(part.to_string());
+                        }
+                    } else if !found_eq {
+                        name_parts.push(token);
+                    }
+                }
+
+                if has_invalid_mention {
+                    return Some(None);
+                }
+
+                let uname = if name_parts.is_empty() {
+                    None
+                } else {
+                    Some(name_parts.join(" "))
+                };
+
+                let all_filters = match filters {
+                    Some(mut f) => {
+                        f.extend(extra_filters);
+                        if f.is_empty() {
+                            None
+                        } else {
+                            Some(f)
+                        }
+                    }
+                    None => {
+                        if extra_filters.is_empty() {
+                            None
+                        } else {
+                            Some(extra_filters)
+                        }
+                    }
+                };
+
+                if qq_id.is_some() && uname.is_none() {
+                    (None, qq_id, all_filters)
+                } else if qq_id.is_none() {
+                    (uname, mentioned_user_id, all_filters)
+                } else {
+                    return Some(None);
+                }
+            };
+
+            let (final_limit, final_limit_end) = if default_limit == 1 {
+                (limit, None)
+            } else {
+                (limit, limit_end)
+            };
+
+            return Some(Some(if is_pass {
+                Command::Pass {
+                    mode,
+                    username,
+                    qq,
+                    limit: final_limit,
+                    limit_end: final_limit_end,
+                    is_summary,
+                    filters,
+                }
+            } else {
+                Command::Recent {
+                    mode,
+                    username,
+                    qq,
+                    limit: final_limit,
+                    limit_end: final_limit_end,
+                    is_summary,
+                    filters,
+                }
+            }));
+        }
+    }
+    None
+}
+
 /// 解析用户消息为命令
 /// 支持格式:
 /// - `~` / `~0` - 查询自己 std
@@ -132,6 +620,11 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         return Some(Command::Highlight { mode });
     }
 
+    // 帮助: !help
+    if msg == "!help" {
+        return Some(Command::Help);
+    }
+
     // 个人主页卡片: !profile [用户名] or !profile + @mention
     // Must be checked before !p/!r to avoid "!profile" being matched as "!p" + "rofile"
     if let Some(rest) = msg.strip_prefix("!profile") {
@@ -165,200 +658,13 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         });
     }
 
-    // Beatmap score command: !s, !ss
-    // Format: !s [<username>|@QQ] <beatmap_id|score_id> [:<mode>] [+<mods>] [#<N>]
-    // Format: !ss [<username>|@QQ] <beatmap_id> [:<mode>]
-    let s_cmds: &[(&str, bool)] = &[("!ss", true), ("!s", false)];
-    for &(prefix, is_all) in s_cmds {
-        if let Some(rest) = msg.strip_prefix(prefix) {
-            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                continue;
-            }
-            let rest = rest.trim();
-            // Parse +mods suffix
-            let (rest, mods) = if let Some(plus_pos) = rest.rfind('+') {
-                let mod_str = &rest[plus_pos + 1..];
-                if mod_str.len() >= 2 && mod_str.chars().all(|c| c.is_ascii_alphabetic()) {
-                    let parsed: Vec<String> = mod_str
-                        .chars()
-                        .collect::<Vec<_>>()
-                        .chunks(2)
-                        .map(|chunk| chunk.iter().collect::<String>().to_uppercase())
-                        .collect();
-                    (rest[..plus_pos].trim(), Some(parsed))
-                } else {
-                    (rest, None)
-                }
-            } else {
-                (rest, None)
-            };
-            // Parse #N suffix
-            let (rest, limit) = if let Some(hash_pos) = rest.rfind('#') {
-                let num_str = &rest[hash_pos + 1..];
-                match num_str.parse::<u32>() {
-                    Ok(n) if n >= 1 => (rest[..hash_pos].trim(), n.min(100)),
-                    Ok(_) => (rest[..hash_pos].trim(), 1),
-                    _ => (rest[..hash_pos].trim(), 1),
-                }
-            } else {
-                (rest, 1)
-            };
-            // Parse :mode suffix
-            let (username_part, mode) = if let Some(colon_pos) = rest.rfind(':') {
-                let mode_str = &rest[colon_pos + 1..];
-                if mode_str.is_empty() {
-                    (rest[..colon_pos].trim(), GameMode::Osu)
-                } else {
-                    match GameMode::from_mode_str(mode_str) {
-                        Some(mode) => (rest[..colon_pos].trim(), mode),
-                        None => return None,
-                    }
-                }
-            } else {
-                (rest, GameMode::Osu)
-            };
-            // Parse beatmap_id / score_id / username from remaining
-            let (beatmap_id, score_id, username, qq) = if username_part.is_empty() {
-                (None, None, None, mentioned_user_id)
-            } else {
-                let tokens: Vec<&str> = username_part.split_whitespace().collect();
-                let mut bid: Option<u32> = None;
-                let mut sid: Option<u64> = None;
-                let mut uname: Option<String> = None;
-                let mut qq_id: Option<i64> = None;
-                let mut name_parts: Vec<&str> = Vec::new();
-                let mut hit_numeric = false;
-
-                for token in tokens {
-                    if let Some(at) = token.strip_prefix('@') {
-                        if let Ok(parsed) = at.parse::<i64>() {
-                            qq_id = Some(parsed);
-                        } else {
-                            return None;
-                        }
-                        continue;
-                    }
-                    if let Ok(num) = token.parse::<u64>() {
-                        hit_numeric = true;
-                        if num >= 10_000_000 {
-                            sid = Some(num);
-                        } else if num <= 9_999_999 && bid.is_none() {
-                            bid = Some(num as u32);
-                        }
-                    } else if !hit_numeric {
-                        name_parts.push(token);
-                    } else {
-                        return None;
-                    }
-                }
-                if !name_parts.is_empty() {
-                    uname = Some(name_parts.join(" "));
-                }
-                (bid, sid, uname, qq_id)
-            };
-            // 互斥：不能同时提供用户名和 @QQ
-            if username.is_some() && qq.is_some() {
-                return None;
-            }
-            // If no user and no mention, resolve as self
-            let (username, qq) = if username.is_none() && qq.is_none() {
-                if let Some(qq_val) = mentioned_user_id {
-                    (None, Some(qq_val))
-                } else {
-                    (None, None)
-                }
-            } else {
-                (username, qq)
-            };
-
-            return Some(Command::ScoreOnBeatmap {
-                mode,
-                username,
-                qq,
-                beatmap_id,
-                score_id,
-                mods,
-                limit,
-                is_all,
-            });
-        }
+    // Dispatch to sub-parsers for score commands
+    if let Some(cmd) = parse_score_on_beatmap(&msg, mentioned_user_id) {
+        return cmd;
     }
 
-    // Pass/Recent score commands: !p, !r, !ps, !rs
-    // Format: !p [username] [:mode] [#N]
-    // Negative lookahead: command letter must NOT be followed by another letter/digit/underscore/hyphen.
-    // This prevents !pv, !profile, !rabc from matching while allowing !p, !p v, !p:3, !p#5.
-    for (prefix, is_pass, default_limit) in [
-        ("!ps", true, 20u32),
-        ("!rs", false, 20u32),
-        ("!p", true, 1u32),
-        ("!r", false, 1u32),
-    ] {
-        if let Some(rest) = msg.strip_prefix(prefix) {
-            // Negative lookahead: skip if command is immediately followed by a word character
-            if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                continue;
-            }
-            let rest = rest.trim();
-            // Parse #N suffix (from end)
-            let (rest, limit) = if let Some(hash_pos) = rest.rfind('#') {
-                let num_str = &rest[hash_pos + 1..];
-                match num_str.parse::<u32>() {
-                    Ok(n) if n >= 1 => (rest[..hash_pos].trim(), n.min(100)),
-                    Ok(_) => (rest[..hash_pos].trim(), default_limit),
-                    _ => (rest[..hash_pos].trim(), default_limit),
-                }
-            } else {
-                (rest, default_limit)
-            };
-            // Parse :mode suffix (from end, after #N removal)
-            let (username_part, mode) = if let Some(colon_pos) = rest.rfind(':') {
-                let mode_str = &rest[colon_pos + 1..];
-                if mode_str.is_empty() {
-                    // Bare colon with no mode string — treat as no mode specified
-                    (rest[..colon_pos].trim(), GameMode::Osu)
-                } else {
-                    match GameMode::from_mode_str(mode_str) {
-                        Some(mode) => (rest[..colon_pos].trim(), mode),
-                        None => return None, // Invalid mode string, ignore command
-                    }
-                }
-            } else {
-                (rest, GameMode::Osu)
-            };
-            let (username, qq) = if username_part.is_empty() {
-                if let Some(qq) = mentioned_user_id {
-                    (None, Some(qq))
-                } else {
-                    (None, None)
-                }
-            } else if let Some(at) = username_part.strip_prefix('@') {
-                if let Ok(parsed) = at.parse::<i64>() {
-                    (None, Some(parsed))
-                } else {
-                    return None;
-                }
-            } else {
-                (Some(username_part.to_string()), None)
-            };
-            return Some(if is_pass {
-                Command::Pass {
-                    mode,
-                    username,
-                    qq,
-                    limit,
-                    is_summary: default_limit > 1,
-                }
-            } else {
-                Command::Recent {
-                    mode,
-                    username,
-                    qq,
-                    limit,
-                    is_summary: default_limit > 1,
-                }
-            });
-        }
+    if let Some(cmd) = parse_pass_recent(&msg, mentioned_user_id) {
+        return cmd;
     }
 
     None
@@ -447,6 +753,12 @@ mod tests {
     }
 
     #[test]
+    fn test_help_command() {
+        let cmd = parse_command("!help", None).unwrap();
+        assert_eq!(cmd, Command::Help);
+    }
+
+    #[test]
     fn test_pass_self() {
         let cmd = parse_command("!p", None).unwrap();
         assert_eq!(
@@ -457,6 +769,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -472,6 +786,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -487,6 +803,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -502,6 +820,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -517,6 +837,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -532,6 +854,8 @@ mod tests {
                 qq: None,
                 limit: 20,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -547,6 +871,8 @@ mod tests {
                 qq: Some(123456),
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -562,6 +888,8 @@ mod tests {
                 qq: Some(123456),
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -595,6 +923,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -610,6 +940,8 @@ mod tests {
                 qq: None,
                 limit: 2,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -625,6 +957,8 @@ mod tests {
                 qq: None,
                 limit: 5,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -640,6 +974,8 @@ mod tests {
                 qq: None,
                 limit: 3,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -655,6 +991,8 @@ mod tests {
                 qq: None,
                 limit: 5,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -670,6 +1008,8 @@ mod tests {
                 qq: None,
                 limit: 100,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -685,6 +1025,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -700,6 +1042,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -715,6 +1059,8 @@ mod tests {
                 qq: None,
                 limit: 1,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -730,6 +1076,8 @@ mod tests {
                 qq: None,
                 limit: 3,
                 is_summary: false,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -745,14 +1093,27 @@ mod tests {
                 qq: None,
                 limit: 5,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
 
     #[test]
-    fn parse_ps_invalid_mode_returns_none() {
-        let result = parse_command("!ps :xyz", None);
-        assert!(result.is_none());
+    fn parse_ps_invalid_mode_falls_back_to_osu() {
+        let result = parse_command("!ps :xyz", None).unwrap();
+        assert_eq!(
+            result,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 20,
+                limit_end: None,
+                is_summary: true,
+                filters: None,
+            }
+        );
     }
 
     #[test]
@@ -784,6 +1145,8 @@ mod tests {
                 qq: None,
                 limit: 20,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             })
         );
     }
@@ -842,7 +1205,9 @@ mod tests {
                 username: None,
                 qq: None,
                 limit: 1,
-                is_summary: false
+                is_summary: false,
+                limit_end: None,
+                filters: None,
             }
             .group_name(),
             CommandGroup::Score
@@ -853,7 +1218,9 @@ mod tests {
                 username: None,
                 qq: None,
                 limit: 1,
-                is_summary: false
+                is_summary: false,
+                limit_end: None,
+                filters: None,
             }
             .group_name(),
             CommandGroup::Score
@@ -967,6 +1334,8 @@ mod tests {
                 qq: None,
                 limit: 20,
                 is_summary: true,
+                limit_end: None,
+                filters: None,
             }
         );
     }
@@ -982,9 +1351,10 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
+                filters: None,
+                limit_end: None,
             }
         );
     }
@@ -1000,16 +1370,17 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: Some(vec!["HD".to_string(), "DT".to_string()]),
+                filters: Some(vec!["mod=HDDT".to_string()]),
                 limit: 1,
                 is_all: false,
+                limit_end: None,
             }
         );
     }
 
     #[test]
     fn test_score_on_beatmap_with_mode_and_username() {
-        let cmd = parse_command("!s ZnCookie 123456 :2", None).unwrap();
+        let cmd = parse_command("!s :2 123456 ZnCookie", None).unwrap();
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
@@ -1018,9 +1389,10 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
+                filters: None,
+                limit_end: None,
             }
         );
     }
@@ -1036,9 +1408,10 @@ mod tests {
                 qq: None,
                 beatmap_id: None,
                 score_id: Some(12345678901),
-                mods: None,
                 limit: 1,
                 is_all: false,
+                filters: None,
+                limit_end: None,
             }
         );
     }
@@ -1054,9 +1427,10 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
-                limit: 1,
+                limit: 20,
                 is_all: true,
+                filters: None,
+                limit_end: None,
             }
         );
     }
@@ -1078,9 +1452,10 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 5,
                 is_all: false,
+                filters: None,
+                limit_end: None,
             }
         );
     }
@@ -1096,27 +1471,28 @@ mod tests {
                 qq: Some(123456),
                 beatmap_id: Some(789012),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
+                filters: None,
+                limit_end: None,
             }
         );
     }
 
     #[test]
     fn test_score_on_beatmap_username_and_qq_mutually_exclusive() {
-        assert!(parse_command("!s ZnCookie @999 123", None).is_none());
-        assert!(parse_command("!s @999 ZnCookie 123", None).is_none());
+        assert!(parse_command("!s 123 ZnCookie @999", None).is_none());
+        assert!(parse_command("!s 123 @999 ZnCookie", None).is_none());
     }
 
     #[test]
     fn test_score_on_beatmap_at_non_numeric_returns_none() {
-        assert!(parse_command("!s @ZnCookie 123456", None).is_none());
+        assert!(parse_command("!s 123456 @ZnCookie", None).is_none());
     }
 
     #[test]
     fn test_score_on_beatmap_multi_word_username() {
-        let cmd = parse_command("!s My Name 123456", None).unwrap();
+        let cmd = parse_command("!s 123456 My Name", None).unwrap();
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
@@ -1125,16 +1501,17 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
+                filters: None,
+                limit_end: None,
             }
         );
     }
 
     #[test]
     fn test_score_on_beatmap_multi_word_username_with_mode() {
-        let cmd = parse_command("!s Zhang San 123456 :2 #3 +HD", None).unwrap();
+        let cmd = parse_command("!s :2 123456 Zhang San #3 +HD", None).unwrap();
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
@@ -1143,16 +1520,17 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: Some(vec!["HD".to_string()]),
+                filters: Some(vec!["mod=HD".to_string()]),
                 limit: 3,
                 is_all: false,
+                limit_end: None,
             }
         );
     }
 
     #[test]
     fn test_score_on_beatmap_single_word_username_still_works() {
-        let cmd = parse_command("!s ZnCookie 123456", None).unwrap();
+        let cmd = parse_command("!s 123456 ZnCookie", None).unwrap();
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
@@ -1161,15 +1539,546 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
+                is_all: false,
+                filters: None,
+                limit_end: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_score_on_beatmap_username_before_numeric() {
+        // In new format, username comes after beatmap_id
+        let cmd = parse_command("!s 123456 ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                limit: 1,
+                is_all: false,
+                filters: None,
+                limit_end: None,
+            }
+        );
+    }
+
+    // === Unified format tests ===
+
+    #[test]
+    fn test_pass_new_format_mode_user() {
+        let cmd = parse_command("!p :1 ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Taiko,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 1,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_mode_user_hash() {
+        let cmd = parse_command("!p :2 ZnCookie #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 5,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_filters() {
+        let cmd = parse_command("!ps ZnCookie miss=1,combo=500", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 20,
+                limit_end: None,
+                is_summary: true,
+                filters: Some(vec!["miss=1".to_string(), "combo=500".to_string()]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_hash_without_hash() {
+        // !r :3 miss=1,combo=500 5  → 5 当作 #5
+        let cmd = parse_command("!r :3 miss=1,combo=500 5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Recent {
+                mode: GameMode::Mania,
+                username: None,
+                qq: None,
+                limit: 5,
+                limit_end: None,
+                is_summary: false,
+                filters: Some(vec!["miss=1".to_string(), "combo=500".to_string()]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_mode_alias_rejected() {
+        // String mode aliases are not supported — :std falls back to Osu
+        let cmd = parse_command("!p :std ZnCookie", None).unwrap();
+        match cmd {
+            Command::Pass { mode, .. } => assert_eq!(mode, GameMode::Osu),
+            _ => panic!("expected Command::Pass"),
+        }
+    }
+
+    #[test]
+    fn test_pass_new_format_invalid_mode_falls_back() {
+        let cmd = parse_command("!p :99", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_range_ps() {
+        let cmd = parse_command("!ps #2-10", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 2,
+                limit_end: Some(10),
+                is_summary: true,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_range_pr_ignored() {
+        let cmd = parse_command("!p #2-10", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 2,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_multi_word_username() {
+        let cmd = parse_command("!ps Zhang San miss=1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: Some("Zhang San".to_string()),
+                qq: None,
+                limit: 20,
+                limit_end: None,
+                is_summary: true,
+                filters: Some(vec!["miss=1".to_string()]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_qq_user() {
+        let cmd = parse_command("!ps @123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: Some(123456),
+                limit: 20,
+                limit_end: None,
+                is_summary: true,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_mods_and_filters() {
+        let cmd = parse_command("!p +HDHR,miss=1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                limit_end: None,
+                is_summary: false,
+                filters: Some(vec!["miss=1".to_string(), "mod=HDHR".to_string()]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_mods_only() {
+        let cmd = parse_command("!p +HDHR", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                limit_end: None,
+                is_summary: false,
+                filters: Some(vec!["mod=HDHR".to_string()]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_bare_command() {
+        let cmd = parse_command("!p", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                limit: 1,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_mode_user_limit() {
+        // !p :1 ZnCookie #5
+        let cmd = parse_command("!p :1 ZnCookie #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Taiko,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                limit: 5,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pass_new_format_mention_fallback() {
+        // When no user specified and mentioned_user_id is present
+        let cmd = parse_command("!p :1", Some(999999)).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Pass {
+                mode: GameMode::Taiko,
+                username: None,
+                qq: Some(999999),
+                limit: 1,
+                limit_end: None,
+                is_summary: false,
+                filters: None,
+            }
+        );
+    }
+
+    // === Unified !s/!ss format tests ===
+
+    #[test]
+    fn test_s_new_format_basic() {
+        let cmd = parse_command("!s 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 1,
+                limit_end: None,
                 is_all: false,
             }
         );
     }
 
     #[test]
-    fn test_score_on_beatmap_username_after_numeric_is_error() {
-        assert!(parse_command("!s 123456 TrailingName", None).is_none());
+    fn test_s_new_format_mode_beatmap_user() {
+        let cmd = parse_command("!s :2 123456 ZnCookie", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Catch,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_mods_filters() {
+        let cmd = parse_command("!s :1 123456 ZnCookie +HDHR,miss=1 #5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Taiko,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: Some(vec!["miss=1".to_string(), "mod=HDHR".to_string()]),
+                limit: 5,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_score_id() {
+        // >= 10_000_000 is score_id
+        let cmd = parse_command("!s :3 1234567890", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Mania,
+                username: None,
+                qq: None,
+                beatmap_id: None,
+                score_id: Some(1234567890),
+                filters: None,
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_ss_new_format_range() {
+        let cmd = parse_command("!ss 123456 #2-10", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 2,
+                limit_end: Some(10),
+                is_all: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_multi_word_username() {
+        let cmd = parse_command("!s :2 123456 Zhang San +DT,miss=1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Catch,
+                username: Some("Zhang San".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: Some(vec!["miss=1".to_string(), "mod=DT".to_string()]),
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_qq_user() {
+        let cmd = parse_command("!s :2 123456 @123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Catch,
+                username: None,
+                qq: Some(123456),
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_inline_filters_no_plus() {
+        let cmd = parse_command("!s 123456 ZnCookie miss=1,combo=500", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: Some("ZnCookie".to_string()),
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: Some(vec!["miss=1".to_string(), "combo=500".to_string()]),
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_bare_command() {
+        let cmd = parse_command("!s", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: None,
+                score_id: None,
+                filters: None,
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_mode_alias_rejected() {
+        // String mode aliases are not supported — :mania falls back to Osu
+        let cmd = parse_command("!s :mania 123456", None).unwrap();
+        match cmd {
+            Command::ScoreOnBeatmap { mode, .. } => assert_eq!(mode, GameMode::Osu),
+            _ => panic!("expected Command::ScoreOnBeatmap"),
+        }
+    }
+
+    #[test]
+    fn test_s_new_format_invalid_mode_falls_back() {
+        let cmd = parse_command("!s :99 123456", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 1,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_new_format_implicit_hash() {
+        // !s 123456 5 → beatmap_id=123456, limit=5
+        let cmd = parse_command("!s 123456 5", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 5,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_s_implicit_limit_clamped() {
+        // !s 123456 999999 → limit should be clamped to MAX_LIMIT (100)
+        let cmd = parse_command("!s 123456 999999", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: Some(123456),
+                score_id: None,
+                filters: None,
+                limit: 100,
+                limit_end: None,
+                is_all: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_ss_new_format_bare_command() {
+        let cmd = parse_command("!ss", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::ScoreOnBeatmap {
+                mode: GameMode::Osu,
+                username: None,
+                qq: None,
+                beatmap_id: None,
+                score_id: None,
+                filters: None,
+                limit: 20,
+                limit_end: None,
+                is_all: true,
+            }
+        );
     }
 }

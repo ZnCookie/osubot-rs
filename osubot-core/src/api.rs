@@ -375,6 +375,31 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             .pp()
     };
 
+    let calc_acc = |acc: f64| -> f64 {
+        if matches!(params.mode, GameMode::Osu) {
+            if let Some(s) = params.statistics {
+                let perf = match base_perf.clone() {
+                    Some(p) => p,
+                    None => return 0.0,
+                };
+                perf.accuracy(acc * 100.0)
+                    .combo(bm_combo)
+                    .misses(0)
+                    .large_tick_hits(s.osu_large_tick_hits as u32)
+                    .small_tick_hits(s.osu_small_tick_hits as u32)
+                    .slider_end_hits(s.osu_slider_tail_hits as u32)
+                    .calculate()
+                    .pp()
+            } else {
+                calc_pp(acc, combo, misses)
+            }
+        } else if matches!(params.mode, GameMode::Mania) {
+            calc_pp(acc, combo, 0)
+        } else {
+            calc_pp(acc, combo, misses)
+        }
+    };
+
     let if_fc = 'fc: {
         let Some(s) = params.statistics else {
             break 'fc calc_pp(params.accuracy, bm_combo, 0);
@@ -382,54 +407,16 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         let Some(perf) = base_perf.clone() else {
             break 'fc 0.0;
         };
-        let fc_counts = ScoreStatistics {
-            count_geki: s.count_geki,
-            count_300: s.count_300 + s.count_miss,
-            count_katu: s.count_katu,
-            count_100: s.count_100,
-            count_50: s.count_50,
-            count_miss: 0,
-            osu_large_tick_hits: s.osu_large_tick_hits,
-            osu_small_tick_hits: s.osu_small_tick_hits,
-            osu_slider_tail_hits: s.osu_slider_tail_hits,
-            osu_large_tick_misses: 0,
-            osu_small_tick_misses: 0,
-        };
-        match params.mode {
-            GameMode::Mania => perf
-                .n_geki(fc_counts.count_geki as u32)
-                .n300(fc_counts.count_300 as u32)
-                .n_katu(fc_counts.count_katu as u32)
-                .n100(fc_counts.count_100 as u32)
-                .n50(fc_counts.count_50 as u32)
-                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
-                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
-                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
-                .misses(fc_counts.count_miss as u32)
-                .calculate()
-                .pp(),
-            _ => perf
-                .n_geki(fc_counts.count_geki as u32)
-                .n300(fc_counts.count_300 as u32)
-                .n_katu(fc_counts.count_katu as u32)
-                .n100(fc_counts.count_100 as u32)
-                .n50(fc_counts.count_50 as u32)
-                .large_tick_hits(fc_counts.osu_large_tick_hits as u32)
-                .small_tick_hits(fc_counts.osu_small_tick_hits as u32)
-                .slider_end_hits(fc_counts.osu_slider_tail_hits as u32)
-                .misses(fc_counts.count_miss as u32)
-                .combo(bm_combo)
-                .calculate()
-                .pp(),
+        let mut p = perf
+            .accuracy(params.accuracy * 100.0)
+            .misses(0)
+            .large_tick_hits(s.osu_large_tick_hits as u32)
+            .small_tick_hits(s.osu_small_tick_hits as u32)
+            .slider_end_hits(s.osu_slider_tail_hits as u32);
+        if !matches!(params.mode, GameMode::Mania) {
+            p = p.combo(bm_combo);
         }
-    };
-
-    let calc_acc = |acc: f64| -> f64 {
-        if matches!(params.mode, GameMode::Mania) {
-            calc_pp(acc, combo, 0)
-        } else {
-            calc_pp(acc, combo, misses)
-        }
+        p.calculate().pp()
     };
 
     Some(PpIfAcc {
@@ -630,8 +617,7 @@ struct OsuApiScore {
     #[serde(default)]
     total_score: Option<i64>,
     #[serde(default)]
-    #[allow(dead_code)] // is_lazer now determined from build_id > 0 (aligned with yumu-bot)
-    is_lazer: bool,
+    is_lazer: Option<bool>,
     #[serde(default)]
     build_id: Option<i64>,
     #[serde(default)]
@@ -1106,7 +1092,9 @@ fn get_stable_accuracy(stats: &OsuApiScoreStatistics, mode: GameMode, passed: bo
 
 fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
     let bmap = api.beatmap.as_ref();
-    let is_lazer = api.build_id.is_some_and(|id| id > 0);
+    let is_lazer = api
+        .is_lazer
+        .unwrap_or_else(|| api.build_id.is_some_and(|id| id > 0));
     let has_hidden = api.mods.iter().any(|m| {
         let acronym = match m {
             OsuApiMod::String(s) => s.as_str(),
@@ -1584,7 +1572,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    debug_assert!(
+    assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
@@ -1622,7 +1610,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    debug_assert!(
+    assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
@@ -2445,7 +2433,7 @@ mod tests {
             passed: true,
             perfect: false,
             ended_at: "2024-01-01T00:00:00Z".to_string(),
-            is_lazer: false,
+            is_lazer: None,
             build_id: None,
             has_replay: true,
             legacy_score_id: None,
@@ -2782,8 +2770,25 @@ mod tests {
     #[test]
     fn test_api_score_to_score_lazer_by_build_id() {
         let mut api = make_full_score();
-        api.is_lazer = false;
         api.build_id = Some(12345);
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert!(score.is_lazer);
+    }
+
+    #[test]
+    fn test_api_score_to_score_stable_when_api_is_lazer_false() {
+        let mut api = make_full_score();
+        api.is_lazer = Some(false);
+        api.build_id = Some(12345);
+        let score = api_score_to_score(api, GameMode::Osu);
+        assert!(!score.is_lazer);
+    }
+
+    #[test]
+    fn test_api_score_to_score_lazer_when_api_is_lazer_true() {
+        let mut api = make_full_score();
+        api.is_lazer = Some(true);
+        api.build_id = None;
         let score = api_score_to_score(api, GameMode::Osu);
         assert!(score.is_lazer);
     }
@@ -2791,7 +2796,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_lazer_by_legacy_total_score_zero() {
         let mut api = make_full_score();
-        api.is_lazer = false;
+        api.is_lazer = None;
         api.build_id = None;
         api.legacy_total_score = Some(0);
         let score = api_score_to_score(api, GameMode::Osu);
@@ -2804,7 +2809,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_not_lazer_when_build_id_zero() {
         let mut api = make_full_score();
-        api.is_lazer = false;
+        api.is_lazer = None;
         api.build_id = Some(0);
         api.legacy_total_score = Some(5000);
         let score = api_score_to_score(api, GameMode::Osu);
@@ -2814,7 +2819,7 @@ mod tests {
     #[test]
     fn test_api_score_to_score_not_lazer_all_conditions_false() {
         let mut api = make_full_score();
-        api.is_lazer = false;
+        api.is_lazer = None;
         api.build_id = None;
         api.legacy_total_score = None;
         let score = api_score_to_score(api, GameMode::Osu);

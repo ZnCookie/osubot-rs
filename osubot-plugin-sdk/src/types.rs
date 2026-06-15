@@ -86,10 +86,13 @@ pub struct Command {
     pub beatmap_id: Option<u32>,
     /// Score ID extracted from `!s <score_id>` syntax.
     pub score_id: Option<u64>,
-    /// Mod filter (e.g. `+HDDT`) from score commands.
-    pub mods: Option<Vec<String>>,
+    /// Filter conditions (e.g. `["mod=HDDT", "miss=1"]`) from score commands.
+    /// Replaces the legacy `mods` field in the host payload.
+    pub filters: Option<Vec<String>>,
     /// Pagination limit (`#N`) from score list commands.
     pub limit: Option<u32>,
+    /// Pagination range end for `#N-M` syntax (e.g. `#2-10` yields `limit=2, limit_end=Some(10)`)
+    pub limit_end: Option<u32>,
     /// Mentioned user ID from `@` mentions in the command.
     pub mentioned_user_id: Option<i64>,
 }

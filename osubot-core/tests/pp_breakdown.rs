@@ -727,3 +727,239 @@ fn if_acc_ignores_passed_field_and_assumes_full_play() {
         "if-FC should not depend on the passed flag"
     );
 }
+
+// === Bug report: EZ+HD mods, breakdown total_pp vs acc_100 discrepancy ===
+// User reports: !p/!r SS score with EZ+HD shows total_pp=177 but acc_100=206.
+// Both should be equal for a 100% accuracy SS score.
+//
+// After fix: acc_100 now uses rosu-pp's Fast hitresult generator (full-map SS),
+// while total_pp uses the actual player combo from breakdown.
+// acc_100 (full-map SS) >= total_pp (actual play).
+
+#[test]
+fn ss_ezhd_acc_100_gte_total_pp() {
+    // simulate SS: all 300s, no 100s/50s, zero misses, 100% acc
+    let stats = ScoreStatistics {
+        count_geki: 0,
+        count_300: 400,
+        count_katu: 0,
+        count_100: 0,
+        count_50: 0,
+        count_miss: 0,
+        osu_large_tick_hits: 100,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 50,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
+    };
+    let bm_max_combo = 500;
+
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::EasyOsu(Default::default()));
+    mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods: mods.clone(),
+        accuracy: 1.0,
+        max_combo: 400,
+        miss_count: 0,
+        is_lazer: false,
+        statistics: Some(&stats),
+        beatmap_star_rating: None,
+        passed: true,
+    })
+    .expect("SS EZHD should return breakdown");
+
+    let if_acc = calculate_pp_if_acc(
+        PpCalcParams {
+            osu_path: &resource("2785319.osu"),
+            mode: GameMode::Osu,
+            mods,
+            accuracy: 1.0,
+            max_combo: 400,
+            miss_count: 0,
+            is_lazer: false,
+            statistics: Some(&stats),
+            beatmap_star_rating: None,
+            passed: true,
+        },
+        bm_max_combo,
+    )
+    .expect("SS EZHD should return if-acc");
+
+    eprintln!("SS EZHD combo=400/500:");
+    eprintln!("  breakdown total_pp = {}", pp.total_pp);
+    eprintln!("  acc_100            = {}", if_acc.acc_100);
+    eprintln!("  if_fc              = {}", if_acc.if_fc);
+    eprintln!("  perfect_pp         = {}", if_acc.perfect_pp);
+
+    // acc_100 = full-map SS PP, should be >= any partial-play PP
+    assert!(
+        if_acc.acc_100 >= pp.total_pp - 0.5,
+        "SS EZHD: acc_100 ({}) should be >= total_pp ({})",
+        if_acc.acc_100,
+        pp.total_pp
+    );
+
+    // acc_100 (full-map SS) should be >= if_fc (partial-object FC)
+    assert!(
+        if_acc.acc_100 >= if_acc.if_fc - 0.5,
+        "SS EZHD: acc_100 ({}) should be >= if_fc ({})",
+        if_acc.acc_100,
+        if_acc.if_fc
+    );
+
+    // perfect_pp and acc_100 are both full-map SS values
+    assert!(
+        (if_acc.acc_100 - if_acc.perfect_pp).abs() < 0.5,
+        "SS EZHD: acc_100 ({}) should equal perfect_pp ({})",
+        if_acc.acc_100,
+        if_acc.perfect_pp
+    );
+}
+
+#[test]
+fn ss_ezhd_slider_tick_miss_acc_100_is_full_map_ss() {
+    // SS score but combo broke due to slider tick miss, not circle miss.
+    // acc_100 should be the full-map theoretical SS PP,
+    // not capped by the broken combo or partial object count.
+    let stats = ScoreStatistics {
+        count_geki: 0,
+        count_300: 400,
+        count_katu: 0,
+        count_100: 0,
+        count_50: 0,
+        count_miss: 0,
+        osu_large_tick_hits: 80,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 40,
+        osu_large_tick_misses: 20,
+        osu_small_tick_misses: 0,
+    };
+
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::EasyOsu(Default::default()));
+    mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+    let bm_max_combo = 500;
+
+    let pp = calculate_pp_breakdown(PpCalcParams {
+        osu_path: &resource("2785319.osu"),
+        mode: GameMode::Osu,
+        mods: mods.clone(),
+        accuracy: 1.0,
+        max_combo: 380,
+        miss_count: 0,
+        is_lazer: false,
+        statistics: Some(&stats),
+        beatmap_star_rating: None,
+        passed: true,
+    })
+    .expect("SS tick-miss should return breakdown");
+
+    let if_acc = calculate_pp_if_acc(
+        PpCalcParams {
+            osu_path: &resource("2785319.osu"),
+            mode: GameMode::Osu,
+            mods,
+            accuracy: 1.0,
+            max_combo: 380,
+            miss_count: 0,
+            is_lazer: false,
+            statistics: Some(&stats),
+            beatmap_star_rating: None,
+            passed: true,
+        },
+        bm_max_combo,
+    )
+    .expect("SS tick-miss should return if-acc");
+
+    eprintln!("SS tick-miss EZHD:");
+    eprintln!("  breakdown total_pp = {}", pp.total_pp);
+    eprintln!("  acc_100            = {}", if_acc.acc_100);
+    eprintln!("  if_fc              = {}", if_acc.if_fc);
+
+    // acc_100 (full-map SS PP) should be >= total_pp (broken-combo PP)
+    assert!(
+        if_acc.acc_100 >= pp.total_pp - 0.5,
+        "SS tick-miss EZHD: acc_100 ({}) should be >= total_pp ({})",
+        if_acc.acc_100,
+        pp.total_pp
+    );
+
+    // acc_100 (full-map SS) should be >= if_fc (partial-object FC)
+    assert!(
+        if_acc.acc_100 >= if_acc.if_fc - 0.5,
+        "SS tick-miss EZHD: acc_100 ({}) should be >= if_fc ({})",
+        if_acc.acc_100,
+        if_acc.if_fc
+    );
+}
+
+#[test]
+fn ss_ezhd_acc100_equals_perfect_pp() {
+    let stats = ScoreStatistics {
+        count_geki: 0,
+        count_300: 400,
+        count_katu: 0,
+        count_100: 0,
+        count_50: 0,
+        count_miss: 0,
+        osu_large_tick_hits: 100,
+        osu_small_tick_hits: 0,
+        osu_slider_tail_hits: 50,
+        osu_large_tick_misses: 0,
+        osu_small_tick_misses: 0,
+    };
+    let bm_max_combo = 500;
+
+    let mut mods = GameMods::new();
+    mods.insert(rosu_mods::GameMod::EasyOsu(Default::default()));
+    mods.insert(rosu_mods::GameMod::HiddenOsu(Default::default()));
+
+    let if_acc = calculate_pp_if_acc(
+        PpCalcParams {
+            osu_path: &resource("2785319.osu"),
+            mode: GameMode::Osu,
+            mods: mods.clone(),
+            accuracy: 1.0,
+            max_combo: 500,
+            miss_count: 0,
+            is_lazer: false,
+            statistics: Some(&stats),
+            beatmap_star_rating: None,
+            passed: true,
+        },
+        bm_max_combo,
+    )
+    .expect("SS EZHD should return if-acc");
+
+    eprintln!("SS EZHD FC scenario:");
+    eprintln!("  acc_100   = {}", if_acc.acc_100);
+    eprintln!("  if_fc     = {}", if_acc.if_fc);
+    eprintln!("  perfect   = {}", if_acc.perfect_pp);
+
+    // All acc targets are monotonically increasing
+    assert!(if_acc.acc_95 <= if_acc.acc_97, "acc_95 <= acc_97");
+    assert!(if_acc.acc_97 <= if_acc.acc_98, "acc_97 <= acc_98");
+    assert!(if_acc.acc_98 <= if_acc.acc_99, "acc_98 <= acc_99");
+    assert!(if_acc.acc_99 <= if_acc.acc_100, "acc_99 <= acc_100");
+
+    // All values should be positive
+    assert!(if_acc.acc_95 > 0.0);
+    assert!(if_acc.acc_100 > 0.0);
+    assert!(if_acc.if_fc > 0.0);
+    assert!(if_acc.perfect_pp > 0.0);
+
+    // acc_100 (full-map SS via rosu-pp Fast) should equal perfect_pp (SS via IgnoreAccuracy)
+    // Both represent the theoretical maximum PP for the full map.
+    let diff = (if_acc.acc_100 - if_acc.perfect_pp).abs();
+    assert!(
+        diff < 0.5,
+        "SS EZHD FC: acc_100 ({}) should == perfect_pp ({}), diff={}",
+        if_acc.acc_100,
+        if_acc.perfect_pp,
+        diff
+    );
+}
