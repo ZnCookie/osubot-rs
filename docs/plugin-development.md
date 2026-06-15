@@ -49,7 +49,7 @@ pub enum PluginAction {
 
 ### `Command`
 
-`on_command` 收到的 JSON 包含：`command_type`、`group_id`、`user_id`、`message`、`mode`、`username`、`qq`、`beatmap_id`、`score_id`、`mods`、`limit`、`mentioned_user_id`。
+`on_command` 收到的 JSON 包含：`command_type`、`group_id`、`user_id`、`message`、`mode`、`username`、`qq`、`beatmap_id`、`score_id`、`filters`、`limit`、`limit_end`、`mentioned_user_id`。
 
 ### `QQMessage`
 
