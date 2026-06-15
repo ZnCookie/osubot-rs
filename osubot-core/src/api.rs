@@ -375,6 +375,43 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
             .pp()
     };
 
+    let calc_acc = |acc: f64| -> f64 {
+        if matches!(params.mode, GameMode::Osu) {
+            if let Some(s) = params.statistics {
+                let total = (s.count_300 + s.count_100 + s.count_50 + s.count_miss) as u32;
+                // Explicit hit counts for consistency with calculate_pp_breakdown
+                // accuracy = (n300 + n100/3) / total  (n50=0 for optimal distribution)
+                // n300 = (3*total*acc - total + misses) / 2
+                let n300_f = (3.0 * total as f64 * acc - total as f64 + misses as f64) / 2.0;
+                let n300 = n300_f.max(0.0).round() as u32;
+                let n300 = n300.min(total - misses);
+                let n100 = total - n300 - misses;
+                let perf = match base_perf.clone() {
+                    Some(p) => p,
+                    None => return 0.0,
+                };
+                perf.combo(combo)
+                    .n300(n300)
+                    .n100(n100)
+                    .n50(0u32)
+                    .n_geki(s.count_geki as u32)
+                    .n_katu(s.count_katu as u32)
+                    .large_tick_hits(s.osu_large_tick_hits as u32)
+                    .small_tick_hits(s.osu_small_tick_hits as u32)
+                    .slider_end_hits(s.osu_slider_tail_hits as u32)
+                    .misses(misses)
+                    .calculate()
+                    .pp()
+            } else {
+                calc_pp(acc, combo, misses)
+            }
+        } else if matches!(params.mode, GameMode::Mania) {
+            calc_pp(acc, combo, 0)
+        } else {
+            calc_pp(acc, combo, misses)
+        }
+    };
+
     let if_fc = 'fc: {
         let Some(s) = params.statistics else {
             break 'fc calc_pp(params.accuracy, bm_combo, 0);
@@ -421,14 +458,6 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
                 .combo(bm_combo)
                 .calculate()
                 .pp(),
-        }
-    };
-
-    let calc_acc = |acc: f64| -> f64 {
-        if matches!(params.mode, GameMode::Mania) {
-            calc_pp(acc, combo, 0)
-        } else {
-            calc_pp(acc, combo, misses)
         }
     };
 
