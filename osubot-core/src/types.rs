@@ -62,7 +62,6 @@ pub enum Command {
         qq: Option<i64>,
         beatmap_id: Option<u32>,
         score_id: Option<u64>,
-        mods: Option<Vec<String>>,
         filters: Option<Vec<String>>,
         limit: u32,
         limit_end: Option<u32>,

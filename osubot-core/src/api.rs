@@ -1584,7 +1584,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    debug_assert!(
+    assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
@@ -1622,7 +1622,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    debug_assert!(
+    assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );

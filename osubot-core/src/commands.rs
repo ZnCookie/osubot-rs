@@ -51,13 +51,23 @@ fn parse_limit(num_str: &str) -> (u32, Option<u32>) {
 /// Format: +MOD1MOD2,key=value,...
 /// - mods are pairs of uppercase letters before any '=' token
 /// - filters are key=value tokens after the first '=' token
+///
+/// Only tokens starting with `+` are treated as plus-suffix tokens.
 fn extract_plus_suffix(rest: &str) -> (String, Option<Vec<String>>, Option<Vec<String>>) {
-    let plus_pos = match rest.rfind('+') {
-        Some(p) => p,
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let plus_idx = match tokens.iter().rposition(|t| t.starts_with('+')) {
+        Some(i) => i,
         None => return (rest.to_string(), None, None),
     };
-    let suffix = &rest[plus_pos + 1..];
-    let new_rest = rest[..plus_pos].trim();
+    let token = tokens[plus_idx];
+    let suffix = &token[1..];
+    let new_rest: Vec<&str> = tokens
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != plus_idx)
+        .map(|(_, t)| *t)
+        .collect();
+    let new_rest = new_rest.join(" ");
 
     if suffix.is_empty() {
         return (new_rest.to_string(), None, None);
@@ -159,7 +169,6 @@ fn parse_score_on_beatmap(msg: &str, mentioned_user_id: Option<i64>) -> Option<O
                     qq: mentioned_user_id,
                     beatmap_id: None,
                     score_id: None,
-                    mods: None,
                     filters: None,
                     limit: if is_all { 20 } else { 1 },
                     limit_end: None,
@@ -299,7 +308,6 @@ fn parse_score_on_beatmap(msg: &str, mentioned_user_id: Option<i64>) -> Option<O
                 qq,
                 beatmap_id,
                 score_id,
-                mods: None,
                 filters,
                 limit: final_limit,
                 limit_end,
@@ -1332,7 +1340,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1352,7 +1359,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: Some(vec!["mod=HDDT".to_string()]),
                 limit: 1,
                 is_all: false,
@@ -1372,7 +1378,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1392,7 +1397,6 @@ mod tests {
                 qq: None,
                 beatmap_id: None,
                 score_id: Some(12345678901),
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1412,7 +1416,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 20,
                 is_all: true,
                 filters: None,
@@ -1438,7 +1441,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 5,
                 is_all: false,
                 filters: None,
@@ -1458,7 +1460,6 @@ mod tests {
                 qq: Some(123456),
                 beatmap_id: Some(789012),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1489,7 +1490,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1509,7 +1509,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: Some(vec!["mod=HD".to_string()]),
                 limit: 3,
                 is_all: false,
@@ -1529,7 +1528,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1550,7 +1548,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 limit: 1,
                 is_all: false,
                 filters: None,
@@ -1825,7 +1822,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 1,
                 limit_end: None,
@@ -1845,7 +1841,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 1,
                 limit_end: None,
@@ -1865,7 +1860,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: Some(vec!["miss=1".to_string(), "mod=HDHR".to_string()]),
                 limit: 5,
                 limit_end: None,
@@ -1886,7 +1880,6 @@ mod tests {
                 qq: None,
                 beatmap_id: None,
                 score_id: Some(1234567890),
-                mods: None,
                 filters: None,
                 limit: 1,
                 limit_end: None,
@@ -1906,7 +1899,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 2,
                 limit_end: Some(10),
@@ -1926,7 +1918,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: Some(vec!["miss=1".to_string(), "mod=DT".to_string()]),
                 limit: 1,
                 limit_end: None,
@@ -1946,7 +1937,6 @@ mod tests {
                 qq: Some(123456),
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 1,
                 limit_end: None,
@@ -1966,7 +1956,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: Some(vec!["miss=1".to_string(), "combo=500".to_string()]),
                 limit: 1,
                 limit_end: None,
@@ -1986,7 +1975,6 @@ mod tests {
                 qq: None,
                 beatmap_id: None,
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 1,
                 limit_end: None,
@@ -2016,7 +2004,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 1,
                 limit_end: None,
@@ -2037,7 +2024,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 5,
                 limit_end: None,
@@ -2058,7 +2044,6 @@ mod tests {
                 qq: None,
                 beatmap_id: Some(123456),
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 100,
                 limit_end: None,
@@ -2078,7 +2063,6 @@ mod tests {
                 qq: None,
                 beatmap_id: None,
                 score_id: None,
-                mods: None,
                 filters: None,
                 limit: 20,
                 limit_end: None,

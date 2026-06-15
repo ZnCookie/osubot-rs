@@ -1016,33 +1016,30 @@ async fn handle_beatmap_score_query(
     resp_tx: &mpsc::Sender<String>,
     cmd: &Command,
 ) {
-    let (mode, username, qq, beatmap_id, score_id, mods, filters, limit, limit_end, is_all) =
-        match cmd {
-            Command::ScoreOnBeatmap {
-                mode,
-                username,
-                qq,
-                beatmap_id,
-                score_id,
-                mods,
-                filters,
-                limit,
-                limit_end,
-                is_all,
-            } => (
-                *mode,
-                username.as_deref(),
-                *qq,
-                *beatmap_id,
-                *score_id,
-                mods.clone(),
-                filters.as_deref(),
-                *limit,
-                *limit_end,
-                *is_all,
-            ),
-            _ => return,
-        };
+    let (mode, username, qq, beatmap_id, score_id, filters, limit, limit_end, is_all) = match cmd {
+        Command::ScoreOnBeatmap {
+            mode,
+            username,
+            qq,
+            beatmap_id,
+            score_id,
+            filters,
+            limit,
+            limit_end,
+            is_all,
+        } => (
+            *mode,
+            username.as_deref(),
+            *qq,
+            *beatmap_id,
+            *score_id,
+            filters.as_deref(),
+            *limit,
+            *limit_end,
+            *is_all,
+        ),
+        _ => return,
+    };
 
     if let Some(sid) = score_id {
         info!(score_id = sid, "ScoreOnBeatmap by score_id");
@@ -1133,7 +1130,7 @@ async fn handle_beatmap_score_query(
     info!(
         beatmap_id = resolved_bid,
         mode = ?mode,
-        mods = ?mods,
+        filters = ?filters,
         limit,
         is_all,
         "ScoreOnBeatmap"
@@ -1279,16 +1276,14 @@ async fn handle_beatmap_score_query(
             render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
                 .await;
         } else {
-            // No filters: use existing single-score API
-            let key = (_user_id, resolved_bid as i64, mode, mods.clone());
+            // No filters: use existing single-score API (mods are in filters when present)
+            let key = (_user_id, resolved_bid as i64, mode, None::<Vec<String>>);
             let dedup_rscore = ctx.rate_limiter.clone();
             let dedup_oscore = ctx.oauth.clone();
-            let dedup_mods = mods.clone();
             let score_result = beatmap_score_dedup()
                 .run_or_wait(key, move || {
                     let rate_limiter = dedup_rscore.clone();
                     let oauth = dedup_oscore.clone();
-                    let mods = dedup_mods.clone();
                     async move {
                         api::get_user_beatmap_score(
                             &rate_limiter,
@@ -1296,22 +1291,15 @@ async fn handle_beatmap_score_query(
                             resolved_bid as i64,
                             _user_id,
                             mode,
-                            &mods,
+                            &None,
                         )
                         .await
                         .map_err(|e| match e {
-                            ApiError::NotFound => {
-                                if mods.is_some() {
-                                    "未找到符合该 mod 条件的成绩".to_string()
-                                } else {
-                                    "该玩家在此谱面上没有成绩".to_string()
-                                }
-                            }
+                            ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
                             e => {
                                 warn!(
                                     error = ?e,
                                     beatmap_id = resolved_bid,
-                                    ?mods,
                                     "get_user_beatmap_score failed"
                                 );
                                 "获取成绩失败，请稍后再试".to_string()
@@ -1773,12 +1761,6 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
         },
         "score_id": match cmd {
             Command::ScoreOnBeatmap { score_id, .. } => *score_id,
-            _ => None,
-        },
-        "mods": match cmd {
-            Command::ScoreOnBeatmap { mods, .. } => {
-                mods.as_ref().map(|m| m.iter().map(|m| m.to_string()).collect::<Vec<_>>())
-            }
             _ => None,
         },
         "limit": match cmd {
