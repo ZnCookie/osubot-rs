@@ -37,7 +37,7 @@ pub struct BotConfig {
     /// 命令处理超时（秒），默认 120
     #[serde(default = "default_command_timeout_secs")]
     pub command_timeout_secs: u64,
-    /// 渲染超时（秒），默认 30
+    /// 渲染超时（秒），默认 60
     #[serde(default = "default_render_timeout_secs")]
     pub render_timeout_secs: u64,
     /// OneBot API 请求超时（秒），默认 5
@@ -52,7 +52,7 @@ fn default_command_timeout_secs() -> u64 {
     120
 }
 fn default_render_timeout_secs() -> u64 {
-    30
+    60
 }
 fn default_onebot_api_timeout_secs() -> u64 {
     5
@@ -344,7 +344,7 @@ impl Default for Config {
                 onebot_url: std::env::var("ONEBOT_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
                 command_timeout_secs: 120,
-                render_timeout_secs: 30,
+                render_timeout_secs: 60,
                 onebot_api_timeout_secs: 5,
                 ur_timeout_secs: 10,
             },
