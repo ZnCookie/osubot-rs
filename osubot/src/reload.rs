@@ -13,6 +13,7 @@ use crate::scheduler::Scheduler;
 use crate::xfs_upstream::XfsUpstream;
 use crate::yumu_upstream::YumuUpstream;
 use osubot_core::irc::{IrcClient, IrcConfig as CoreIrcConfig};
+use osubot_core::log_fmt;
 use osubot_core::{OauthTokenCache, RateLimiter, UpstreamBindingProvider, UpstreamChain};
 use osubot_plugin::PluginManager;
 
@@ -82,7 +83,7 @@ impl ReloadCoordinator {
     pub fn start(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             if let Err(e) = self.run().await {
-                error!("ReloadCoordinator 致命错误: {e}");
+                error!("{}", log_fmt!("reload.coordinator_fatal", error = &e));
             }
         })
     }
@@ -124,9 +125,12 @@ impl ReloadCoordinator {
         watcher.watch(&initial_dir, RecursiveMode::NonRecursive)?;
 
         info!(
-            "文件监控已启动: config={}, plugins={}",
-            self.config_path.display(),
-            initial_dir.display()
+            "{}",
+            log_fmt!(
+                "reload.file_watch_started",
+                config = self.config_path.display(),
+                plugins = initial_dir.display()
+            )
         );
 
         while let Some(()) = rx.recv().await {
@@ -154,7 +158,7 @@ impl ReloadCoordinator {
         watcher: &mut RecommendedWatcher,
         plugin_dir: &Arc<std::sync::RwLock<PathBuf>>,
     ) {
-        info!("收到文件变更，开始热重载...");
+        info!("{}", log_fmt!("reload.file_change_detected"));
 
         self.handle.drain.store(true, Ordering::SeqCst);
         let drained = self.wait_drain().await;
@@ -164,14 +168,14 @@ impl ReloadCoordinator {
         let new_config = match self.reload_config(watcher, plugin_dir, &old_config).await {
             Ok(cfg) => cfg,
             Err(e) => {
-                error!("配置重载失败，保留旧配置并跳过插件重载: {e}");
+                error!("{}", log_fmt!("reload.config_reload_failed", error = &e));
                 self.handle.drain.store(false, Ordering::SeqCst);
                 return;
             }
         };
 
         if !drained {
-            error!("任务超时未排空，跳过插件重载以避免实例索引混乱");
+            error!("{}", log_fmt!("reload.drain_timeout"));
             self.apply_side_effects(&old_config, &new_config).await;
             *self.handle.config.write().await = new_config.clone();
             self.handle.drain.store(false, Ordering::SeqCst);
@@ -179,7 +183,10 @@ impl ReloadCoordinator {
         }
 
         if let Err(e) = self.reload_plugins().await {
-            error!("插件重载失败，回滚配置: {e}");
+            error!(
+                "{}",
+                log_fmt!("reload.plugin_reload_failed_rollback", error = &e)
+            );
             // 即使插件失败，也要应用 side effects（如 IRC 重连）
             // apply_side_effects 比较 old_config 和 new_config，用 new_config 的值触发副作用
             self.apply_side_effects(&old_config, &new_config).await;
@@ -205,10 +212,10 @@ impl ReloadCoordinator {
 
         let content = tokio::fs::read_to_string(&self.config_path)
             .await
-            .map_err(|e| format!("读取配置文件失败: {e}"))?;
+            .map_err(|e| log_fmt!("reload.err_read_failed", error = e.to_string()).to_string())?;
 
-        let mutable: MutableConfig =
-            toml::from_str(&content).map_err(|e| format!("TOML 解析失败: {e}"))?;
+        let mutable: MutableConfig = toml::from_str(&content)
+            .map_err(|e| log_fmt!("reload.err_toml_parse", error = e.to_string()).to_string())?;
 
         let new_osu = mutable.osu.unwrap_or(old_osu.clone());
         let new_irc = mutable.irc.unwrap_or(old_irc.clone());
@@ -228,61 +235,70 @@ impl ReloadCoordinator {
 
         // validate
         if new_config.bot.onebot_url.is_empty() {
-            return Err("onebot_url 为空".to_string());
+            return Err(log_fmt!("reload.err_onebot_url_empty").to_string());
         }
         if new_config.bot.command_timeout_secs < 5 {
-            return Err(format!(
-                "command_timeout_secs 过小（{} < 5 秒）",
-                new_config.bot.command_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_cmd_timeout_too_small",
+                value = new_config.bot.command_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.render_timeout_secs < 5 {
-            return Err(format!(
-                "render_timeout_secs 过小（{} < 5 秒）",
-                new_config.bot.render_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_render_timeout_too_small",
+                value = new_config.bot.render_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.onebot_api_timeout_secs < 2 {
-            return Err(format!(
-                "onebot_api_timeout_secs 过小（{} < 2 秒）",
-                new_config.bot.onebot_api_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_api_timeout_too_small",
+                value = new_config.bot.onebot_api_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.ur_timeout_secs < 3 {
-            return Err(format!(
-                "ur_timeout_secs 过小（{} < 3 秒）",
-                new_config.bot.ur_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_ur_timeout_too_small",
+                value = new_config.bot.ur_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.command_timeout_secs > 3600 {
-            return Err(format!(
-                "command_timeout_secs 过大（{} > 3600 秒）",
-                new_config.bot.command_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_cmd_timeout_too_large",
+                value = new_config.bot.command_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.render_timeout_secs > 600 {
-            return Err(format!(
-                "render_timeout_secs 过大（{} > 600 秒）",
-                new_config.bot.render_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_render_timeout_too_large",
+                value = new_config.bot.render_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.onebot_api_timeout_secs > 120 {
-            return Err(format!(
-                "onebot_api_timeout_secs 过大（{} > 120 秒）",
-                new_config.bot.onebot_api_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_api_timeout_too_large",
+                value = new_config.bot.onebot_api_timeout_secs
+            )
+            .to_string());
         }
         if new_config.bot.ur_timeout_secs > 300 {
-            return Err(format!(
-                "ur_timeout_secs 过大（{} > 300 秒）",
-                new_config.bot.ur_timeout_secs
-            ));
+            return Err(log_fmt!(
+                "reload.err_ur_timeout_too_large",
+                value = new_config.bot.ur_timeout_secs
+            )
+            .to_string());
         }
         if new_config.scheduler.interval_minutes > 1440 {
-            return Err(format!(
-                "scheduler.interval_minutes 过大（{} > 1440 分钟 = 1 天）",
-                new_config.scheduler.interval_minutes
-            ));
+            return Err(log_fmt!(
+                "reload.err_sched_interval_too_large",
+                value = new_config.scheduler.interval_minutes
+            )
+            .to_string());
         }
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
@@ -290,9 +306,9 @@ impl ReloadCoordinator {
             let cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
             let changed = *cur_dir != new_plugin_dir;
             if changed {
-                watcher
-                    .unwatch(cur_dir.as_path())
-                    .map_err(|e| format!("unwatch old plugin dir failed: {e}"))?;
+                watcher.unwatch(cur_dir.as_path()).map_err(|e| {
+                    log_fmt!("reload.unwatch_old_dir_failed", error = &e).to_string()
+                })?;
             }
             changed
         };
@@ -301,16 +317,19 @@ impl ReloadCoordinator {
             let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
             watcher
                 .watch(&new_plugin_dir, RecursiveMode::NonRecursive)
-                .map_err(|e| format!("watch new plugin dir failed: {e}"))?;
+                .map_err(|e| log_fmt!("reload.watch_new_dir_failed", error = &e).to_string())?;
             info!(
-                "插件目录监控已更新: {} → {}",
-                cur_dir.display(),
-                new_plugin_dir.display()
+                "{}",
+                log_fmt!(
+                    "reload.plugin_dir_watch_updated",
+                    old = cur_dir.display(),
+                    new = new_plugin_dir.display()
+                )
             );
             *cur_dir = new_plugin_dir;
         }
 
-        info!("配置验证通过，等待插件重载...");
+        info!("{}", log_fmt!("reload.config_validated"));
         Ok(new_config)
     }
 
@@ -331,7 +350,7 @@ impl ReloadCoordinator {
         // osu! API 凭据变更：更新 OAuth 缓存，旧 token 自动失效
         if new_osu.client_id != old_osu.client_id || new_osu.client_secret != old_osu.client_secret
         {
-            info!("osu! API 凭据已变更，正在更新 OAuth 缓存");
+            info!("{}", log_fmt!("reload.oauth_credentials_changed"));
             self.handle
                 .oauth
                 .update_credentials(new_osu.client_id.clone(), new_osu.client_secret.clone())
@@ -345,7 +364,7 @@ impl ReloadCoordinator {
             || new_irc.nickname != old_irc.nickname
             || new_irc.password != old_irc.password
         {
-            info!("IRC 配置已变更，正在重启连接");
+            info!("{}", log_fmt!("reload.irc_config_changed"));
             self.restart_irc(new_irc).await;
         }
 
@@ -353,7 +372,8 @@ impl ReloadCoordinator {
             info!(
                 old = %old_onebot_url,
                 new = %new_onebot_url,
-                "onebot_url 已变更，触发重连"
+                "{}",
+                log_fmt!("reload.onebot_url_changed")
             );
             self.handle.force_reconnect.store(true, Ordering::SeqCst);
         }
@@ -370,7 +390,7 @@ impl ReloadCoordinator {
             *chain = new_chain;
         }
 
-        info!("配置热重载成功（含副作用应用）");
+        info!("{}", log_fmt!("reload.config_reload_success"));
     }
 
     async fn reload_plugins(&self) -> Result<(), String> {
@@ -384,13 +404,11 @@ impl ReloadCoordinator {
             if let Some(ref mut pm) = *guard {
                 pm.reload_all(&plugin_config).await?;
             } else if plugin_config.instances.iter().any(|p| p.enabled) {
-                warn!(
-                    "PluginManager 未初始化（可能在启动时未启用插件），已启用插件将在下次 OneBot 重连后加载"
-                );
+                warn!("{}", log_fmt!("reload.plugin_manager_not_init"));
             }
         }
 
-        info!("插件热重载成功");
+        info!("{}", log_fmt!("reload.plugin_reload_success"));
         Ok(())
     }
 
@@ -405,7 +423,8 @@ impl ReloadCoordinator {
             if start.elapsed() >= timeout {
                 warn!(
                     in_flight = count,
-                    "等待进行中任务超时 ({DRAIN_TIMEOUT_SECS}s)，强制切换"
+                    "{}",
+                    log_fmt!("reload.drain_wait_timeout", timeout = DRAIN_TIMEOUT_SECS)
                 );
                 return false;
             }
@@ -424,12 +443,12 @@ impl ReloadCoordinator {
         }
 
         if !irc_cfg.enabled {
-            info!("IRC 已禁用，连接已关闭");
+            info!("{}", log_fmt!("reload.irc_disabled"));
             return;
         }
 
         if irc_cfg.nickname.is_empty() || irc_cfg.password.is_empty() {
-            warn!("IRC 已启用但 nickname/password 为空，跳过重连");
+            warn!("{}", log_fmt!("reload.irc_skipped"));
             return;
         }
 
@@ -444,10 +463,10 @@ impl ReloadCoordinator {
             let client = IrcClient::new(client_config, tx.clone());
             *guard = Some(tokio::spawn(async move {
                 if let Err(e) = client.run().await {
-                    error!(error = %e, "IRC client error");
+                    error!(error = %e, "{}", log_fmt!("reload.irc_client_error"));
                 }
             }));
-            info!("IRC 连接已重启");
+            info!("{}", log_fmt!("reload.irc_restarted"));
         }
     }
 }
@@ -472,7 +491,7 @@ pub(crate) fn build_upstream_chain(
                     providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
                 }
                 other => {
-                    warn!("unknown upstream provider type: {other}");
+                    warn!("{}", log_fmt!("reload.unknown_upstream", provider = other));
                 }
             }
         }

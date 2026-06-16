@@ -1,3 +1,5 @@
+use osubot_core::log_fmt;
+
 use crate::bridge::HostServices;
 use crate::types::{PluginAction, PluginMetadata};
 use std::time::Duration;
@@ -93,7 +95,7 @@ impl PluginInstance {
             }
         }
 
-        tracing::info!(name = %params.name, version = %metadata.version, commands = ?metadata.commands, "Plugin loaded");
+        tracing::info!(name = %params.name, version = %metadata.version, commands = ?metadata.commands, "{}", log_fmt!("instance.plugin_loaded"));
 
         Ok(Self {
             name: params.name,
@@ -233,10 +235,7 @@ impl PluginInstance {
             let data_len = u32::from_le_bytes(len_buf);
             self.dealloc(ptr, 4 + data_len);
         } else {
-            tracing::warn!(
-                ptr,
-                "dealloc_result: 无法读取长度前缀，跳过释放（WASM 线性内存泄漏）"
-            );
+            tracing::warn!(ptr, "{}", log_fmt!("instance.dealloc_length_prefix_failed"));
         }
     }
 

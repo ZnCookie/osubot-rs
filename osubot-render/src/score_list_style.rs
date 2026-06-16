@@ -160,7 +160,8 @@ pub struct ScoreListHtmlParams<'a> {
     pub cards: &'a [ScoreListCardData],
     pub username: &'a str,
     pub mode: osubot_types::GameMode,
-    pub is_pass: bool,
+    pub label: &'a str,
+    pub count_text: &'a str,
     pub avatar_data_uri: &'a str,
     pub hero_bg_data_uri: &'a str,
     pub user_pp: f64,
@@ -212,11 +213,7 @@ fn format_relative_time(created_at: &str) -> String {
 pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     let css = SCORE_LIST_CSS.to_string();
 
-    let label = if params.is_pass {
-        "最近通过"
-    } else {
-        "最近游玩"
-    };
+    let label = params.label;
     let mode_name = params.mode.name();
     let count = params.cards.len();
 
@@ -275,7 +272,7 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     html.push_str(r#"</span><span class="dot">·</span><span>"#);
     html.push_str(mode_name);
     html.push_str(r#"</span><span class="dot">·</span><span>"#);
-    html.push_str(&format!("{} 条记录", count));
+    html.push_str(&params.count_text.replacen("{}", &count.to_string(), 1));
     html.push_str(r#"</span></div></div></div></div>"#);
 
     // Score list
@@ -366,7 +363,8 @@ mod tests {
             cards: &[card],
             username: "TestUser",
             mode: osubot_types::GameMode::Osu,
-            is_pass: true,
+            label: "最近通过",
+            count_text: "{} 条记录",
             avatar_data_uri: "data:image/jpeg;base64,avatar",
             hero_bg_data_uri: "data:image/jpeg;base64,bg",
             user_pp: 9876.5,
@@ -403,7 +401,8 @@ mod tests {
             cards: &[card],
             username: "<b>Bad</b>",
             mode: osubot_types::GameMode::Osu,
-            is_pass: false,
+            label: "最近游玩",
+            count_text: "{} 条记录",
             avatar_data_uri: "",
             hero_bg_data_uri: "",
             user_pp: 5000.0,
@@ -461,7 +460,8 @@ mod tests {
             cards: &[card],
             username: "User",
             mode: osubot_types::GameMode::Osu,
-            is_pass: false,
+            label: "最近游玩",
+            count_text: "{} 条记录",
             avatar_data_uri: "",
             hero_bg_data_uri: "",
             user_pp: 5000.0,
@@ -584,7 +584,8 @@ mod tests {
             cards: &[card],
             username: "U",
             mode: osubot_types::GameMode::Osu,
-            is_pass: true,
+            label: "最近通过",
+            count_text: "{} 条记录",
             avatar_data_uri: "",
             hero_bg_data_uri: "",
             user_pp: 0.0,
@@ -632,7 +633,8 @@ mod tests {
             cards: &[card],
             username: "U",
             mode: osubot_types::GameMode::Osu,
-            is_pass: true,
+            label: "最近通过",
+            count_text: "{} 条记录",
             avatar_data_uri: "",
             hero_bg_data_uri: "data:image/jpeg;base64,HEROBG",
             user_pp: 0.0,
@@ -668,7 +670,8 @@ mod tests {
             cards: &[card],
             username: "U",
             mode: osubot_types::GameMode::Osu,
-            is_pass: true,
+            label: "最近通过",
+            count_text: "{} 条记录",
             avatar_data_uri: "",
             hero_bg_data_uri: "",
             user_pp: 0.0,

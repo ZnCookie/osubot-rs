@@ -17,9 +17,10 @@ use osubot_core::{
     api::{self, ApiError},
     dedup::RequestDedup,
     highlight::{format_highlight, get_highlight, HighlightError},
-    parse_command,
+    log_fmt, parse_command,
     response::{format_score, format_scores, format_stats_with_change},
     storage::Storage,
+    strings::user_str,
     types::{format_play_datetime, Command, GameMode, Score, UserStats},
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
@@ -203,17 +204,21 @@ struct BotContext {
     plugin_manager: Arc<tokio::sync::Mutex<Option<PluginManager>>>,
 }
 
-fn api_error_msg(e: &ApiError) -> String {
+fn api_error_msg(qq: i64, e: &ApiError) -> String {
     match e {
-        ApiError::NotFound => "未找到该用户".to_string(),
-        ApiError::MissingApiKey => "API Key 未配置".to_string(),
-        ApiError::OAuthError => "OAuth 认证失败".to_string(),
-        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-            format!("查询繁忙，请 {} 秒后再试", secs)
+        ApiError::NotFound => user_str("error.not_found").replace("{qq}", &qq.to_string()),
+        ApiError::MissingApiKey => user_str("error.api_key").replace("{qq}", &qq.to_string()),
+        ApiError::OAuthError => user_str("error.oauth").replace("{qq}", &qq.to_string()),
+        ApiError::RateLimitedWithRetryAfter(Some(secs)) => user_str("error.rate_limit")
+            .replace("{qq}", &qq.to_string())
+            .replace("{secs}", &secs.to_string()),
+        ApiError::RateLimitedWithRetryAfter(None) => {
+            user_str("error.rate_limit_generic").replace("{qq}", &qq.to_string())
         }
-        ApiError::RateLimitedWithRetryAfter(None) => "查询繁忙，请稍后再试".to_string(),
-        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
-        _ => "查询失败，请稍后重试".to_string(),
+        ApiError::ClientRateLimited => {
+            user_str("error.client_rate_limit").replace("{qq}", &qq.to_string())
+        }
+        _ => user_str("error.query_failed").replace("{qq}", &qq.to_string()),
     }
 }
 
@@ -224,10 +229,10 @@ impl BotContext {
             Ok(None) => {
                 let binding = self.upstream_chain.read().await.try_query(qq).await?;
                 if let Err(e) = self.storage.set_user_id(&binding.1, binding.0).await {
-                    warn!("failed to persist user_id from upstream: {e}");
+                    warn!("{}", log_fmt!("main.persist_user_id_failed", error = &e));
                 }
                 if let Err(e) = self.storage.bind(qq, binding.0, &binding.1).await {
-                    warn!("failed to persist binding from upstream: {e}");
+                    warn!("{}", log_fmt!("main.persist_binding_failed", error = &e));
                 }
                 Some(binding)
             }
@@ -258,7 +263,8 @@ impl BotContext {
                             qq = qq,
                             username = %stats.username,
                             error = %e,
-                            "Failed to update binding username"
+                            "{}",
+                            log_fmt!("main.update_binding_failed")
                         );
                     }
                 }
@@ -267,7 +273,8 @@ impl BotContext {
                         username = %stats.username,
                         user_id = user_id,
                         error = %e,
-                        "Failed to cache user_id"
+                        "{}",
+                        log_fmt!("main.cache_user_id_failed")
                     );
                 }
                 let change = self
@@ -279,18 +286,21 @@ impl BotContext {
                             user_id = user_id,
                             mode = ?mode,
                             error = %e,
-                            "Failed to calculate change"
+                            "{}",
+                            log_fmt!("main.calculate_change_failed")
                         )
                     })
                     .ok()
                     .flatten();
-                info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{log_label} success");
+                info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.log_label_success", label = log_label));
                 let response = format_stats_with_change(&stats, &change, mode);
-                let _ = resp_tx.send(response).await;
+                let _ = resp_tx
+                    .send(format!("[CQ:at,qq={}] {}", qq, response))
+                    .await;
             }
             Err(e) => {
-                warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{log_label} failed");
-                let _ = resp_tx.send(api_error_msg(&e)).await;
+                warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{}", log_fmt!("main.log_label_failed", label = log_label));
+                let _ = resp_tx.send(api_error_msg(qq, &e)).await;
             }
         }
     }
@@ -339,10 +349,13 @@ async fn resolve_score_user(
     mode: GameMode,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<(i64, String, UserStats)> {
-    tracing::trace!("resolve_score_user: starting");
+    tracing::trace!("{}", log_fmt!("main.resolve_score_user_start"));
     if let Some(ref name) = username {
         // Look up by username
-        tracing::trace!("resolve_score_user: looking up by username '{}'", name);
+        tracing::trace!(
+            "{}",
+            log_fmt!("main.resolve_score_user_lookup", username = name)
+        );
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
                 if let Err(e) = ctx
@@ -354,25 +367,35 @@ async fn resolve_score_user(
                         username = %stats.username,
                         user_id = stats.user_id,
                         error = %e,
-                        "Failed to cache user_id"
+                        "{}",
+                        log_fmt!("main.cache_user_id_failed")
                     );
                 }
                 Some((stats.user_id, stats.username.clone(), stats))
             }
             Err(e) => {
-                tracing::error!(error = ?e, username = %name, "resolve_score_user: API lookup failed");
+                tracing::error!(error = ?e, username = %name, "{}", log_fmt!("main.resolve_score_user_api_failed"));
                 let err_msg = match e {
-                    ApiError::NotFound => format!("找不到用户 \"{}\"", name),
-                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                        format!("请求过于频繁，请 {} 秒后再试", secs)
+                    ApiError::NotFound => user_str("error.not_found_named")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{name}", name),
+                    ApiError::MissingApiKey => {
+                        user_str("error.api_key").replace("{qq}", &msg.user_id.to_string())
                     }
+                    ApiError::OAuthError => {
+                        user_str("error.oauth").replace("{qq}", &msg.user_id.to_string())
+                    }
+                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => user_str("error.rate_limit")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{secs}", &secs.to_string()),
                     ApiError::RateLimitedWithRetryAfter(None) => {
-                        "请求过于频繁，请稍后再试".to_string()
+                        user_str("error.rate_limit_generic")
+                            .replace("{qq}", &msg.user_id.to_string())
                     }
-                    ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
-                    _ => "获取数据失败，请稍后再试".to_string(),
+                    ApiError::ClientRateLimited => user_str("error.client_rate_limit")
+                        .replace("{qq}", &msg.user_id.to_string()),
+                    _ => user_str("error.data_fetch_failed")
+                        .replace("{qq}", &msg.user_id.to_string()),
                 };
                 let _ = resp_tx.send(err_msg).await;
                 None
@@ -385,7 +408,7 @@ async fn resolve_score_user(
                 None => (
                     0,
                     String::new(),
-                    Some("该用户还没有绑定 osu! 账号".to_string()),
+                    Some(user_str("bind.user_not_bound").replace("{qq}", &msg.user_id.to_string())),
                 ),
             }
         } else {
@@ -394,7 +417,7 @@ async fn resolve_score_user(
                 None => (
                     0,
                     String::new(),
-                    Some("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string()),
+                    Some(user_str("bind.not_bound").replace("{qq}", &msg.user_id.to_string())),
                 ),
             }
         };
@@ -402,7 +425,10 @@ async fn resolve_score_user(
             let _ = resp_tx.send(err).await;
             return None;
         }
-        tracing::info!("resolve_score_user: fetching stats for user_id={}", user_id);
+        tracing::info!(
+            "{}",
+            log_fmt!("main.resolve_score_user_fetch_stats", user_id = user_id)
+        );
         match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
             Ok(stats) => {
                 if let Err(e) = ctx
@@ -414,15 +440,19 @@ async fn resolve_score_user(
                         username = %stats.username,
                         user_id = stats.user_id,
                         error = %e,
-                        "Failed to cache user_id"
+                        "{}",
+                        log_fmt!("main.cache_user_id_failed")
                     );
                 }
                 Some((user_id, stats.username.clone(), stats))
             }
             Err(e) => {
-                tracing::error!(error = ?e, user_id, "resolve_score_user: API lookup failed for bound user");
+                tracing::error!(error = ?e, user_id, "{}", log_fmt!("main.resolve_score_user_lookup_bound_failed"));
                 let _ = resp_tx
-                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .send(
+                        user_str("error.data_fetch_failed")
+                            .replace("{qq}", &msg.user_id.to_string()),
+                    )
                     .await;
                 None
             }
@@ -641,7 +671,7 @@ async fn handle_score_query(
     resp_tx: &mpsc::Sender<String>,
     params: ScoreQueryParams<'_>,
 ) {
-    tracing::trace!("handle_score_query: starting");
+    tracing::trace!("{}", log_fmt!("main.handle_score_query_start"));
 
     // For self/bound users (no explicit username/qq), resolve user_id from DB
     // and parallelize the two API calls. For username/QQ lookups, use the
@@ -659,21 +689,25 @@ async fn handle_score_query(
             Some(binding) => binding,
             None => {
                 let _ = resp_tx
-                    .send("你还没有绑定 osu! 账号，请使用 绑定 <用户名> 绑定".to_string())
+                    .send(user_str("bind.not_bound").replace("{qq}", &msg.user_id.to_string()))
                     .await;
                 return;
             }
         };
 
         tracing::trace!(
-            "handle_score_query: bound user, user_id={}, username={}",
-            uid,
-            name
+            "{}",
+            log_fmt!(
+                "main.handle_score_query_bound",
+                user_id = uid,
+                username = name
+            )
         );
         ctx.scheduler.trigger_update(uid, params.mode).await;
 
         let mode = params.mode;
         let is_pass = params.is_pass;
+        let qq = msg.user_id;
         let rate_limiter = ctx.rate_limiter.clone();
         let oauth = ctx.oauth.clone();
         let rl2 = rate_limiter.clone();
@@ -684,26 +718,33 @@ async fn handle_score_query(
             score_dedup().run_or_wait((uid, is_pass, api_limit, mode), move || {
                 let rate_limiter = rl2.clone();
                 let oauth = oa2.clone();
+
                 async move {
                     api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, api_limit)
                         .await
                         .map(Arc::new)
                         .map_err(|e| {
-                            warn!(user_id = uid, mode = ?mode, error = ?e, "Score query failed");
+                            warn!(user_id = uid, mode = ?mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
                             match e {
-                                ApiError::NotFound => "未找到该用户".to_string(),
+                                ApiError::NotFound => user_str("error.not_found").replace("{qq}",
+        &qq.to_string()),
                                 ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                    format!("请求过于频繁，请 {} 秒后再试", secs)
+                                    user_str("error.rate_limit")
+                                        .replace("{qq}", &qq.to_string())
+                                        .replace("{secs}", &secs.to_string())
                                 }
                                 ApiError::RateLimitedWithRetryAfter(None) => {
-                                    "请求过于频繁，请稍后再试".to_string()
+                                    user_str("error.rate_limit_generic")
+                                        .replace("{qq}", &qq.to_string())
                                 }
                                 ApiError::ClientRateLimited => {
-                                    "本地请求限流，请稍后再试".to_string()
+                                    user_str("error.client_rate_limit")
+                                        .replace("{qq}", &qq.to_string())
                                 }
                                 e => {
-                                    tracing::error!(error = ?e, "Score query error details");
-                                    "获取数据失败，请稍后再试".to_string()
+                                    tracing::error!(error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                                    user_str("error.data_fetch_failed").replace("{qq}",
+        &qq.to_string())
                                 }
                             }
                         })
@@ -722,15 +763,19 @@ async fn handle_score_query(
                         username = %stats.username,
                         user_id = stats.user_id,
                         error = %e,
-                        "Failed to cache user_id"
+                        "{}",
+                        log_fmt!("main.cache_user_id_failed")
                     );
                 }
                 stats
             }
             Err(e) => {
-                tracing::error!(error = ?e, user_id = uid, "resolve: API lookup failed for bound user");
+                tracing::error!(error = ?e, user_id = uid, "{}", log_fmt!("main.resolve_bound_user_failed"));
                 let _ = resp_tx
-                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .send(
+                        user_str("error.data_fetch_failed")
+                            .replace("{qq}", &msg.user_id.to_string()),
+                    )
                     .await;
                 return;
             }
@@ -738,20 +783,24 @@ async fn handle_score_query(
 
         (uid, name, user_stats, scores)
     } else {
+        let qq = msg.user_id;
         let (uid, name, user_stats) =
             match resolve_score_user(ctx, msg, params.username, params.qq, params.mode, resp_tx)
                 .await
             {
                 Some(u) => {
                     tracing::trace!(
-                        "resolve_score_user: resolved user_id={}, username={}",
-                        u.0,
-                        u.1
+                        "{}",
+                        log_fmt!(
+                            "main.resolve_score_user_resolved",
+                            user_id = u.0,
+                            username = &u.1
+                        )
                     );
                     u
                 }
                 None => {
-                    tracing::warn!("resolve_score_user: returned None");
+                    tracing::warn!("{}", log_fmt!("main.resolve_score_user_none"));
                     return;
                 }
             };
@@ -763,15 +812,19 @@ async fn handle_score_query(
         let dedup_mode = params.mode;
 
         tracing::trace!(
-            "Fetching scores for user_id={}, mode={:?}, limit={}",
-            uid,
-            params.mode,
-            api_limit
+            "{}",
+            log_fmt!(
+                "main.fetch_scores",
+                user_id = uid,
+                mode = &format!("{:?}", params.mode),
+                limit = api_limit
+            )
         );
         let scores: Result<Arc<Vec<Score>>, String> = score_dedup()
             .run_or_wait(dedup_key, move || {
                 let dedup_rate_limiter = dedup_rate_limiter.clone();
                 let dedup_oauth = dedup_oauth.clone();
+
                 async move {
                     api::get_user_recent(
                         &dedup_rate_limiter,
@@ -784,19 +837,26 @@ async fn handle_score_query(
                     .await
                     .map(Arc::new)
                     .map_err(|e| {
-                        warn!(user_id = uid, mode = ?dedup_mode, error = ?e, "Score query failed");
+                        warn!(user_id = uid, mode = ?dedup_mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
                         match e {
-                            ApiError::NotFound => "未找到该用户".to_string(),
+                            ApiError::NotFound => {
+                                user_str("error.not_found").replace("{qq}", &qq.to_string())
+                            }
                             ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                format!("请求过于频繁，请 {} 秒后再试", secs)
+                                user_str("error.rate_limit")
+                                    .replace("{qq}", &qq.to_string())
+                                    .replace("{secs}", &secs.to_string())
                             }
                             ApiError::RateLimitedWithRetryAfter(None) => {
-                                "请求过于频繁，请稍后再试".to_string()
+                                user_str("error.rate_limit_generic")
+                                    .replace("{qq}", &qq.to_string())
                             }
-                            ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
+                            ApiError::ClientRateLimited => user_str("error.client_rate_limit")
+                                .replace("{qq}", &qq.to_string()),
                             e => {
-                                tracing::error!(error = ?e, "Score query error details");
-                                "获取数据失败，请稍后再试".to_string()
+                                tracing::error!(error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                                user_str("error.data_fetch_failed").replace("{qq}",
+        &qq.to_string())
                             }
                         }
                     })
@@ -808,16 +868,17 @@ async fn handle_score_query(
     };
 
     let dedup_username = resolved_username.clone();
+    let qq = msg.user_id;
 
     match score_result {
         Ok(mut scores) => {
             if scores.is_empty() {
                 let empty_msg = if include_fails {
-                    "最近没有游玩记录（包括失败）"
+                    user_str("query.no_records").replace("{qq}", &msg.user_id.to_string())
                 } else {
-                    "最近没有游玩记录"
+                    user_str("query.no_records_pass").replace("{qq}", &msg.user_id.to_string())
                 };
-                let _ = resp_tx.send(empty_msg.to_string()).await;
+                let _ = resp_tx.send(empty_msg).await;
                 return;
             }
             ctx.last_beatmap
@@ -827,7 +888,13 @@ async fn handle_score_query(
                 let scores_arc = Arc::make_mut(&mut scores);
                 scores_arc.retain(|s| score_matches_filters(s, filters));
                 if scores_arc.is_empty() {
-                    let _ = resp_tx.send("没有符合条件的记录".to_string()).await;
+                    let _ = resp_tx
+                        .send(
+                            user_str("query.no_match")
+                                .replace("{qq}", &msg.user_id.to_string())
+                                .replace("{name}", user_str("query.noun_replay")),
+                        )
+                        .await;
                     return;
                 }
             }
@@ -836,11 +903,13 @@ async fn handle_score_query(
                 let index = (params.limit - 1) as usize;
                 if index >= scores.len() {
                     let _ = resp_tx
-                        .send(format!(
-                            "没有第{}条记录，只有{}条",
-                            params.limit,
-                            scores.len()
-                        ))
+                        .send(
+                            user_str("query.index_out_of_range")
+                                .replace("{qq}", &msg.user_id.to_string())
+                                .replace("{pos}", &params.limit.to_string())
+                                .replace("{name}", user_str("query.noun_replay"))
+                                .replace("{total}", &scores.len().to_string()),
+                        )
                         .await;
                     return;
                 }
@@ -862,11 +931,13 @@ async fn handle_score_query(
                     let end = end as usize;
                     if start >= scores.len() {
                         let _ = resp_tx
-                            .send(format!(
-                                "没有第{}条记录，只有{}条",
-                                params.limit,
-                                scores.len()
-                            ))
+                            .send(
+                                user_str("query.index_out_of_range")
+                                    .replace("{qq}", &msg.user_id.to_string())
+                                    .replace("{pos}", &params.limit.to_string())
+                                    .replace("{name}", user_str("query.noun_replay"))
+                                    .replace("{total}", &scores.len().to_string()),
+                            )
                             .await;
                         return;
                     }
@@ -944,7 +1015,8 @@ async fn handle_score_query(
                             user_id = user_id,
                             mode = ?params.mode,
                             error = %e,
-                            "Failed to calculate change"
+                            "{}",
+                            log_fmt!("main.calculate_change_failed")
                         )
                     })
                     .ok()
@@ -952,13 +1024,20 @@ async fn handle_score_query(
                 let pp_change = change.as_ref().and_then(|c| c.pp_change);
                 let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
                 let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
+                let score_label = if params.is_pass {
+                    user_str("fmt.recent_pass")
+                } else {
+                    user_str("fmt.recent_play")
+                };
+                let score_count_text = user_str("fmt.score_count");
                 let render_result = tokio::time::timeout(
                     std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
                     osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
                         scores: &scores,
                         username: &dedup_username,
                         mode: params.mode,
-                        is_pass: params.is_pass,
+                        label: score_label,
+                        count_text: score_count_text,
                         avatar_url: &avatar_url,
                         cover_images,
                         user_pp: user_stats.pp,
@@ -975,7 +1054,10 @@ async fn handle_score_query(
 
                 match render_result {
                     Ok(Ok(jpeg_bytes)) => {
-                        tracing::info!("Score list card rendered, {} bytes", jpeg_bytes.len());
+                        tracing::info!(
+                            "{}",
+                            log_fmt!("main.score_list_card_rendered", bytes = jpeg_bytes.len())
+                        );
                         let jpeg = Arc::new(jpeg_bytes);
                         let write = ctx.write.clone();
                         let group_id = msg.group_id;
@@ -985,21 +1067,30 @@ async fn handle_score_query(
                                 .await
                                 .is_err()
                             {
-                                let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                                let _ = resp_tx_img
+                                    .send(
+                                        user_str("error.image_send_failed")
+                                            .replace("{qq}", &qq.to_string()),
+                                    )
+                                    .await;
                             }
                         });
                     }
                     Ok(Err(e)) => {
-                        warn!(error = %e, "render_score_list_card failed, falling back to text");
+                        warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
                         let response =
                             format_scores(&scores, &dedup_username, params.mode, params.is_pass);
-                        let _ = resp_tx.send(response).await;
+                        let _ = resp_tx
+                            .send(format!("[CQ:at,qq={}] {}", qq, response))
+                            .await;
                     }
                     Err(_) => {
-                        warn!("render_score_list_card timed out, falling back to text");
+                        warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
                         let response =
                             format_scores(&scores, &dedup_username, params.mode, params.is_pass);
-                        let _ = resp_tx.send(response).await;
+                        let _ = resp_tx
+                            .send(format!("[CQ:at,qq={}] {}", qq, response))
+                            .await;
                     }
                 }
             }
@@ -1042,7 +1133,8 @@ async fn handle_beatmap_score_query(
     };
 
     if let Some(sid) = score_id {
-        info!(score_id = sid, "ScoreOnBeatmap by score_id");
+        info!(score_id = sid, "{}", log_fmt!("main.score_by_id"));
+        let qq = msg.user_id;
         let dedup_rate_limiter = ctx.rate_limiter.clone();
         let dedup_oauth = ctx.oauth.clone();
         let sid_key = sid as i64;
@@ -1050,14 +1142,18 @@ async fn handle_beatmap_score_query(
             .run_or_wait((sid_key, mode), move || {
                 let rate_limiter = dedup_rate_limiter.clone();
                 let oauth = dedup_oauth.clone();
+
                 async move {
                     api::get_score_by_id(&rate_limiter, &oauth, sid)
                         .await
                         .map_err(|e| match e {
-                            ApiError::NotFound => "未找到该成绩".to_string(),
+                            ApiError::NotFound => {
+                                user_str("query.score_not_found").replace("{qq}", &qq.to_string())
+                            }
                             e => {
-                                warn!(error = ?e, "get_score_by_id failed");
-                                "获取成绩失败，请稍后再试".to_string()
+                                warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                                user_str("query.score_fetch_failed")
+                                    .replace("{qq}", &qq.to_string())
                             }
                         })
                 }
@@ -1074,7 +1170,9 @@ async fn handle_beatmap_score_query(
 
         let user_id = score.user.user_id.unwrap_or(0);
         if user_id == 0 {
-            let _ = resp_tx.send("无法获取该玩家信息".to_string()).await;
+            let _ = resp_tx
+                .send(user_str("query.user_info_failed").replace("{qq}", &msg.user_id.to_string()))
+                .await;
             return;
         }
         let user_stats = match api::fetch_user_stats_by_user_id(
@@ -1095,16 +1193,20 @@ async fn handle_beatmap_score_query(
                         username = %stats.username,
                         user_id = stats.user_id,
                         error = %e,
-                        "Failed to cache user_id"
+                        "{}",
+                        log_fmt!("main.cache_user_id_failed")
                     );
                 }
                 ctx.scheduler.trigger_update(user_id, mode).await;
                 stats
             }
             Err(e) => {
-                warn!(user_id = user_id, error = ?e, "fetch_user_stats_by_user_id failed for score_id query");
+                warn!(user_id = user_id, error = ?e, "{}", log_fmt!("main.fetch_stats_score_id_failed"));
                 let _ = resp_tx
-                    .send("获取用户数据失败，请稍后再试".to_string())
+                    .send(
+                        user_str("error.data_fetch_failed")
+                            .replace("{qq}", &msg.user_id.to_string()),
+                    )
                     .await;
                 return;
             }
@@ -1120,7 +1222,10 @@ async fn handle_beatmap_score_query(
             Some(bid) => bid,
             None => {
                 let _ = resp_tx
-                    .send("请提供谱面 ID 或先查询一张图".to_string())
+                    .send(
+                        user_str("query.need_beatmap_or_cache")
+                            .replace("{qq}", &msg.user_id.to_string()),
+                    )
                     .await;
                 return;
             }
@@ -1133,7 +1238,8 @@ async fn handle_beatmap_score_query(
         filters = ?filters,
         limit,
         is_all,
-        "ScoreOnBeatmap"
+        "{}",
+        log_fmt!("main.score_on_beatmap")
     );
     ctx.last_beatmap.set(msg.group_id, resolved_bid);
 
@@ -1152,6 +1258,7 @@ async fn handle_beatmap_score_query(
     };
 
     ctx.scheduler.trigger_update(_user_id, mode).await;
+    let qq = msg.user_id;
 
     if is_all {
         let raw_api_limit = limit_end.or(if limit > 1 { Some(limit) } else { None });
@@ -1166,6 +1273,7 @@ async fn handle_beatmap_score_query(
             .run_or_wait(key, move || {
                 let rate_limiter = dedup_rall.clone();
                 let oauth = dedup_oall.clone();
+
                 async move {
                     api::get_user_beatmap_scores_all(
                         &rate_limiter,
@@ -1177,10 +1285,13 @@ async fn handle_beatmap_score_query(
                     )
                     .await
                     .map_err(|e| match e {
-                        ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                        ApiError::NotFound => {
+                            user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
+                        }
                         e => {
-                            warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                            "获取成绩失败，请稍后再试".to_string()
+                            warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                            user_str("query.score_fetch_failed").replace("{qq}",
+        &qq.to_string())
                         }
                     })
                 }
@@ -1194,7 +1305,9 @@ async fn handle_beatmap_score_query(
             }
         };
         if scores.is_empty() {
-            let _ = resp_tx.send("该玩家在此谱面上没有成绩".to_string()).await;
+            let _ = resp_tx
+                .send(user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()))
+                .await;
             return;
         }
 
@@ -1202,7 +1315,13 @@ async fn handle_beatmap_score_query(
         if let Some(filters) = filters {
             scores.retain(|s| score_matches_filters(s, filters));
             if scores.is_empty() {
-                let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
+                let _ = resp_tx
+                    .send(
+                        user_str("query.no_match")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{name}", user_str("query.noun_score")),
+                    )
+                    .await;
                 return;
             }
         }
@@ -1212,7 +1331,13 @@ async fn handle_beatmap_score_query(
             let end = end as usize;
             if start >= scores.len() {
                 let _ = resp_tx
-                    .send(format!("没有第{}条成绩，仅有{}条", limit, scores.len()))
+                    .send(
+                        user_str("query.index_out_of_range")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{pos}", &limit.to_string())
+                            .replace("{name}", user_str("query.noun_score"))
+                            .replace("{total}", &scores.len().to_string()),
+                    )
                     .await;
                 return;
             }
@@ -1230,30 +1355,34 @@ async fn handle_beatmap_score_query(
             let key = (_user_id, resolved_bid as i64, mode, Some(api_limit));
             let dedup_rscores = ctx.rate_limiter.clone();
             let dedup_oscores = ctx.oauth.clone();
-            let scores_result = beatmap_scores_dedup()
-                .run_or_wait(key, move || {
-                    let rate_limiter = dedup_rscores.clone();
-                    let oauth = dedup_oscores.clone();
-                    async move {
-                        api::get_user_beatmap_scores_all(
-                            &rate_limiter,
-                            &oauth,
-                            resolved_bid as i64,
-                            _user_id,
-                            mode,
-                            Some(api_limit),
-                        )
-                        .await
-                        .map_err(|e| match e {
-                            ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
-                            e => {
-                                warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                                "获取成绩失败，请稍后再试".to_string()
-                            }
-                        })
-                    }
-                })
-                .await;
+            let scores_result =
+                beatmap_scores_dedup()
+                    .run_or_wait(key, move || {
+                        let rate_limiter = dedup_rscores.clone();
+                        let oauth = dedup_oscores.clone();
+
+                        async move {
+                            api::get_user_beatmap_scores_all(
+                                &rate_limiter,
+                                &oauth,
+                                resolved_bid as i64,
+                                _user_id,
+                                mode,
+                                Some(api_limit),
+                            )
+                            .await
+                            .map_err(|e| match e {
+                                ApiError::NotFound => user_str("query.no_score_on_map")
+                                    .replace("{qq}", &qq.to_string()),
+                                e => {
+                                    warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                                    user_str("query.score_fetch_failed").replace("{qq}",
+        &qq.to_string())
+                                }
+                            })
+                        }
+                    })
+                    .await;
             let mut scores = match scores_result {
                 Ok(s) => s,
                 Err(err_msg) => {
@@ -1262,12 +1391,22 @@ async fn handle_beatmap_score_query(
                 }
             };
             if scores.is_empty() {
-                let _ = resp_tx.send("该玩家在此谱面上没有成绩".to_string()).await;
+                let _ = resp_tx
+                    .send(
+                        user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()),
+                    )
+                    .await;
                 return;
             }
             scores.retain(|s| score_matches_filters(s, filters));
             if scores.is_empty() {
-                let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
+                let _ = resp_tx
+                    .send(
+                        user_str("query.no_match")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{name}", user_str("query.noun_score")),
+                    )
+                    .await;
                 return;
             }
             let score = scores.swap_remove(0);
@@ -1282,6 +1421,7 @@ async fn handle_beatmap_score_query(
                 .run_or_wait(key, move || {
                     let rate_limiter = dedup_rscore.clone();
                     let oauth = dedup_oscore.clone();
+
                     async move {
                         api::get_user_beatmap_score(
                             &rate_limiter,
@@ -1293,14 +1433,18 @@ async fn handle_beatmap_score_query(
                         )
                         .await
                         .map_err(|e| match e {
-                            ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                            ApiError::NotFound => {
+                                user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
+                            }
                             e => {
                                 warn!(
                                     error = ?e,
                                     beatmap_id = resolved_bid,
-                                    "get_user_beatmap_score failed"
+                                    "{}",
+                                    log_fmt!("main.get_user_beatmap_score_failed")
                                 );
-                                "获取成绩失败，请稍后再试".to_string()
+                                user_str("query.score_fetch_failed")
+                                    .replace("{qq}", &qq.to_string())
                             }
                         })
                     }
@@ -1332,6 +1476,7 @@ async fn handle_beatmap_score_query(
             .run_or_wait(key, move || {
                 let rate_limiter = dedup_rscores.clone();
                 let oauth = dedup_oscores.clone();
+
                 async move {
                     api::get_user_beatmap_scores_all(
                         &rate_limiter,
@@ -1343,10 +1488,13 @@ async fn handle_beatmap_score_query(
                     )
                     .await
                     .map_err(|e| match e {
-                        ApiError::NotFound => "该玩家在此谱面上没有成绩".to_string(),
+                        ApiError::NotFound => {
+                            user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
+                        }
                         e => {
-                            warn!(error = ?e, "get_user_beatmap_scores_all failed");
-                            "获取成绩失败，请稍后再试".to_string()
+                            warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                            user_str("query.score_fetch_failed").replace("{qq}",
+        &qq.to_string())
                         }
                     })
                 }
@@ -1363,7 +1511,13 @@ async fn handle_beatmap_score_query(
         if let Some(filters) = filters {
             scores.retain(|s| score_matches_filters(s, filters));
             if scores.is_empty() {
-                let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
+                let _ = resp_tx
+                    .send(
+                        user_str("query.no_match")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{name}", user_str("query.noun_score")),
+                    )
+                    .await;
                 return;
             }
         }
@@ -1373,7 +1527,13 @@ async fn handle_beatmap_score_query(
             let end = end as usize;
             if start >= scores.len() {
                 let _ = resp_tx
-                    .send(format!("没有第{}条成绩，仅有{}条", limit, scores.len()))
+                    .send(
+                        user_str("query.index_out_of_range")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{pos}", &limit.to_string())
+                            .replace("{name}", user_str("query.noun_score"))
+                            .replace("{total}", &scores.len().to_string()),
+                    )
                     .await;
                 return;
             }
@@ -1381,7 +1541,13 @@ async fn handle_beatmap_score_query(
             let _ = scores.drain(..start);
             scores.truncate(end - start);
             if scores.is_empty() {
-                let _ = resp_tx.send("没有符合条件的成绩".to_string()).await;
+                let _ = resp_tx
+                    .send(
+                        user_str("query.no_match")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{name}", user_str("query.noun_score")),
+                    )
+                    .await;
                 return;
             }
             render_and_send_score_list(
@@ -1397,7 +1563,13 @@ async fn handle_beatmap_score_query(
         } else {
             if scores.len() < n {
                 let _ = resp_tx
-                    .send(format!("没有第{}条成绩，仅有{}条", n, scores.len()))
+                    .send(
+                        user_str("query.index_out_of_range")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{pos}", &n.to_string())
+                            .replace("{name}", user_str("query.noun_score"))
+                            .replace("{total}", &scores.len().to_string()),
+                    )
                     .await;
                 return;
             }
@@ -1433,7 +1605,7 @@ async fn render_and_send_single_score(
     enrich_score_with_pp(&mut score, mode, true).await;
 
     let ur_value = if mode == GameMode::Osu && score.score_id > 0 && score.has_replay {
-        tracing::trace!(score_id = score.score_id, mode = ?mode, is_lazer = score.is_lazer, length = score.length_seconds, "Starting UR calculation");
+        tracing::trace!(score_id = score.score_id, mode = ?mode, is_lazer = score.is_lazer, length = score.length_seconds, "{}", log_fmt!("main.ur_calculation_start"));
         let rl = ctx.rate_limiter.clone();
         let oa = ctx.oauth.clone();
         let ur_params = osubot_core::ur::ScoreUrParams {
@@ -1454,16 +1626,25 @@ async fn render_and_send_single_score(
                 tracing::debug!(
                     score_id = score.score_id,
                     total_ur = ur_val,
-                    "UR calculation succeeded"
+                    "{}",
+                    log_fmt!("main.ur_calculation_succeeded")
                 );
                 Some(ur_val)
             }
             Ok(None) => {
-                tracing::warn!(score_id = score.score_id, "UR calculation returned None");
+                tracing::warn!(
+                    score_id = score.score_id,
+                    "{}",
+                    log_fmt!("main.ur_calculation_none")
+                );
                 None
             }
             Err(_) => {
-                tracing::warn!(score_id = score.score_id, "UR calculation timed out");
+                tracing::warn!(
+                    score_id = score.score_id,
+                    "{}",
+                    log_fmt!("main.ur_calculation_timeout")
+                );
                 None
             }
         }
@@ -1473,7 +1654,8 @@ async fn render_and_send_single_score(
             mode = ?mode,
             is_lazer = score.is_lazer,
             has_replay = score.has_replay,
-            "Skipping UR calculation"
+            "{}",
+            log_fmt!("main.ur_calculation_skipped")
         );
         None
     };
@@ -1559,30 +1741,35 @@ async fn render_and_send_single_score(
     )
     .await;
 
+    let qq = msg.user_id;
+
     match render_result {
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
             let group_id = msg.group_id;
             let resp_tx_img = resp_tx.clone();
+
             tokio::spawn(async move {
                 if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
                     .await
                     .is_err()
                 {
-                    let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                    let _ = resp_tx_img
+                        .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
+                        .await;
                 }
             });
         }
         Ok(Err(e)) => {
-            warn!(error = %e, "render_score_card failed, falling back to text");
+            warn!(error = %e, "{}", log_fmt!("main.render_score_card_failed_text"));
             let text = format_score(&score, &user_stats.username, mode, position, is_pass);
-            let _ = resp_tx.send(text).await;
+            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
         }
         Err(_) => {
             cancel_flag.store(true, Ordering::Relaxed);
-            warn!("render_score_card timed out, falling back to text");
+            warn!("{}", log_fmt!("main.render_score_card_timeout_text"));
             let text = format_score(&score, &user_stats.username, mode, position, is_pass);
-            let _ = resp_tx.send(text).await;
+            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
         }
     }
 }
@@ -1652,7 +1839,8 @@ async fn render_and_send_score_list(
                 user_id = user_stats.user_id,
                 mode = ?mode,
                 error = %e,
-                "Failed to calculate change"
+                "{}",
+                log_fmt!("main.calculate_change_failed")
             )
         })
         .ok()
@@ -1661,13 +1849,16 @@ async fn render_and_send_score_list(
     let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
     let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
 
+    let score_label = user_str("fmt.beatmap_score");
+    let score_count_text = user_str("fmt.score_count");
     let render_result = tokio::time::timeout(
         Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
         render_score_list_card(osubot_render::ScoreListCardParams {
             scores: &scores_mut,
             username,
             mode,
-            is_pass: true,
+            label: score_label,
+            count_text: score_count_text,
             avatar_url: &avatar_url,
             cover_images,
             user_pp: user_stats.pp,
@@ -1682,29 +1873,34 @@ async fn render_and_send_score_list(
     )
     .await;
 
+    let qq = msg.user_id;
+
     match render_result {
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
             let group_id = msg.group_id;
             let resp_tx_img = resp_tx.clone();
+
             tokio::spawn(async move {
                 if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
                     .await
                     .is_err()
                 {
-                    let _ = resp_tx_img.send("图片发送失败".to_string()).await;
+                    let _ = resp_tx_img
+                        .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
+                        .await;
                 }
             });
         }
         Ok(Err(e)) => {
-            warn!(error = %e, "render_score_list_card failed, falling back to text");
+            warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
             let text = format_scores(&scores_mut, username, mode, true);
-            let _ = resp_tx.send(text).await;
+            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
         }
         Err(_) => {
-            warn!("render_score_list_card timed out, falling back to text");
+            warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
             let text = format_scores(&scores_mut, username, mode, true);
-            let _ = resp_tx.send(text).await;
+            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
         }
     }
 }
@@ -1778,10 +1974,6 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
 
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
-const HELP_TEXT: &str = "\
-绑定/解绑/~/查/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!help\n\
-\n\
-更多细节请移步 https://github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅";
 async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
     // ==== Plugin on_message dispatch (brief locks, never across .await) ====
     let msg_indices: Vec<usize> = {
@@ -1927,7 +2119,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         cfg.groups.get_group_config(msg.group_id)
     };
     if !group_cfg.is_enabled(cmd.group_name()) {
-        debug!(group_id = msg.group_id, command = ?cmd.group_name(), "命令已禁用，跳过");
+        debug!(group_id = msg.group_id, command = ?cmd.group_name(), "{}", log_fmt!("main.command_disabled"));
         return;
     }
 
@@ -1953,7 +2145,9 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         entry.command_timestamps.len() > 5
     };
     if rate_limited {
-        let _ = resp_tx.send("操作太频繁，请稍后再试".to_string()).await;
+        let _ = resp_tx
+            .send(user_str("error.rate_limit_generic").replace("{qq}", &msg.user_id.to_string()))
+            .await;
         return;
     }
 
@@ -1971,7 +2165,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
     // Handle command and send response
     match cmd {
         Command::QuerySelf { mode } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "QuerySelf command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_self"));
             match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
@@ -1986,7 +2180,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
                 Ok(None) => {
                     if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id).await {
-                        info!(user_id = msg.user_id, osu_id = user_id, username = %username, "QuerySelf auto-bound via upstream");
+                        info!(user_id = msg.user_id, osu_id = user_id, username = %username, "{}", log_fmt!("main.query_self_auto_bound"));
                         ctx.fetch_stats_and_reply(
                             msg.user_id,
                             user_id,
@@ -1997,20 +2191,33 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         )
                         .await;
                     } else {
-                        info!(user_id = msg.user_id, "QuerySelf but no binding");
+                        info!(
+                            user_id = msg.user_id,
+                            "{}",
+                            log_fmt!("main.query_self_no_binding")
+                        );
                         let _ = resp_tx
-                            .send("请先绑定 osu! 用户名，使用 绑定 <用户名>".to_string())
+                            .send(
+                                user_str("bind.not_bound")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
                             .await;
                     }
                 }
                 Err(_) => {
-                    error!(user_id = msg.user_id, "QuerySelf database error");
-                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                    error!(
+                        user_id = msg.user_id,
+                        "{}",
+                        log_fmt!("main.query_self_db_error")
+                    );
+                    let _ = resp_tx
+                        .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
+                        .await;
                 }
             }
         }
         Command::QueryUser { username, mode } => {
-            info!(group_id = msg.group_id, username = %username, mode = ?mode, "QueryUser command");
+            info!(group_id = msg.group_id, username = %username, mode = ?mode, "{}", log_fmt!("main.query_user"));
             match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, &username, mode)
                 .await
             {
@@ -2025,7 +2232,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                             username = %stats.username,
                             user_id = stats.user_id,
                             error = %e,
-                            "Failed to cache user_id"
+                            "{}",
+                            log_fmt!("main.cache_user_id_failed")
                         );
                     }
                     if stats.username != username {
@@ -2034,7 +2242,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                 username = %username,
                                 user_id = stats.user_id,
                                 error = %e,
-                                "Failed to cache user_id"
+                                "{}",
+                                log_fmt!("main.cache_user_id_failed")
                             );
                         }
                     }
@@ -2048,27 +2257,30 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                 user_id = stats.user_id,
                                 mode = ?mode,
                                 error = %e,
-                                "Failed to calculate change"
+                                "{}",
+                                log_fmt!("main.calculate_change_failed")
                             )
                         })
                         .ok()
                         .flatten();
                     let has_change = change.is_some();
-                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "QueryUser success");
+                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.query_user_success"));
                     let response = format_stats_with_change(&stats, &change, mode);
-                    let _ = resp_tx.send(response).await;
+                    let _ = resp_tx
+                        .send(format!("[CQ:at,qq={}] {}", msg.user_id, response))
+                        .await;
                     if !has_change {
-                        info!(username = %username, "QueryUser - no change data available");
+                        info!(username = %username, "{}", log_fmt!("main.query_user_no_change"));
                     }
                 }
                 Err(e) => {
-                    warn!(username = %username, mode = ?mode, error = ?e, "QueryUser failed");
-                    let _ = resp_tx.send(api_error_msg(&e)).await;
+                    warn!(username = %username, mode = ?mode, error = ?e, "{}", log_fmt!("main.query_user_failed"));
+                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                 }
             }
         }
         Command::QueryMentionedUser { qq, mode } => {
-            info!(qq = qq, group_id = msg.group_id, mode = ?mode, "QueryMentionedUser command");
+            info!(qq = qq, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_mentioned_user"));
             match ctx.storage.get_binding(qq).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
@@ -2083,7 +2295,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
                 Ok(None) => {
                     if let Some((user_id, username)) = ctx.resolve_binding(qq).await {
-                        info!(qq = qq, osu_id = user_id, username = %username, "QueryMentionedUser auto-bound via upstream");
+                        info!(qq = qq, osu_id = user_id, username = %username, "{}", log_fmt!("main.query_mentioned_auto_bound"));
                         ctx.fetch_stats_and_reply(
                             qq,
                             user_id,
@@ -2094,31 +2306,34 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         )
                         .await;
                     } else {
-                        info!(qq = qq, "QueryMentionedUser but no binding");
+                        info!(qq = qq, "{}", log_fmt!("main.query_mentioned_no_binding"));
                         let _ = resp_tx
                             .send(
-                                "该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定"
-                                    .to_string(),
+                                user_str("bind.mentioned_not_bound")
+                                    .replace("{qq}", &msg.user_id.to_string()),
                             )
                             .await;
                     }
                 }
                 Err(_) => {
-                    error!(qq = qq, "QueryMentionedUser database error");
-                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                    error!(qq = qq, "{}", log_fmt!("main.query_mentioned_db_error"));
+                    let _ = resp_tx
+                        .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
+                        .await;
                 }
             }
         }
         Command::Bind { username } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "Bind command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "{}", log_fmt!("main.bind_command"));
             match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((_, existing_username))) => {
-                    info!(user_id = msg.user_id, existing = %existing_username, "Bind but already bound");
+                    info!(user_id = msg.user_id, existing = %existing_username, "{}", log_fmt!("main.bind_already_bound"));
                     let _ = resp_tx
-                        .send(format!(
-                            "[CQ:at,qq={}] 你已经绑定为{},如需修改请先解绑",
-                            msg.user_id, existing_username
-                        ))
+                        .send(
+                            user_str("bind.already_bound")
+                                .replace("{qq}", &msg.user_id.to_string())
+                                .replace("{name}", &existing_username),
+                        )
                         .await;
                 }
                 Ok(None) => {
@@ -2134,20 +2349,24 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         match ctx.storage.has_pending_bind(msg.user_id).await {
                             Ok(true) => {
                                 let _ = resp_tx
-                                    .send(format!(
-                                        "[CQ:at,qq={}] 你已有进行中的绑定请求，请等待当前验证码过期后再试",
-                                        msg.user_id
-                                    ))
+                                    .send(
+                                        user_str("bind.pending_exists")
+                                            .replace("{qq}", &msg.user_id.to_string()),
+                                    )
                                     .await;
                                 return;
                             }
                             Err(_) => {
-                                error!(user_id = msg.user_id, "Failed to check pending bind");
+                                error!(
+                                    user_id = msg.user_id,
+                                    "{}",
+                                    log_fmt!("main.bind_check_pending_failed")
+                                );
                                 let _ = resp_tx
-                                    .send(format!(
-                                        "[CQ:at,qq={}] 绑定失败，请稍后重试",
-                                        msg.user_id
-                                    ))
+                                    .send(
+                                        user_str("bind.failed_retry")
+                                            .replace("{qq}", &msg.user_id.to_string()),
+                                    )
                                     .await;
                                 return;
                             }
@@ -2159,21 +2378,27 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                             .await
                         {
                             Ok(code) => {
-                                info!(user_id = msg.user_id, username = %username, code = %code, "Pending bind created");
+                                info!(user_id = msg.user_id, username = %username, code = %code, "{}", log_fmt!("main.bind_pending_created"));
                                 let _ = resp_tx
-                                    .send(format!(
-                                        "[CQ:at,qq={}] 您的验证码是 {}，请在两分钟内通过osu!发送私信给 {} 来完成验证",
-                                        msg.user_id, code, nickname
-                                    ))
+                                    .send(
+                                        user_str("bind.code_sent")
+                                            .replace("{qq}", &msg.user_id.to_string())
+                                            .replace("{code}", &code)
+                                            .replace("{target}", &nickname),
+                                    )
                                     .await;
                             }
                             Err(_) => {
-                                error!(user_id = msg.user_id, "Failed to create pending bind");
+                                error!(
+                                    user_id = msg.user_id,
+                                    "{}",
+                                    log_fmt!("main.bind_create_pending_failed")
+                                );
                                 let _ = resp_tx
-                                    .send(format!(
-                                        "[CQ:at,qq={}] 绑定失败，请稍后重试",
-                                        msg.user_id
-                                    ))
+                                    .send(
+                                        user_str("bind.failed_retry")
+                                            .replace("{qq}", &msg.user_id.to_string()),
+                                    )
                                     .await;
                             }
                         }
@@ -2183,7 +2408,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                 if let Err(e) =
                                     ctx.storage.set_user_id(&username, user_info.id).await
                                 {
-                                    warn!("Failed to cache user_id for {username}: {e}");
+                                    warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
                                 }
                                 match ctx
                                     .storage
@@ -2191,68 +2416,55 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                     .await
                                 {
                                     Ok(Ok(())) => {
-                                        info!(user_id = msg.user_id, username = %user_info.username, "Bind success");
+                                        info!(user_id = msg.user_id, username = %user_info.username, "{}", log_fmt!("main.bind_success"));
                                         let _ = resp_tx
-                                            .send(format!(
-                                                "[CQ:at,qq={}] 成功绑定为{}",
-                                                msg.user_id, user_info.username
-                                            ))
+                                            .send(
+                                                user_str("bind.success")
+                                                    .replace("{qq}", &msg.user_id.to_string())
+                                                    .replace("{name}", &user_info.username),
+                                            )
                                             .await;
                                     }
                                     Ok(Err(bound_qq)) => {
-                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "Bind failed - username already bound");
+                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
                                         let _ = resp_tx
-                                            .send(format!(
-                                                "[CQ:at,qq={}] 该 osu! 用户已绑定其他QQ",
-                                                msg.user_id
-                                            ))
+                                            .send(
+                                                user_str("bind.already_bound_other")
+                                                    .replace("{qq}", &msg.user_id.to_string()),
+                                            )
                                             .await;
                                     }
                                     Err(_) => {
-                                        error!(user_id = msg.user_id, username = %username, "Bind failed");
+                                        error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
                                         let _ = resp_tx
-                                            .send(format!(
-                                                "[CQ:at,qq={}] 绑定失败，请稍后重试",
-                                                msg.user_id
-                                            ))
+                                            .send(
+                                                user_str("bind.failed_retry")
+                                                    .replace("{qq}", &msg.user_id.to_string()),
+                                            )
                                             .await;
                                     }
                                 }
                             }
                             Ok(None) => {
-                                info!(username = %username, "Bind but user not found");
+                                info!(username = %username, "{}", log_fmt!("main.bind_user_not_found"));
                                 let _ = resp_tx
-                                    .send(format!("[CQ:at,qq={}] 未找到该 osu! 用户", msg.user_id))
+                                    .send(
+                                        user_str("bind.user_not_found")
+                                            .replace("{qq}", &msg.user_id.to_string()),
+                                    )
                                     .await;
                             }
                             Err(e) => {
-                                warn!(username = %username, error = ?e, "Bind - user info check failed");
-                                let err_msg = match e {
-                                    ApiError::NotFound => "未找到该用户".to_string(),
-                                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                        format!("查询繁忙，请 {} 秒后再试", secs)
-                                    }
-                                    ApiError::RateLimitedWithRetryAfter(None) => {
-                                        "查询繁忙，请稍后再试".to_string()
-                                    }
-                                    ApiError::ClientRateLimited => {
-                                        "本地请求限流，请稍后再试".to_string()
-                                    }
-                                    _ => "查询失败，请稍后重试".to_string(),
-                                };
-                                let _ = resp_tx
-                                    .send(format!("[CQ:at,qq={}] {}", msg.user_id, err_msg))
-                                    .await;
+                                warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
+                                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                             }
                         }
                     }
                 }
                 Err(_) => {
-                    error!(user_id = msg.user_id, "Bind database error");
+                    error!(user_id = msg.user_id, "{}", log_fmt!("main.bind_db_error"));
                     let _ = resp_tx
-                        .send(format!("[CQ:at,qq={}] 数据库错误", msg.user_id))
+                        .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
                         .await;
                 }
             }
@@ -2261,7 +2473,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             info!(
                 user_id = msg.user_id,
                 group_id = msg.group_id,
-                "Unbind command"
+                "{}",
+                log_fmt!("main.unbind_command")
             );
             // Check if user has pending unbind confirmation (within 5 minutes)
             match ctx.storage.get_pending_unbind(msg.user_id).await {
@@ -2273,18 +2486,25 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                 tracing::warn!(
                                     user_id = msg.user_id,
                                     error = %e,
-                                    "Failed to remove pending unbind"
+                                    "{}",
+                                    log_fmt!("main.unbind_remove_pending_failed")
                                 );
                             }
-                            info!(user_id = msg.user_id, "Unbind success");
+                            info!(user_id = msg.user_id, "{}", log_fmt!("main.unbind_success"));
                             let _ = resp_tx
-                                .send(format!("[CQ:at,qq={}] 解绑成功", msg.user_id))
+                                .send(
+                                    user_str("bind.unbind_success")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
                                 .await;
                         }
                         Err(_) => {
-                            error!(user_id = msg.user_id, "Unbind failed");
+                            error!(user_id = msg.user_id, "{}", log_fmt!("main.unbind_failed"));
                             let _ = resp_tx
-                                .send(format!("[CQ:at,qq={}] 解绑失败，请稍后重试", msg.user_id))
+                                .send(
+                                    user_str("bind.unbind_failed")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
                                 .await;
                         }
                     }
@@ -2297,52 +2517,72 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                 tracing::warn!(
                                     user_id = msg.user_id,
                                     error = %e,
-                                    "Failed to set pending unbind"
+                                    "{}",
+                                    log_fmt!("main.unbind_set_pending_failed")
                                 );
                             }
-                            info!(user_id = msg.user_id, username = %current_username, "Unbind confirmation requested");
+                            info!(user_id = msg.user_id, username = %current_username, "{}", log_fmt!("main.unbind_confirmation"));
                             let _ = resp_tx
-                                .send(format!(
-                                    "[CQ:at,qq={}] 确定要解除绑定 {} 吗？回复\"解绑\"确认",
-                                    msg.user_id, current_username
-                                ))
+                                .send(
+                                    user_str("bind.confirm_unbind")
+                                        .replace("{qq}", &msg.user_id.to_string())
+                                        .replace("{name}", &current_username),
+                                )
                                 .await;
                         }
                         Ok(None) => {
-                            info!(user_id = msg.user_id, "Unbind but no binding");
+                            info!(
+                                user_id = msg.user_id,
+                                "{}",
+                                log_fmt!("main.unbind_no_binding")
+                            );
                             let _ = resp_tx
-                                .send(format!(
-                                    "[CQ:at,qq={}] 你还没有绑定任何 osu! 用户",
-                                    msg.user_id
-                                ))
+                                .send(
+                                    user_str("bind.not_bound_any")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
                                 .await;
                         }
                         Err(_) => {
-                            error!(user_id = msg.user_id, "Unbind database error");
+                            error!(
+                                user_id = msg.user_id,
+                                "{}",
+                                log_fmt!("main.unbind_db_error")
+                            );
                             let _ = resp_tx
-                                .send(format!("[CQ:at,qq={}] 数据库错误", msg.user_id))
+                                .send(
+                                    user_str("error.db_error")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
                                 .await;
                         }
                     }
                 }
                 Err(_) => {
-                    error!(user_id = msg.user_id, "Unbind pending check error");
+                    error!(
+                        user_id = msg.user_id,
+                        "{}",
+                        log_fmt!("main.unbind_pending_check_error")
+                    );
                     let _ = resp_tx
-                        .send(format!("[CQ:at,qq={}] 数据库错误", msg.user_id))
+                        .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
                         .await;
                 }
             }
         }
         Command::Highlight { mode } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "Highlight command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.highlight_command"));
 
             let group_members =
                 match get_group_member_list(&ctx.write, &ctx.onebot_api, msg.group_id).await {
                     Ok(m) => m,
                     Err(e) => {
-                        warn!(error = %e, "Failed to get group member list");
+                        warn!(error = %e, "{}", log_fmt!("main.highlight_group_member_failed"));
                         let _ = resp_tx
-                            .send("无法获取群成员列表，请稍后重试".to_string())
+                            .send(
+                                user_str("error.get_group_member_failed")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
                             .await;
                         return;
                     }
@@ -2351,8 +2591,10 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             let all_bindings = match ctx.storage.get_all_user_bindings().await {
                 Ok(bindings) => bindings,
                 Err(_) => {
-                    error!("Highlight failed to get bindings");
-                    let _ = resp_tx.send("数据库错误".to_string()).await;
+                    error!("{}", log_fmt!("main.highlight_fetch_bindings_failed"));
+                    let _ = resp_tx
+                        .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
+                        .await;
                     return;
                 }
             };
@@ -2364,7 +2606,9 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
 
             if group_bindings.is_empty() {
                 let _ = resp_tx
-                    .send("你群根本没有人绑定 osu! 账号".to_string())
+                    .send(
+                        user_str("query.no_bound_users").replace("{qq}", &msg.user_id.to_string()),
+                    )
                     .await;
                 return;
             }
@@ -2383,10 +2627,12 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     let _ = resp_tx.send(response).await;
                 }
                 Err(e) => {
-                    warn!(error = ?e, "Highlight fetch failed");
+                    warn!(error = ?e, "{}", log_fmt!("main.highlight_fetch_failed"));
                     let err_msg = match e {
-                        HighlightError::NoData => "你群根本没有人屙屎。".to_string(),
-                        _ => "查询失败，请稍后重试".to_string(),
+                        HighlightError::NoData => user_str("highlight.no_data").to_string(),
+                        _ => {
+                            user_str("error.query_failed").replace("{qq}", &msg.user_id.to_string())
+                        }
                     };
                     let _ = resp_tx.send(err_msg).await;
                 }
@@ -2396,7 +2642,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             let target_user_id = match username {
                 Some(ref name) => {
                     if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name).await {
-                        info!(username = %name, user_id = cached_id, "ProfileCard resolved from local cache");
+                        info!(username = %name, user_id = cached_id, "{}", log_fmt!("main.profile_card_cached"));
                         cached_id
                     } else {
                         match api::fetch_user_stats_by_username(
@@ -2408,7 +2654,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                         .await
                         {
                             Ok(stats) => {
-                                info!(username = %name, user_id = stats.user_id, "ProfileCard resolved by username");
+                                info!(username = %name, user_id = stats.user_id, "{}", log_fmt!("main.profile_card_by_username"));
                                 if let Err(e) = ctx
                                     .storage
                                     .set_user_id(&stats.username, stats.user_id)
@@ -2418,87 +2664,99 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                                         username = %stats.username,
                                         user_id = stats.user_id,
                                         error = %e,
-                                        "Failed to cache user_id"
+                                        "{}",
+                                        log_fmt!("main.cache_user_id_failed")
                                     );
                                 }
                                 stats.user_id
                             }
                             Err(e) => {
-                                warn!(username = %name, error = ?e, "ProfileCard username resolution failed");
-                                let err_msg = match e {
-                                    ApiError::NotFound => "未找到该用户".to_string(),
-                                    ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                                    ApiError::OAuthError => "OAuth 认证失败".to_string(),
-                                    ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                                        format!("查询繁忙，请 {} 秒后再试", secs)
-                                    }
-                                    ApiError::RateLimitedWithRetryAfter(None) => {
-                                        "查询繁忙，请稍后再试".to_string()
-                                    }
-                                    ApiError::ClientRateLimited => {
-                                        "本地请求限流，请稍后再试".to_string()
-                                    }
-                                    _ => "查询失败，请稍后重试".to_string(),
-                                };
-                                let _ = resp_tx.send(err_msg).await;
+                                warn!(username = %name, error = ?e, "{}", log_fmt!("main.profile_card_resolution_failed"));
+                                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                                 return;
                             }
                         }
                     }
                 }
-                None => {
-                    match qq {
-                        Some(mentioned_qq) => match ctx.storage.get_binding(mentioned_qq).await {
-                            Ok(Some((user_id, current_username))) => {
-                                info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "ProfileCard mention");
-                                user_id
-                            }
-                            Ok(None) => {
-                                if let Some((uid, uname)) = ctx.resolve_binding(mentioned_qq).await
-                                {
-                                    info!(qq = mentioned_qq, osu_id = uid, username = %uname, "ProfileCard mention auto-bound");
-                                    uid
-                                } else {
-                                    info!(qq = mentioned_qq, "ProfileCard mention but no binding");
-                                    let _ = resp_tx
-                                        .send("该用户未绑定 osu! 账号，请使用 绑定 <osu用户名> 命令绑定".to_string())
-                                        .await;
-                                    return;
-                                }
-                            }
-                            Err(_) => {
-                                error!(qq = mentioned_qq, "ProfileCard mention database error");
-                                let _ = resp_tx.send("数据库错误".to_string()).await;
+                None => match qq {
+                    Some(mentioned_qq) => match ctx.storage.get_binding(mentioned_qq).await {
+                        Ok(Some((user_id, current_username))) => {
+                            info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "{}", log_fmt!("main.profile_card_mention"));
+                            user_id
+                        }
+                        Ok(None) => {
+                            if let Some((uid, uname)) = ctx.resolve_binding(mentioned_qq).await {
+                                info!(qq = mentioned_qq, osu_id = uid, username = %uname, "{}", log_fmt!("main.profile_card_mention_bound"));
+                                uid
+                            } else {
+                                info!(
+                                    qq = mentioned_qq,
+                                    "{}",
+                                    log_fmt!("main.profile_card_mention_no_binding")
+                                );
+                                let _ = resp_tx
+                                    .send(
+                                        user_str("bind.mentioned_not_bound")
+                                            .replace("{qq}", &msg.user_id.to_string()),
+                                    )
+                                    .await;
                                 return;
                             }
-                        },
-                        None => match ctx.storage.get_binding(msg.user_id).await {
-                            Ok(Some((user_id, current_username))) => {
-                                info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "ProfileCard self");
-                                user_id
-                            }
-                            Ok(None) => {
-                                if let Some((uid, uname)) = ctx.resolve_binding(msg.user_id).await {
-                                    info!(user_id = msg.user_id, osu_id = uid, username = %uname, "ProfileCard self auto-bound");
-                                    uid
-                                } else {
-                                    let _ = resp_tx
-                                        .send("请先绑定 osu! 用户名，或使用 !profile <用户名> 查询他人".to_string())
-                                        .await;
-                                    return;
-                                }
-                            }
-                            Err(_) => {
-                                error!(user_id = msg.user_id, "ProfileCard database error");
-                                let _ = resp_tx.send("数据库错误".to_string()).await;
+                        }
+                        Err(_) => {
+                            error!(
+                                qq = mentioned_qq,
+                                "{}",
+                                log_fmt!("main.profile_card_mention_db_error")
+                            );
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.db_error")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                            return;
+                        }
+                    },
+                    None => match ctx.storage.get_binding(msg.user_id).await {
+                        Ok(Some((user_id, current_username))) => {
+                            info!(user_id = msg.user_id, osu_id = user_id, username = %current_username, "{}", log_fmt!("main.profile_card_self"));
+                            user_id
+                        }
+                        Ok(None) => {
+                            if let Some((uid, uname)) = ctx.resolve_binding(msg.user_id).await {
+                                info!(user_id = msg.user_id, osu_id = uid, username = %uname, "{}", log_fmt!("main.profile_card_self_bound"));
+                                uid
+                            } else {
+                                let _ = resp_tx
+                                    .send(
+                                        user_str("query.profile_not_bound")
+                                            .replace("{qq}", &msg.user_id.to_string()),
+                                    )
+                                    .await;
                                 return;
                             }
-                        },
-                    }
-                }
+                        }
+                        Err(_) => {
+                            error!(
+                                user_id = msg.user_id,
+                                "{}",
+                                log_fmt!("main.profile_card_db_error")
+                            );
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.db_error")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                            return;
+                        }
+                    },
+                },
             };
 
-            info!(user_id = target_user_id, qq = ?qq, "ProfileCard command");
+            info!(user_id = target_user_id, qq = ?qq, "{}", log_fmt!("main.profile_card_command"));
+            let qq = msg.user_id;
 
             let dedup_rate_limiter = ctx.rate_limiter.clone();
             let dedup_oauth = ctx.oauth.clone();
@@ -2513,23 +2771,34 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     )
                     .await
                     .map_err(|e| match e {
-                        ApiError::NotFound => "未找到该用户".to_string(),
-                        ApiError::MissingApiKey => "API Key 未配置".to_string(),
-                        ApiError::OAuthError => "OAuth 认证失败".to_string(),
+                        ApiError::NotFound => {
+                            user_str("error.not_found").replace("{qq}", &qq.to_string())
+                        }
+                        ApiError::MissingApiKey => {
+                            user_str("error.api_key").replace("{qq}", &qq.to_string())
+                        }
+                        ApiError::OAuthError => {
+                            user_str("error.oauth").replace("{qq}", &qq.to_string())
+                        }
                         ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                            format!("查询繁忙，请 {} 秒后再试", secs)
+                            user_str("error.rate_limit")
+                                .replace("{qq}", &qq.to_string())
+                                .replace("{secs}", &secs.to_string())
                         }
                         ApiError::RateLimitedWithRetryAfter(None) => {
-                            "查询繁忙，请稍后再试".to_string()
+                            user_str("error.rate_limit_generic")
+                                .replace("{qq}", &qq.to_string())
                         }
-                        ApiError::ClientRateLimited => "本地请求限流，请稍后再试".to_string(),
-                        _ => "查询失败，请稍后重试".to_string(),
+                        ApiError::ClientRateLimited => user_str("error.client_rate_limit")
+                            .replace("{qq}", &qq.to_string()),
+                        _ => user_str("error.query_failed").replace("{qq}", &qq.to_string()),
                     })?;
                     info!(
                         user_id = dedup_target_id,
                         html_len = profile.html.len(),
                         hue = profile.profile_hue,
-                        "ProfileCard HTML fetched"
+                        "{}",
+                        log_fmt!("main.profile_card_html_fetched")
                     );
                     let profile_render = render_profile_card(
                         &profile.html,
@@ -2544,13 +2813,13 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     tokio::time::timeout(render_timeout, profile_render)
                         .await
                         .map_err(|_| {
-                            warn!(user_id = target_user_id, "ProfileCard render timed out");
-                            "渲染超时，请稍后重试".to_string()
+                            warn!(user_id = target_user_id, "{}", log_fmt!("main.profile_card_render_timeout"));
+                            user_str("error.render_timeout").replace("{qq}", &qq.to_string())
                         })?
                         .map(Arc::new)
                         .map_err(|e| {
-                            warn!(user_id = target_user_id, error = %e, "render failed");
-                            "渲染失败，请稍后重试".to_string()
+                            warn!(user_id = target_user_id, error = %e, "{}", log_fmt!("main.profile_card_render_failed"));
+                            user_str("error.render_failed").replace("{qq}", &qq.to_string())
                         })
                 })
                 .await;
@@ -2560,22 +2829,29 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     info!(
                         user_id = target_user_id,
                         jpeg_len = jpeg_bytes.len(),
-                        "ProfileCard rendered"
+                        "{}",
+                        log_fmt!("main.profile_card_rendered")
                     );
                     let write = ctx.write.clone();
                     let group_id = msg.group_id;
                     let resp_tx = resp_tx.clone();
+
                     tokio::spawn(async move {
                         if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
                             .await
                             .is_err()
                         {
-                            let _ = resp_tx.send("图片发送失败".to_string()).await;
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.image_send_failed")
+                                        .replace("{qq}", &qq.to_string()),
+                                )
+                                .await;
                         }
                     });
                 }
                 Err(msg) => {
-                    warn!(user_id = target_user_id, msg = %msg, "ProfileCard failed");
+                    warn!(user_id = target_user_id, msg = %msg, "{}", log_fmt!("main.profile_card_failed"));
                     let _ = resp_tx.send(msg).await;
                 }
             }
@@ -2584,7 +2860,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             info!(
                 user_id = msg.user_id,
                 group_id = msg.group_id,
-                "ScoreOnBeatmap command"
+                "{}",
+                log_fmt!("main.score_on_beatmap_cmd")
             );
             handle_beatmap_score_query(&ctx, &msg, &resp_tx, &cmd).await;
         }
@@ -2597,7 +2874,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             is_summary,
             filters,
         } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "Pass command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "{}", log_fmt!("main.pass_command"));
             handle_score_query(
                 &ctx,
                 &msg,
@@ -2624,7 +2901,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             is_summary,
             filters,
         } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "Recent command");
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = limit, "{}", log_fmt!("main.recent_command"));
             handle_score_query(
                 &ctx,
                 &msg,
@@ -2646,9 +2923,12 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             info!(
                 user_id = msg.user_id,
                 group_id = msg.group_id,
-                "Help command"
+                "{}",
+                log_fmt!("main.help_command")
             );
-            let _ = resp_tx.send(HELP_TEXT.to_string()).await;
+            let _ = resp_tx
+                .send(user_str("sys.help").replace("{qq}", &msg.user_id.to_string()))
+                .await;
         }
     }
 }
@@ -2671,7 +2951,7 @@ async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &
     });
     let mut sink = write.lock().await;
     if let Err(e) = sink.send(WsMsg::Text(json.to_string().into())).await {
-        tracing::error!("发送群消息失败: {}", e);
+        tracing::error!("{}", log_fmt!("main.send_group_msg_failed", error = &e));
     }
 }
 
@@ -2702,7 +2982,7 @@ async fn send_group_msg_with_image(
     sink.send(WsMsg::Text(json.to_string().into()))
         .await
         .inspect_err(|e| {
-            warn!(error = %e, group_id = group_id, "Failed to send group image message");
+            warn!(error = %e, group_id = group_id, "{}", log_fmt!("main.send_image_failed"));
         })
 }
 
@@ -2742,8 +3022,8 @@ async fn call_onebot_api(
 
     match result {
         Ok(Ok(data)) => Ok(data),
-        Ok(Err(_)) => Err("请求已取消".to_string()),
-        Err(_) => Err("请求超时".to_string()),
+        Ok(Err(_)) => Err(user_str("error.request_cancelled").to_string()),
+        Err(_) => Err(user_str("error.request_timeout").to_string()),
     }
 }
 
@@ -2760,7 +3040,7 @@ async fn get_group_member_list(
     )
     .await?;
 
-    let data = value.as_array().ok_or("无效的响应数据")?;
+    let data = value.as_array().ok_or(user_str("error.invalid_response"))?;
 
     let mut members = HashSet::new();
     for member in data {
@@ -2783,23 +3063,20 @@ async fn handle_irc_message(
     let pending = match storage.get_pending_bind(code).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            warn!(code = code, sender = %irc_msg.sender, "No matching pending bind for IRC code");
+            warn!(code = code, sender = %irc_msg.sender, "{}", log_fmt!("main.irc_no_pending_bind"));
             return;
         }
         Err(_) => {
-            error!("Database error looking up pending bind");
+            error!("{}", log_fmt!("main.irc_pending_bind_db_error"));
             return;
         }
     };
 
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
         if let Err(e) = storage.remove_pending_bind(code).await {
-            tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (username mismatch)");
+            tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.irc_pending_bind_username_mismatch"));
         }
-        let msg = format!(
-            "[CQ:at,qq={}] 绑定失败（绑定的不是本人）",
-            pending.qq_user_id
-        );
+        let msg = user_str("bind.wrong_person").replace("{qq}", &pending.qq_user_id.to_string());
         send_group_msg(&write, pending.group_id, &msg).await;
         return;
     }
@@ -2807,10 +3084,7 @@ async fn handle_irc_message(
     match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
         Ok(Some(info)) => {
             if let Err(e) = storage.set_user_id(&pending.target_username, info.id).await {
-                warn!(
-                    "Failed to cache user_id for {}: {e}",
-                    pending.target_username
-                );
+                warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
             }
             match storage
                 .bind(pending.qq_user_id, info.id, &info.username)
@@ -2818,51 +3092,61 @@ async fn handle_irc_message(
             {
                 Ok(Ok(())) => {
                     if let Err(e) = storage.remove_pending_bind(code).await {
-                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (bind success)");
+                        tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
                     }
-                    info!(qq = pending.qq_user_id, username = %info.username, "Bind verified and completed");
-                    let msg = format!(
-                        "[CQ:at,qq={}] 成功绑定为{}",
-                        pending.qq_user_id, info.username
-                    );
+                    info!(qq = pending.qq_user_id, username = %info.username, "{}", log_fmt!("main.irc_bind_verified"));
+                    let msg = user_str("bind.success")
+                        .replace("{qq}", &pending.qq_user_id.to_string())
+                        .replace("{name}", &info.username);
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Ok(Err(_)) => {
                     if let Err(e) = storage.remove_pending_bind(code).await {
-                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (already bound)");
+                        tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
                     }
-                    let msg = format!(
-                        "[CQ:at,qq={}] 绑定失败（该 osu! 用户已绑定其他 QQ）",
-                        pending.qq_user_id
-                    );
+                    let msg = user_str("bind.irc_already_bound_other")
+                        .replace("{qq}", &pending.qq_user_id.to_string());
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
                 Err(_) => {
                     if let Err(e) = storage.remove_pending_bind(code).await {
-                        tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (db error)");
+                        tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
                     }
-                    let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
+                    let msg = user_str("bind.failed_retry")
+                        .replace("{qq}", &pending.qq_user_id.to_string());
                     send_group_msg(&write, pending.group_id, &msg).await;
                 }
             }
         }
         Ok(None) => {
             if let Err(e) = storage.remove_pending_bind(code).await {
-                tracing::warn!(code = %code, error = %e, "Failed to remove pending bind (user not found)");
+                tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
             }
-            warn!("User {} not found during IRC bind", pending.target_username);
-            let msg = format!("[CQ:at,qq={}] 绑定失败（用户不存在）", pending.qq_user_id);
+            warn!(
+                "{}",
+                log_fmt!(
+                    "main.irc_bind_user_not_found",
+                    username = &pending.target_username
+                )
+            );
+            let msg = user_str("bind.irc_user_not_found")
+                .replace("{qq}", &pending.qq_user_id.to_string());
             send_group_msg(&write, pending.group_id, &msg).await;
         }
         Err(e) => {
             if let Err(e2) = storage.remove_pending_bind(code).await {
-                tracing::warn!(code = %code, error = %e2, "Failed to remove pending bind (api error)");
+                tracing::warn!(code = %code, error = %e2, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e2));
             }
             warn!(
-                "Failed to fetch user info for {} during IRC bind: {e}",
-                pending.target_username
+                "{}",
+                log_fmt!(
+                    "main.irc_bind_fetch_failed",
+                    username = &pending.target_username,
+                    error = &e
+                )
             );
-            let msg = format!("[CQ:at,qq={}] 绑定失败，请稍后重试", pending.qq_user_id);
+            let msg =
+                user_str("bind.failed_retry").replace("{qq}", &pending.qq_user_id.to_string());
             send_group_msg(&write, pending.group_id, &msg).await;
         }
     }
@@ -2883,15 +3167,17 @@ async fn main() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
-    info!("Starting osubot...");
+    info!("{}", log_fmt!("main.startup"));
 
     osubot_render::ensure_cache_dir().await;
 
     let config = Config::from_path("osubot.toml").expect("Failed to load config");
     let config = Arc::new(tokio::sync::RwLock::new(config));
 
-    info!("osubot starting...");
-    info!("OneBot URL: {}", config.read().await.bot.onebot_url);
+    info!(
+        "{}",
+        log_fmt!("main.onebot_url", url = &config.read().await.bot.onebot_url)
+    );
 
     let db_path = config.read().await.database.path.clone();
     let storage = Arc::new(
@@ -2929,27 +3215,40 @@ async fn main() {
 
     match storage.get_users_without_ids().await {
         Ok(users) if !users.is_empty() => {
-            info!("Backfilling user IDs for {} users...", users.len());
+            info!("{}", log_fmt!("main.backfilling", count = users.len()));
             for username in &users {
                 match api::get_user_info(&rate_limiter, &oauth, username).await {
                     Ok(Some(info)) => {
                         if let Err(e) = storage.set_user_id(username, info.id).await {
-                            warn!("Failed to cache user_id for {username}: {e}");
+                            warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
                         } else {
-                            info!("Cached user_id for {username}: {}", info.id);
+                            info!(
+                                "{}",
+                                log_fmt!("main.backfilled", username = username, user_id = info.id)
+                            );
                         }
                     }
                     Ok(None) => {
-                        warn!("User {username} not found during backfill");
+                        warn!(
+                            "{}",
+                            log_fmt!("main.backfill_not_found", username = username)
+                        );
                     }
                     Err(e) => {
-                        warn!("Failed to fetch user info for {username} during backfill: {e}");
+                        warn!(
+                            "{}",
+                            log_fmt!(
+                                "main.backfill_fetch_failed",
+                                username = username,
+                                error = &e
+                            )
+                        );
                     }
                 }
             }
         }
-        Ok(_) => info!("All bound users already have cached user IDs"),
-        Err(e) => error!("Failed to query users without IDs: {e}"),
+        Ok(_) => info!("{}", log_fmt!("main.all_users_cached")),
+        Err(e) => error!("{}", log_fmt!("main.backfill_query_failed", error = &e)),
     }
 
     let scheduler = Scheduler::new(
@@ -2991,7 +3290,7 @@ async fn main() {
             let irc_client = osubot_core::irc::IrcClient::new(irc_config, irc_tx);
             *irc_handle.lock().unwrap() = Some(tokio::spawn(async move {
                 if let Err(e) = irc_client.run().await {
-                    error!(error = %e, "IRC client error");
+                    error!(error = %e, "{}", log_fmt!("main.irc_client_error"));
                 }
             }));
         }
@@ -3000,7 +3299,7 @@ async fn main() {
     {
         let cfg = config.read().await;
         if cfg.osu.client_secret.is_empty() || cfg.osu.client_secret == "your-client-secret-here" {
-            warn!("osu! API v2 client_secret not configured. Please set osu.client_secret in osubot.toml");
+            warn!("{}", log_fmt!("main.oauth_not_configured"));
         }
     }
 
@@ -3016,7 +3315,7 @@ async fn main() {
             pending.retain(|_, entry| entry.created_at.elapsed() < Duration::from_secs(30));
             let removed = before.saturating_sub(pending.len());
             if removed > 0 {
-                tracing::warn!(removed, "cleaned up stale pending OneBot API entries");
+                tracing::warn!(removed, "{}", log_fmt!("main.cleanup_stale_pending"));
             }
         }
     });
@@ -3059,7 +3358,7 @@ async fn main() {
     let watcher_monitor_handle = coordinator.start();
     tokio::spawn(async move {
         let _ = watcher_monitor_handle.await;
-        warn!("文件监控任务已退出，热重载功能不可用");
+        warn!("{}", log_fmt!("main.file_watcher_exited"));
     });
 
     let user_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>> =
@@ -3084,7 +3383,7 @@ async fn main() {
                     handle_irc_message(storage, irc_msg, write, rate_limiter, oauth).await;
                 });
             } else {
-                warn!("No active WebSocket connection, dropping IRC message");
+                warn!("{}", log_fmt!("main.no_ws_dropping_irc"));
             }
         }
     });
@@ -3094,32 +3393,32 @@ async fn main() {
     let shutdown_clone = shutdown.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        tracing::info!("收到关闭信号，正在优雅关闭...");
+        tracing::info!("{}", log_fmt!("main.shutdown_signal"));
         shutdown_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
     let mut reconnect_delay = 1u64;
     loop {
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::info!("正在关闭，不再重连");
+            tracing::info!("{}", log_fmt!("main.shutdown_no_reconnect"));
             break;
         }
         let onebot_url = config.read().await.bot.onebot_url.clone();
-        info!(url = %onebot_url, "正在连接 OneBot WebSocket");
+        info!(url = %onebot_url, "{}", log_fmt!("main.connecting_ws"));
         let ws_stream = match connect_async(&onebot_url).await {
             Ok((stream, _)) => {
                 reconnect_delay = 1;
                 stream
             }
             Err(e) => {
-                error!(error = %e, delay = reconnect_delay, "WebSocket 连接失败，{}秒后重试", reconnect_delay);
+                error!(error = %e, delay = reconnect_delay, "{}", log_fmt!("main.ws_connect_failed", secs = reconnect_delay));
                 tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
                 reconnect_delay = (reconnect_delay * 2).min(60);
                 continue;
             }
         };
 
-        info!("WebSocket 连接已建立");
+        info!("{}", log_fmt!("main.ws_connected"));
 
         let (write, mut read) = ws_stream.split();
         let write = Arc::new(Mutex::new(write));
@@ -3131,7 +3430,7 @@ async fn main() {
             if let Some(old) = old {
                 let mut sink = old.lock().await;
                 if let Err(e) = sink.close().await {
-                    tracing::debug!(error = %e, "failed to close old WebSocket sink");
+                    tracing::debug!(error = %e, "{}", log_fmt!("main.ws_sink_close_failed"));
                 }
             }
         }
@@ -3154,7 +3453,7 @@ async fn main() {
                 }
                 let mut sink = ping_write.lock().await;
                 if let Err(e) = sink.send(Message::Ping(vec![].into())).await {
-                    tracing::debug!(error = %e, "WebSocket ping failed");
+                    tracing::debug!(error = %e, "{}", log_fmt!("main.ws_ping_failed"));
                     break;
                 }
             }
@@ -3182,16 +3481,16 @@ async fn main() {
                     });
                     let mut sink = write_consumer.lock().await;
                     if let Err(e) = sink.send(Message::Text(json.to_string().into())).await {
-                        tracing::debug!(error = %e, "plugin send channel closed");
+                        tracing::debug!(error = %e, "{}", log_fmt!("main.plugin_channel_closed"));
                     }
                 }
             });
 
             let msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
                 Arc::new(move |group_id, message| {
-                    plugin_tx
-                        .try_send((group_id, message))
-                        .map_err(|e| format!("plugin message channel busy: {e}"))
+                    plugin_tx.try_send((group_id, message)).map_err(|e| {
+                        log_fmt!("main.plugin_msg_channel_busy", error = &e).to_string()
+                    })
                 });
 
             let services = HostServices {
@@ -3213,11 +3512,14 @@ async fn main() {
 
             match PluginManager::new(&plugin_cfg, services).await {
                 Ok(mgr) => {
-                    info!("Plugin manager initialized with {} plugins", mgr.len());
+                    info!(
+                        "{}",
+                        log_fmt!("main.plugin_manager_init", count = mgr.len())
+                    );
                     Some(mgr)
                 }
                 Err(e) => {
-                    warn!("Plugin initialization failed: {e}");
+                    warn!("{}", log_fmt!("main.plugin_init_failed", error = &e));
                     None
                 }
             }
@@ -3369,7 +3671,7 @@ async fn main() {
             }
             // onebot_url hot-reload triggers a forced reconnect
             if force_reconnect.load(Ordering::SeqCst) {
-                info!("强制重连：onebot_url 已热重载变更");
+                info!("{}", log_fmt!("main.force_reconnect_url_changed"));
                 break;
             }
             match read.next().await {
@@ -3393,7 +3695,7 @@ async fn main() {
                         {
                             let cfg = config.read().await;
                             if !cfg.group_filter.is_group_allowed(qq_msg.group_id) {
-                                debug!(group_id = qq_msg.group_id, mode = ?cfg.group_filter.mode, "群被过滤，跳过");
+                                debug!(group_id = qq_msg.group_id, mode = ?cfg.group_filter.mode, "{}", log_fmt!("main.group_filtered"));
                                 continue;
                             }
                         }
@@ -3410,7 +3712,11 @@ async fn main() {
                                 }
                             });
                         if increment_result.is_err() {
-                            info!(group_id = qq_msg.group_id, "热重载中，跳过消息");
+                            info!(
+                                group_id = qq_msg.group_id,
+                                "{}",
+                                log_fmt!("main.hot_reload_skip")
+                            );
                             continue;
                         }
 
@@ -3443,6 +3749,7 @@ async fn main() {
                             let command_timeout = Duration::from_secs(
                                 ctx.config.read().await.bot.command_timeout_secs,
                             );
+                            let qq = qq_msg.user_id;
                             if tokio::time::timeout(
                                 command_timeout,
                                 handle_command(ctx, qq_msg, resp_tx.clone()),
@@ -3450,22 +3757,39 @@ async fn main() {
                             .await
                             .is_err()
                             {
-                                tracing::warn!("命令处理超时（{}秒）", command_timeout.as_secs());
-                                let _ = resp_tx.send("命令处理超时，请稍后重试".to_string()).await;
+                                tracing::warn!(
+                                    "{}",
+                                    log_fmt!(
+                                        "main.command_timeout",
+                                        secs = command_timeout.as_secs()
+                                    )
+                                );
+                                let _ = resp_tx
+                                    .send(
+                                        user_str("error.command_timeout")
+                                            .replace("{qq}", &qq.to_string()),
+                                    )
+                                    .await;
                             }
                         });
                     }
                 }
                 Some(Ok(Message::Close(_))) => {
-                    warn!("WebSocket 连接关闭，{}秒后重连", reconnect_delay);
+                    warn!(
+                        "{}",
+                        log_fmt!("main.ws_closed_reconnect", secs = reconnect_delay)
+                    );
                     break;
                 }
                 Some(Err(e)) => {
-                    error!(error = %e, "WebSocket 错误，{}秒后重连", reconnect_delay);
+                    error!(error = %e, "{}", log_fmt!("main.ws_error_reconnect", secs = reconnect_delay));
                     break;
                 }
                 None => {
-                    warn!("WebSocket 流结束，{}秒后重连", reconnect_delay);
+                    warn!(
+                        "{}",
+                        log_fmt!("main.ws_stream_ended", secs = reconnect_delay)
+                    );
                     break;
                 }
                 _ => {}

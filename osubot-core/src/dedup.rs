@@ -1,3 +1,4 @@
+use crate::log_fmt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
@@ -106,7 +107,10 @@ where
                     result
                 }
                 Err(join_err) => {
-                    tracing::warn!("dedup creator task failed: {join_err}");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!("dedup.creator_task_failed", error = format!("{join_err}"))
+                    );
                     {
                         let mut guard = entry.result.lock().unwrap_or_else(|e| e.into_inner());
                         *guard = Some(StoredResult::Panicked);

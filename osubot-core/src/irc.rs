@@ -1,3 +1,4 @@
+use crate::log_fmt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -45,7 +46,7 @@ impl IrcClient {
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if !self.config.enabled {
-            info!("IRC is disabled, skipping connection");
+            info!("{}", log_fmt!("irc.disabled"));
             std::future::pending::<()>().await;
         }
 
@@ -54,20 +55,21 @@ impl IrcClient {
         const MAX_RECONNECT_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(300);
 
         loop {
-            info!(server = %addr, nickname = %self.config.nickname, "Connecting to IRC");
+            info!(server = %addr, nickname = %self.config.nickname, "{}", log_fmt!("irc.connecting"));
 
             match self.connect_and_listen(&addr).await {
                 Ok(()) => {
-                    warn!("IRC listener exited cleanly, reconnecting...");
+                    warn!("{}", log_fmt!("irc.listener_exited"));
                 }
                 Err(e) => {
-                    warn!(error = %e, "IRC connection error, reconnecting...");
+                    warn!(error = %e, "{}", log_fmt!("irc.connection_error"));
                 }
             }
 
             info!(
                 delay_secs = reconnect_delay.as_secs(),
-                "Waiting before reconnect"
+                "{}",
+                log_fmt!("irc.waiting_reconnect")
             );
             tokio::time::sleep(reconnect_delay).await;
             reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
@@ -104,7 +106,7 @@ impl IrcClient {
             .await?;
         writer.flush().await?;
 
-        info!(nickname = %self.config.nickname, "IRC connection established");
+        info!(nickname = %self.config.nickname, "{}", log_fmt!("irc.connected"));
 
         let mut line = String::new();
         let mut consecutive_timeouts: u32 = 0;
@@ -117,26 +119,26 @@ impl IrcClient {
             .await
             {
                 Ok(Ok(0)) => {
-                    warn!("IRC connection closed by server");
+                    warn!("{}", log_fmt!("irc.closed_by_server"));
                     return Ok(());
                 }
                 Ok(Ok(_)) => {
                     consecutive_timeouts = 0;
                 }
                 Ok(Err(e)) => {
-                    warn!(error = %e, "IRC read error");
+                    warn!(error = %e, "{}", log_fmt!("irc.read_error"));
                     return Err(e.into());
                 }
                 Err(_) => {
                     // Read timeout — connection may be dead
                     consecutive_timeouts += 1;
                     if consecutive_timeouts >= 2 {
-                        warn!("IRC read timeout twice in a row, reconnecting");
+                        warn!("{}", log_fmt!("irc.read_timeout_reconnect"));
                         return Ok(());
                     }
-                    info!("IRC read timeout, sending PING to check connection");
+                    info!("{}", log_fmt!("irc.read_timeout_ping"));
                     if let Err(e) = writer.write_all(b"PING :keepalive\r\n").await {
-                        warn!(error = %e, "Failed to send PING");
+                        warn!(error = %e, "{}", log_fmt!("irc.ping_failed"));
                         return Err(e.into());
                     }
                     writer.flush().await?;
@@ -152,7 +154,7 @@ impl IrcClient {
 
             // Handle PONG (response to our PING)
             if line.starts_with("PONG") {
-                debug!(line = %line, "IRC PONG received");
+                debug!(line = %line, "{}", log_fmt!("irc.pong_received"));
                 continue;
             }
 
@@ -170,18 +172,14 @@ impl IrcClient {
 
             // Log non-PRIVMSG messages for debugging
             if !line.contains("PRIVMSG") {
-                trace!(line = %line, "IRC non-PRIVMSG");
+                trace!(line = %line, "{}", log_fmt!("irc.non_privmsg"));
             }
 
             // Parse PRIVMSG
             if let Some(privmsg) = Self::parse_privmsg(line) {
-                info!(
-                    sender = %privmsg.sender,
-                    message = %privmsg.message,
-                    "Received IRC private message"
-                );
+                info!(sender = %privmsg.sender, message = %privmsg.message, "{}", log_fmt!("irc.privmsg_received"));
                 if self.message_tx.send(privmsg).await.is_err() {
-                    error!("Failed to send IRC message to channel");
+                    error!("{}", log_fmt!("irc.send_failed"));
                 }
             }
         }

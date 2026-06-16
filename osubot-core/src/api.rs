@@ -1,4 +1,5 @@
 use crate::cache::beatmap_cache_dir;
+use crate::log_fmt;
 use crate::rate_limiter::RateLimiter;
 use crate::types::{GameMode, Score, ScoreStatistics, ScoreUser, UserStats};
 use futures::stream::{self, StreamExt};
@@ -108,12 +109,16 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
                 .parent()
                 .expect("cache path always has parent dirs (beatmap_cache_dir()/id.osu)"),
         ) {
-            tracing::warn!("failed to create cache dir: {e}");
+            tracing::warn!("{}", log_fmt!("api.cache_dir_failed", error = &e));
         }
         if let Err(e) = std::fs::write(&write_path, &bytes) {
             tracing::warn!(
-                "failed to write beatmap cache file {}: {e}",
-                write_path.display()
+                "{}",
+                log_fmt!(
+                    "api.write_beatmap_cache_failed",
+                    path = format!("{}", write_path.display()),
+                    error = &e
+                )
             );
         }
     })
@@ -210,7 +215,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     let map = match Beatmap::from_path(params.osu_path) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = ?e, "Failed to parse .osu file");
+            tracing::warn!(error = ?e, "{}", log_fmt!("api.parse_osu_failed"));
             return None;
         }
     };
@@ -241,7 +246,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
     ) {
         Some(p) => p,
         None => {
-            tracing::warn!(?params.mode, "try_mode failed; cannot convert");
+            tracing::warn!(?params.mode, "{}", log_fmt!("api.try_mode_failed"));
             return None;
         }
     };
@@ -323,7 +328,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
     let map = match Beatmap::from_path(params.osu_path) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = ?e, "Failed to parse .osu file for if-acc");
+            tracing::warn!(error = ?e, "{}", log_fmt!("api.ifacc_parse_failed"));
             return None;
         }
     };
@@ -441,11 +446,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
     let osu_path = match download_beatmap_osu(score.beatmap_id).await {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(
-                error = ?e,
-                beatmap_id = score.beatmap_id,
-                "Failed to download .osu for PP calculation"
-            );
+            tracing::warn!(error = ?e, beatmap_id = score.beatmap_id, "{}", log_fmt!("api.pp_download_failed"));
             return;
         }
     };
@@ -496,7 +497,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
     })
     .await
     .unwrap_or_else(|e| {
-        tracing::warn!(error = ?e, "PP calculation task panicked");
+        tracing::warn!(error = ?e, "{}", log_fmt!("api.pp_calc_panicked"));
         (None, None)
     });
 
@@ -529,7 +530,6 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
 pub struct OsuUserInfo {
     pub id: i64,
     pub username: String,
-    pub is_active: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -739,7 +739,7 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
                 let mut de = serde_json::Deserializer::from_str(&json_str);
                 seed.deserialize(&mut de)
                     .unwrap_or_else(|e| {
-                        tracing::warn!(mod_str = %s, error = %e, "Failed to deserialize mod, falling back to basic");
+                        tracing::warn!(mod_str = %s, error = %e, "{}", log_fmt!("api.mod_deserialize_failed"));
                         rosu_mods::GameMod::new(s, ros_mode)
                     })
             }
@@ -752,7 +752,7 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
                 let mut de = serde_json::Deserializer::from_str(&json_str);
                 seed.deserialize(&mut de)
                     .unwrap_or_else(|e| {
-                        tracing::warn!(acronym = %acronym, error = %e, "Failed to deserialize mod with settings, falling back to basic");
+                        tracing::warn!(acronym = %acronym, error = %e, "{}", log_fmt!("api.mod_settings_deserialize_failed"));
                         rosu_mods::GameMod::new(acronym, ros_mode)
                     })
             }
@@ -764,7 +764,7 @@ fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> GameMods {
                 let mut de = serde_json::Deserializer::from_str(&json_str);
                 seed.deserialize(&mut de)
                     .unwrap_or_else(|e| {
-                        tracing::warn!(acronym = %acronym, error = %e, "Failed to deserialize mod, falling back to basic");
+                        tracing::warn!(acronym = %acronym, error = %e, "{}", log_fmt!("api.mod_deserialize_failed"));
                         rosu_mods::GameMod::new(acronym, ros_mode)
                     })
             }
@@ -1146,7 +1146,7 @@ fn api_score_to_score(api: OsuApiScore, mode: GameMode) -> Score {
             let u: OsuApiScoreUser = match serde_json::from_value(v.clone()) {
                 Ok(u) => u,
                 Err(e) => {
-                    tracing::warn!(error = %e, user_json = %v, "Failed to parse user from score response");
+                    tracing::warn!(error = %e, user_json = %v, "{}", log_fmt!("api.parse_user_from_score_failed"));
                     return None;
                 }
             };
@@ -1334,13 +1334,7 @@ async fn json_body<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> R
     let url = resp.url().to_string();
     let body = resp.text().await.map_err(ApiError::Http)?;
     serde_json::from_str::<T>(&body).map_err(|e| {
-        tracing::warn!(
-            %status,
-            %url,
-            body = %body,
-            error = %e,
-            "API 响应反序列化失败"
-        );
+        tracing::warn!(%status, %url, body = %body, error = %e, "{}", log_fmt!("api.deserialize_failed"));
         ApiError::Deserialization(e.to_string())
     })
 }
@@ -1410,11 +1404,11 @@ impl OauthTokenCache {
 
     pub fn is_configured(&self) -> bool {
         let cid = self.client_id.read().unwrap_or_else(|e| {
-            tracing::warn!("RwLock poisoned, recovering");
+            tracing::warn!("{}", log_fmt!("api.rwlock_recovering"));
             e.into_inner()
         });
         let cs = self.client_secret.read().unwrap_or_else(|e| {
-            tracing::warn!("RwLock poisoned, recovering");
+            tracing::warn!("{}", log_fmt!("api.rwlock_recovering"));
             e.into_inner()
         });
         !cid.is_empty() && !cs.is_empty()
@@ -1424,11 +1418,11 @@ impl OauthTokenCache {
     pub async fn update_credentials(&self, client_id: String, client_secret: String) {
         let _guard = self.refresh_lock.lock().await;
         *self.client_id.write().unwrap_or_else(|e| {
-            tracing::warn!("RwLock poisoned, recovering");
+            tracing::warn!("{}", log_fmt!("api.rwlock_recovering"));
             e.into_inner()
         }) = client_id;
         *self.client_secret.write().unwrap_or_else(|e| {
-            tracing::warn!("RwLock poisoned, recovering");
+            tracing::warn!("{}", log_fmt!("api.rwlock_recovering"));
             e.into_inner()
         }) = client_secret;
         let mut cache = self.cache.lock().await;
@@ -1469,11 +1463,11 @@ impl OauthTokenCache {
         let client = http_client();
         let (cid, cs) = {
             let cid = self.client_id.read().unwrap_or_else(|e| {
-                tracing::warn!("RwLock poisoned, recovering");
+                tracing::warn!("{}", log_fmt!("api.rwlock_recovering"));
                 e.into_inner()
             });
             let cs = self.client_secret.read().unwrap_or_else(|e| {
-                tracing::warn!("RwLock poisoned, recovering");
+                tracing::warn!("{}", log_fmt!("api.rwlock_recovering"));
                 e.into_inner()
             });
             (cid.clone(), cs.clone())
@@ -1627,20 +1621,15 @@ where
                     attempt = attempt + 1,
                     max_retries,
                     delay_secs = retry_after,
-                    "Retrying after Retry-After header"
+                    "{}",
+                    log_fmt!("api.retry_after")
                 );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
             Err(e) if e.is_transient() && attempt < max_retries => {
                 let delay = backoff_with_jitter(attempt);
-                tracing::warn!(
-                    error = %e,
-                    attempt = attempt + 1,
-                    max_retries,
-                    delay_ms = delay.as_millis(),
-                    "Retrying transient API error"
-                );
+                tracing::warn!(error = %e, attempt = attempt + 1, max_retries, delay_ms = delay.as_millis(), "{}", log_fmt!("api.retry_transient"));
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
@@ -1797,11 +1786,7 @@ async fn backfill_score_details(
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    beatmapset_id = score.beatmapset_id,
-                    "Failed to backfill beatmapset metadata"
-                );
+                tracing::warn!(error = ?e, beatmapset_id = score.beatmapset_id, "{}", log_fmt!("api.backfill_beatmapset_failed"));
             }
         }
     }
@@ -1814,21 +1799,19 @@ async fn backfill_score_details(
                 tracing::trace!(
                     score_id = score.score_id,
                     score_value = val,
-                    "Backfilled score value from detail endpoint"
+                    "{}",
+                    log_fmt!("api.backfilled_score_value")
                 );
             }
             Ok(None) => {
                 tracing::trace!(
                     score_id = score.score_id,
-                    "Score detail endpoint returned no value"
+                    "{}",
+                    log_fmt!("api.score_detail_no_value")
                 );
             }
             Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    score_id = score.score_id,
-                    "Failed to backfill score value"
-                );
+                tracing::warn!(error = ?e, score_id = score.score_id, "{}", log_fmt!("api.backfill_score_failed"));
             }
         }
     }
@@ -1876,7 +1859,7 @@ pub async fn get_user_recent(
             let raw_json: serde_json::Value = json_body(resp).await?;
 
             let plays: Vec<OsuApiScore> = serde_json::from_value(raw_json).map_err(|e| {
-                tracing::error!(error = %e, "Failed to parse score JSON");
+                tracing::error!(error = %e, "{}", log_fmt!("api.parse_score_json_failed"));
                 ApiError::InvalidResponse
             })?;
             let mut scores_raw: Vec<Score> = plays
@@ -1956,12 +1939,7 @@ pub async fn get_user_beatmap_score(
                 .await?;
 
             if resp.status() == 404 {
-                tracing::debug!(
-                    beatmap_id,
-                    user_id,
-                    ?mode,
-                    "Beatmap score 404, retrying with legacy_only=1"
-                );
+                tracing::debug!(beatmap_id, user_id, ?mode, "{}", log_fmt!("api.beatmap_score_404_retry"));
                 let access_token = oauth.get_token().await?;
                 let retry_resp = client
                     .get(&url_retry)
@@ -1977,7 +1955,7 @@ pub async fn get_user_beatmap_score(
 
                 let body = retry_resp.text().await.map_err(ApiError::Http)?;
                 let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
-                    tracing::error!(error = %e, body, "BeatmapScore retry parse failed");
+                    tracing::error!(error = %e, body, "{}", log_fmt!("api.beatmap_score_retry_parse_failed"));
                     ApiError::InvalidResponse
                 })?;
                 let api_score = raw.score.ok_or(ApiError::NotFound)?;
@@ -1990,7 +1968,7 @@ pub async fn get_user_beatmap_score(
 
             let body = resp.text().await.map_err(ApiError::Http)?;
             let raw: BeatmapUserScore = serde_json::from_str(&body).map_err(|e| {
-                tracing::error!(error = %e, body, "BeatmapScore parse failed");
+                tracing::error!(error = %e, body, "{}", log_fmt!("api.beatmap_score_parse_failed"));
                 ApiError::InvalidResponse
             })?;
             let api_score = raw.score.ok_or(ApiError::NotFound)?;
@@ -2046,12 +2024,7 @@ pub async fn get_user_beatmap_scores_all(
                 .await?;
 
             if resp.status() == 404 {
-                tracing::debug!(
-                    beatmap_id,
-                    user_id,
-                    ?mode,
-                    "Beatmap scores all 404, retrying with legacy_only=1"
-                );
+                tracing::debug!(beatmap_id, user_id, ?mode, "{}", log_fmt!("api.beatmap_scores_404_retry"));
                 let access_token = oauth.get_token().await?;
                 let retry_resp = client
                     .get(&url_retry)
@@ -2067,7 +2040,7 @@ pub async fn get_user_beatmap_scores_all(
 
                 let body = retry_resp.text().await.map_err(ApiError::Http)?;
                 let raw: BeatmapScoresResponse = serde_json::from_str(&body).map_err(|e| {
-                    tracing::error!(error = %e, body, "BeatmapScoresAll retry parse failed");
+                    tracing::error!(error = %e, body, "{}", log_fmt!("api.beatmap_scores_retry_parse_failed"));
                     ApiError::InvalidResponse
                 })?;
                 let scores_raw: Vec<Score> = raw
@@ -2103,7 +2076,7 @@ pub async fn get_user_beatmap_scores_all(
 
             let body = resp.text().await.map_err(ApiError::Http)?;
             let raw: BeatmapScoresResponse = serde_json::from_str(&body).map_err(|e| {
-                tracing::error!(error = %e, body, "BeatmapScoresAll parse failed");
+                tracing::error!(error = %e, body, "{}", log_fmt!("api.beatmap_scores_parse_failed"));
                 ApiError::InvalidResponse
             })?;
             let scores_raw: Vec<Score> = raw
@@ -2186,7 +2159,7 @@ async fn fetch_score_detail(
 ) -> Result<Option<i64>, ApiError> {
     let client = http_client();
     let url = format!("https://osu.ppy.sh/api/v2/scores/{}/{}", ruleset, score_id);
-    tracing::trace!(url = %url, "Fetching score detail");
+    tracing::trace!(url = %url, "{}", log_fmt!("api.fetch_score_detail"));
 
     rate_limiter
         .acquire()
@@ -2204,20 +2177,13 @@ async fn fetch_score_detail(
                 .await?;
 
             if resp.status() == 404 {
-                tracing::debug!(url = %url, status = %resp.status(), "Score detail endpoint 404");
+                tracing::debug!(url = %url, status = %resp.status(), "{}", log_fmt!("api.score_detail_404"));
                 return Ok(None);
             }
             classify_http_error(&resp)?;
 
             let data: serde_json::Value = json_body(resp).await?;
-            tracing::trace!(
-                keys = ?data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
-                score = ?data.get("score"),
-                total_score = ?data.get("total_score"),
-                legacy_total_score = ?data.get("legacy_total_score"),
-                classic_total_score = ?data.get("classic_total_score"),
-                "Score detail endpoint response"
-            );
+            tracing::trace!(keys = ?data.as_object().map(|o| o.keys().collect::<Vec<_>>()), score = ?data.get("score"), total_score = ?data.get("total_score"), legacy_total_score = ?data.get("legacy_total_score"), classic_total_score = ?data.get("classic_total_score"), "{}", log_fmt!("api.score_detail_response"));
             let score_val = data
                 .get("total_score")
                 .and_then(|v| v.as_i64())
