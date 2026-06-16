@@ -348,6 +348,7 @@ async fn resolve_score_user(
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<(i64, String, UserStats)> {
     tracing::trace!("{}", log_fmt!("main.resolve_score_user_start"));
+
     if let Some(ref name) = username {
         // Look up by username
         tracing::trace!(
@@ -459,7 +460,7 @@ async fn resolve_score_user(
 }
 
 struct ScoreQueryParams<'a> {
-    mode: GameMode,
+    mode: Option<GameMode>,
     username: &'a Option<String>,
     qq: &'a Option<i64>,
     is_pass: bool,
@@ -671,6 +672,26 @@ async fn handle_score_query(
 ) {
     tracing::trace!("{}", log_fmt!("main.handle_score_query_start"));
 
+    // Resolve target user's default mode
+    let target_qq = if params.username.is_none() && params.qq.is_none() {
+        Some(msg.user_id)
+    } else if let Some(qq) = params.qq {
+        Some(*qq)
+    } else {
+        let name = params
+            .username
+            .as_ref()
+            .expect("username must be Some after earlier checks");
+        match ctx.storage.find_qq_by_username(name).await {
+            Ok(qq) => qq,
+            Err(e) => {
+                warn!(username = %name, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = &name, error = &e.to_string()));
+                None
+            }
+        }
+    };
+    let mode = resolve_mode(&ctx.storage, target_qq, params.mode).await;
+
     // For self/bound users (no explicit username/qq), resolve user_id from DB
     // and parallelize the two API calls. For username/QQ lookups, use the
     // existing sequential resolve_score_user flow.
@@ -701,9 +722,8 @@ async fn handle_score_query(
                 username = name
             )
         );
-        ctx.scheduler.trigger_update(uid, params.mode).await;
+        ctx.scheduler.trigger_update(uid, mode).await;
 
-        let mode = params.mode;
         let is_pass = params.is_pass;
         let qq = msg.user_id;
         let rate_limiter = ctx.rate_limiter.clone();
@@ -783,9 +803,7 @@ async fn handle_score_query(
     } else {
         let qq = msg.user_id;
         let (uid, name, user_stats) =
-            match resolve_score_user(ctx, msg, params.username, params.qq, params.mode, resp_tx)
-                .await
-            {
+            match resolve_score_user(ctx, msg, params.username, params.qq, mode, resp_tx).await {
                 Some(u) => {
                     tracing::trace!(
                         "{}",
@@ -803,18 +821,18 @@ async fn handle_score_query(
                 }
             };
 
-        ctx.scheduler.trigger_update(uid, params.mode).await;
-        let dedup_key = (uid, params.is_pass, api_limit, params.mode);
+        ctx.scheduler.trigger_update(uid, mode).await;
+        let dedup_key = (uid, params.is_pass, api_limit, mode);
         let dedup_rate_limiter = ctx.rate_limiter.clone();
         let dedup_oauth = ctx.oauth.clone();
-        let dedup_mode = params.mode;
+        let dedup_mode = mode;
 
         tracing::trace!(
             "{}",
             log_fmt!(
                 "main.fetch_scores",
                 user_id = uid,
-                mode = &format!("{:?}", params.mode),
+                mode = &format!("{:?}", mode),
                 limit = api_limit
             )
         );
@@ -917,7 +935,7 @@ async fn handle_score_query(
                     msg,
                     resp_tx,
                     score,
-                    params.mode,
+                    mode,
                     &user_stats,
                     Some(index),
                     params.is_pass,
@@ -949,7 +967,6 @@ async fn handle_score_query(
                 // may return pp=null for failed scores, loved/pending
                 // beatmaps, or unsupported mod combos.  Re-compute locally
                 // and download covers in one pass so network I/O overlaps.
-                let mode = params.mode;
                 let results =
                     futures_util::future::join_all(scores.iter().enumerate().map(|(i, s)| {
                         let cover_url = s.cover_url.clone();
@@ -1006,12 +1023,12 @@ async fn handle_score_query(
                 };
                 let change = ctx
                     .storage
-                    .calculate_change(user_id, params.mode, &user_stats)
+                    .calculate_change(user_id, mode, &user_stats)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!(
                             user_id = user_id,
-                            mode = ?params.mode,
+                            mode = ?mode,
                             error = %e,
                             "{}",
                             log_fmt!("main.calculate_change_failed")
@@ -1033,7 +1050,7 @@ async fn handle_score_query(
                     osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
                         scores: &scores,
                         username: &dedup_username,
-                        mode: params.mode,
+                        mode,
                         label: score_label,
                         count_text: score_count_text,
                         avatar_url: &avatar_url,
@@ -1077,13 +1094,13 @@ async fn handle_score_query(
                     Ok(Err(e)) => {
                         warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
                         let response =
-                            format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                            format_scores(&scores, &dedup_username, mode, params.is_pass);
                         let _ = resp_tx.send(response).await;
                     }
                     Err(_) => {
                         warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
                         let response =
-                            format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                            format_scores(&scores, &dedup_username, mode, params.is_pass);
                         let _ = resp_tx.send(response).await;
                     }
                 }
@@ -1125,6 +1142,22 @@ async fn handle_beatmap_score_query(
         ),
         _ => return,
     };
+
+    // Resolve target user's default mode
+    let target_qq = if let Some(qq) = qq {
+        Some(qq)
+    } else if let Some(name) = username {
+        match ctx.storage.find_qq_by_username(name).await {
+            Ok(qq) => qq,
+            Err(e) => {
+                warn!(username = %name, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = name, error = &e.to_string()));
+                None
+            }
+        }
+    } else {
+        Some(msg.user_id)
+    };
+    let mode = resolve_mode(&ctx.storage, target_qq, mode).await;
 
     if let Some(sid) = score_id {
         info!(score_id = sid, "{}", log_fmt!("main.score_by_id"));
@@ -1900,8 +1933,35 @@ async fn render_and_send_score_list(
     }
 }
 
+/// 解析最终使用的模式：显式指定优先，否则查目标用户的默认配置，未绑定则 fallback 到 Osu
+async fn resolve_mode(
+    storage: &Storage,
+    target_qq: Option<i64>,
+    explicit_mode: Option<GameMode>,
+) -> GameMode {
+    match explicit_mode {
+        Some(mode) => mode,
+        None => match target_qq {
+            Some(qq) => match storage.get_default_mode(qq).await {
+                Ok(Some(mode)) => mode,
+                Ok(None) => GameMode::Osu,
+                Err(e) => {
+                    warn!(user_id = qq, error = %e, "{}", log_fmt!("main.get_default_mode_error"));
+                    GameMode::Osu
+                }
+            },
+            None => GameMode::Osu,
+        },
+    }
+}
+
 /// Build a JSON payload for the plugin command dispatch.
-fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_json::Value {
+async fn build_cmd_payload(
+    cmd: &Command,
+    cmd_name: &str,
+    msg: &QQMessage,
+    storage: &Storage,
+) -> serde_json::Value {
     let mode = match cmd {
         Command::QuerySelf { mode }
         | Command::QueryUser { mode, .. }
@@ -1909,15 +1969,73 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
         | Command::Pass { mode, .. }
         | Command::Recent { mode, .. }
         | Command::Highlight { mode, .. }
-        | Command::ScoreOnBeatmap { mode, .. } => Some(match mode {
-            GameMode::Osu => 0,
-            GameMode::Taiko => 1,
-            GameMode::Catch => 2,
-            GameMode::Mania => 3,
-        }),
+        | Command::ScoreOnBeatmap { mode, .. } => {
+            let target_qq = match cmd {
+                Command::QuerySelf { .. } => Some(msg.user_id),
+                Command::QueryUser { username, .. } => {
+                    match storage.find_qq_by_username(username).await {
+                        Ok(qq) => qq,
+                        Err(e) => {
+                            warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
+                            None
+                        }
+                    }
+                }
+                Command::QueryMentionedUser { qq, .. } => Some(*qq),
+                Command::Pass { qq: Some(qq), .. }
+                | Command::Recent { qq: Some(qq), .. }
+                | Command::ScoreOnBeatmap { qq: Some(qq), .. } => Some(*qq),
+                Command::Pass {
+                    qq: None,
+                    username: Some(username),
+                    ..
+                }
+                | Command::Recent {
+                    qq: None,
+                    username: Some(username),
+                    ..
+                }
+                | Command::ScoreOnBeatmap {
+                    qq: None,
+                    username: Some(username),
+                    ..
+                } => match storage.find_qq_by_username(username).await {
+                    Ok(qq) => qq,
+                    Err(e) => {
+                        warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
+                        None
+                    }
+                },
+                Command::Pass {
+                    qq: None,
+                    username: None,
+                    ..
+                }
+                | Command::Recent {
+                    qq: None,
+                    username: None,
+                    ..
+                }
+                | Command::ScoreOnBeatmap {
+                    qq: None,
+                    username: None,
+                    ..
+                } => Some(msg.user_id),
+                Command::Highlight { .. } => Some(msg.user_id),
+                _ => None,
+            };
+            let resolved = resolve_mode(storage, target_qq, *mode).await;
+            Some(match resolved {
+                GameMode::Osu => 0,
+                GameMode::Taiko => 1,
+                GameMode::Catch => 2,
+                GameMode::Mania => 3,
+            })
+        }
         Command::ProfileCard { .. } | Command::Bind { .. } | Command::Unbind | Command::Help => {
             None
         }
+        Command::SetDefaultMode { mode } => mode.map(|m| m as i32),
     };
     let username = match cmd {
         Command::QueryUser { username, .. } => Some(username.as_str()),
@@ -1937,7 +2055,11 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
         "mode": mode,
         "username": username,
         "qq": match cmd {
-            Command::QueryMentionedUser { qq, .. } => Some(qq),
+            Command::QueryMentionedUser { qq, .. } => Some(*qq),
+            Command::Pass { qq, .. }
+            | Command::Recent { qq, .. }
+            | Command::ScoreOnBeatmap { qq, .. }
+            | Command::ProfileCard { qq, .. } => *qq,
             _ => None,
         },
         "beatmap_id": match cmd {
@@ -2047,7 +2169,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 .unwrap_or_default()
         };
         if !cmd_indices.is_empty() {
-            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg);
+            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg, &ctx.storage).await;
             let cmd_payload_str = cmd_payload.to_string();
             for idx in cmd_indices {
                 let (mut instance, pname, ptimeout) = {
@@ -2161,6 +2283,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
     match cmd {
         Command::QuerySelf { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_self"));
+            let mode = resolve_mode(&ctx.storage, Some(msg.user_id), mode).await;
             match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
@@ -2213,6 +2336,14 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         }
         Command::QueryUser { username, mode } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "{}", log_fmt!("main.query_user"));
+            let target_qq = match ctx.storage.find_qq_by_username(&username).await {
+                Ok(qq) => qq,
+                Err(e) => {
+                    warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = &username, error = &e.to_string()));
+                    None
+                }
+            };
+            let mode = resolve_mode(&ctx.storage, target_qq, mode).await;
             match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, &username, mode)
                 .await
             {
@@ -2274,6 +2405,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         }
         Command::QueryMentionedUser { qq, mode } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_mentioned_user"));
+            let mode = resolve_mode(&ctx.storage, Some(qq), mode).await;
             match ctx.storage.get_binding(qq).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
@@ -2565,6 +2697,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
         }
         Command::Highlight { mode } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.highlight_command"));
+            let mode = resolve_mode(&ctx.storage, Some(msg.user_id), mode).await;
 
             let group_members =
                 match get_group_member_list(&ctx.write, &ctx.onebot_api, msg.group_id).await {
@@ -2631,6 +2764,141 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
             }
         }
+        Command::SetDefaultMode { mode } => match mode {
+            Some(mode) => {
+                info!(
+                    user_id = msg.user_id,
+                    ?mode,
+                    "{}",
+                    log_fmt!(
+                        "main.set_default_mode",
+                        user_id = &msg.user_id.to_string(),
+                        mode = &format!("{:?}", mode)
+                    )
+                );
+                match ctx.storage.get_binding(msg.user_id).await {
+                    Ok(Some(_)) => match ctx.storage.set_default_mode(msg.user_id, mode).await {
+                        Ok(true) => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("mode.set_success")
+                                        .replace("{qq}", &msg.user_id.to_string())
+                                        .replace("{mode}", mode.name()),
+                                )
+                                .await;
+                        }
+                        Ok(false) => {
+                            warn!(
+                                user_id = msg.user_id,
+                                "{}",
+                                log_fmt!(
+                                    "main.set_default_mode_not_bound",
+                                    user_id = &msg.user_id.to_string()
+                                )
+                            );
+                            let _ = resp_tx
+                                .send(
+                                    user_str("mode.not_bound")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            error!(user_id = msg.user_id, error = %e, "{}", log_fmt!("main.set_default_mode_error", user_id = &msg.user_id.to_string(), error = &e.to_string()));
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.db_error")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                        }
+                    },
+                    Ok(None) => {
+                        let _ = resp_tx
+                            .send(
+                                user_str("bind.not_bound")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                    Err(_) => {
+                        error!(
+                            user_id = msg.user_id,
+                            "{}",
+                            log_fmt!(
+                                "main.set_default_mode_error",
+                                user_id = &msg.user_id.to_string()
+                            )
+                        );
+                        let _ = resp_tx
+                            .send(
+                                user_str("error.db_error")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                }
+            }
+            None => {
+                info!(
+                    user_id = msg.user_id,
+                    "{}",
+                    log_fmt!("main.get_default_mode", user_id = &msg.user_id.to_string())
+                );
+                match ctx.storage.get_binding(msg.user_id).await {
+                    Ok(Some(_)) => match ctx.storage.get_default_mode(msg.user_id).await {
+                        Ok(Some(mode)) => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("mode.get_success")
+                                        .replace("{qq}", &msg.user_id.to_string())
+                                        .replace("{mode}", mode.name()),
+                                )
+                                .await;
+                        }
+                        Ok(None) => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("mode.get_unset")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            warn!(user_id = msg.user_id, error = %e, "{}", log_fmt!("main.get_default_mode_error", user_id = &msg.user_id.to_string(), error = &e.to_string()));
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.db_error")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                        }
+                    },
+                    Ok(None) => {
+                        let _ = resp_tx
+                            .send(
+                                user_str("bind.not_bound")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        error!(
+                            user_id = msg.user_id,
+                            error = %e,
+                            "{}",
+                            log_fmt!("main.get_default_mode_error", user_id = &msg.user_id.to_string(), error = &e.to_string())
+                        );
+                        let _ = resp_tx
+                            .send(
+                                user_str("error.db_error")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                }
+            }
+        },
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {

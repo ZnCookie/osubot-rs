@@ -1,4 +1,3 @@
-use crate::log_fmt;
 use crate::types::{Command, GameMode};
 
 const MAX_LIMIT: u32 = 100;
@@ -7,14 +6,13 @@ const SCORE_ID_THRESHOLD: u64 = 10_000_000;
 /// Extract `:mode` suffix from rest. Returns (rest_without_mode, mode).
 /// Finds the rightmost colon and extracts only the first token after it as mode.
 /// The rest of the content (before and after the mode token) is preserved.
-/// Invalid mode strings silently fall back to GameMode::Osu.
-fn extract_mode(rest: &str) -> (String, GameMode) {
+/// Invalid mode strings return None.
+fn extract_mode(rest: &str) -> (String, Option<GameMode>) {
     if let Some(colon_pos) = rest.rfind(':') {
         let after_colon = &rest[colon_pos + 1..];
         let mode_token = after_colon.split_whitespace().next().unwrap_or("");
-        let mode = GameMode::from_mode_str(mode_token).unwrap_or(GameMode::Osu);
+        let mode = GameMode::from_mode_str(mode_token);
 
-        // Reconstruct the rest without the :mode part
         let before_colon = &rest[..colon_pos];
         let after_mode_token = &rest[colon_pos + 1 + mode_token.len()..];
         let new_rest = format!("{} {}", before_colon.trim(), after_mode_token.trim())
@@ -23,7 +21,7 @@ fn extract_mode(rest: &str) -> (String, GameMode) {
 
         (new_rest, mode)
     } else {
-        (rest.to_string(), GameMode::Osu)
+        (rest.to_string(), None)
     }
 }
 
@@ -165,7 +163,7 @@ fn parse_score_on_beatmap(msg: &str, mentioned_user_id: Option<i64>) -> Option<O
 
             if rest.is_empty() {
                 return Some(Some(Command::ScoreOnBeatmap {
-                    mode: GameMode::Osu,
+                    mode: None,
                     username: None,
                     qq: mentioned_user_id,
                     beatmap_id: None,
@@ -341,7 +339,7 @@ fn parse_pass_recent(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option
             if rest.is_empty() {
                 return Some(Some(if is_pass {
                     Command::Pass {
-                        mode: GameMode::Osu,
+                        mode: None,
                         username: None,
                         qq: mentioned_user_id,
                         limit: default_limit,
@@ -351,7 +349,7 @@ fn parse_pass_recent(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option
                     }
                 } else {
                     Command::Recent {
-                        mode: GameMode::Osu,
+                        mode: None,
                         username: None,
                         qq: mentioned_user_id,
                         limit: default_limit,
@@ -516,12 +514,10 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             .trim_start_matches(' ')
             .trim_start_matches(',');
         if rest.is_empty() {
-            return Some(Command::QuerySelf {
-                mode: GameMode::Osu,
-            });
+            return Some(Command::QuerySelf { mode: None });
         }
         let mode = GameMode::from_mode_str(rest)?;
-        return Some(Command::QuerySelf { mode });
+        return Some(Command::QuerySelf { mode: Some(mode) });
     }
 
     // 查询他人 via QQ: where qq=<QQ号> [, 模式]
@@ -529,9 +525,9 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         let parts: Vec<&str> = rest.split(',').collect();
         let qq: i64 = parts[0].trim().parse().ok()?;
         let mode = if parts.len() > 1 {
-            GameMode::from_mode_str(parts[1].trim())?
+            Some(GameMode::from_mode_str(parts[1].trim())?)
         } else {
-            GameMode::Osu
+            None
         };
         return Some(Command::QueryMentionedUser { qq, mode });
     }
@@ -544,9 +540,9 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         if let Some(at) = first.strip_prefix('@') {
             if let Ok(qq) = at.parse::<i64>() {
                 let mode = if parts.len() > 1 {
-                    GameMode::from_mode_str(parts[1].trim())?
+                    Some(GameMode::from_mode_str(parts[1].trim())?)
                 } else {
-                    GameMode::Osu
+                    None
                 };
                 return Some(Command::QueryMentionedUser { qq, mode });
             }
@@ -554,9 +550,9 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         }
         let username = first.to_string();
         let mode = if parts.len() > 1 {
-            GameMode::from_mode_str(parts[1].trim())?
+            Some(GameMode::from_mode_str(parts[1].trim())?)
         } else {
-            GameMode::Osu
+            None
         };
         return Some(Command::QueryUser { username, mode });
     }
@@ -567,9 +563,9 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             let rest = msg.strip_prefix('查').unwrap();
             let rest = rest.trim_start_matches(',').trim().trim_start_matches(',');
             let mode = if rest.is_empty() {
-                GameMode::Osu
+                None
             } else {
-                GameMode::from_mode_str(rest)?
+                Some(GameMode::from_mode_str(rest)?)
             };
             return Some(Command::QueryMentionedUser { qq, mode });
         }
@@ -599,26 +595,12 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         let mode = if rest.is_empty() || rest.starts_with(',') {
             let mode_str = rest.trim_start_matches(',').trim();
             if mode_str.is_empty() {
-                GameMode::Osu
+                None
             } else {
-                GameMode::from_mode_str(mode_str).unwrap_or_else(|| {
-                    tracing::debug!(
-                        mode_str,
-                        "{}",
-                        log_fmt!("commands.highlight_parse_mode_failed")
-                    );
-                    GameMode::Osu
-                })
+                GameMode::from_mode_str(mode_str)
             }
         } else {
-            GameMode::from_mode_str(rest).unwrap_or_else(|| {
-                tracing::debug!(
-                    mode_str = rest,
-                    "{}",
-                    log_fmt!("commands.highlight_parse_mode_failed")
-                );
-                GameMode::Osu
-            })
+            GameMode::from_mode_str(rest)
         };
         return Some(Command::Highlight { mode });
     }
@@ -626,6 +608,16 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     // 帮助: !help
     if msg == "!help" {
         return Some(Command::Help);
+    }
+
+    // 查询/设置默认模式: !mode 或 !mode <N>
+    if msg == "!mode" || msg.starts_with("!mode ") {
+        let rest = msg.strip_prefix("!mode").unwrap().trim();
+        if rest.is_empty() {
+            return Some(Command::SetDefaultMode { mode: None });
+        }
+        let mode = GameMode::from_mode_str(rest)?;
+        return Some(Command::SetDefaultMode { mode: Some(mode) });
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
@@ -767,7 +759,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -784,7 +776,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
                 username: None,
                 qq: None,
                 limit: 1,
@@ -801,7 +793,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 1,
@@ -818,7 +810,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 1,
@@ -835,7 +827,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Recent {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -852,7 +844,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Recent {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 20,
@@ -869,7 +861,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: Some(123456),
                 limit: 1,
@@ -886,7 +878,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: Some(123456),
                 limit: 1,
@@ -921,7 +913,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Mania,
+                mode: Some(GameMode::Mania),
                 username: None,
                 qq: None,
                 limit: 1,
@@ -938,7 +930,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 2,
@@ -955,7 +947,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 5,
@@ -972,7 +964,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 3,
@@ -989,7 +981,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 5,
@@ -1006,7 +998,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 100,
@@ -1023,7 +1015,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1040,7 +1032,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 1,
@@ -1057,7 +1049,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1074,7 +1066,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Recent {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 3,
@@ -1091,7 +1083,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Recent {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 5,
@@ -1103,12 +1095,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_ps_invalid_mode_falls_back_to_osu() {
+    fn test_ps_invalid_mode_returns_none() {
         let result = parse_command("!ps :xyz", None).unwrap();
         assert_eq!(
             result,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 20,
@@ -1143,7 +1135,7 @@ mod tests {
         assert_eq!(
             result,
             Some(Command::Pass {
-                mode: GameMode::Osu,
+                mode: Some(GameMode::Osu),
                 username: None,
                 qq: None,
                 limit: 20,
@@ -1157,26 +1149,19 @@ mod tests {
     #[test]
     fn test_command_group_name() {
         assert_eq!(
-            Command::QuerySelf {
-                mode: GameMode::Osu
-            }
-            .group_name(),
+            Command::QuerySelf { mode: None }.group_name(),
             CommandGroup::Query
         );
         assert_eq!(
             Command::QueryUser {
                 username: "x".into(),
-                mode: GameMode::Osu
+                mode: None
             }
             .group_name(),
             CommandGroup::Query
         );
         assert_eq!(
-            Command::QueryMentionedUser {
-                qq: 1,
-                mode: GameMode::Osu
-            }
-            .group_name(),
+            Command::QueryMentionedUser { qq: 1, mode: None }.group_name(),
             CommandGroup::Query
         );
         assert_eq!(
@@ -1188,10 +1173,7 @@ mod tests {
         );
         assert_eq!(Command::Unbind.group_name(), CommandGroup::Bind);
         assert_eq!(
-            Command::Highlight {
-                mode: GameMode::Osu
-            }
-            .group_name(),
+            Command::Highlight { mode: None }.group_name(),
             CommandGroup::Highlight
         );
         assert_eq!(
@@ -1204,7 +1186,7 @@ mod tests {
         );
         assert_eq!(
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1217,7 +1199,7 @@ mod tests {
         );
         assert_eq!(
             Command::Recent {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1257,7 +1239,7 @@ mod tests {
             cmd,
             Command::QueryMentionedUser {
                 qq: 1234567,
-                mode: GameMode::Osu,
+                mode: None,
             }
         );
     }
@@ -1269,7 +1251,7 @@ mod tests {
             cmd,
             Command::QueryMentionedUser {
                 qq: 1234567,
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
             }
         );
     }
@@ -1296,7 +1278,7 @@ mod tests {
             cmd,
             Command::QueryMentionedUser {
                 qq: 1234567,
-                mode: GameMode::Osu,
+                mode: None,
             }
         );
     }
@@ -1308,7 +1290,7 @@ mod tests {
             cmd,
             Command::QueryMentionedUser {
                 qq: 1234567,
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
             }
         );
     }
@@ -1332,7 +1314,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 20,
@@ -1349,7 +1331,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1368,7 +1350,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1387,7 +1369,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1406,7 +1388,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: None,
@@ -1425,7 +1407,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1450,7 +1432,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1469,7 +1451,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: Some(123456),
                 beatmap_id: Some(789012),
@@ -1499,7 +1481,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("My Name".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1518,7 +1500,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("Zhang San".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1537,7 +1519,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1557,7 +1539,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1578,7 +1560,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 1,
@@ -1595,7 +1577,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 5,
@@ -1612,7 +1594,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 20,
@@ -1630,7 +1612,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Recent {
-                mode: GameMode::Mania,
+                mode: Some(GameMode::Mania),
                 username: None,
                 qq: None,
                 limit: 5,
@@ -1643,21 +1625,21 @@ mod tests {
 
     #[test]
     fn test_pass_new_format_mode_alias_rejected() {
-        // String mode aliases are not supported — :std falls back to Osu
+        // String mode aliases are not supported — :std returns None
         let cmd = parse_command("!p :std ZnCookie", None).unwrap();
         match cmd {
-            Command::Pass { mode, .. } => assert_eq!(mode, GameMode::Osu),
+            Command::Pass { mode, .. } => assert_eq!(mode, None),
             _ => panic!("expected Command::Pass"),
         }
     }
 
     #[test]
-    fn test_pass_new_format_invalid_mode_falls_back() {
+    fn test_pass_new_format_invalid_mode_returns_none() {
         let cmd = parse_command("!p :99", None).unwrap();
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1674,7 +1656,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 2,
@@ -1691,7 +1673,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 2,
@@ -1708,7 +1690,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("Zhang San".to_string()),
                 qq: None,
                 limit: 20,
@@ -1725,7 +1707,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: Some(123456),
                 limit: 20,
@@ -1742,7 +1724,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1759,7 +1741,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1776,7 +1758,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 1,
@@ -1794,7 +1776,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 limit: 5,
@@ -1812,7 +1794,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Pass {
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
                 username: None,
                 qq: Some(999999),
                 limit: 1,
@@ -1831,7 +1813,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1850,7 +1832,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1869,7 +1851,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Taiko,
+                mode: Some(GameMode::Taiko),
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1889,7 +1871,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Mania,
+                mode: Some(GameMode::Mania),
                 username: None,
                 qq: None,
                 beatmap_id: None,
@@ -1908,7 +1890,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1927,7 +1909,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: Some("Zhang San".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1946,7 +1928,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Catch,
+                mode: Some(GameMode::Catch),
                 username: None,
                 qq: Some(123456),
                 beatmap_id: Some(123456),
@@ -1965,7 +1947,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: Some("ZnCookie".to_string()),
                 qq: None,
                 beatmap_id: Some(123456),
@@ -1984,7 +1966,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: None,
@@ -1999,21 +1981,21 @@ mod tests {
 
     #[test]
     fn test_s_new_format_mode_alias_rejected() {
-        // String mode aliases are not supported — :mania falls back to Osu
+        // String mode aliases are not supported — :mania returns None
         let cmd = parse_command("!s :mania 123456", None).unwrap();
         match cmd {
-            Command::ScoreOnBeatmap { mode, .. } => assert_eq!(mode, GameMode::Osu),
+            Command::ScoreOnBeatmap { mode, .. } => assert_eq!(mode, None),
             _ => panic!("expected Command::ScoreOnBeatmap"),
         }
     }
 
     #[test]
-    fn test_s_new_format_invalid_mode_falls_back() {
+    fn test_s_new_format_invalid_mode_returns_none() {
         let cmd = parse_command("!s :99 123456", None).unwrap();
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -2033,7 +2015,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -2053,7 +2035,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: Some(123456),
@@ -2072,7 +2054,7 @@ mod tests {
         assert_eq!(
             cmd,
             Command::ScoreOnBeatmap {
-                mode: GameMode::Osu,
+                mode: None,
                 username: None,
                 qq: None,
                 beatmap_id: None,
@@ -2083,5 +2065,71 @@ mod tests {
                 is_all: true,
             }
         );
+    }
+
+    #[test]
+    fn test_get_default_mode() {
+        let cmd = parse_command("!mode", None).unwrap();
+        assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    }
+
+    #[test]
+    fn test_set_default_mode_osu() {
+        let cmd = parse_command("!mode 0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Osu)
+            }
+        );
+    }
+
+    #[test]
+    fn test_set_default_mode_mania() {
+        let cmd = parse_command("!mode 3", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Mania)
+            }
+        );
+    }
+
+    #[test]
+    fn test_set_default_mode_invalid() {
+        assert!(parse_command("!mode 5", None).is_none());
+    }
+
+    #[test]
+    fn test_set_default_mode_trailing_space() {
+        let cmd = parse_command("!mode ", None).unwrap();
+        assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    }
+
+    #[test]
+    fn test_set_default_mode_multi_spaces() {
+        let cmd = parse_command("!mode  0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Osu)
+            }
+        );
+    }
+
+    #[test]
+    fn test_set_default_mode_fullwidth_exclamation() {
+        let cmd = parse_command("！mode 0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Osu)
+            }
+        );
+    }
+
+    #[test]
+    fn test_set_default_mode_string_name() {
+        assert!(parse_command("!mode osu", None).is_none());
     }
 }

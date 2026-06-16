@@ -2,6 +2,8 @@ use crate::log_fmt;
 use chrono::{DateTime, Local, TimeZone, Utc};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use turso::{params, Connection, Database, Result as DbResult};
 
@@ -36,6 +38,25 @@ pub struct Storage {
     db: Database,
 }
 
+/// Check if a table has a given column (used for migration checks).
+async fn has_column(
+    pool: &[tokio::sync::Mutex<Connection>],
+    table: &str,
+    column: &str,
+) -> DbResult<bool> {
+    let conn = pool[0].lock().await;
+    let mut rows = conn
+        .query(&format!("PRAGMA table_info({table})"), ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl Storage {
     pub async fn new(path: &str) -> DbResult<Self> {
         let db = turso::Builder::new_local(path).build().await?;
@@ -55,6 +76,7 @@ impl Storage {
                 qq INTEGER PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 current_username TEXT NOT NULL,
+                default_mode INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS user_stats_history (
@@ -109,7 +131,28 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode);
             CREATE INDEX IF NOT EXISTS idx_history_recorded ON user_stats_history(recorded_at);
-            CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(user_id, mode);",
+            CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(user_id, mode);
+            ",
+            )
+            .await?;
+
+        if !has_column(&pool, "user_bindings", "default_mode").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE user_bindings ADD COLUMN default_mode INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        // Ensure index exists (for both new and upgraded DBs)
+        pool[0]
+            .lock()
+            .await
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_bindings_username ON user_bindings(LOWER(current_username))",
+                (),
             )
             .await?;
 
@@ -118,6 +161,21 @@ impl Storage {
             pool,
             next: AtomicUsize::new(0),
         })
+    }
+
+    /// Create a temporary on-disk storage for testing.
+    /// Uses a temp file (not `:memory:`) because `Storage::new` requires a file path.
+    #[cfg(test)]
+    pub(crate) async fn connect_for_testing() -> DbResult<Self> {
+        static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "osubot-storage-test-{}-{}.db",
+            std::process::id(),
+            counter
+        ));
+        let _ = std::fs::remove_file(&path);
+        Storage::new(path.to_str().expect("valid UTF-8 path")).await
     }
 
     async fn conn(&self) -> tokio::sync::MutexGuard<'_, Connection> {
@@ -136,28 +194,34 @@ impl Storage {
     ) -> DbResult<std::result::Result<(), i64>> {
         let conn = self.conn().await;
         conn.execute("BEGIN IMMEDIATE", ()).await?;
-        let result = async {
-            let mut rows = conn
-                .query(
-                    "SELECT qq FROM user_bindings WHERE user_id = ?1",
-                    params![user_id],
-                )
-                .await?;
-            if let Some(row) = rows.next().await? {
-                let existing_qq: i64 = row.get(0)?;
-                if existing_qq != qq {
-                    return Ok(Err(existing_qq));
+        let result =
+            async {
+                let mut rows = conn
+                    .query(
+                        "SELECT qq FROM user_bindings WHERE user_id = ?1",
+                        params![user_id],
+                    )
+                    .await?;
+                if let Some(row) = rows.next().await? {
+                    let existing_qq: i64 = row.get(0)?;
+                    if existing_qq != qq {
+                        return Ok(Err(existing_qq));
+                    }
                 }
-            }
-            drop(rows);
-            conn.execute(
-                    "INSERT OR REPLACE INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
+                drop(rows);
+                let updated = conn.execute(
+                "UPDATE user_bindings SET user_id = ?2, current_username = ?3 WHERE qq = ?1",
+                params![qq, user_id, current_username],
+            ).await?;
+                if updated == 0 {
+                    conn.execute(
+                    "INSERT INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
                     params![qq, user_id, current_username],
-                )
-                .await?;
-            Ok(Ok(()))
-        }
-        .await;
+                ).await?;
+                }
+                Ok(Ok(()))
+            }
+            .await;
         match &result {
             Ok(Ok(())) | Ok(Err(_)) => {
                 conn.execute("COMMIT", ()).await?;
@@ -260,6 +324,60 @@ impl Storage {
             .await?;
         if let Some(row) = rows.next().await? {
             Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn get_default_mode(&self, qq: i64) -> DbResult<Option<GameMode>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT default_mode FROM user_bindings WHERE qq = ?1",
+                params![qq],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let mode: i32 = row.get(0)?;
+            match mode {
+                0 => Ok(Some(GameMode::Osu)),
+                1 => Ok(Some(GameMode::Taiko)),
+                2 => Ok(Some(GameMode::Catch)),
+                3 => Ok(Some(GameMode::Mania)),
+                _ => {
+                    tracing::error!(mode, "invalid default_mode value in database");
+                    Err(turso::Error::Error(
+                        "invalid default_mode value in database".to_string(),
+                    ))
+                }
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn set_default_mode(&self, qq: i64, mode: GameMode) -> DbResult<bool> {
+        let rows = self
+            .conn()
+            .await
+            .execute(
+                "UPDATE user_bindings SET default_mode = ?1 WHERE qq = ?2",
+                params![mode as i32, qq],
+            )
+            .await?;
+        Ok(rows > 0)
+    }
+
+    pub async fn find_qq_by_username(&self, username: &str) -> DbResult<Option<i64>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq FROM user_bindings WHERE LOWER(current_username) = LOWER(?1)",
+                params![username],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get(0)?))
         } else {
             Ok(None)
         }
@@ -1150,5 +1268,73 @@ mod tests {
 
         assert_eq!(baselines.len(), 1);
         assert_eq!(baselines.get(&404).expect("user 404 baseline").hits, 4_040);
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get_default_mode() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        storage
+            .bind(10001, 12345, "test_user")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // 初始为 Osu (DEFAULT 0)
+        assert_eq!(
+            storage.get_default_mode(10001).await.unwrap(),
+            Some(GameMode::Osu)
+        );
+
+        assert!(storage
+            .set_default_mode(10001, GameMode::Taiko)
+            .await
+            .unwrap());
+        assert_eq!(
+            storage.get_default_mode(10001).await.unwrap(),
+            Some(GameMode::Taiko)
+        );
+
+        assert!(storage
+            .set_default_mode(10001, GameMode::Mania)
+            .await
+            .unwrap());
+        assert_eq!(
+            storage.get_default_mode(10001).await.unwrap(),
+            Some(GameMode::Mania)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_default_mode_unbound_user_returns_false() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        assert!(!storage
+            .set_default_mode(99999, GameMode::Osu)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_qq_by_username_case_insensitive() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        storage
+            .bind(10001, 12345, "TestUser")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            storage.find_qq_by_username("testuser").await.unwrap(),
+            Some(10001)
+        );
+        assert_eq!(
+            storage.find_qq_by_username("TESTUSER").await.unwrap(),
+            Some(10001)
+        );
+        assert_eq!(
+            storage.find_qq_by_username("TestUser").await.unwrap(),
+            Some(10001)
+        );
+
+        assert_eq!(storage.find_qq_by_username("nobody").await.unwrap(), None);
     }
 }

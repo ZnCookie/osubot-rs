@@ -212,6 +212,7 @@ pub struct GroupConfig {
     pub profile: Option<bool>,
     pub highlight: Option<bool>,
     pub bind: Option<bool>,
+    pub mode: Option<bool>,
     pub help: Option<bool>,
 }
 
@@ -224,6 +225,7 @@ impl GroupConfig {
             CommandGroup::Profile => self.profile.unwrap_or(default),
             CommandGroup::Highlight => self.highlight.unwrap_or(default),
             CommandGroup::Bind => self.bind.unwrap_or(default),
+            CommandGroup::Mode => self.mode.unwrap_or(default),
             CommandGroup::Help => self.help.unwrap_or(default),
         }
     }
@@ -248,6 +250,7 @@ impl GroupsConfig {
                 profile: override_cfg.profile.or(self.default.profile),
                 highlight: override_cfg.highlight.or(self.default.highlight),
                 bind: override_cfg.bind.or(self.default.bind),
+                mode: override_cfg.mode.or(self.default.mode),
                 help: override_cfg.help.or(self.default.help),
             }
         } else {
@@ -406,6 +409,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
+        assert!(cfg.is_enabled(CommandGroup::Mode));
         assert!(cfg.is_enabled(CommandGroup::Help));
     }
 
@@ -417,6 +421,7 @@ mod tests {
             profile: None,
             highlight: Some(false),
             bind: None,
+            mode: None,
             help: None,
         };
         assert!(cfg.is_enabled(CommandGroup::Query));
@@ -424,6 +429,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(!cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
+        assert!(cfg.is_enabled(CommandGroup::Mode));
         assert!(cfg.is_enabled(CommandGroup::Help));
     }
 
@@ -461,11 +467,13 @@ mod tests {
         assert!(g123.is_enabled(CommandGroup::Profile));
         assert!(!g123.is_enabled(CommandGroup::Highlight));
         assert!(!g123.is_enabled(CommandGroup::Bind));
+        assert!(g123.is_enabled(CommandGroup::Mode));
 
         let g999 = cfg.get_group_config(999);
         assert!(g999.is_enabled(CommandGroup::Query));
         assert!(!g999.is_enabled(CommandGroup::Score));
         assert!(g999.is_enabled(CommandGroup::Highlight));
+        assert!(g999.is_enabled(CommandGroup::Mode));
     }
 
     #[test]

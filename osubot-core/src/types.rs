@@ -29,6 +29,7 @@ pub enum CommandGroup {
     Profile,
     Highlight,
     Bind,
+    Mode,
     Help,
 }
 
@@ -36,29 +37,29 @@ pub enum CommandGroup {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     QuerySelf {
-        mode: GameMode,
+        mode: Option<GameMode>,
     },
     QueryUser {
         username: String,
-        mode: GameMode,
+        mode: Option<GameMode>,
     },
     QueryMentionedUser {
         qq: i64,
-        mode: GameMode,
+        mode: Option<GameMode>,
     },
     Bind {
         username: String,
     },
     Unbind,
     Highlight {
-        mode: GameMode,
+        mode: Option<GameMode>,
     },
     ProfileCard {
         username: Option<String>,
         qq: Option<i64>,
     },
     ScoreOnBeatmap {
-        mode: GameMode,
+        mode: Option<GameMode>,
         username: Option<String>,
         qq: Option<i64>,
         beatmap_id: Option<u32>,
@@ -69,7 +70,7 @@ pub enum Command {
         is_all: bool,
     },
     Pass {
-        mode: GameMode,
+        mode: Option<GameMode>,
         username: Option<String>,
         qq: Option<i64>,
         limit: u32,
@@ -78,13 +79,16 @@ pub enum Command {
         filters: Option<Vec<String>>,
     },
     Recent {
-        mode: GameMode,
+        mode: Option<GameMode>,
         username: Option<String>,
         qq: Option<i64>,
         limit: u32,
         limit_end: Option<u32>,
         is_summary: bool,
         filters: Option<Vec<String>>,
+    },
+    SetDefaultMode {
+        mode: Option<GameMode>,
     },
     Help,
 }
@@ -101,6 +105,7 @@ impl Command {
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
             Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
+            Command::SetDefaultMode { .. } => CommandGroup::Mode,
             Command::Help => CommandGroup::Help,
         }
     }
@@ -118,6 +123,7 @@ impl Command {
             Command::Pass { .. } => "!p",
             Command::Recent { .. } => "!r",
             Command::ScoreOnBeatmap { .. } => "!s",
+            Command::SetDefaultMode { .. } => "!mode",
             Command::Help => "!help",
         }
     }
