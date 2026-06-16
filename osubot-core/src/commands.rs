@@ -1210,6 +1210,10 @@ mod tests {
             .group_name(),
             CommandGroup::Score
         );
+        assert_eq!(
+            Command::SetDefaultMode { mode: None }.group_name(),
+            CommandGroup::Mode
+        );
     }
 
     #[test]
@@ -2131,5 +2135,32 @@ mod tests {
     #[test]
     fn test_set_default_mode_string_name() {
         assert!(parse_command("!mode osu", None).is_none());
+    }
+
+    #[test]
+    fn test_set_default_mode_taiko() {
+        let cmd = parse_command("!mode 1", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Taiko)
+            }
+        );
+    }
+
+    #[test]
+    fn test_set_default_mode_catch() {
+        let cmd = parse_command("!mode 2", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Catch)
+            }
+        );
+    }
+
+    #[test]
+    fn test_set_default_mode_extra_args() {
+        assert!(parse_command("!mode 0 extra", None).is_none());
     }
 }

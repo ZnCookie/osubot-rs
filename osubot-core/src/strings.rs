@@ -119,10 +119,9 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ── 模式配置 ──
     "mode.set_success" => "[CQ:at,qq={qq}] 已设置默认模式为 {mode}",
     "mode.get_success" => "[CQ:at,qq={qq}] 你的默认模式是 {mode}",
-    "mode.not_bound" => "[CQ:at,qq={qq}] 设置失败：绑定状态已变化，请先绑定后再设置默认模式",
 
     // ── 系统 ──
-    "sys.help" => "[CQ:at,qq={qq}] 绑定/解绑/~/where/查/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!mode/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!mode/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",
@@ -569,7 +568,6 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ===== osubot/src/main.rs (!mode) =====
     "main.set_default_mode" => "用户 {user_id} 设置默认模式为 {mode}",
     "main.set_default_mode_error" => "无法保存用户 {user_id} 的默认模式设置: {error}",
-    "main.set_default_mode_not_bound" => "用户 {user_id} 设置默认模式时绑定已不存在（竞态条件）",
     "main.get_default_mode" => "用户 {user_id} 查询默认模式",
     "main.get_default_mode_error" => "无法获取用户 {user_id} 的默认模式: {error}",
     "main.find_qq_by_username_error" => "通过用户名 '{username}' 查找 QQ 时数据库错误: {error}",

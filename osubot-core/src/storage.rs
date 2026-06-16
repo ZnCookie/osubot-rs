@@ -38,6 +38,28 @@ pub struct Storage {
     db: Database,
 }
 
+/// RAII guard that removes the temp database file on drop.
+#[cfg(test)]
+pub(crate) struct TempDb {
+    path: std::path::PathBuf,
+    storage: Storage,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TempDb {
+    type Target = Storage;
+    fn deref(&self) -> &Storage {
+        &self.storage
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Check if a table has a given column (used for migration checks).
 /// `table` is validated against an allowlist to prevent SQL injection.
 async fn has_column(
@@ -53,7 +75,7 @@ async fn has_column(
     }
     let conn = pool[0].lock().await;
     let mut rows = conn
-        .query(&format!("PRAGMA table_info({table})"), ())
+        .query(&format!("PRAGMA table_info(\"{table}\")"), ())
         .await?;
     while let Some(row) = rows.next().await? {
         let name: String = row.get(1)?;
@@ -172,8 +194,9 @@ impl Storage {
 
     /// Create a temporary on-disk storage for testing.
     /// Uses a temp file (not `:memory:`) because `Storage::new` requires a file path.
+    /// The returned `TempDb` guard cleans up the file on drop.
     #[cfg(test)]
-    pub(crate) async fn connect_for_testing() -> DbResult<Self> {
+    pub(crate) async fn connect_for_testing() -> DbResult<TempDb> {
         static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
         let counter = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -182,7 +205,8 @@ impl Storage {
             counter
         ));
         let _ = std::fs::remove_file(&path);
-        Storage::new(path.to_str().expect("valid UTF-8 path")).await
+        let storage = Storage::new(path.to_str().expect("valid UTF-8 path")).await?;
+        Ok(TempDb { path, storage })
     }
 
     async fn conn(&self) -> tokio::sync::MutexGuard<'_, Connection> {
@@ -193,6 +217,8 @@ impl Storage {
     // ==================== Binding Query ====================
 
     /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
+    /// Note: INSERT 不包含 default_mode，意图是解绑会清除所有用户数据（含默认模式），
+    /// 新绑定从此重新开始，default_mode 走 DEFAULT 0（Osu）。这不是 bug。
     pub async fn bind(
         &self,
         qq: i64,
@@ -1329,5 +1355,60 @@ mod tests {
         );
 
         assert_eq!(storage.find_qq_by_username("nobody").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_set_default_mode_catch() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        storage
+            .bind(10001, 12345, "test_user")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(storage
+            .set_default_mode(10001, GameMode::Catch)
+            .await
+            .unwrap());
+        assert_eq!(
+            storage.get_default_mode(10001).await.unwrap(),
+            Some(GameMode::Catch)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_mode_unbound_qq() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        assert_eq!(storage.get_default_mode(99999).await.unwrap(), None);
+        assert!(!storage
+            .set_default_mode(99999, GameMode::Mania)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_qq_after_username_update() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        storage
+            .bind(10001, 12345, "OldName")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            storage.find_qq_by_username("OldName").await.unwrap(),
+            Some(10001)
+        );
+
+        storage
+            .update_binding_username(10001, "NewName")
+            .await
+            .unwrap();
+
+        assert_eq!(storage.find_qq_by_username("OldName").await.unwrap(), None);
+        assert_eq!(
+            storage.find_qq_by_username("NewName").await.unwrap(),
+            Some(10001)
+        );
     }
 }
