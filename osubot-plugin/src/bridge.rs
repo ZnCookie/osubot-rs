@@ -1,8 +1,11 @@
+use std::fmt;
 use std::io::Read;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use wasmtime::Result as WasmResult;
 use wasmtime::{Caller, Linker, StoreLimits};
+
+use osubot_core::strings::user_str;
 
 // 信任模型：所有宿主函数默认信任 WASM 插件的调用意图。
 // 插件可以发送消息到任意群、发起任意 HTTP 请求、查询任意绑定——
@@ -12,24 +15,65 @@ use wasmtime::{Caller, Linker, StoreLimits};
 /// HTTP 响应体最大大小限制（10MB），防止恶意或意外的大响应耗尽进程内存。
 const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum BridgeError {
-    #[error("JSON 解析失败: {0}")]
-    JsonParse(#[from] serde_json::Error),
-    #[error("缺少字段 '{0}'")]
+    JsonParse(serde_json::Error),
     MissingField(String),
-    #[error("无效游戏模式: {0}")]
     InvalidMode(u8),
-    #[error("HTTP 请求失败: {0}")]
     HttpRequest(String),
-    #[error("数据库查询失败: {0}")]
     Database(String),
-    #[error("宿主函数调用失败: {0}")]
     SendMsg(String),
-    #[error("未知宿主函数: {0}")]
     UnknownHostCall(String),
-    #[error("参数校验失败: {0}")]
     Validation(String),
+}
+
+impl fmt::Display for BridgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use osubot_core::log_fmt;
+        match self {
+            BridgeError::JsonParse(e) => {
+                write!(f, "{}", log_fmt!("bridge.err_json_parse", detail = e))
+            }
+            BridgeError::MissingField(field) => {
+                write!(f, "{}", log_fmt!("bridge.err_missing_field", field = field))
+            }
+            BridgeError::InvalidMode(mode) => {
+                write!(f, "{}", log_fmt!("bridge.err_invalid_mode", mode = mode))
+            }
+            BridgeError::HttpRequest(detail) => {
+                write!(
+                    f,
+                    "{}",
+                    log_fmt!("bridge.err_http_request", detail = detail)
+                )
+            }
+            BridgeError::Database(detail) => {
+                write!(f, "{}", log_fmt!("bridge.err_database", detail = detail))
+            }
+            BridgeError::SendMsg(detail) => {
+                write!(f, "{}", log_fmt!("bridge.err_send_msg", detail = detail))
+            }
+            BridgeError::UnknownHostCall(detail) => {
+                write!(
+                    f,
+                    "{}",
+                    log_fmt!("bridge.err_unknown_host", detail = detail)
+                )
+            }
+            BridgeError::Validation(detail) => {
+                write!(f, "{}", log_fmt!("bridge.err_validation", detail = detail))
+            }
+        }
+    }
+}
+
+impl std::error::Error for BridgeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BridgeError::JsonParse(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 impl From<BridgeError> for String {
@@ -194,7 +238,9 @@ fn dispatch_host_call(
                 serde_json::Value::String(text)
             };
             if !acquire_rate_limiter(services) {
-                return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
+                return Err(BridgeError::SendMsg(
+                    user_str("bridge.rate_limit_send_msg").into(),
+                ));
             }
             send_msg_sync(services, group_id, message)?;
             Ok("{}".to_string())
@@ -206,7 +252,9 @@ fn dispatch_host_call(
                 .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
             let jpeg_b64 = get_field(&v, "jpeg_base64")?;
             if !acquire_rate_limiter(services) {
-                return Err(BridgeError::SendMsg("消息发送过于频繁，请稍后再试".into()));
+                return Err(BridgeError::SendMsg(
+                    user_str("bridge.rate_limit_send_msg").into(),
+                ));
             }
             let image_segment = serde_json::json!([{
                 "type": "image",
@@ -225,7 +273,7 @@ fn dispatch_host_call(
                 .map_err(|e| BridgeError::HttpRequest(format!("invalid HTTP method: {e}")))?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
-                    "请求过于频繁，请稍后再试".to_string(),
+                    user_str("bridge.rate_limit_http").into(),
                 ));
             }
             let mut req = services
@@ -310,7 +358,7 @@ fn dispatch_host_call(
             };
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
-                    "请求过于频繁，请稍后再试".to_string(),
+                    user_str("bridge.rate_limit_http").into(),
                 ));
             }
             let stats = tokio::task::block_in_place(|| {
@@ -344,9 +392,10 @@ fn dispatch_host_call(
             const MIN_INTERVAL: u64 = 5;
             const MAX_TICKS_PER_PLUGIN: usize = 8;
             if interval_secs < MIN_INTERVAL {
-                return Err(BridgeError::Validation(format!(
-                    "tick 间隔不能小于 {MIN_INTERVAL} 秒"
-                )));
+                return Err(BridgeError::Validation(
+                    user_str("bridge.tick_interval_too_short")
+                        .replace("{secs}", &MIN_INTERVAL.to_string()),
+                ));
             }
             let mut registry = services
                 .tick_registry
@@ -361,9 +410,10 @@ fn dispatch_host_call(
                     .iter()
                     .any(|(idx, name, _, _)| *idx == services.instance_idx && name == &tick_name)
             {
-                return Err(BridgeError::Validation(format!(
-                    "每个插件最多注册 {MAX_TICKS_PER_PLUGIN} 个 tick"
-                )));
+                return Err(BridgeError::Validation(
+                    user_str("bridge.tick_limit_exceeded")
+                        .replace("{limit}", &MAX_TICKS_PER_PLUGIN.to_string()),
+                ));
             }
             if let Some((existing_pos, _)) = registry
                 .iter()

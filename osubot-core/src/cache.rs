@@ -1,3 +1,4 @@
+use crate::log_fmt;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -19,7 +20,7 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
     let cutoff = match cutoff {
         Some(t) => t,
         None => {
-            tracing::error!("failed to compute cutoff time for {} cleanup", label);
+            tracing::error!("{}", log_fmt!("cache.cutoff_time_failed", name = label));
             return;
         }
     };
@@ -27,7 +28,10 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
     let mut entries = match tokio::fs::read_dir(&dir).await {
         Ok(entries) => entries,
         Err(e) => {
-            tracing::error!("failed to read {} dir for cleanup: {}", label, e);
+            tracing::error!(
+                "{}",
+                log_fmt!("cache.read_dir_failed", name = label, error = &e)
+            );
             return;
         }
     };
@@ -40,7 +44,10 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
             Ok(Some(e)) => e,
             Ok(None) => break,
             Err(e) => {
-                tracing::warn!("failed to read {} dir entry during cleanup: {e}", label);
+                tracing::warn!(
+                    "{}",
+                    log_fmt!("cache.read_entry_failed", name = label, error = &e)
+                );
                 continue;
             }
         };
@@ -56,7 +63,15 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
                 Ok(()) => deleted += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
-                    tracing::warn!("failed to delete {} file {}: {e}", label, path.display());
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "cache.delete_failed",
+                            name = label,
+                            path = format!("{}", path.display()),
+                            error = &e
+                        )
+                    );
                     errors += 1;
                 }
             }
@@ -64,11 +79,14 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
     }
 
     tracing::info!(
-        "{} cleanup: {} deleted, {} errors (retention: {} days)",
-        label,
-        deleted,
-        errors,
-        retention_days
+        "{}",
+        log_fmt!(
+            "cache.cleanup_summary",
+            name = label,
+            deleted = deleted,
+            errors = errors,
+            days = retention_days
+        )
     );
 }
 

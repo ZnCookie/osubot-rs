@@ -135,19 +135,6 @@ pub struct UserChange {
     pub playtime_change: Option<i64>,
 }
 
-impl UserChange {
-    /// Returns true if any field has a non-zero change.
-    pub fn has_changes(&self) -> bool {
-        self.rank_change.is_some_and(|c| c != 0)
-            || self.country_rank_change.is_some_and(|c| c != 0)
-            || self.pp_change.is_some_and(|c| c != 0.0)
-            || self.accuracy_change.is_some_and(|c| c != 0.0)
-            || self.playcount_change.is_some_and(|c| c != 0)
-            || self.hits_change.is_some_and(|c| c != 0)
-            || self.playtime_change.is_some_and(|c| c != 0)
-    }
-}
-
 /// Activity level classification used by the scheduler to determine update intervals.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserActivity {

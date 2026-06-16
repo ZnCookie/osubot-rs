@@ -1,3 +1,4 @@
+use crate::strings::user_str;
 use crate::types::{GameMode, Score, UserChange, UserStats};
 use osubot_types::{
     format_accuracy, format_length, format_mods, format_number, format_play_datetime,
@@ -35,25 +36,32 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     };
 
     format!(
-        "{username}的个人信息—{mode_name}\n\n\
-         {pp}pp 表现\n\
+        "{username}{header}{mode_name}\n\n\
+         {pp}{pp_label}\n\
          #{rank_str}\n\
          {country_rank_str}\n\
-         {ranked_score}m Ranked谱面总分\n\
-         {acc} 准确率\n\
-         {playcount} 游玩次数\n\
-         {hits} 总命中次数\n\
-         {playtime}游玩时间",
+         {ranked_score}{score_label}\n\
+         {acc}{acc_label}\n\
+         {playcount}{playcount_label}\n\
+         {hits}{hits_label}\n\
+         {playtime}{playtime_label}",
         username = username,
+        header = user_str("fmt.profile_header"),
         mode_name = mode_name,
         pp = pp,
+        pp_label = user_str("fmt.profile_pp"),
         rank_str = rank_str,
         country_rank_str = country_rank_str,
         ranked_score = ranked_score,
+        score_label = user_str("fmt.profile_ranked_score"),
         acc = acc,
+        acc_label = user_str("fmt.profile_accuracy"),
         playcount = playcount,
+        playcount_label = user_str("fmt.profile_playcount"),
         hits = hits,
+        hits_label = user_str("fmt.profile_hits"),
         playtime = playtime,
+        playtime_label = user_str("fmt.profile_playtime"),
     )
 }
 
@@ -69,7 +77,10 @@ fn format_playtime(seconds: i64) -> String {
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     let secs = seconds % 60;
-    format!("{} 小时 {} 分钟 {} 秒", hours, minutes, secs)
+    let s = user_str("fmt.playtime_detail");
+    let s = s.replace("{hours}", &hours.to_string());
+    let s = s.replace("{minutes}", &minutes.to_string());
+    s.replace("{seconds}", &secs.to_string())
 }
 
 fn format_star_rating(stars: f64) -> String {
@@ -97,7 +108,7 @@ fn compute_display_fields(score: &Score) -> ScoreDisplayFields {
         stars: format_star_rating(score.star_rating),
         pp_str: match score.pp {
             Some(pp) => format!("{:.2}", pp),
-            None => "--".to_string(),
+            None => user_str("fmt.no_pp").to_string(),
         },
         acc: format_accuracy(score.accuracy), // score.accuracy is already a 0-1 fraction from the API
     }
@@ -120,9 +131,9 @@ pub fn format_score(
     };
 
     let label = if is_pass {
-        "最近通过"
+        user_str("fmt.recent_pass")
     } else {
-        "最近游玩"
+        user_str("fmt.recent_play")
     };
     let position_str = match position {
         Some(pos) => format!("#{} {}", pos + 1, label),
@@ -193,13 +204,19 @@ pub fn format_score(
 /// 将多条成绩格式化为带序号的并列中文成绩列表文本。
 pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, is_pass: bool) -> String {
     let label = if is_pass {
-        "最近通过"
+        user_str("fmt.recent_pass")
     } else {
-        "最近游玩"
+        user_str("fmt.recent_play")
     };
     let mode_name = mode.name();
 
-    let mut lines = vec![format!("{}的{} ({})：\n", username, label, mode_name)];
+    let mut lines = {
+        let header = user_str("fmt.score_list_header");
+        let header = header.replace("{username}", username);
+        let header = header.replace("{label}", label);
+        let header = header.replace("{mode}", mode_name);
+        vec![header.to_string()]
+    };
 
     for (i, score) in scores.iter().enumerate() {
         let fields = compute_display_fields(score);
@@ -607,29 +624,36 @@ pub fn format_stats_with_change(
     let playtime_change_str = space_prefix(playtime_change_str);
 
     format!(
-        "{username}的个人信息—{mode_name}\n\n\
-         {pp}pp 表现{pp_change_str}\n\
+        "{username}{header}{mode_name}\n\n\
+         {pp}{pp_label}{pp_change_str}\n\
          #{rank_str}\n\
          {country_rank_change_str}\n\
-         {ranked_score}m Ranked谱面总分\n\
-         {acc} 准确率{acc_change_str}\n\
-         {playcount} 游玩次数{playcount_change_str}\n\
-         {hits} 总命中次数{hits_change_str}\n\
-         {playtime}游玩时间{playtime_change_str}",
+         {ranked_score}{score_label}\n\
+         {acc}{acc_label}{acc_change_str}\n\
+         {playcount}{playcount_label}{playcount_change_str}\n\
+         {hits}{hits_label}{hits_change_str}\n\
+         {playtime}{playtime_label}{playtime_change_str}",
         username = username,
+        header = user_str("fmt.profile_header"),
         mode_name = mode_name,
         pp = pp,
+        pp_label = user_str("fmt.profile_pp"),
         pp_change_str = pp_change_str,
         rank_str = rank_str,
         country_rank_change_str = country_rank_change_str,
         ranked_score = ranked_score,
+        score_label = user_str("fmt.profile_ranked_score"),
         acc = acc,
+        acc_label = user_str("fmt.profile_accuracy"),
         acc_change_str = acc_change_str,
         playcount = playcount,
+        playcount_label = user_str("fmt.profile_playcount"),
         playcount_change_str = playcount_change_str,
         hits = hits,
+        hits_label = user_str("fmt.profile_hits"),
         hits_change_str = hits_change_str,
         playtime = playtime,
+        playtime_label = user_str("fmt.profile_playtime"),
         playtime_change_str = playtime_change_str,
     )
 }

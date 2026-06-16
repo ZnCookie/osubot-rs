@@ -1,5 +1,7 @@
 use crate::api::{self, ApiError};
+use crate::log_fmt;
 use crate::storage::Storage;
+use crate::strings::user_str;
 use crate::types::GameMode;
 use crate::OauthTokenCache;
 use crate::RateLimiter;
@@ -71,7 +73,8 @@ pub async fn get_highlight(
                 ?e,
                 ?mode,
                 user_count = user_ids.len(),
-                "batch baseline snapshot query failed, falling back to per-user queries"
+                "{}",
+                log_fmt!("highlight.baseline_query_failed")
             );
             let mut map = HashMap::new();
             for (_, user_id, _) in user_data {
@@ -162,29 +165,40 @@ pub async fn get_highlight(
 pub fn format_highlight(result: &HighlightResult) -> String {
     let mut s = String::new();
 
-    s.push_str("最飞升：\n");
+    s.push_str(user_str("highlight.most_pp"));
     if let Some(h) = &result.most_pp_increase {
-        s.push_str(&format!(
-            "{} 增加了 {:.2} PP。\n({:.2} -> {:.2})\n",
-            h.username, h.pp_increase, h.old_pp, h.new_pp
-        ));
+        let pp = format!("{:.2}", h.pp_increase);
+        let old = format!("{:.2}", h.old_pp);
+        let new = format!("{:.2}", h.new_pp);
+        let t = user_str("highlight.pp_increase");
+        let t = t.replace("{username}", &h.username);
+        let t = t.replace("{pp}", &pp);
+        let t = t.replace("{old}", &old);
+        let t = t.replace("{new}", &new);
+        s.push_str(&t);
     } else {
-        s.push_str("你群没有人飞升。\n");
+        s.push_str(user_str("highlight.no_pp"));
     }
 
-    s.push_str("最肝：\n");
+    s.push_str(user_str("highlight.most_hits"));
     if let Some(h) = &result.most_hits_increase {
-        s.push_str(&format!("{} 打了 {} 下。\n", h.username, h.hits_increase));
+        let t = user_str("highlight.hits_increase");
+        let t = t.replace("{username}", &h.username);
+        let t = t.replace("{hits}", &h.hits_increase.to_string());
+        s.push_str(&t);
     } else {
-        s.push_str("你群没有人肝。\n");
+        s.push_str(user_str("highlight.no_hits"));
     }
 
-    s.push_str("最长游戏时间：\n");
+    s.push_str(user_str("highlight.most_playtime"));
     if let Some(h) = &result.most_playtime_increase {
-        let hours = h.playtime_increase as f64 / 3600.0;
-        s.push_str(&format!("{} 玩儿了 {:.2} 小时。\n", h.username, hours));
+        let hours = format!("{:.2}", h.playtime_increase as f64 / 3600.0);
+        let t = user_str("highlight.playtime_increase");
+        let t = t.replace("{username}", &h.username);
+        let t = t.replace("{hours}", &hours);
+        s.push_str(&t);
     } else {
-        s.push_str("你群没有人玩。\n");
+        s.push_str(user_str("highlight.no_playtime"));
     }
 
     s

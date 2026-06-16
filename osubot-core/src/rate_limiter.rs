@@ -1,3 +1,4 @@
+use crate::log_fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, Notify};
@@ -91,7 +92,7 @@ impl RateLimiter {
             return;
         }
         let mut guard = self.refill_handle.lock().unwrap_or_else(|e| {
-            tracing::warn!("rate limiter refill handle mutex 被污染，强制恢复");
+            tracing::warn!("{}", log_fmt!("rate_limiter.mutex_poisoned"));
             e.into_inner()
         });
         if guard.is_finished()
@@ -100,7 +101,7 @@ impl RateLimiter {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
-            tracing::error!("rate limiter refill task panicked, respawning");
+            tracing::error!("{}", log_fmt!("rate_limiter.refill_panicked"));
             let new_handle = spawn_refill(
                 self.state.clone(),
                 self.notify.clone(),

@@ -11,6 +11,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tracing::{debug, warn};
 
+use osubot_core::log_fmt;
 use osubot_core::rate_limiter::RateLimiter;
 use osubot_core::upstream::{extract_text_from_message, SendAction};
 use osubot_core::UpstreamBindingProvider;
@@ -94,7 +95,7 @@ impl UpstreamBindingProvider for YumuUpstream {
         let mut request = match self.url.as_str().into_client_request() {
             Ok(r) => r,
             Err(e) => {
-                warn!("yumu: failed to build WS request: {e}");
+                warn!("{}", log_fmt!("yumu.build_request_failed", error = &e));
                 return Ok(None);
             }
         };
@@ -102,24 +103,24 @@ impl UpstreamBindingProvider for YumuUpstream {
         if let Ok(val) = "Universal".parse() {
             request.headers_mut().insert("X-Client-Role", val);
         } else {
-            warn!("yumu: invalid X-Client-Role header value");
+            warn!("{}", log_fmt!("yumu.invalid_client_role"));
             return Ok(None);
         }
         if let Ok(val) = qq.to_string().parse() {
             request.headers_mut().insert("X-Self-ID", val);
         } else {
-            warn!("yumu: invalid X-Self-ID header value");
+            warn!("{}", log_fmt!("yumu.invalid_self_id"));
             return Ok(None);
         }
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,
             Ok(Err(e)) => {
-                warn!("yumu: WS connect failed: {e}");
+                warn!("{}", log_fmt!("yumu.connect_failed", error = &e));
                 return Ok(None);
             }
             Err(_) => {
-                warn!("yumu: WS connect timed out");
+                warn!("{}", log_fmt!("yumu.connect_timeout"));
                 return Ok(None);
             }
         };
@@ -141,7 +142,7 @@ impl UpstreamBindingProvider for YumuUpstream {
             .await
             .is_err()
         {
-            warn!("yumu: failed to send lifecycle");
+            warn!("{}", log_fmt!("yumu.send_lifecycle_failed"));
             return Ok(None);
         }
 
@@ -179,7 +180,7 @@ impl UpstreamBindingProvider for YumuUpstream {
             .await
             .is_err()
         {
-            warn!("yumu: failed to send event");
+            warn!("{}", log_fmt!("yumu.send_event_failed"));
             return Ok(None);
         }
 
@@ -194,7 +195,7 @@ impl UpstreamBindingProvider for YumuUpstream {
             let msg = match _msg {
                 Ok(m) => m,
                 Err(_) => {
-                    warn!("yumu: WS read error");
+                    warn!("{}", log_fmt!("yumu.ws_read_error"));
                     return Ok(None);
                 }
             };
@@ -208,12 +209,12 @@ impl UpstreamBindingProvider for YumuUpstream {
                 _ => continue,
             };
 
-            debug!(target: "yumu_upstream", %text, "received message");
+            debug!(target: "yumu_upstream", %text, "{}", log_fmt!("yumu.received_message"));
 
             if let Some(resp_text) = parse_send_msg_action(&text) {
-                debug!(target: "yumu_upstream", resp = %resp_text, "parsed send action");
+                debug!(target: "yumu_upstream", resp = %resp_text, "{}", log_fmt!("yumu.parsed_send_action"));
                 if let Some(binding) = parse_bind_response_text(&resp_text) {
-                    debug!(target: "yumu_upstream", username = %binding.1, osu_id = binding.0, "parsed binding");
+                    debug!(target: "yumu_upstream", username = %binding.1, osu_id = binding.0, "{}", log_fmt!("yumu.parsed_binding"));
                     return Ok(Some(binding));
                 }
                 // Got a response but it's not a binding info (e.g., "已撤回绑定授权" etc.)
@@ -222,7 +223,7 @@ impl UpstreamBindingProvider for YumuUpstream {
             }
         }
 
-        warn!("yumu: timed out waiting for response");
+        warn!("{}", log_fmt!("yumu.response_timeout"));
         Ok(None)
     }
 }
@@ -311,10 +312,13 @@ mod integration_tests {
         );
         let binding = result.unwrap();
         if binding.is_none() {
-            tracing::info!("NOTE: no binding found for QQ 3628905173 (expected for test)");
+            tracing::info!("{}", log_fmt!("yumu.no_binding_test"));
         } else {
             let (osu_id, username) = binding.unwrap();
-            tracing::info!("BINDING FOUND: {osu_id} {username}");
+            tracing::info!(
+                "{}",
+                log_fmt!("yumu.binding_found", osu_id = osu_id, username = username)
+            );
         }
     }
 }

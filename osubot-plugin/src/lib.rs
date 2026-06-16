@@ -4,6 +4,7 @@ pub mod instance;
 mod types;
 
 use instance::{PluginInstance, PluginInstanceParams};
+use osubot_core::log_fmt;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -132,7 +133,6 @@ impl PluginManager {
         kind: &'static str,
         result: Result<PluginDispatchResult<PluginAction>, PluginDispatchPanic>,
     ) -> PluginAction {
-        // Put instance back if available (timeout/panic cases lose the instance)
         if let Some(inst) = instance {
             self.put_instance(idx, inst);
         }
@@ -144,47 +144,70 @@ impl PluginManager {
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                 if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = name,
-                        consecutive = self.lost_instances[idx],
-                        "Plugin {kind} 连续错误，自动重载"
+                        "{}",
+                        log_fmt!("plugin.consecutive_error_reload", kind = kind, name = name)
                     );
                     if let Err(re) = self.reload_instance(idx) {
-                        tracing::error!(plugin = name, "重载失败: {re}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                     }
                 }
-                tracing::warn!(plugin = name, error = %e, "Plugin {kind} error");
+                tracing::warn!(
+                    "{}",
+                    log_fmt!("plugin.error", kind = kind, name = name, error = e)
+                );
                 PluginAction::Next
             }
             Err(PluginDispatchPanic::Panic(join_err)) => {
-                tracing::error!(plugin = name, "Plugin {kind} panicked: {join_err}");
+                tracing::error!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.panicked",
+                        kind = kind,
+                        name = name,
+                        error = join_err
+                    )
+                );
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                 if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = name,
-                        consecutive = self.lost_instances[idx],
-                        "Plugin {kind} 连续 panic，自动重载"
+                        "{}",
+                        log_fmt!("plugin.consecutive_panic_reload", kind = kind, name = name)
                     );
                     if let Err(e) = self.reload_instance(idx) {
-                        tracing::error!(plugin = name, "重载失败: {e}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
                     }
                 }
                 PluginAction::Next
             }
             Err(PluginDispatchPanic::Timeout) => {
-                tracing::warn!(plugin = name, "Plugin {kind} timed out");
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.timeout",
+                        kind = kind,
+                        name = name,
+                        error = "timeout"
+                    )
+                );
                 self.engine.increment_epoch();
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                 if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = name,
-                        consecutive = self.lost_instances[idx],
-                        "Plugin {kind} 连续超时，自动重载"
+                        "{}",
+                        log_fmt!(
+                            "plugin.consecutive_timeout_reload",
+                            kind = kind,
+                            name = name
+                        )
                     );
                     if let Err(re) = self.reload_instance(idx) {
-                        tracing::error!(plugin = name, "重载失败: {re}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                     }
                 } else {
-                    tracing::warn!(plugin = name, "Plugin {kind} 超时，跳过重载等待阈值");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!("plugin.timeout_skip_reload", kind = kind, name = name)
+                    );
                 }
                 PluginAction::Next
             }
@@ -222,7 +245,7 @@ impl PluginManager {
         let mut blueprints: Vec<PluginBlueprint> = Vec::new();
         for pcfg in &config.instances {
             if !pcfg.enabled {
-                tracing::info!(name = %pcfg.name, "Plugin disabled, skipping");
+                tracing::info!("{}", log_fmt!("plugin.disabled", name = &pcfg.name));
                 continue;
             }
             if !seen_names.insert(&pcfg.name) {
@@ -248,7 +271,7 @@ impl PluginManager {
                 config: pcfg.clone(),
                 wasm_path,
             });
-            tracing::info!(name = %pcfg.name, "Plugin module loaded");
+            tracing::info!("{}", log_fmt!("plugin.module_loaded", name = &pcfg.name));
         }
 
         blueprints.sort_by_key(|b| std::cmp::Reverse(b.params.priority));
@@ -314,18 +337,20 @@ impl PluginManager {
             let wasm_path = blueprint.wasm_path;
             wasm_paths_vec.push(wasm_path);
 
-            tracing::info!(
-                name = %instance_params.last().map_or("unknown", |p| &p.name),
-                sorted_idx,
-                "Plugin instantiated"
-            );
+            let name = instance_params
+                .last()
+                .map_or("unknown", |p| p.name.as_str());
+            tracing::info!("{}", log_fmt!("plugin.instantiated", name = name));
         }
 
         for (sorted_idx, instance) in instances.iter_mut().enumerate() {
             if let Some(inst) = instance {
                 inst.set_instance_idx(sorted_idx);
                 inst.on_load()?;
-                tracing::info!(name = %inst.name, sorted_idx, "Plugin on_load completed");
+                tracing::info!(
+                    "{}",
+                    log_fmt!("plugin.on_load_completed", name = &inst.name)
+                );
             }
         }
 
@@ -384,12 +409,17 @@ impl PluginManager {
         };
 
         for &idx in &indices {
+            let name = self
+                .instance_params
+                .get(idx)
+                .map_or("unknown", |p| p.name.as_str())
+                .to_owned();
+
             let cmd_owned = cmd_json.to_owned();
             let mut instance = match self.take_instance(idx) {
                 Some(inst) => inst,
                 None => continue,
             };
-            let name = instance.name.clone();
             let timeout_dur = instance.timeout;
 
             let result = tokio::time::timeout(
@@ -419,47 +449,81 @@ impl PluginManager {
                     self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                     if self.lost_instances[idx] >= self.lost_instances_threshold {
                         tracing::warn!(
-                            plugin = %name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin command 连续错误，自动重载"
+                            "{}",
+                            log_fmt!(
+                                "plugin.command_consecutive_error",
+                                kind = "command",
+                                name = &name
+                            )
                         );
                         if let Err(re) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %name, "重载失败: {re}");
+                            tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                         }
                     }
-                    tracing::warn!(plugin = %name, error = %e, "Plugin command error");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.command_error",
+                            kind = "command",
+                            name = &name,
+                            error = e
+                        )
+                    );
                     continue;
                 }
                 Ok(Err(join_err)) => {
-                    tracing::error!(plugin = %name, "Plugin command panicked: {join_err}");
+                    tracing::error!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.command_panicked",
+                            kind = "command",
+                            name = &name,
+                            error = join_err
+                        )
+                    );
                     self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                     if self.lost_instances[idx] >= self.lost_instances_threshold {
                         tracing::warn!(
-                            plugin = %name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin command 连续 panic，自动重载"
+                            "{}",
+                            log_fmt!(
+                                "plugin.command_consecutive_error",
+                                kind = "command",
+                                name = &name
+                            )
                         );
                         if let Err(e) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %name, "Failed to reload after panic: {e}");
+                            tracing::error!(
+                                "{}",
+                                log_fmt!("plugin.command_reload_after_panic_failed", error = e)
+                            );
                         }
                     }
                     continue;
                 }
                 Err(_) => {
-                    tracing::warn!(plugin = %name, "Plugin command timed out");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!("plugin.command_timeout", kind = "command", name = &name)
+                    );
                     self.engine.increment_epoch();
                     self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                     if self.lost_instances[idx] >= self.lost_instances_threshold {
                         tracing::warn!(
-                            plugin = %name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin command 连续超时，自动重载"
+                            "{}",
+                            log_fmt!(
+                                "plugin.command_consecutive_timeout",
+                                kind = "command",
+                                name = &name
+                            )
                         );
                         if let Err(re) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %name, "重载失败: {re}");
+                            tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                         }
                     } else {
-                        tracing::warn!(plugin = %name, "Plugin command 超时，跳过重载等待阈值");
+                        tracing::warn!(
+                            "{}",
+                            log_fmt!("plugin.timeout_skip_reload", kind = "command", name = &name)
+                        );
                     }
                     continue;
                 }
@@ -481,12 +545,17 @@ impl PluginManager {
                 continue;
             }
 
+            let name = self
+                .instance_params
+                .get(idx)
+                .map_or("unknown", |p| p.name.as_str())
+                .to_owned();
+
             let msg_owned = msg_json.to_owned();
             let mut instance = match self.take_instance(idx) {
                 Some(inst) => inst,
                 None => continue,
             };
-            let name = instance.name.clone();
             let timeout_dur = instance.timeout;
 
             let result = tokio::time::timeout(
@@ -516,47 +585,89 @@ impl PluginManager {
                     self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                     if self.lost_instances[idx] >= self.lost_instances_threshold {
                         tracing::warn!(
-                            plugin = %name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin on_message 连续错误，自动重载"
+                            "{}",
+                            log_fmt!(
+                                "plugin.on_message_consecutive_error",
+                                kind = "on_message",
+                                name = &name
+                            )
                         );
                         if let Err(re) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %name, "重载失败: {re}");
+                            tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                         }
                     }
-                    tracing::warn!(plugin = %name, error = %e, "Plugin on_message error");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_message_error",
+                            kind = "on_message",
+                            name = &name,
+                            error = e
+                        )
+                    );
                     continue;
                 }
                 Ok(Err(join_err)) => {
-                    tracing::error!(plugin = %name, "Plugin on_message panicked: {join_err}");
+                    tracing::error!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_message_panicked",
+                            kind = "on_message",
+                            name = &name,
+                            error = join_err
+                        )
+                    );
                     self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                     if self.lost_instances[idx] >= self.lost_instances_threshold {
                         tracing::warn!(
-                            plugin = %name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin on_message 连续 panic，自动重载"
+                            "{}",
+                            log_fmt!(
+                                "plugin.on_message_consecutive_error",
+                                kind = "on_message",
+                                name = &name
+                            )
                         );
                         if let Err(e) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %name, "Failed to reload after panic: {e}");
+                            tracing::error!(
+                                "{}",
+                                log_fmt!("plugin.on_message_reload_failed", error = e)
+                            );
                         }
                     }
                     continue;
                 }
                 Err(_) => {
-                    tracing::warn!(plugin = %name, "Plugin on_message timed out");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_message_timeout",
+                            kind = "on_message",
+                            name = &name
+                        )
+                    );
                     self.engine.increment_epoch();
                     self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                     if self.lost_instances[idx] >= self.lost_instances_threshold {
                         tracing::warn!(
-                            plugin = %name,
-                            consecutive = self.lost_instances[idx],
-                            "Plugin on_message 连续超时，自动重载"
+                            "{}",
+                            log_fmt!(
+                                "plugin.on_message_consecutive_timeout",
+                                kind = "on_message",
+                                name = &name
+                            )
                         );
                         if let Err(re) = self.reload_instance(idx) {
-                            tracing::error!(plugin = %name, "重载失败: {re}");
+                            tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                         }
                     } else {
-                        tracing::warn!(plugin = %name, "Plugin on_message 超时，跳过重载等待阈值");
+                        tracing::warn!(
+                            "{}",
+                            log_fmt!(
+                                "plugin.timeout_skip_reload",
+                                kind = "on_message",
+                                name = &name
+                            )
+                        );
                     }
                     continue;
                 }
@@ -611,9 +722,17 @@ impl PluginManager {
         // 连续重载失败保护：超过阈值则拒绝重载，需手动干预
         let consecutive = self.reload_failures.get(idx).copied().unwrap_or(0);
         if consecutive >= self.reload_failures_threshold {
+            let name = self
+                .instance_params
+                .get(idx)
+                .map_or("unknown", |p| p.name.as_str());
             warn!(
-                idx,
-                consecutive, "plugin reload failed too many times, manual reload required"
+                "{}",
+                log_fmt!(
+                    "plugin.reload_too_many_times",
+                    name = name,
+                    consecutive = consecutive
+                )
             );
             return Err(format!(
                 "plugin reload failed too many times ({consecutive}), manual reload required"
@@ -632,7 +751,7 @@ impl PluginManager {
         // 原子操作：保存旧 tick 注册快照并清除旧注册（防止 TOCTOU 竞争）
         let old_ticks: Vec<_> = {
             let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                 e.into_inner()
             });
             let snapshot: Vec<_> = registry
@@ -652,9 +771,7 @@ impl PluginManager {
                     // new() 失败：仅在旧实例仍存在时恢复旧 tick 注册
                     if self.instances[idx].is_some() {
                         let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                            tracing::warn!(
-                                "tick_registry mutex 被污染，强制恢复（数据可能不一致）"
-                            );
+                            tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                             e.into_inner()
                         });
                         registry.extend(old_ticks);
@@ -669,7 +786,7 @@ impl PluginManager {
             // on_load 中可能已注册 tick，失败后原子清理残留并恢复旧 tick
             {
                 let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                     e.into_inner()
                 });
                 registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != idx);
@@ -716,7 +833,7 @@ impl PluginManager {
 
     pub fn get_ticks(&self) -> Vec<(usize, u64, u32)> {
         let registry = self.tick_registry.lock().unwrap_or_else(|e| {
-            tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+            tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
             e.into_inner()
         });
         registry
@@ -764,11 +881,16 @@ impl PluginManager {
             return;
         }
 
+        let name = self
+            .instance_params
+            .get(plugin_idx)
+            .map_or("unknown", |p| p.name.as_str())
+            .to_owned();
+
         let mut instance = match self.take_instance(plugin_idx) {
             Some(inst) => inst,
             None => return,
         };
-        let name = instance.name.clone();
         let timeout_dur = instance.timeout;
 
         let result = tokio::time::timeout(
@@ -789,45 +911,76 @@ impl PluginManager {
                 self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
                 if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = %name,
-                        consecutive = self.lost_instances[plugin_idx],
-                        "Plugin on_tick 连续错误，自动重载"
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_tick_consecutive_error",
+                            kind = "on_tick",
+                            name = &name
+                        )
                     );
                     if let Err(re) = self.reload_instance(plugin_idx) {
-                        tracing::error!(plugin = %name, "重载失败: {re}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                     }
                 }
-                tracing::warn!(plugin = %name, error = %e, "Plugin on_tick error");
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_tick_error",
+                        kind = "on_tick",
+                        name = &name,
+                        error = e
+                    )
+                );
             }
             Ok(Err(join_err)) => {
-                tracing::error!(plugin = %name, "Plugin on_tick panicked: {join_err}");
+                tracing::error!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_tick_panicked",
+                        kind = "on_tick",
+                        name = &name,
+                        error = join_err
+                    )
+                );
                 self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
                 if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = %name,
-                        consecutive = self.lost_instances[plugin_idx],
-                        "Plugin on_tick 连续 panic，自动重载"
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_tick_consecutive_panic",
+                            kind = "on_tick",
+                            name = &name
+                        )
                     );
                     if let Err(e) = self.reload_instance(plugin_idx) {
-                        tracing::error!(plugin = %name, "Failed to reload after panic: {e}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
                     }
                 }
             }
             Err(_) => {
-                tracing::warn!(plugin = %name, "Plugin on_tick timed out");
+                tracing::warn!(
+                    "{}",
+                    log_fmt!("plugin.on_tick_timeout", kind = "on_tick", name = &name)
+                );
                 self.engine.increment_epoch();
                 self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
                 if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = %name,
-                        consecutive = self.lost_instances[plugin_idx],
-                        "Plugin on_tick 连续超时，自动重载"
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_tick_consecutive_timeout",
+                            kind = "on_tick",
+                            name = &name
+                        )
                     );
                     if let Err(re) = self.reload_instance(plugin_idx) {
-                        tracing::error!(plugin = %name, "重载失败: {re}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                     }
                 } else {
-                    tracing::warn!(plugin = %name, "Plugin on_tick 超时，跳过重载等待阈值");
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!("plugin.timeout_skip_reload", kind = "on_tick", name = &name)
+                    );
                 }
             }
         }
@@ -842,11 +995,16 @@ impl PluginManager {
             return;
         }
 
+        let name = self
+            .instance_params
+            .get(idx)
+            .map_or("unknown", |p| p.name.as_str())
+            .to_owned();
+
         let mut instance = match self.take_instance(idx) {
             Some(inst) => inst,
             None => return,
         };
-        let unload_name = instance.name.clone();
         let timeout_dur = instance.timeout;
 
         let result = tokio::time::timeout(
@@ -867,32 +1025,62 @@ impl PluginManager {
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                 if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = %unload_name,
-                        consecutive = self.lost_instances[idx],
-                        "Plugin on_unload 连续错误，自动重载"
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_unload_consecutive_error",
+                            kind = "on_unload",
+                            name = &name
+                        )
                     );
                     if let Err(re) = self.reload_instance(idx) {
-                        tracing::error!(plugin = %unload_name, "重载失败: {re}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
                     }
                 }
-                tracing::warn!(plugin = %unload_name, error = %e, "Plugin on_unload error");
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_unload_error",
+                        kind = "on_unload",
+                        name = &name,
+                        error = e
+                    )
+                );
             }
             Ok(Err(join_err)) => {
-                tracing::error!(plugin = %unload_name, "Plugin on_unload panicked: {join_err}");
+                tracing::error!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_unload_panicked",
+                        kind = "on_unload",
+                        name = &name,
+                        error = join_err
+                    )
+                );
                 self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
                 if self.lost_instances[idx] >= self.lost_instances_threshold {
                     tracing::warn!(
-                        plugin = %unload_name,
-                        consecutive = self.lost_instances[idx],
-                        "Plugin on_unload 连续 panic，自动重载"
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_unload_consecutive_panic",
+                            kind = "on_unload",
+                            name = &name
+                        )
                     );
                     if let Err(e) = self.reload_instance(idx) {
-                        tracing::error!(plugin = %unload_name, "Failed to reload after panic: {e}");
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
                     }
                 }
             }
             Err(_) => {
-                tracing::warn!(plugin = %unload_name, "Plugin on_unload timed out, proceeding with {context}");
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_unload_timeout",
+                        kind = "on_unload",
+                        name = &name,
+                        context = context
+                    )
+                );
                 self.engine.increment_epoch();
             }
         }
@@ -905,8 +1093,11 @@ impl PluginManager {
         for idx in 0..self.instances.len() {
             self.unload_single_instance(idx, "unload").await;
             if self.instances[idx].is_some() {
-                let name = self.instances[idx].as_ref().map(|i| &i.name).cloned();
-                tracing::info!(plugin = ?name, "Plugin unloaded");
+                let name = self
+                    .instance_params
+                    .get(idx)
+                    .map_or("unknown", |p| p.name.as_str());
+                tracing::info!("{}", log_fmt!("plugin.unloaded", name = name));
             }
         }
         self.instances.clear();
@@ -997,10 +1188,13 @@ impl PluginManager {
             .collect();
 
         info!(
-            to_add = to_add.len(),
-            to_remove = to_remove.len(),
-            to_reload = to_reload.len(),
-            "Plugin diff 完成"
+            "{}",
+            log_fmt!(
+                "plugin.diff_complete",
+                to_add = to_add.len(),
+                to_remove = to_remove.len(),
+                to_reload = to_reload.len()
+            )
         );
 
         for idx in to_remove.iter().rev() {
@@ -1013,21 +1207,26 @@ impl PluginManager {
 
             {
                 let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                    tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                    tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                     e.into_inner()
                 });
                 registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
             }
 
             self.instances[*idx] = None;
-            info!(idx = *idx, "Plugin 已移除");
+            let removed_name = old_map
+                .iter()
+                .find(|(_, (i, _, _, _, _))| *i == *idx)
+                .map(|(n, _)| n.as_str())
+                .unwrap_or("unknown");
+            info!("{}", log_fmt!("plugin.removed", name = removed_name));
         }
 
         for pcfg in &to_add {
             let wasm_path = match resolve_wasm_path(&new_config.dir, &pcfg.path) {
                 Ok(p) => p,
                 Err(e) => {
-                    warn!(name = %pcfg.name, "路径无效，跳过: {e}");
+                    warn!("{}", log_fmt!("plugin.invalid_path", error = e));
                     continue;
                 }
             };
@@ -1035,7 +1234,7 @@ impl PluginManager {
             let module = match Module::from_file(&self.engine, &wasm_path) {
                 Ok(m) => m,
                 Err(e) => {
-                    warn!(name = %pcfg.name, "WASM 编译失败，跳过: {e}");
+                    warn!("{}", log_fmt!("plugin.compile_failed", error = e));
                     continue;
                 }
             };
@@ -1044,17 +1243,17 @@ impl PluginManager {
             let (mut instance, params) = match self.build_instance(sorted_idx, pcfg, &module) {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!(name = %pcfg.name, "实例构建失败，跳过: {e}");
+                    warn!("{}", log_fmt!("plugin.instance_build_failed", error = e));
                     continue;
                 }
             };
 
             if let Err(e) = instance.on_load() {
-                warn!(name = %pcfg.name, "on_load 失败: {e}");
+                warn!("{}", log_fmt!("plugin.on_load_failed", error = e));
                 // on_load 中可能已注册 tick，失败后需清理残留
                 {
                     let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                        tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                        tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                         e.into_inner()
                     });
                     registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != sorted_idx);
@@ -1086,7 +1285,7 @@ impl PluginManager {
             self.wasm_mtimes.push(wasm_mtime);
             self.wasm_paths.push(wasm_path);
 
-            info!(name = %pcfg.name, "Plugin 已添加");
+            info!("{}", log_fmt!("plugin.added", name = &pcfg.name));
         }
 
         for pcfg in &to_reload {
@@ -1094,7 +1293,7 @@ impl PluginManager {
                 let wasm_path = match resolve_wasm_path(&new_config.dir, &pcfg.path) {
                     Ok(p) => p,
                     Err(e) => {
-                        warn!(name = %pcfg.name, "路径无效，跳过重载: {e}");
+                        warn!("{}", log_fmt!("plugin.reload_invalid_path", error = e));
                         continue;
                     }
                 };
@@ -1102,7 +1301,7 @@ impl PluginManager {
                 let module = match Module::from_file(&self.engine, &wasm_path) {
                     Ok(m) => m,
                     Err(e) => {
-                        warn!(name = %pcfg.name, "WASM 编译失败，跳过重载: {e}");
+                        warn!("{}", log_fmt!("plugin.reload_compile_failed", error = e));
                         continue;
                     }
                 };
@@ -1111,7 +1310,7 @@ impl PluginManager {
                 let (mut instance, params) = match self.build_instance(*idx, pcfg, &module) {
                     Ok(v) => v,
                     Err(e) => {
-                        warn!(name = %pcfg.name, "实例构建失败，跳过重载: {e}");
+                        warn!("{}", log_fmt!("plugin.reload_instance_failed", error = e));
                         continue;
                     }
                 };
@@ -1121,7 +1320,7 @@ impl PluginManager {
                 // 保存旧 tick 注册快照，on_load 失败时恢复
                 let old_ticks: Vec<_> = {
                     let registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                        tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                        tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                         e.into_inner()
                     });
                     registry
@@ -1134,7 +1333,7 @@ impl PluginManager {
                 // 在 on_load 之前清理旧 tick，避免新注册的 tick 被误删
                 {
                     let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                        tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                        tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                         e.into_inner()
                     });
                     registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
@@ -1143,22 +1342,16 @@ impl PluginManager {
                 // 连续重载失败保护：超过阈值则跳过，需手动干预
                 let consecutive = self.reload_failures[*idx];
                 if consecutive >= self.reload_failures_threshold {
-                    warn!(
-                        idx = *idx,
-                        consecutive,
-                        "plugin reload failed too many times in reload_all, manual reload required"
-                    );
+                    warn!("{}", log_fmt!("plugin.reload_too_many_times_all"));
                     continue;
                 }
 
                 if let Err(e) = instance.on_load() {
-                    warn!(name = %pcfg.name, "on_load 失败: {e}");
+                    warn!("{}", log_fmt!("plugin.on_load_failed", error = e));
                     // 恢复旧 tick 注册，旧实例仍然有效
                     {
                         let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
-                            tracing::warn!(
-                                "tick_registry mutex 被污染，强制恢复（数据可能不一致）"
-                            );
+                            tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                             e.into_inner()
                         });
                         registry.retain(|(plugin_idx, _, _, _)| *plugin_idx != *idx);
@@ -1192,7 +1385,7 @@ impl PluginManager {
                 self.wasm_mtimes[*idx] = wasm_mtime;
                 self.wasm_paths[*idx] = wasm_path;
 
-                info!(name = %pcfg.name, "Plugin 已重载");
+                info!("{}", log_fmt!("plugin.reloaded", name = &pcfg.name));
             }
         }
 
@@ -1273,7 +1466,7 @@ impl PluginManager {
 
         {
             let mut reg = self.tick_registry.lock().unwrap_or_else(|e| {
-                tracing::warn!("tick_registry mutex 被污染，强制恢复（数据可能不一致）");
+                tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                 e.into_inner()
             });
             for entry in reg.iter_mut() {
@@ -1290,10 +1483,13 @@ impl PluginManager {
         }
 
         info!(
-            old_len,
-            new_len,
-            removed = old_len - new_len,
-            "PluginManager 已压缩"
+            "{}",
+            log_fmt!(
+                "plugin.manager_compacted",
+                old_len = old_len,
+                new_len = new_len,
+                removed = old_len - new_len
+            )
         );
     }
 }
@@ -1382,10 +1578,6 @@ mod tests {
         let config: PluginInstanceConfig = serde_json::from_str(json).unwrap();
         assert!(!config.enabled, "enabled should default to false");
     }
-
-    #[test]
-    #[ignore = "tick interval scheduling is handled in the main binary tick loop"]
-    fn test_get_due_ticks() {}
 
     fn find_hello_plugin_wasm() -> Option<String> {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;

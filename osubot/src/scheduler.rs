@@ -6,6 +6,7 @@ use tokio::time;
 use tracing::{error, info, warn};
 
 use osubot_core::api::ApiError;
+use osubot_core::log_fmt;
 use osubot_core::{
     api,
     storage::today_0am_utc,
@@ -65,33 +66,34 @@ impl Scheduler {
                     deleted_stats = stats,
                     deleted_plays = plays,
                     deleted_next = next,
-                    "pruned old records"
+                    "{}",
+                    log_fmt!("scheduler.pruned_records")
                 );
             }
             Err(e) => {
-                error!(error = ?e, "failed to prune old records");
+                error!(error = ?e, "{}", log_fmt!("scheduler.prune_records_failed"));
             }
         }
 
         // Also prune expired pending binds
         match self.storage.prune_expired_pending_binds().await {
             Ok(deleted) if deleted > 0 => {
-                info!(deleted, "pruned expired pending binds");
+                info!(deleted, "{}", log_fmt!("scheduler.pruned_pending_binds"));
             }
             Ok(_) => {}
             Err(e) => {
-                error!(error = ?e, "failed to prune expired pending binds");
+                error!(error = ?e, "{}", log_fmt!("scheduler.prune_pending_binds_failed"));
             }
         }
 
         // Prune expired pending unbinds
         match self.storage.prune_expired_pending_unbinds().await {
             Ok(deleted) if deleted > 0 => {
-                info!(deleted, "pruned expired pending unbinds");
+                info!(deleted, "{}", log_fmt!("scheduler.pruned_pending_unbinds"));
             }
             Ok(_) => {}
             Err(e) => {
-                error!(error = ?e, "failed to prune expired pending unbinds");
+                error!(error = ?e, "{}", log_fmt!("scheduler.prune_pending_unbinds_failed"));
             }
         }
 
@@ -108,13 +110,13 @@ impl Scheduler {
 
     /// Background task entry point - only processes due users/modes
     pub async fn run(&self) {
-        info!("Scheduler task started");
+        info!("{}", log_fmt!("scheduler.task_started"));
         loop {
             if self.shutdown.load(Ordering::Acquire) {
-                info!("Scheduler shutting down");
+                info!("{}", log_fmt!("scheduler.shutting_down"));
                 break;
             }
-            info!("Scheduler tick");
+            info!("{}", log_fmt!("scheduler.tick"));
             let interval_secs = {
                 let cfg = self.config.read().await;
                 60 * cfg.scheduler.interval_minutes.max(1)
@@ -130,11 +132,17 @@ impl Scheduler {
         let due = match self.storage.get_due_users().await {
             Ok(d) => d,
             Err(e) => {
-                error!("get_due_users failed: {:?}", e);
+                error!(
+                    "{}",
+                    log_fmt!("scheduler.get_due_users_failed", error = format!("{:?}", e))
+                );
                 Vec::new()
             }
         };
-        info!("due users count: {}", due.len());
+        info!(
+            "{}",
+            log_fmt!("scheduler.due_users_count", count = due.len())
+        );
 
         for (user_id, mode) in due {
             let result = self.eval_activity(user_id, mode).await;
@@ -147,7 +155,15 @@ impl Scheduler {
                     .set_next_update(user_id, mode, Utc::now())
                     .await
                 {
-                    warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+                    warn!(
+                        "{}",
+                        log_fmt!(
+                            "scheduler.set_next_update_failed",
+                            user_id = user_id,
+                            mode = format!("{:?}", mode),
+                            error = &e
+                        )
+                    );
                 }
             }
         }
@@ -186,7 +202,8 @@ impl Scheduler {
                                 user_id = user_id,
                                 new_username = %stats.username,
                                 updated_bindings = updated,
-                                "username change detected by scheduler"
+                                "{}",
+                                log_fmt!("scheduler.username_change_detected")
                             );
                         }
                     }
@@ -229,19 +246,51 @@ impl Scheduler {
             Ok(Some(prev)) => {
                 if prev.rank != current.rank || prev.playcount != current.playcount {
                     if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
-                        warn!("save_stats error for {user_id}/{mode:?}: {e}");
+                        warn!(
+                            "{}",
+                            log_fmt!(
+                                "scheduler.save_stats_error",
+                                user_id = user_id,
+                                mode = format!("{:?}", mode),
+                                error = &e
+                            )
+                        );
                     }
                 }
             }
             Ok(None) => {
                 if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
-                    warn!("save_stats error for {user_id}/{mode:?}: {e}");
+                    warn!(
+                        "{}",
+                        log_fmt!(
+                            "scheduler.save_stats_error",
+                            user_id = user_id,
+                            mode = format!("{:?}", mode),
+                            error = &e
+                        )
+                    );
                 }
             }
             Err(e) => {
-                warn!("get_latest_snapshot error for {user_id}/{mode:?}: {e}");
+                warn!(
+                    "{}",
+                    log_fmt!(
+                        "scheduler.get_snapshot_error",
+                        user_id = user_id,
+                        mode = format!("{:?}", mode),
+                        error = &e
+                    )
+                );
                 if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
-                    warn!("save_stats error for {user_id}/{mode:?}: {e}");
+                    warn!(
+                        "{}",
+                        log_fmt!(
+                            "scheduler.save_stats_error",
+                            user_id = user_id,
+                            mode = format!("{:?}", mode),
+                            error = &e
+                        )
+                    );
                 }
             }
         }
@@ -253,7 +302,14 @@ impl Scheduler {
             {
                 Ok(plays) => plays,
                 Err(e) => {
-                    error!("Failed to fetch recent plays for user {user_id}: {e:?}");
+                    error!(
+                        "{}",
+                        log_fmt!(
+                            "scheduler.fetch_recent_failed",
+                            user_id = user_id,
+                            error = format!("{:?}", e)
+                        )
+                    );
                     Vec::new()
                 }
             };
@@ -274,7 +330,15 @@ impl Scheduler {
             .save_play_records(user_id, mode, &records)
             .await
         {
-            error!("Failed to save play records for {user_id}/{mode:?}: {e}");
+            error!(
+                "{}",
+                log_fmt!(
+                    "scheduler.save_records_failed",
+                    user_id = user_id,
+                    mode = format!("{:?}", mode),
+                    error = &e
+                )
+            );
         }
 
         // Activity determination based on play records (no more API calls needed)
@@ -319,7 +383,15 @@ impl Scheduler {
         // so the fallback branches can measure time-since-last-activity correctly.
         if activity == UserActivity::SemiActive || (activity == UserActivity::Normal && has_today) {
             if let Err(e) = self.storage.set_last_update(user_id, mode, now).await {
-                warn!("Failed to set last update for {user_id}/{mode:?}: {e}");
+                warn!(
+                    "{}",
+                    log_fmt!(
+                        "scheduler.set_last_update_failed",
+                        user_id = user_id,
+                        mode = format!("{:?}", mode),
+                        error = &e
+                    )
+                );
             }
         }
 
@@ -346,7 +418,15 @@ impl Scheduler {
         let interval = self.get_update_interval(activity).await;
         let next = Utc::now() + interval;
         if let Err(e) = self.storage.set_next_update(user_id, mode, next).await {
-            warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+            warn!(
+                "{}",
+                log_fmt!(
+                    "scheduler.set_next_update_failed",
+                    user_id = user_id,
+                    mode = format!("{:?}", mode),
+                    error = &e
+                )
+            );
         }
     }
 
@@ -358,7 +438,15 @@ impl Scheduler {
                 .set_next_update(user_id, mode, Utc::now())
                 .await
             {
-                warn!("set_next_update failed for {user_id}/{mode:?}: {e}");
+                warn!(
+                    "{}",
+                    log_fmt!(
+                        "scheduler.set_next_update_failed",
+                        user_id = user_id,
+                        mode = format!("{:?}", mode),
+                        error = &e
+                    )
+                );
             }
         }
     }
@@ -366,8 +454,11 @@ impl Scheduler {
     pub async fn reschedule_all(&self) {
         match self.storage.reset_all_next_updates().await {
             Ok(0) => {}
-            Ok(count) => info!(count, "配置变更，已重置所有用户更新排程"),
-            Err(e) => warn!("重置排程失败: {e}"),
+            Ok(count) => info!(count, "{}", log_fmt!("scheduler.config_changed_reset")),
+            Err(e) => warn!(
+                "{}",
+                log_fmt!("scheduler.reset_schedule_failed", error = &e)
+            ),
         }
     }
 

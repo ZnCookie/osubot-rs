@@ -8,6 +8,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use crate::cache::replay_cache_dir;
+use crate::log_fmt;
 
 async fn download_replay(
     rate_limiter: &RateLimiter,
@@ -53,7 +54,12 @@ async fn download_replay(
     .unwrap_or(None);
 
     if let Some(bytes) = cached {
-        tracing::debug!(score_id, bytes = bytes.len(), "Replay loaded from cache");
+        tracing::debug!(
+            score_id,
+            bytes = bytes.len(),
+            "{}",
+            log_fmt!("ur.replay_cached")
+        );
         return Ok(bytes);
     }
 
@@ -83,15 +89,15 @@ async fn download_replay(
                 .await?;
 
             if resp.status() == 404 {
-                tracing::debug!(url = %url, status = %resp.status(), "Replay download 404");
+                tracing::debug!(url = %url, status = %resp.status(), "{}", log_fmt!("ur.replay_404"));
                 return Err(ApiError::NotFound);
             }
             crate::api::classify_http_error(&resp)?;
 
-            tracing::debug!(url = %url, "Replay download request sent");
+            tracing::debug!(url = %url, "{}", log_fmt!("ur.replay_request_sent"));
 
             let bytes = resp.bytes().await?;
-            tracing::debug!(url = %url, bytes = bytes.len(), "Replay downloaded successfully");
+            tracing::debug!(url = %url, bytes = bytes.len(), "{}", log_fmt!("ur.replay_downloaded"));
             Ok(bytes)
         })
     })
@@ -102,9 +108,9 @@ async fn download_replay(
     let bytes_clone = bytes.clone();
     tokio::task::spawn_blocking(move || {
         if let Err(e) = std::fs::create_dir_all(write_path.parent().unwrap()) {
-            tracing::warn!(error = %e, path = %write_path.parent().unwrap().display(), "failed to create replay cache dir");
+            tracing::warn!(error = %e, path = %write_path.parent().unwrap().display(), "{}", log_fmt!("ur.create_cache_dir_failed"));
         } else if let Err(e) = std::fs::write(&write_path, &bytes_clone) {
-            tracing::warn!(error = %e, path = %write_path.display(), "failed to write replay cache");
+            tracing::warn!(error = %e, path = %write_path.display(), "{}", log_fmt!("ur.write_cache_failed"));
         }
     })
     .await
@@ -350,7 +356,8 @@ fn parse_replay_key_times(osr_bytes: &[u8]) -> Option<(Vec<f64>, f64)> {
 
     tracing::trace!(
         replay_data_len = deltas.len(),
-        "Replay parsed with lazer time correction"
+        "{}",
+        log_fmt!("ur.replay_parsed")
     );
 
     let result = extract_key_times_from_deltas(&deltas);
@@ -359,7 +366,8 @@ fn parse_replay_key_times(osr_bytes: &[u8]) -> Option<(Vec<f64>, f64)> {
         tracing::trace!(
             key_times_count = key_times.len(),
             time_offset,
-            "Key times extracted from replay"
+            "{}",
+            log_fmt!("ur.key_times_extracted")
         );
     }
 
@@ -453,7 +461,8 @@ fn match_hits(
         assigned,
         unmatched_notes = hit_times.len() - assigned,
         unmatched_keys = key_times.len() - assigned,
-        "match_hits complete"
+        "{}",
+        log_fmt!("ur.match_hits_complete")
     );
 
     results
@@ -491,14 +500,15 @@ pub async fn calculate_score_ur(
         mods,
     } = params;
     if mode != GameMode::Osu {
-        tracing::trace!(mode = ?mode, "Skipping UR/PP calculation: not osu! mode");
+        tracing::trace!(mode = ?mode, "{}", log_fmt!("ur.skip_non_osu"));
         return None;
     }
 
     tracing::debug!(
         score_id,
         beatmap_id,
-        "Downloading replay for UR/PP calculation"
+        "{}",
+        log_fmt!("ur.downloading_replay")
     );
 
     // 并行下载 replay 和谱面
@@ -509,22 +519,27 @@ pub async fn calculate_score_ur(
 
     let osr_bytes = match osr_result {
         Ok(bytes) => {
-            tracing::debug!(score_id, bytes = bytes.len(), "Replay downloaded");
+            tracing::debug!(
+                score_id,
+                bytes = bytes.len(),
+                "{}",
+                log_fmt!("ur.replay_arrived")
+            );
             bytes
         }
         Err(e) => {
-            tracing::warn!(score_id, error = ?e, "Failed to download replay");
+            tracing::warn!(score_id, error = ?e, "{}", log_fmt!("ur.replay_download_failed"));
             return None;
         }
     };
 
     let osu_path = match osu_path_result {
         Ok(path) => {
-            tracing::debug!(beatmap_id, path = %path.display(), "Beatmap downloaded");
+            tracing::debug!(beatmap_id, path = %path.display(), "{}", log_fmt!("ur.beatmap_downloaded"));
             path
         }
         Err(e) => {
-            tracing::warn!(beatmap_id, error = ?e, "Failed to download beatmap");
+            tracing::warn!(beatmap_id, error = ?e, "{}", log_fmt!("ur.beatmap_download_failed"));
             return None;
         }
     };
@@ -534,7 +549,7 @@ pub async fn calculate_score_ur(
         let map = match Beatmap::from_path(&osu_path) {
             Ok(map) => map,
             Err(e) => {
-                tracing::warn!(beatmap_id, error = ?e, "Failed to parse beatmap");
+                tracing::warn!(beatmap_id, error = ?e, "{}", log_fmt!("ur.beatmap_parse_failed"));
                 return None;
             }
         };
@@ -547,7 +562,7 @@ pub async fn calculate_score_ur(
             .collect();
 
         if hit_times.is_empty() {
-            tracing::warn!(beatmap_id, "No hit objects in beatmap");
+            tracing::warn!(beatmap_id, "{}", log_fmt!("ur.no_hit_objects"));
             return None;
         }
 
@@ -559,31 +574,15 @@ pub async fn calculate_score_ur(
         let ar = attrs.ar() as f64;
         let gameplay_rate = attrs.clock_rate();
 
-        tracing::trace!(
-            beatmap_id,
-            count = hit_times.len(),
-            od,
-            ar,
-            gameplay_rate,
-            "Parsed beatmap info"
-        );
+        tracing::trace!(beatmap_id, count = hit_times.len(), od, ar, gameplay_rate, "{}", log_fmt!("ur.parsed_beatmap_info"));
 
         let (key_times, time_offset) = match parse_replay_key_times(&osr_bytes) {
             Some((times, offset)) => {
-                tracing::trace!(
-                    score_id,
-                    count = times.len(),
-                    first_keys = ?times.iter().take(5).collect::<Vec<_>>(),
-                    last_key = times.last(),
-                    first_hits = ?hit_times.iter().take(5).collect::<Vec<_>>(),
-                    last_hit = hit_times.last(),
-                    time_offset = offset,
-                    "Parsed replay key times"
-                );
+                tracing::trace!(score_id, count = times.len(), first_keys = ?times.iter().take(5).collect::<Vec<_>>(), last_key = times.last(), first_hits = ?hit_times.iter().take(5).collect::<Vec<_>>(), last_hit = hit_times.last(), time_offset = offset, "{}", log_fmt!("ur.parsed_replay_times"));
                 (times, offset)
             }
             None => {
-                tracing::warn!(score_id, "Failed to parse replay key times");
+                tracing::warn!(score_id, "{}", log_fmt!("ur.parse_replay_times_failed"));
                 return None;
             }
         };
@@ -604,14 +603,7 @@ pub async fn calculate_score_ur(
                     1 => (c300, c100, c50 + 1, cm),
                     _ => (c300, c100, c50, cm + 1),
                 });
-        tracing::trace!(
-            score_id,
-            h300 = hit_counts.0,
-            h100 = hit_counts.1,
-            h50 = hit_counts.2,
-            miss = hit_counts.3,
-            "Matched hits"
-        );
+        tracing::trace!(score_id, h300 = hit_counts.0, h100 = hit_counts.1, h50 = hit_counts.2, miss = hit_counts.3, "{}", log_fmt!("ur.matched_hits"));
 
         let timing_errors: Vec<(f64, f64)> = hits
             .iter()
@@ -625,15 +617,11 @@ pub async fn calculate_score_ur(
             })
             .collect();
 
-        tracing::trace!(
-            score_id,
-            matched = timing_errors.len(),
-            "Calculated timing errors"
-        );
+        tracing::trace!(score_id, matched = timing_errors.len(), "{}", log_fmt!("ur.calculated_timing_errors"));
 
         if timing_errors.len() >= 5 {
             let first_5: Vec<f64> = timing_errors.iter().take(5).map(|&(_, e)| e).collect();
-            tracing::trace!(score_id, first_errors = ?first_5, "First 5 timing errors");
+            tracing::trace!(score_id, first_errors = ?first_5, "{}", log_fmt!("ur.first_timing_errors"));
             let mean: f64 =
                 timing_errors.iter().map(|&(_, e)| e).sum::<f64>() / timing_errors.len() as f64;
             let variance: f64 = timing_errors
@@ -642,22 +630,22 @@ pub async fn calculate_score_ur(
                 .sum::<f64>()
                 / timing_errors.len() as f64;
             let std_dev = variance.sqrt();
-            tracing::trace!(score_id, mean, std_dev, "Timing error statistics");
+            tracing::trace!(score_id, mean, std_dev, "{}", log_fmt!("ur.timing_error_stats"));
         }
 
         if timing_errors.is_empty() {
-            tracing::warn!(score_id, "No timing errors, skipping UR calculation");
+            tracing::warn!(score_id, "{}", log_fmt!("ur.no_timing_errors"));
             return None;
         }
 
         let all_errors: Vec<f64> = timing_errors.iter().map(|&(_, err)| err).collect();
         let total_ur = calculate_ur(&all_errors);
-        tracing::info!(score_id, total_ur, "UR calculation complete");
+        tracing::info!(score_id, total_ur, "{}", log_fmt!("ur.calculation_complete"));
         Some(total_ur)
     })
     .await
     .unwrap_or_else(|e| {
-        tracing::warn!(score_id, error = ?e, "UR/PP calculation panicked");
+        tracing::warn!(score_id, error = ?e, "{}", log_fmt!("ur.calculation_panicked"));
         None
     });
 

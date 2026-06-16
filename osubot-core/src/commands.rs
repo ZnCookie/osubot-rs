@@ -1,3 +1,4 @@
+use crate::log_fmt;
 use crate::types::{Command, GameMode};
 
 const MAX_LIMIT: u32 = 100;
@@ -603,7 +604,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 GameMode::from_mode_str(mode_str).unwrap_or_else(|| {
                     tracing::debug!(
                         mode_str,
-                        "今日高光: failed to parse mode, falling back to osu"
+                        "{}",
+                        log_fmt!("commands.highlight_parse_mode_failed")
                     );
                     GameMode::Osu
                 })
@@ -612,7 +614,8 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             GameMode::from_mode_str(rest).unwrap_or_else(|| {
                 tracing::debug!(
                     mode_str = rest,
-                    "今日高光: failed to parse mode, falling back to osu"
+                    "{}",
+                    log_fmt!("commands.highlight_parse_mode_failed")
                 );
                 GameMode::Osu
             })

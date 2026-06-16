@@ -54,7 +54,7 @@ pub fn wrap_osu_profile_html(
 }
 
 /// 格式化 pp 变化量的小数位(整数去掉小数点,小数保留 2 位)
-pub fn format_pp_delta(delta: f64) -> String {
+fn format_pp_delta(delta: f64) -> String {
     if delta.fract() == 0.0 {
         format!("{}", delta as i64)
     } else {

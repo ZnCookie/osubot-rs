@@ -7,6 +7,7 @@ pub mod irc;
 pub mod rate_limiter;
 pub mod response;
 pub mod storage;
+pub mod strings;
 pub mod types;
 pub mod upstream;
 pub mod ur;

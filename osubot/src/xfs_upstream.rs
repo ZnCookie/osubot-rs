@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tracing::{debug, warn};
 
 use osubot_core::api;
+use osubot_core::log_fmt;
 use osubot_core::rate_limiter::RateLimiter;
 use osubot_core::types::GameMode;
 use osubot_core::upstream::{extract_text_from_message, SendAction};
@@ -77,37 +78,37 @@ impl UpstreamBindingProvider for XfsUpstream {
         let mut request = match self.url.as_str().into_client_request() {
             Ok(r) => r,
             Err(e) => {
-                warn!("xfs: failed to build WS request: {e}");
+                warn!("{}", log_fmt!("xfs.build_request_failed", error = &e));
                 return Ok(None);
             }
         };
         if let Ok(val) = self.self_id.to_string().parse() {
             request.headers_mut().insert("X-Self-ID", val);
         } else {
-            warn!("xfs: invalid self_id header value");
+            warn!("{}", log_fmt!("xfs.invalid_self_id"));
             return Ok(None);
         }
         if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
             request.headers_mut().insert("Authorization", val);
         } else {
-            warn!("xfs: invalid access_token header value");
+            warn!("{}", log_fmt!("xfs.invalid_access_token"));
             return Ok(None);
         }
         if let Ok(val) = "Universal".parse() {
             request.headers_mut().insert("X-Client-Role", val);
         } else {
-            warn!("xfs: invalid X-Client-Role header value");
+            warn!("{}", log_fmt!("xfs.invalid_client_role"));
             return Ok(None);
         }
 
         let ws_stream = match timeout(self.timeout, connect_async(request)).await {
             Ok(Ok((stream, _))) => stream,
             Ok(Err(e)) => {
-                warn!("xfs: WS connect failed: {e}");
+                warn!("{}", log_fmt!("xfs.connect_failed", error = &e));
                 return Ok(None);
             }
             Err(_) => {
-                warn!("xfs: WS connect timed out");
+                warn!("{}", log_fmt!("xfs.connect_timeout"));
                 return Ok(None);
             }
         };
@@ -126,10 +127,10 @@ impl UpstreamBindingProvider for XfsUpstream {
             "message_id": message_id,
         });
 
-        debug!(target: "xfs_upstream", %event, "计划请求");
+        debug!(target: "xfs_upstream", %event, "{}", log_fmt!("xfs.plan_request"));
 
         let event_str = event.to_string();
-        debug!(target: "xfs_upstream", text = %event_str, "实际发送");
+        debug!(target: "xfs_upstream", text = %event_str, "{}", log_fmt!("xfs.actual_send"));
         let deadline = Instant::now() + self.timeout;
 
         let send_timeout = deadline.saturating_duration_since(Instant::now());
@@ -137,7 +138,7 @@ impl UpstreamBindingProvider for XfsUpstream {
             .await
             .is_err()
         {
-            warn!("xfs: failed to send event");
+            warn!("{}", log_fmt!("xfs.send_event_failed"));
             return Ok(None);
         }
 
@@ -150,7 +151,7 @@ impl UpstreamBindingProvider for XfsUpstream {
             let msg = match msg {
                 Ok(m) => m,
                 Err(_) => {
-                    warn!("xfs: WS read error");
+                    warn!("{}", log_fmt!("xfs.ws_read_error"));
                     return Ok(None);
                 }
             };
@@ -160,7 +161,7 @@ impl UpstreamBindingProvider for XfsUpstream {
                 Err(_) => continue,
             };
 
-            debug!(target: "xfs_upstream", %text, "服务器返回");
+            debug!(target: "xfs_upstream", %text, "{}", log_fmt!("xfs.server_response"));
 
             let action: SendAction = match serde_json::from_str(text) {
                 Ok(a) => a,
@@ -188,9 +189,9 @@ impl UpstreamBindingProvider for XfsUpstream {
                     return Ok(None);
                 }
 
-                debug!(username, "xfs: resolved username from upstream");
+                debug!(username, "{}", log_fmt!("xfs.resolved_username"));
                 if !self.oauth.is_configured() {
-                    warn!("xfs: skipping osu! API resolution - credentials not configured");
+                    warn!("{}", log_fmt!("xfs.skipping_api"));
                     return Ok(None);
                 }
                 let user_id = match api::fetch_user_stats_by_username(
@@ -203,19 +204,19 @@ impl UpstreamBindingProvider for XfsUpstream {
                 {
                     Ok(stats) => stats.user_id,
                     Err(_) => {
-                        warn!(username, "xfs: failed to resolve username to user_id");
+                        warn!(username, "{}", log_fmt!("xfs.resolve_failed"));
                         return Ok(None);
                     }
                 };
 
-                debug!(target: "xfs_upstream", %username, user_id, "解析结果");
+                debug!(target: "xfs_upstream", %username, user_id, "{}", log_fmt!("xfs.parse_result"));
                 return Ok(Some((user_id, username.to_string())));
             }
 
             return Ok(None);
         }
 
-        warn!("xfs: timed out waiting for response");
+        warn!("{}", log_fmt!("xfs.response_timeout"));
         Ok(None)
     }
 }
@@ -258,9 +259,7 @@ mod integration_tests {
         );
         let binding = result.unwrap();
         if binding.is_none() {
-            tracing::info!(
-                "NOTE: relay responded but osu! API resolution failed (no credentials in test)"
-            );
+            tracing::info!("{}", log_fmt!("xfs.relay_api_failed"));
         }
     }
 }

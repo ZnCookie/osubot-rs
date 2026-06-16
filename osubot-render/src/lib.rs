@@ -8,6 +8,7 @@ mod style;
 
 use base64::Engine;
 use image::{imageops, GenericImageView};
+use osubot_core::log_fmt;
 use parley::FontContext;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
@@ -76,12 +77,6 @@ pub fn crop_and_resize(
     cropped.resize_exact(target_w, target_h, imageops::FilterType::Lanczos3)
 }
 
-pub fn blur_image(img: &image::DynamicImage, radius: u32) -> image::DynamicImage {
-    let rgb = img.to_rgb8();
-    let blurred = imageops::blur(&rgb, radius as f32);
-    image::DynamicImage::ImageRgb8(blurred)
-}
-
 pub fn extract_dominant_hue(img: &image::DynamicImage) -> (u16, u16) {
     let small = img.resize_exact(32, 32, imageops::FilterType::Nearest);
     let rgb = small.to_rgb8();
@@ -133,8 +128,9 @@ pub fn image_to_data_uri(img: &image::DynamicImage, quality: u8) -> Result<Strin
     let rgb = img.to_rgb8();
     let mut buf = Vec::new();
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-    rgb.write_with_encoder(encoder)
-        .map_err(|e| RenderError::Encode(format!("JPEG encode: {e}")))?;
+    rgb.write_with_encoder(encoder).map_err(|e| {
+        RenderError::Encode(log_fmt!("render.err_jpeg_encode", error = e).to_string())
+    })?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
@@ -191,21 +187,24 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     } = params;
     let client = cache::http_client();
 
-    tracing::debug!("Downloading avatar: {}", avatar_url);
+    tracing::debug!("{}", log_fmt!("render.download_avatar", url = avatar_url));
     let avatar_bytes = if !avatar_url.is_empty() {
         match cache::fetch_and_cache(avatar_url, client).await {
             Ok((bytes, _, _)) => bytes,
             Err(e) => {
-                tracing::warn!("Avatar download failed: {}", e);
+                tracing::warn!("{}", log_fmt!("render.avatar_download_failed", error = &e));
                 vec![]
             }
         }
     } else {
         vec![]
     };
-    tracing::debug!("Avatar downloaded: {} bytes", avatar_bytes.len());
+    tracing::debug!(
+        "{}",
+        log_fmt!("render.avatar_downloaded", bytes = avatar_bytes.len())
+    );
 
-    tracing::debug!("Preprocessing cover image...");
+    tracing::debug!("{}", log_fmt!("render.preprocess_cover"));
     let (bg_uri, thumb_uri, hue, sat) = if let Some(ref img) = preloaded_cover_image {
         let bg = crop_and_resize(img, 2560, 1440);
         let bg_uri = image_to_data_uri(&bg, 85)?;
@@ -221,8 +220,9 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     };
 
     let avatar_uri = if !avatar_bytes.is_empty() {
-        let img = image::load_from_memory(&avatar_bytes)
-            .map_err(|e| RenderError::Render(format!("avatar decode: {e}")))?;
+        let img = image::load_from_memory(&avatar_bytes).map_err(|e| {
+            RenderError::Render(log_fmt!("render.err_avatar_decode", error = e).to_string())
+        })?;
         let resized = img.resize_exact(116, 116, imageops::FilterType::Lanczos3);
         image_to_data_uri(&resized, 85)?
     } else {
@@ -257,7 +257,7 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     };
 
     let html = score_style::wrap_score_html(&data);
-    tracing::debug!("HTML generated, starting render...");
+    tracing::debug!("{}", log_fmt!("render.html_generated"));
 
     let font_ctx = get_font_context();
     let cancel =
@@ -278,8 +278,10 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
         Err(_) => {
             cancel.store(true, std::sync::atomic::Ordering::Release);
             abort_handle.abort();
-            tracing::warn!("score card render timed out after 60s, blocking task aborted");
-            return Err(RenderError::Render("render timed out after 60s".into()));
+            tracing::warn!("{}", log_fmt!("render.score_card_timeout"));
+            return Err(RenderError::Render(
+                log_fmt!("render.err_render_timeout").to_string(),
+            ));
         }
     };
 
@@ -316,8 +318,10 @@ pub async fn render_profile_card(
         Err(_) => {
             cancel.store(true, std::sync::atomic::Ordering::Release);
             abort_handle.abort();
-            tracing::warn!("profile card render timed out after 60s, blocking task aborted");
-            return Err(RenderError::Render("render timed out after 60s".into()));
+            tracing::warn!("{}", log_fmt!("render.profile_card_timeout"));
+            return Err(RenderError::Render(
+                log_fmt!("render.err_render_timeout").to_string(),
+            ));
         }
     };
 
@@ -349,7 +353,8 @@ pub struct ScoreListCardParams<'a> {
     pub scores: &'a [osubot_types::Score],
     pub username: &'a str,
     pub mode: osubot_types::GameMode,
-    pub is_pass: bool,
+    pub label: &'a str,
+    pub count_text: &'a str,
     pub avatar_url: &'a str,
     pub cover_images: Vec<Option<image::DynamicImage>>,
     pub user_pp: f64,
@@ -369,7 +374,8 @@ pub async fn render_score_list_card(
         scores,
         username,
         mode,
-        is_pass,
+        label,
+        count_text,
         avatar_url,
         cover_images,
         user_pp,
@@ -390,11 +396,17 @@ pub async fn render_score_list_card(
                 if avatar_url.is_empty() {
                     return Ok(String::new());
                 }
-                let (bytes, _, _) = cache::fetch_and_cache(avatar_url, client)
-                    .await
-                    .map_err(|e| RenderError::Render(format!("avatar: {e}")))?;
-                let img = image::load_from_memory(&bytes)
-                    .map_err(|e| RenderError::Render(format!("avatar decode: {e}")))?;
+                let (bytes, _, _) =
+                    cache::fetch_and_cache(avatar_url, client)
+                        .await
+                        .map_err(|e| {
+                            RenderError::Render(
+                                log_fmt!("render.err_avatar_fetch", error = e).to_string(),
+                            )
+                        })?;
+                let img = image::load_from_memory(&bytes).map_err(|e| {
+                    RenderError::Render(log_fmt!("render.err_avatar_decode", error = e).to_string())
+                })?;
                 let resized = img.resize_exact(120, 120, imageops::FilterType::Lanczos3);
                 image_to_data_uri(&resized, 85)
             },
@@ -404,9 +416,14 @@ pub async fn render_score_list_card(
                 }
                 let (bytes, _, _) = cache::fetch_and_cache(hero_cover_url, client)
                     .await
-                    .map_err(|e| RenderError::Render(format!("hero: {e}")))?;
-                let img = image::load_from_memory(&bytes)
-                    .map_err(|_| RenderError::Render("hero banner decode".into()))?;
+                    .map_err(|e| {
+                        RenderError::Render(
+                            log_fmt!("render.err_hero_fetch", error = e).to_string(),
+                        )
+                    })?;
+                let img = image::load_from_memory(&bytes).map_err(|_| {
+                    RenderError::Render(log_fmt!("render.err_hero_decode").to_string())
+                })?;
                 let cropped = crop_and_resize(&img, 2560, 640);
                 Ok(image_to_data_uri(&cropped, 80).unwrap_or_default())
             },
@@ -440,7 +457,8 @@ pub async fn render_score_list_card(
         cards: &cards,
         username,
         mode,
-        is_pass,
+        label,
+        count_text,
         avatar_data_uri: &avatar_uri,
         hero_bg_data_uri: &hero_bg_uri,
         user_pp,
@@ -484,10 +502,20 @@ pub async fn render_score_list_card(
         Err(_) => {
             cancel.store(true, std::sync::atomic::Ordering::Release);
             abort_handle.abort();
-            tracing::warn!("score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s");
-            return Err(RenderError::Render(format!(
-                "score list render timed out after {SCORE_LIST_RENDER_TIMEOUT_SECS}s",
-            )));
+            tracing::warn!(
+                "{}",
+                log_fmt!(
+                    "render.score_list_timeout",
+                    secs = SCORE_LIST_RENDER_TIMEOUT_SECS
+                )
+            );
+            return Err(RenderError::Render(
+                log_fmt!(
+                    "render.err_score_list_timeout",
+                    secs = SCORE_LIST_RENDER_TIMEOUT_SECS
+                )
+                .to_string(),
+            ));
         }
     };
 

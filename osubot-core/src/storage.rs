@@ -1,3 +1,4 @@
+use crate::log_fmt;
 use chrono::{DateTime, Local, TimeZone, Utc};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -695,10 +696,7 @@ impl Storage {
             let ts: i64 = row.get(0)?;
             return Ok(Some(Utc.timestamp_opt(ts, 0).single().unwrap_or_else(
                 || {
-                    tracing::warn!(
-                        ts,
-                        "failed to parse next_update timestamp, falling back to now"
-                    );
+                    tracing::warn!(ts, "{}", log_fmt!("storage.parse_next_update_failed"));
                     Utc::now()
                 },
             )));
@@ -941,7 +939,7 @@ impl Storage {
             let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|e| {
-                    tracing::warn!(created_at_str, error = %e, "failed to parse pending_bind created_at, falling back to now");
+                    tracing::warn!(created_at_str, error = %e, "{}", log_fmt!("storage.parse_pending_bind_created_failed"));
                     Utc::now()
                 });
             Ok(Some(PendingBind {

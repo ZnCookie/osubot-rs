@@ -1,4 +1,5 @@
 use crate::dedup::RequestDedup;
+use crate::log_fmt;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -59,10 +60,6 @@ impl UpstreamChain {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.providers.is_empty()
-    }
-
     /// Returns the first successful binding from any provider, or `None` if
     /// all providers fail or the chain is empty. Failures are silent — the
     /// caller should fall back to prompting the user to bind manually.
@@ -80,10 +77,7 @@ impl UpstreamChain {
                             Ok(Some(binding)) => return Ok(Some(binding)),
                             Ok(None) => continue,
                             Err(e) => {
-                                tracing::warn!(
-                                    ?e,
-                                    "upstream provider query failed, trying next provider"
-                                );
+                                tracing::warn!(?e, "{}", log_fmt!("upstream.provider_failed"));
                                 continue;
                             }
                         }
@@ -93,7 +87,7 @@ impl UpstreamChain {
             })
             .await
             .unwrap_or_else(|e| {
-                warn!("upstream dedup error: {e}");
+                warn!("{}", log_fmt!("upstream.dedup_error", error = &e));
                 None
             })
     }

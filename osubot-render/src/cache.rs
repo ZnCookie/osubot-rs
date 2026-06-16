@@ -1,3 +1,4 @@
+use osubot_core::log_fmt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -62,7 +63,7 @@ fn cache_dir() -> PathBuf {
 
 pub async fn ensure_cache_dir() {
     if let Err(e) = tokio::fs::create_dir_all(cache_dir()).await {
-        tracing::error!("failed to create cache directory: {}", e);
+        tracing::error!("{}", log_fmt!("render.cache_dir_failed", error = &e));
     }
 }
 
@@ -281,7 +282,7 @@ async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>,
                             bytes.extend_from_slice(&chunk);
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, url = %url, attempt, "body download failed, will retry");
+                            tracing::warn!(error = %e, url = %url, attempt, "{}", log_fmt!("render.body_download_failed"));
                             body_failed = true;
                             break;
                         }
@@ -293,16 +294,16 @@ async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>,
                 return Ok(bytes);
             }
             Ok(resp) if resp.status().is_server_error() => {
-                tracing::warn!(status = %resp.status(), url = %url, "server error, will retry");
+                tracing::warn!(status = %resp.status(), url = %url, "{}", log_fmt!("render.server_error_retry"));
                 continue;
             }
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                tracing::warn!(status = %status, url = %url, "client error, aborting");
+                tracing::warn!(status = %status, url = %url, "{}", log_fmt!("render.client_error_abort"));
                 return Err(CacheError::ClientError { status });
             }
             Err(e) => {
-                tracing::warn!(error = %e, url = %url, "request failed, will retry");
+                tracing::warn!(error = %e, url = %url, "{}", log_fmt!("render.request_failed_retry"));
                 continue;
             }
         }
@@ -364,7 +365,10 @@ pub async fn fetch_and_cache(
     let (mime, _) = detect_mime_and_ext(url, &bytes);
 
     if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
-        tracing::warn!("failed to cache {}: {}", url, e);
+        tracing::warn!(
+            "{}",
+            log_fmt!("render.cache_write_failed", url = url, error = &e)
+        );
     }
 
     Ok((bytes, mime.to_string(), hash))
@@ -502,7 +506,7 @@ pub async fn inline_external_images(html: &str) -> String {
                     match rasterize_svg_to_png_cached(&bytes, &url).await {
                         Ok(png_bytes) => (png_bytes, "image/png".to_string()),
                         Err(e) => {
-                            tracing::warn!(url = %url, error = %e, "SVG rasterization failed, falling back to original SVG");
+                            tracing::warn!(url = %url, error = %e, "{}", log_fmt!("render.svg_rasterize_failed"));
                             (bytes, mime)
                         }
                     }
@@ -513,10 +517,10 @@ pub async fn inline_external_images(html: &str) -> String {
                 url_to_data.insert(url, data_uri);
             }
             Ok((url, Err(e))) => {
-                tracing::warn!(url = %url, error = %e, "failed to fetch image in parallel batch");
+                tracing::warn!(url = %url, error = %e, "{}", log_fmt!("render.batch_fetch_failed"));
             }
             Err(e) => {
-                tracing::warn!(error = %e, "join error in parallel image fetch");
+                tracing::warn!(error = %e, "{}", log_fmt!("render.batch_join_error"));
             }
         }
     }
@@ -535,7 +539,7 @@ pub async fn inline_external_images(html: &str) -> String {
     }
 
     String::from_utf8(result).unwrap_or_else(|e| {
-        tracing::warn!("image inlining produced invalid UTF-8: {}", e);
+        tracing::warn!("{}", log_fmt!("render.inline_utf8_invalid", error = &e));
         html.to_string()
     })
 }
@@ -557,7 +561,7 @@ pub async fn cleanup_expired(retention_days: u64) {
     let cutoff = match cutoff {
         Some(t) => t,
         None => {
-            tracing::error!("failed to compute cutoff time for cache cleanup");
+            tracing::error!("{}", log_fmt!("render.cleanup_cutoff_failed"));
             return;
         }
     };
@@ -565,7 +569,7 @@ pub async fn cleanup_expired(retention_days: u64) {
     let mut entries = match tokio::fs::read_dir(&dir).await {
         Ok(entries) => entries,
         Err(e) => {
-            tracing::error!("failed to read cache dir for cleanup: {}", e);
+            tracing::error!("{}", log_fmt!("render.cleanup_read_dir_failed", error = &e));
             return;
         }
     };
@@ -586,7 +590,14 @@ pub async fn cleanup_expired(retention_days: u64) {
                 Ok(()) => deleted += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
-                    tracing::warn!("failed to delete cache file {}: {e}", path.display());
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "render.cleanup_delete_failed",
+                            path = format!("{}", path.display()),
+                            error = &e
+                        )
+                    );
                     errors += 1;
                 }
             }
@@ -594,10 +605,13 @@ pub async fn cleanup_expired(retention_days: u64) {
     }
 
     tracing::info!(
-        "cache cleanup: {} deleted, {} errors (retention: {} days)",
-        deleted,
-        errors,
-        retention_days
+        "{}",
+        log_fmt!(
+            "render.cleanup_summary",
+            deleted = deleted.to_string(),
+            errors = errors.to_string(),
+            days = retention_days.to_string()
+        )
     );
 }
 
