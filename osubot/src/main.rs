@@ -726,8 +726,8 @@ async fn handle_score_query(
                         .map_err(|e| {
                             warn!(user_id = uid, mode = ?mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
                             match e {
-                                ApiError::NotFound => user_str("error.not_found").replace("{qq}",
-        &qq.to_string()),
+                                ApiError::NotFound => user_str("error.not_found")
+                                    .replace("{qq}", &qq.to_string()),
                                 ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
                                     user_str("error.rate_limit")
                                         .replace("{qq}", &qq.to_string())
@@ -743,8 +743,8 @@ async fn handle_score_query(
                                 }
                                 e => {
                                     tracing::error!(error = ?e, "{}", log_fmt!("main.score_query_error_details"));
-                                    user_str("error.data_fetch_failed").replace("{qq}",
-        &qq.to_string())
+                                user_str("error.data_fetch_failed")
+                                    .replace("{qq}", &qq.to_string())
                                 }
                             }
                         })
@@ -855,8 +855,8 @@ async fn handle_score_query(
                                 .replace("{qq}", &qq.to_string()),
                             e => {
                                 tracing::error!(error = ?e, "{}", log_fmt!("main.score_query_error_details"));
-                                user_str("error.data_fetch_failed").replace("{qq}",
-        &qq.to_string())
+                                user_str("error.data_fetch_failed")
+                                    .replace("{qq}", &qq.to_string())
                             }
                         }
                     })
@@ -1290,13 +1290,14 @@ async fn handle_beatmap_score_query(
                         }
                         e => {
                             warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                            user_str("query.score_fetch_failed").replace("{qq}",
-        &qq.to_string())
+                            user_str("query.score_fetch_failed")
+                                .replace("{qq}", &qq.to_string())
                         }
                     })
                 }
             })
             .await;
+
         let scores = match scores_result {
             Ok(s) => s,
             Err(err_msg) => {
@@ -1376,8 +1377,8 @@ async fn handle_beatmap_score_query(
                                     .replace("{qq}", &qq.to_string()),
                                 e => {
                                     warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                                    user_str("query.score_fetch_failed").replace("{qq}",
-        &qq.to_string())
+                            user_str("query.score_fetch_failed")
+                                .replace("{qq}", &qq.to_string())
                                 }
                             })
                         }
@@ -1493,8 +1494,8 @@ async fn handle_beatmap_score_query(
                         }
                         e => {
                             warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                            user_str("query.score_fetch_failed").replace("{qq}",
-        &qq.to_string())
+                            user_str("query.score_fetch_failed")
+                                .replace("{qq}", &qq.to_string())
                         }
                     })
                 }
