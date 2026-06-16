@@ -119,6 +119,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ── 模式配置 ──
     "mode.set_success" => "[CQ:at,qq={qq}] 已设置默认模式为 {mode}",
     "mode.get_success" => "[CQ:at,qq={qq}] 你的默认模式是 {mode}",
+    "mode.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 osu! 账号，无法设置默认模式",
 
     // ── 系统 ──
     "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!mode/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",

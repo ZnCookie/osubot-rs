@@ -175,7 +175,10 @@ impl Storage {
                 )
                 .await?;
         }
-        // Ensure index exists (for both new and upgraded DBs)
+        // Ensure index exists (for both new and upgraded DBs).
+        // 启动期迁移：单次 PRAGMA table_info + ALTER TABLE + CREATE INDEX IF NOT EXISTS
+        // 总成本 < 5ms，可接受。规模上去或迁移项增加时，建议改用 schema_version 表
+        // 仅在版本不匹配时执行迁移。
         pool[0]
             .lock()
             .await
@@ -217,8 +220,9 @@ impl Storage {
     // ==================== Binding Query ====================
 
     /// Bind QQ to user_id with current_username. Returns Err if user_id already bound to another QQ.
-    /// Note: INSERT 不包含 default_mode，意图是解绑会清除所有用户数据（含默认模式），
-    /// 新绑定从此重新开始，default_mode 走 DEFAULT 0（Osu）。这不是 bug。
+    ///
+    /// 关于 `default_mode` 字段：`INSERT OR REPLACE` 不会保留该列旧值，重绑后会落回 `DEFAULT 0`（Osu）。
+    /// 这是 by design——重新绑定视为"建立新的 QQ↔osu 关联"，个人偏好不复用。
     pub async fn bind(
         &self,
         qq: i64,

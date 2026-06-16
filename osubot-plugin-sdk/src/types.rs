@@ -76,7 +76,13 @@ pub struct Command {
     pub user_id: Option<i64>,
     /// The message text associated with this command.
     pub message: Option<String>,
-    /// Game mode (0=osu, 1=taiko, 2=catch, 3=mania), if specified.
+    /// Game mode (0=osu, 1=taiko, 2=catch, 3=mania) resolved for this command.
+    ///
+    /// 行为：
+    /// - 对于模式敏感命令（`~` / `where` / `!p` / `!r` / `!s` / `!ps` / `!rs` / `!ss` / `今日高光`）：取用户在命令中显式指定的模式（如 `!p :1` → `Some(1)`）；若未指定，则取该用户的默认模式（`!mode` 设置），未设置时回退到 `Osu`（0）。最终永远为 `Some(0..3)`。
+    /// - 对于其他命令（`绑定` / `解绑` / `!profile` / `!help` / `!mode`）：固定为 `Some(0)`，不代表任何用户输入。
+    ///
+    /// 如需区分"用户显式指定 vs 默认回退"，请通过 `command_type` 自行判断，或仅在模式敏感命令中读取 `mode`。
     pub mode: Option<u8>,
     /// osu! username found in the command, if any.
     pub username: Option<String>,

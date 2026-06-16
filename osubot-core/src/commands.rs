@@ -617,14 +617,20 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
 
     // 查询/设置默认模式: !mode 或 !mode <N>
     // 无效的 mode 值等价于查询（mode=None），与 !p :99 等命令的行为一致
-    if msg == "!mode" || msg.starts_with("!mode ") {
-        let rest = msg.strip_prefix("!mode").unwrap().trim();
+    if let Some(rest) = msg
+        .strip_prefix("!mode")
+        .and_then(|s| s.chars().next().filter(|c| c.is_whitespace()).map(|_| s))
+    {
+        let rest = rest.trim();
         let mode = if rest.is_empty() {
             None
         } else {
             GameMode::from_mode_str(rest)
         };
         return Some(Command::SetDefaultMode { mode });
+    }
+    if msg == "!mode" {
+        return Some(Command::SetDefaultMode { mode: None });
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
@@ -2172,5 +2178,28 @@ mod tests {
     fn test_set_default_mode_extra_args_gives_query() {
         let cmd = parse_command("!mode 0 extra", None).unwrap();
         assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    }
+
+    #[test]
+    fn test_mode_newline_only() {
+        let cmd = parse_command("!mode\n", None).unwrap();
+        assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    }
+
+    #[test]
+    fn test_mode_tab_separator() {
+        let cmd = parse_command("!mode\t0", None).unwrap();
+        assert_eq!(
+            cmd,
+            Command::SetDefaultMode {
+                mode: Some(GameMode::Osu)
+            }
+        );
+    }
+
+    #[test]
+    fn test_mode_no_space_not_mode_command() {
+        // "!mode1" 不以 "!mode " 开头，也不等于 "!mode"，不是 !mode 命令
+        assert!(parse_command("!mode1", None).is_none());
     }
 }
