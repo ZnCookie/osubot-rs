@@ -294,9 +294,7 @@ impl BotContext {
                     .flatten();
                 info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.log_label_success", label = log_label));
                 let response = format_stats_with_change(&stats, &change, mode);
-                let _ = resp_tx
-                    .send(format!("[CQ:at,qq={}] {}", qq, response))
-                    .await;
+                let _ = resp_tx.send(response).await;
             }
             Err(e) => {
                 warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{}", log_fmt!("main.log_label_failed", label = log_label));
@@ -1080,17 +1078,13 @@ async fn handle_score_query(
                         warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
                         let response =
                             format_scores(&scores, &dedup_username, params.mode, params.is_pass);
-                        let _ = resp_tx
-                            .send(format!("[CQ:at,qq={}] {}", qq, response))
-                            .await;
+                        let _ = resp_tx.send(response).await;
                     }
                     Err(_) => {
                         warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
                         let response =
                             format_scores(&scores, &dedup_username, params.mode, params.is_pass);
-                        let _ = resp_tx
-                            .send(format!("[CQ:at,qq={}] {}", qq, response))
-                            .await;
+                        let _ = resp_tx.send(response).await;
                     }
                 }
             }
@@ -1764,13 +1758,13 @@ async fn render_and_send_single_score(
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_card_failed_text"));
             let text = format_score(&score, &user_stats.username, mode, position, is_pass);
-            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
+            let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             cancel_flag.store(true, Ordering::Relaxed);
             warn!("{}", log_fmt!("main.render_score_card_timeout_text"));
             let text = format_score(&score, &user_stats.username, mode, position, is_pass);
-            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
+            let _ = resp_tx.send(text).await;
         }
     }
 }
@@ -1896,12 +1890,12 @@ async fn render_and_send_score_list(
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
             let text = format_scores(&scores_mut, username, mode, true);
-            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
+            let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
             let text = format_scores(&scores_mut, username, mode, true);
-            let _ = resp_tx.send(format!("[CQ:at,qq={}] {}", qq, text)).await;
+            let _ = resp_tx.send(text).await;
         }
     }
 }
@@ -2267,9 +2261,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     let has_change = change.is_some();
                     info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.query_user_success"));
                     let response = format_stats_with_change(&stats, &change, mode);
-                    let _ = resp_tx
-                        .send(format!("[CQ:at,qq={}] {}", msg.user_id, response))
-                        .await;
+                    let _ = resp_tx.send(response).await;
                     if !has_change {
                         info!(username = %username, "{}", log_fmt!("main.query_user_no_change"));
                     }
@@ -3164,7 +3156,10 @@ async fn main() {
         .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true)
-        .with_timer(LocalTime::rfc_3339())
+        .with_timer(LocalTime::new(
+            time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+                .expect("valid time format"),
+        ))
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
