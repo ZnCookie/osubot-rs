@@ -365,6 +365,10 @@ fn parse_pass_recent(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option
             let filters = merge_mods_into_filters(mods, filters);
 
             // Step 2: Extract #N or #N-M suffix (or implicit number)
+            // 注意：#N 提取在 :mode 之前，与 parse_score_on_beatmap 顺序相反。
+            // 这是有意设计：!p/!r 中数字主要用作条数限制（!p 5），#N 语法与之一致。
+            // 用户应使用 !p :mode #limit 顺序（如 !p :1 #5），若颠倒（!p #5 :1），
+            // #N 会吞掉后续内容导致 limit=1 且 mode=None（回退默认模式），属用户语法顺序问题。
             let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
                 let num_str = &rest[hash_pos + 1..];
                 let (l, le) = parse_limit(num_str);
@@ -611,13 +615,15 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     }
 
     // 查询/设置默认模式: !mode 或 !mode <N>
+    // 无效的 mode 值等价于查询（mode=None），与 !p :99 等命令的行为一致
     if msg == "!mode" || msg.starts_with("!mode ") {
         let rest = msg.strip_prefix("!mode").unwrap().trim();
-        if rest.is_empty() {
-            return Some(Command::SetDefaultMode { mode: None });
-        }
-        let mode = GameMode::from_mode_str(rest)?;
-        return Some(Command::SetDefaultMode { mode: Some(mode) });
+        let mode = if rest.is_empty() {
+            None
+        } else {
+            GameMode::from_mode_str(rest)
+        };
+        return Some(Command::SetDefaultMode { mode });
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
@@ -2100,8 +2106,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_default_mode_invalid() {
-        assert!(parse_command("!mode 5", None).is_none());
+    fn test_set_default_mode_invalid_is_query() {
+        let cmd = parse_command("!mode 5", None).unwrap();
+        assert_eq!(cmd, Command::SetDefaultMode { mode: None });
     }
 
     #[test]
@@ -2133,8 +2140,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_default_mode_string_name() {
-        assert!(parse_command("!mode osu", None).is_none());
+    fn test_set_default_mode_string_name_gives_query() {
+        let cmd = parse_command("!mode osu", None).unwrap();
+        assert_eq!(cmd, Command::SetDefaultMode { mode: None });
     }
 
     #[test]
@@ -2160,7 +2168,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set_default_mode_extra_args() {
-        assert!(parse_command("!mode 0 extra", None).is_none());
+    fn test_set_default_mode_extra_args_gives_query() {
+        let cmd = parse_command("!mode 0 extra", None).unwrap();
+        assert_eq!(cmd, Command::SetDefaultMode { mode: None });
     }
 }
