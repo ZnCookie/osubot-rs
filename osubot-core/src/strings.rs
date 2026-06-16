@@ -119,7 +119,6 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ── 模式配置 ──
     "mode.set_success" => "[CQ:at,qq={qq}] 已设置默认模式为 {mode}",
     "mode.get_success" => "[CQ:at,qq={qq}] 你的默认模式是 {mode}",
-    "mode.get_unset" => "[CQ:at,qq={qq}] 你还没有设置默认模式，当前使用 osu!（可使用 !mode <模式> 设置）",
     "mode.not_bound" => "[CQ:at,qq={qq}] 设置失败：绑定状态已变化，请先绑定后再设置默认模式",
 
     // ── 系统 ──

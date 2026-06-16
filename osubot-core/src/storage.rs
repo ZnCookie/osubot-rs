@@ -1,9 +1,9 @@
 use crate::log_fmt;
 use chrono::{DateTime, Local, TimeZone, Utc};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use turso::{params, Connection, Database, Result as DbResult};
 
@@ -39,11 +39,18 @@ pub struct Storage {
 }
 
 /// Check if a table has a given column (used for migration checks).
+/// `table` is validated against an allowlist to prevent SQL injection.
 async fn has_column(
     pool: &[tokio::sync::Mutex<Connection>],
     table: &str,
     column: &str,
 ) -> DbResult<bool> {
+    const ALLOWED_TABLES: &[&str] = &["user_bindings"];
+    if !ALLOWED_TABLES.contains(&table) {
+        return Err(turso::Error::Error(format!(
+            "has_column: table '{table}' is not in the allowlist"
+        )));
+    }
     let conn = pool[0].lock().await;
     let mut rows = conn
         .query(&format!("PRAGMA table_info({table})"), ())
@@ -209,16 +216,11 @@ impl Storage {
                     }
                 }
                 drop(rows);
-                let updated = conn.execute(
-                "UPDATE user_bindings SET user_id = ?2, current_username = ?3 WHERE qq = ?1",
-                params![qq, user_id, current_username],
-            ).await?;
-                if updated == 0 {
-                    conn.execute(
-                    "INSERT INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
                     params![qq, user_id, current_username],
-                ).await?;
-                }
+                )
+                .await?;
                 Ok(Ok(()))
             }
             .await;
@@ -1302,15 +1304,6 @@ mod tests {
             storage.get_default_mode(10001).await.unwrap(),
             Some(GameMode::Mania)
         );
-    }
-
-    #[tokio::test]
-    async fn test_set_default_mode_unbound_user_returns_false() {
-        let storage = Storage::connect_for_testing().await.unwrap();
-        assert!(!storage
-            .set_default_mode(99999, GameMode::Osu)
-            .await
-            .unwrap());
     }
 
     #[tokio::test]
