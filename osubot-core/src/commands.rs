@@ -368,7 +368,8 @@ fn parse_pass_recent(msg: &str, mentioned_user_id: Option<i64>) -> Option<Option
             // 注意：#N 提取在 :mode 之前，与 parse_score_on_beatmap 顺序相反。
             // 这是有意设计：!p/!r 中数字主要用作条数限制（!p 5），#N 语法与之一致。
             // 用户应使用 !p :mode #limit 顺序（如 !p :1 #5），若颠倒（!p #5 :1），
-            // #N 会吞掉后续内容导致 limit=1 且 mode=None（回退默认模式），属用户语法顺序问题。
+            // #N 会吞掉后续内容导致 parse_limit 失败、limit 回退为 1，
+            // 此时 :mode 也无法提取，mode=None 走默认模式，属于静默忽略。
             let (rest, limit, limit_end) = if let Some(hash_pos) = rest.rfind('#') {
                 let num_str = &rest[hash_pos + 1..];
                 let (l, le) = parse_limit(num_str);
@@ -1136,12 +1137,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_ps_empty_mode_defaults_to_osu() {
+    fn parse_ps_empty_mode_returns_none() {
         let result = parse_command("!ps :", None);
         assert_eq!(
             result,
             Some(Command::Pass {
-                mode: Some(GameMode::Osu),
+                mode: None,
                 username: None,
                 qq: None,
                 limit: 20,

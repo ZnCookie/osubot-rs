@@ -33,7 +33,7 @@ pub enum GameMode {
 impl GameMode {
     pub fn from_mode_str(s: &str) -> Option<GameMode> {
         match s.trim() {
-            "0" | "" => Some(GameMode::Osu),
+            "0" => Some(GameMode::Osu),
             "1" => Some(GameMode::Taiko),
             "2" => Some(GameMode::Catch),
             "3" => Some(GameMode::Mania),
