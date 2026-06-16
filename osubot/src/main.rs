@@ -1934,6 +1934,21 @@ async fn resolve_cmd_target_qq(cmd: &Command, msg: &QQMessage, storage: &Storage
             }
         },
         Command::Highlight { .. } => Some(msg.user_id),
+        Command::Pass {
+            qq: None,
+            username: None,
+            ..
+        }
+        | Command::Recent {
+            qq: None,
+            username: None,
+            ..
+        }
+        | Command::ScoreOnBeatmap {
+            qq: None,
+            username: None,
+            ..
+        } => Some(msg.user_id),
         _ => None,
     }
 }
