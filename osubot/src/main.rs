@@ -348,6 +348,7 @@ async fn resolve_score_user(
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<(i64, String, UserStats)> {
     tracing::trace!("{}", log_fmt!("main.resolve_score_user_start"));
+
     if let Some(ref name) = username {
         // Look up by username
         tracing::trace!(
@@ -459,7 +460,6 @@ async fn resolve_score_user(
 }
 
 struct ScoreQueryParams<'a> {
-    mode: GameMode,
     username: &'a Option<String>,
     qq: &'a Option<i64>,
     is_pass: bool,
@@ -668,6 +668,7 @@ async fn handle_score_query(
     msg: &QQMessage,
     resp_tx: &mpsc::Sender<String>,
     params: ScoreQueryParams<'_>,
+    mode: GameMode,
 ) {
     tracing::trace!("{}", log_fmt!("main.handle_score_query_start"));
 
@@ -701,9 +702,8 @@ async fn handle_score_query(
                 username = name
             )
         );
-        ctx.scheduler.trigger_update(uid, params.mode).await;
+        ctx.scheduler.trigger_update(uid, mode).await;
 
-        let mode = params.mode;
         let is_pass = params.is_pass;
         let qq = msg.user_id;
         let rate_limiter = ctx.rate_limiter.clone();
@@ -783,9 +783,7 @@ async fn handle_score_query(
     } else {
         let qq = msg.user_id;
         let (uid, name, user_stats) =
-            match resolve_score_user(ctx, msg, params.username, params.qq, params.mode, resp_tx)
-                .await
-            {
+            match resolve_score_user(ctx, msg, params.username, params.qq, mode, resp_tx).await {
                 Some(u) => {
                     tracing::trace!(
                         "{}",
@@ -803,18 +801,18 @@ async fn handle_score_query(
                 }
             };
 
-        ctx.scheduler.trigger_update(uid, params.mode).await;
-        let dedup_key = (uid, params.is_pass, api_limit, params.mode);
+        ctx.scheduler.trigger_update(uid, mode).await;
+        let dedup_key = (uid, params.is_pass, api_limit, mode);
         let dedup_rate_limiter = ctx.rate_limiter.clone();
         let dedup_oauth = ctx.oauth.clone();
-        let dedup_mode = params.mode;
+        let dedup_mode = mode;
 
         tracing::trace!(
             "{}",
             log_fmt!(
                 "main.fetch_scores",
                 user_id = uid,
-                mode = &format!("{:?}", params.mode),
+                mode = &format!("{:?}", mode),
                 limit = api_limit
             )
         );
@@ -917,7 +915,7 @@ async fn handle_score_query(
                     msg,
                     resp_tx,
                     score,
-                    params.mode,
+                    mode,
                     &user_stats,
                     Some(index),
                     params.is_pass,
@@ -949,7 +947,6 @@ async fn handle_score_query(
                 // may return pp=null for failed scores, loved/pending
                 // beatmaps, or unsupported mod combos.  Re-compute locally
                 // and download covers in one pass so network I/O overlaps.
-                let mode = params.mode;
                 let results =
                     futures_util::future::join_all(scores.iter().enumerate().map(|(i, s)| {
                         let cover_url = s.cover_url.clone();
@@ -1006,12 +1003,12 @@ async fn handle_score_query(
                 };
                 let change = ctx
                     .storage
-                    .calculate_change(user_id, params.mode, &user_stats)
+                    .calculate_change(user_id, mode, &user_stats)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!(
                             user_id = user_id,
-                            mode = ?params.mode,
+                            mode = ?mode,
                             error = %e,
                             "{}",
                             log_fmt!("main.calculate_change_failed")
@@ -1033,7 +1030,7 @@ async fn handle_score_query(
                     osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
                         scores: &scores,
                         username: &dedup_username,
-                        mode: params.mode,
+                        mode,
                         label: score_label,
                         count_text: score_count_text,
                         avatar_url: &avatar_url,
@@ -1077,13 +1074,13 @@ async fn handle_score_query(
                     Ok(Err(e)) => {
                         warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
                         let response =
-                            format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                            format_scores(&scores, &dedup_username, mode, params.is_pass);
                         let _ = resp_tx.send(response).await;
                     }
                     Err(_) => {
                         warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
                         let response =
-                            format_scores(&scores, &dedup_username, params.mode, params.is_pass);
+                            format_scores(&scores, &dedup_username, mode, params.is_pass);
                         let _ = resp_tx.send(response).await;
                     }
                 }
@@ -1100,10 +1097,10 @@ async fn handle_beatmap_score_query(
     msg: &QQMessage,
     resp_tx: &mpsc::Sender<String>,
     cmd: &Command,
+    mode: GameMode,
 ) {
-    let (mode, username, qq, beatmap_id, score_id, filters, limit, limit_end, is_all) = match cmd {
+    let (username, qq, beatmap_id, score_id, filters, limit, limit_end, is_all) = match cmd {
         Command::ScoreOnBeatmap {
-            mode,
             username,
             qq,
             beatmap_id,
@@ -1112,8 +1109,8 @@ async fn handle_beatmap_score_query(
             limit,
             limit_end,
             is_all,
+            ..
         } => (
-            *mode,
             username.as_deref(),
             *qq,
             *beatmap_id,
@@ -1900,25 +1897,138 @@ async fn render_and_send_score_list(
     }
 }
 
-/// Build a JSON payload for the plugin command dispatch.
-fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_json::Value {
-    let mode = match cmd {
+/// 解析本次命令的"目标 QQ"，用于在命令未显式指定模式时回退到该用户的 `default_mode`。
+///
+/// 设计语义：`default_mode` 是**被查询目标用户**的偏好（"我喜欢用 taiko 模式展示成绩"），
+/// 而不是查询发起者的偏好。这意味着：
+/// - `!p`（自己）→ target = msg.user_id → 用发起者自己的 default_mode
+/// - `!p ZnCookie` / `where ZnCookie` / `!p @123456` → target = ZnCookie 的 QQ → 用 ZnCookie 的 default_mode
+/// - `今日高光` → target = msg.user_id → 用发起者自己的 default_mode
+///
+/// 因此 `A !mode 1` 之后，不仅 A 自己的 `!p` 走 taiko，其他人对 A 用 `!p` / `where A` 也会走 taiko。
+/// 这是 by design：让用户配置一次就适用于所有查询该用户名的场景，避免每次查询都要带 `:1`。
+async fn resolve_cmd_target_qq(cmd: &Command, msg: &QQMessage, storage: &Storage) -> Option<i64> {
+    match cmd {
+        Command::QuerySelf { .. } => Some(msg.user_id),
+        Command::QueryUser { username, .. } => match storage.find_qq_by_username(username).await {
+            Ok(qq) => qq,
+            Err(e) => {
+                warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
+                None
+            }
+        },
+        Command::QueryMentionedUser { qq, .. } => Some(*qq),
+        Command::Pass { qq: Some(qq), .. }
+        | Command::Recent { qq: Some(qq), .. }
+        | Command::ScoreOnBeatmap { qq: Some(qq), .. } => Some(*qq),
+        Command::Pass {
+            qq: None,
+            username: Some(username),
+            ..
+        }
+        | Command::Recent {
+            qq: None,
+            username: Some(username),
+            ..
+        }
+        | Command::ScoreOnBeatmap {
+            qq: None,
+            username: Some(username),
+            ..
+        } => match storage.find_qq_by_username(username).await {
+            Ok(qq) => qq,
+            Err(e) => {
+                warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
+                None
+            }
+        },
+        Command::Highlight { .. } => Some(msg.user_id),
+        Command::Pass {
+            qq: None,
+            username: None,
+            ..
+        }
+        | Command::Recent {
+            qq: None,
+            username: None,
+            ..
+        }
+        | Command::ScoreOnBeatmap {
+            qq: None,
+            username: None,
+            ..
+        } => Some(msg.user_id),
+        _ => None,
+    }
+}
+
+/// 命令是否涉及模式（决定是否需要 `default_mode` 兜底）。
+fn mode_sensitive(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::QuerySelf { .. }
+            | Command::QueryUser { .. }
+            | Command::QueryMentionedUser { .. }
+            | Command::Pass { .. }
+            | Command::Recent { .. }
+            | Command::ScoreOnBeatmap { .. }
+            | Command::Highlight { .. }
+    )
+}
+
+/// 从命令中提取显式指定的 mode（未指定返回 None）。
+fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
+    match cmd {
         Command::QuerySelf { mode }
         | Command::QueryUser { mode, .. }
         | Command::QueryMentionedUser { mode, .. }
         | Command::Pass { mode, .. }
         | Command::Recent { mode, .. }
         | Command::Highlight { mode, .. }
-        | Command::ScoreOnBeatmap { mode, .. } => Some(match mode {
-            GameMode::Osu => 0,
-            GameMode::Taiko => 1,
-            GameMode::Catch => 2,
-            GameMode::Mania => 3,
-        }),
-        Command::ProfileCard { .. } | Command::Bind { .. } | Command::Unbind | Command::Help => {
-            None
-        }
-    };
+        | Command::ScoreOnBeatmap { mode, .. } => *mode,
+        _ => None,
+    }
+}
+
+/// 解析本次命令最终使用的模式。
+///
+/// 优先级：命令中显式指定（`!p :1`） > 目标用户的 `default_mode` > `Osu` 回退。
+/// "目标用户"由 [`resolve_cmd_target_qq`] 决定——通常是**被查询者**的 QQ，
+/// 因此 `A !p B` 在 A 未指定模式时使用 B 的 default_mode，而非 A 的。
+async fn resolve_mode(
+    storage: &Storage,
+    target_qq: Option<i64>,
+    explicit_mode: Option<GameMode>,
+) -> GameMode {
+    match explicit_mode {
+        Some(mode) => mode,
+        None => match target_qq {
+            Some(qq) => match storage.get_default_mode(qq).await {
+                Ok(Some(mode)) => mode,
+                Ok(None) => GameMode::Osu,
+                Err(e) => {
+                    warn!(user_id = qq, error = %e, "{}", log_fmt!("main.get_default_mode_error"));
+                    GameMode::Osu
+                }
+            },
+            None => GameMode::Osu,
+        },
+    }
+}
+
+/// Build a JSON payload for the plugin command dispatch.
+fn build_cmd_payload(
+    cmd: &Command,
+    cmd_name: &str,
+    msg: &QQMessage,
+    resolved_mode: Option<GameMode>,
+) -> serde_json::Value {
+    let mode = resolved_mode.map(|m| match m {
+        GameMode::Osu => 0,
+        GameMode::Taiko => 1,
+        GameMode::Catch => 2,
+        GameMode::Mania => 3,
+    });
     let username = match cmd {
         Command::QueryUser { username, .. } => Some(username.as_str()),
         Command::Bind { username, .. } => Some(username.as_str()),
@@ -1937,7 +2047,11 @@ fn build_cmd_payload(cmd: &Command, cmd_name: &str, msg: &QQMessage) -> serde_js
         "mode": mode,
         "username": username,
         "qq": match cmd {
-            Command::QueryMentionedUser { qq, .. } => Some(qq),
+            Command::QueryMentionedUser { qq, .. } => Some(*qq),
+            Command::Pass { qq, .. }
+            | Command::Recent { qq, .. }
+            | Command::ScoreOnBeatmap { qq, .. }
+            | Command::ProfileCard { qq, .. } => *qq,
             _ => None,
         },
         "beatmap_id": match cmd {
@@ -2037,6 +2151,19 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
 
     // ==== Plugin on_command dispatch (brief locks, never across .await) ====
     let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
+
+    // Pre-resolve mode once for both plugin dispatch and native handlers.
+    // 仅对 mode-sensitive 命令触发 DB 查询；SetDefaultMode / Bind / Unbind / Help / ProfileCard
+    // 不涉及模式，跳过 resolve_cmd_target_qq 和 get_default_mode。
+    let resolved_mode = match cmd_opt.as_ref() {
+        Some(cmd) if mode_sensitive(cmd) => {
+            let target_qq = resolve_cmd_target_qq(cmd, &msg, &ctx.storage).await;
+            let explicit_mode = extract_explicit_mode(cmd);
+            Some(resolve_mode(&ctx.storage, target_qq, explicit_mode).await)
+        }
+        _ => None,
+    };
+
     if let Some(ref cmd) = cmd_opt {
         let cmd_name = cmd.command_name();
         let cmd_indices: Vec<usize> = {
@@ -2047,7 +2174,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 .unwrap_or_default()
         };
         if !cmd_indices.is_empty() {
-            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg);
+            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg, resolved_mode);
             let cmd_payload_str = cmd_payload.to_string();
             for idx in cmd_indices {
                 let (mut instance, pname, ptimeout) = {
@@ -2158,8 +2285,9 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
     }
 
     // Handle command and send response
+    let mode = resolved_mode.unwrap_or(GameMode::Osu);
     match cmd {
-        Command::QuerySelf { mode } => {
+        Command::QuerySelf { .. } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_self"));
             match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((user_id, username))) => {
@@ -2211,7 +2339,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
             }
         }
-        Command::QueryUser { username, mode } => {
+        Command::QueryUser { username, .. } => {
             info!(group_id = msg.group_id, username = %username, mode = ?mode, "{}", log_fmt!("main.query_user"));
             match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, &username, mode)
                 .await
@@ -2272,7 +2400,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
             }
         }
-        Command::QueryMentionedUser { qq, mode } => {
+        Command::QueryMentionedUser { qq, .. } => {
             info!(qq = qq, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_mentioned_user"));
             match ctx.storage.get_binding(qq).await {
                 Ok(Some((user_id, username))) => {
@@ -2563,7 +2691,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
             }
         }
-        Command::Highlight { mode } => {
+        Command::Highlight { .. } => {
             info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.highlight_command"));
 
             let group_members =
@@ -2631,6 +2759,113 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 }
             }
         }
+        Command::SetDefaultMode { mode } => match mode {
+            Some(mode) => {
+                info!(
+                    user_id = msg.user_id,
+                    ?mode,
+                    "{}",
+                    log_fmt!(
+                        "main.set_default_mode",
+                        user_id = &msg.user_id.to_string(),
+                        mode = &format!("{:?}", mode)
+                    )
+                );
+                match ctx.storage.set_default_mode(msg.user_id, mode).await {
+                    Ok(true) => {
+                        let _ = resp_tx
+                            .send(
+                                user_str("mode.set_success")
+                                    .replace("{qq}", &msg.user_id.to_string())
+                                    .replace("{mode}", mode.display_name()),
+                            )
+                            .await;
+                    }
+                    Ok(false) => {
+                        let _ = resp_tx
+                            .send(
+                                user_str("mode.not_bound")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        error!(user_id = msg.user_id, error = %e, "{}", log_fmt!("main.set_default_mode_error", user_id = &msg.user_id.to_string(), error = &e.to_string()));
+                        let _ = resp_tx
+                            .send(
+                                user_str("error.db_error")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                }
+            }
+            None => {
+                info!(
+                    user_id = msg.user_id,
+                    "{}",
+                    log_fmt!("main.get_default_mode", user_id = &msg.user_id.to_string())
+                );
+                match ctx.storage.get_binding(msg.user_id).await {
+                    Ok(Some(_)) => match ctx.storage.get_default_mode(msg.user_id).await {
+                        Ok(Some(mode)) => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("mode.get_success")
+                                        .replace("{qq}", &msg.user_id.to_string())
+                                        .replace("{mode}", mode.display_name()),
+                                )
+                                .await;
+                        }
+                        Ok(None) => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("mode.get_success")
+                                        .replace("{qq}", &msg.user_id.to_string())
+                                        .replace("{mode}", GameMode::Osu.display_name()),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            error!(
+                                user_id = msg.user_id,
+                                error = %e,
+                                "{}",
+                                log_fmt!("main.get_default_mode_error", user_id = &msg.user_id.to_string(), error = &e.to_string())
+                            );
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.db_error")
+                                        .replace("{qq}", &msg.user_id.to_string()),
+                                )
+                                .await;
+                        }
+                    },
+                    Ok(None) => {
+                        let _ = resp_tx
+                            .send(
+                                user_str("bind.not_bound")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        error!(
+                            user_id = msg.user_id,
+                            error = %e,
+                            "{}",
+                            log_fmt!("main.get_default_mode_error", user_id = &msg.user_id.to_string(), error = &e.to_string())
+                        );
+                        let _ = resp_tx
+                            .send(
+                                user_str("error.db_error")
+                                    .replace("{qq}", &msg.user_id.to_string()),
+                            )
+                            .await;
+                    }
+                }
+            }
+        },
         Command::ProfileCard { username, qq } => {
             let target_user_id = match username {
                 Some(ref name) => {
@@ -2856,10 +3091,10 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 "{}",
                 log_fmt!("main.score_on_beatmap_cmd")
             );
-            handle_beatmap_score_query(&ctx, &msg, &resp_tx, &cmd).await;
+            handle_beatmap_score_query(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
         Command::Pass {
-            mode,
+            mode: _,
             username,
             qq,
             limit,
@@ -2873,7 +3108,6 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 &msg,
                 &resp_tx,
                 ScoreQueryParams {
-                    mode,
                     username: &username,
                     qq: &qq,
                     is_pass: true,
@@ -2882,11 +3116,12 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     limit_end,
                     filters: filters.as_deref(),
                 },
+                mode,
             )
             .await;
         }
         Command::Recent {
-            mode,
+            mode: _,
             username,
             qq,
             limit,
@@ -2900,7 +3135,6 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 &msg,
                 &resp_tx,
                 ScoreQueryParams {
-                    mode,
                     username: &username,
                     qq: &qq,
                     is_pass: false,
@@ -2909,6 +3143,7 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     limit_end,
                     filters: filters.as_deref(),
                 },
+                mode,
             )
             .await;
         }

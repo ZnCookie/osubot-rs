@@ -51,6 +51,15 @@ pub enum PluginAction {
 
 `on_command` 收到的 JSON 包含：`command_type`、`group_id`、`user_id`、`message`、`mode`、`username`、`qq`、`beatmap_id`、`score_id`、`filters`、`limit`、`limit_end`、`mentioned_user_id`。
 
+#### `mode` 字段语义
+
+`mode` 是宿主为本次命令解析出的最终模式（0=osu, 1=taiko, 2=catch, 3=mania），取值 `Option<u8>`，但绝大多数情况下为 `Some(0..3)`：
+
+- **模式敏感命令**（`~` / `where` / `!p` / `!r` / `!s` / `!ps` / `!rs` / `!ss` / `今日高光`）：取用户在命令中显式指定的模式（`!p :1` → `Some(1)`）；若未指定，取该用户的默认模式（`!mode` 设置），未设置时回退到 `Osu`（0）。最终必为 `Some(0..3)`。
+- **其他命令**（`绑定` / `解绑` / `!profile` / `!help` / `!mode`）：`null`，不代表任何用户输入。
+
+插件不应通过 `mode.is_none()` 判断"用户是否指定"——`mode` 默认就是 `Some`，且为非模式敏感命令设置固定值。需要区分"显式 vs 默认回退"时，请通过 `command_type` 判断或仅在模式敏感命令中读取 `mode`。
+
 ### `QQMessage`
 
 `on_message` 收到的 JSON 包含：`group_id`、`user_id`、`message`、`mentioned_user_id`。
@@ -162,7 +171,7 @@ key = "value"
 
 ## 最佳实践
 
-- **避免内置命令前缀**：`~` `where` `绑定` `解绑` `今日高光` `!p` `!r` `!ps` `!rs` `!s` `!ss` `!profile`。建议用 `!` + 特有名称
+- **避免内置命令前缀**：`~` `where` `绑定` `解绑` `今日高光` `!p` `!r` `!ps` `!rs` `!s` `!ss` `!profile` `!mode` `!help`。建议用 `!` + 特有名称
 - **不要 panic**：所有宿主调用返回 `Result`，用 `?` 或 match 处理
 - **保持轻量**：插件调用有 10 秒超时，耗时操作用 `http_request` 委托
 - **热重载丢失内存状态**：重载/重连后插件实例重建，持久化数据用 `http_request` 存外部服务

@@ -116,8 +116,13 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "highlight.hits_increase" => "{username} 打了 {hits} 下。\n",
     "highlight.playtime_increase" => "{username} 玩儿了 {hours} 小时。\n",
 
+    // ── 模式配置 ──
+    "mode.set_success" => "[CQ:at,qq={qq}] 已设置默认模式为 {mode}",
+    "mode.get_success" => "[CQ:at,qq={qq}] 你的默认模式是 {mode}",
+    "mode.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 osu! 账号，无法设置默认模式",
+
     // ── 系统 ──
-    "sys.help" => "[CQ:at,qq={qq}] 绑定/解绑/~/查/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!mode/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",
@@ -444,7 +449,6 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "storage.parse_pending_bind_created_failed" => "无法解析 pending_bind created_at，回退到当前时间",
 
     // ===== osubot-core/src/commands.rs =====
-    "commands.highlight_parse_mode_failed" => "今日高光: 无法解析 mode，回退到 osu",
 
     // ===== osubot-core/src/highlight.rs =====
     "highlight.baseline_query_failed" => "批量基准快照查询失败，回退到逐用户查询",
@@ -561,6 +565,13 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "render.err_score_list_timeout" => "成绩列表渲染超时（{secs}秒）",
     "render.err_size_mismatch" => "非平铺渲染尺寸不匹配: 期望 {expected}，实际 {actual}",
     "render.err_tile_size_mismatch" => "tile {tile} 尺寸不匹配: 期望 {expected}，实际 {actual}",
+
+    // ===== osubot/src/main.rs (!mode) =====
+    "main.set_default_mode" => "用户 {user_id} 设置默认模式为 {mode}",
+    "main.set_default_mode_error" => "无法保存用户 {user_id} 的默认模式设置: {error}",
+    "main.get_default_mode" => "用户 {user_id} 查询默认模式",
+    "main.get_default_mode_error" => "无法获取用户 {user_id} 的默认模式: {error}",
+    "main.find_qq_by_username_error" => "通过用户名 '{username}' 查找 QQ 时数据库错误: {error}",
 
     // ===== osubot-render/src/render.rs =====
     "render.resource_channel_disconnected" => "资源 channel 已断开，使用部分资源继续",

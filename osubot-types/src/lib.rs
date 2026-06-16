@@ -22,7 +22,7 @@ pub fn format_number(value: i64) -> String {
     result.chars().rev().collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameMode {
     Osu = 0,
     Taiko = 1,
@@ -31,9 +31,14 @@ pub enum GameMode {
 }
 
 impl GameMode {
+    /// 将用户输入的 mode 字符串解析为 [`GameMode`]。
+    ///
+    /// 接受 `"0"` / `"1"` / `"2"` / `"3"`（trim 后精确匹配），返回对应的 `Some(GameMode)`。
+    /// 任何其他输入（包括空串、字母别名如 `"osu"` / `"taiko"` / `"std"`、范围外数字等）均返回 `None`。
+    /// 调用方负责对 `None` 走 fallback（通常是 `Osu` 或提示用户）。
     pub fn from_mode_str(s: &str) -> Option<GameMode> {
         match s.trim() {
-            "0" | "" => Some(GameMode::Osu),
+            "0" => Some(GameMode::Osu),
             "1" => Some(GameMode::Taiko),
             "2" => Some(GameMode::Catch),
             "3" => Some(GameMode::Mania),
@@ -55,6 +60,17 @@ impl GameMode {
         self.api_value()
     }
 
+    /// 面向用户的纯文本名称，用于 set/get 默认模式等用户消息。
+    /// 与 `name()` 的区别：Osu 模式不带 `!`，避免出现"你的默认模式是 osu!"这种突兀措辞。
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            GameMode::Osu => "osu",
+            GameMode::Taiko => "taiko",
+            GameMode::Catch => "catch",
+            GameMode::Mania => "mania",
+        }
+    }
+
     pub fn api_value(&self) -> &'static str {
         match self {
             GameMode::Osu => "osu",
@@ -66,6 +82,12 @@ impl GameMode {
 }
 
 impl std::fmt::Display for GameMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl std::fmt::Debug for GameMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
