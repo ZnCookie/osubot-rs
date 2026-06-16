@@ -617,20 +617,16 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
 
     // 查询/设置默认模式: !mode 或 !mode <N>
     // 无效的 mode 值等价于查询（mode=None），与 !p :99 等命令的行为一致
-    if let Some(rest) = msg
-        .strip_prefix("!mode")
-        .and_then(|s| s.chars().next().filter(|c| c.is_whitespace()).map(|_| s))
-    {
-        let rest = rest.trim();
-        let mode = if rest.is_empty() {
-            None
-        } else {
-            GameMode::from_mode_str(rest)
-        };
-        return Some(Command::SetDefaultMode { mode });
-    }
-    if msg == "!mode" {
-        return Some(Command::SetDefaultMode { mode: None });
+    if let Some(rest) = msg.strip_prefix("!mode") {
+        if rest.is_empty() || rest.chars().next().is_some_and(|c| c.is_whitespace()) {
+            let rest = rest.trim();
+            let mode = if rest.is_empty() {
+                None
+            } else {
+                GameMode::from_mode_str(rest)
+            };
+            return Some(Command::SetDefaultMode { mode });
+        }
     }
 
     // 个人主页卡片: !profile [用户名] or !profile + @mention
