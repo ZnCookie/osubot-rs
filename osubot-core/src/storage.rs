@@ -274,6 +274,7 @@ impl Storage {
             )
             .await?;
         let user_id: Option<i64> = rows.next().await?.map(|row| row.get(0)).transpose()?;
+        drop(rows);
 
         conn.execute("DELETE FROM user_bindings WHERE qq = ?1", params![qq])
             .await?;
@@ -285,15 +286,18 @@ impl Storage {
                     params![uid],
                 )
                 .await?;
-            if let Some(row) = rows.next().await? {
-                let count: i64 = row.get(0)?;
-                if count == 0 {
-                    conn.execute(
-                        "DELETE FROM user_next_update WHERE user_id = ?1",
-                        params![uid],
-                    )
-                    .await?;
-                }
+            let count: i64 = if let Some(row) = rows.next().await? {
+                row.get(0)?
+            } else {
+                0
+            };
+            drop(rows);
+            if count == 0 {
+                conn.execute(
+                    "DELETE FROM user_next_update WHERE user_id = ?1",
+                    params![uid],
+                )
+                .await?;
             }
         }
 
@@ -441,6 +445,7 @@ impl Storage {
             )
             .await?;
         let current: Option<String> = rows.next().await?.map(|row| row.get(0)).transpose()?;
+        drop(rows);
         if current.as_deref() == Some(new_username) {
             return Ok(0);
         }
@@ -1388,6 +1393,37 @@ mod tests {
             .set_default_mode(99999, GameMode::Mania)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_default_mode_after_unbind_rebind() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        storage
+            .bind(10001, 12345, "test_user")
+            .await
+            .unwrap()
+            .unwrap();
+        storage
+            .set_default_mode(10001, GameMode::Taiko)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get_default_mode(10001).await.unwrap(),
+            Some(GameMode::Taiko)
+        );
+
+        storage.unbind(10001).await.unwrap();
+        assert_eq!(storage.get_default_mode(10001).await.unwrap(), None);
+
+        storage
+            .bind(10001, 12345, "test_user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            storage.get_default_mode(10001).await.unwrap(),
+            Some(GameMode::Osu)
+        );
     }
 
     #[tokio::test]
