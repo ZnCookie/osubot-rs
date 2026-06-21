@@ -536,7 +536,7 @@ pub async fn inline_external_images(html: &str) -> String {
         urls
     };
 
-    let client = (*http_client()).clone();
+    let client = http_client();
 
     let mut url_to_data: HashMap<String, String> = HashMap::new();
     let mut blocked: HashSet<String> = HashSet::new();
