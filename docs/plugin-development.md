@@ -17,7 +17,7 @@
 | `on_unload` (可选) | `() -> *const u8` | 卸载时清理，返回值被丢弃 |
 | `on_command` (可选) | `(cmd_ptr: u32, cmd_len: u32) -> *const u8` | 匹配到注册命令时调用，返回 `PluginAction` |
 | `on_message` (可选) | `(msg_ptr: u32, msg_len: u32) -> *const u8` | 收到群消息时调用，返回 `PluginAction` |
-| `on_tick` (可选) | `(tick_ptr: u32, tick_len: u32) -> *const u8` | 定时任务触发，传入 `{"tick_id": u32}`，返回值被丢弃 |
+| `on_tick` (可选) | `(tick_ptr: u32, tick_len: u32) -> *const u8` | 定时任务触发，传入 JSON 数字 tick_id（如 `42`），返回值被丢弃 |
 
 ### 内存协议
 
@@ -56,9 +56,7 @@ pub enum PluginAction {
 `mode` 是宿主为本次命令解析出的最终模式（0=osu, 1=taiko, 2=catch, 3=mania），取值 `Option<u8>`，但绝大多数情况下为 `Some(0..3)`：
 
 - **模式敏感命令**（`~` / `where` / `!p` / `!r` / `!s` / `!ps` / `!rs` / `!ss` / `今日高光`）：取用户在命令中显式指定的模式（`!p :1` → `Some(1)`）；若未指定，取该用户的默认模式（`!mode` 设置），未设置时回退到 `Osu`（0）。最终必为 `Some(0..3)`。
-- **其他命令**（`绑定` / `解绑` / `!profile` / `!help` / `!mode`）：`null`，不代表任何用户输入。
-
-插件不应通过 `mode.is_none()` 判断"用户是否指定"——`mode` 默认就是 `Some`，且为非模式敏感命令设置固定值。需要区分"显式 vs 默认回退"时，请通过 `command_type` 判断或仅在模式敏感命令中读取 `mode`。
+- **其他命令**（`绑定` / `解绑` / `!profile` / `!help` / `!mode` / `!rv`）：`null`，不代表任何用户输入。
 
 ### `QQMessage`
 
@@ -112,9 +110,17 @@ pub unsafe extern "C" fn alloc(size: u32) -> *mut u8 { osubot_plugin_sdk::alloc(
 #[no_mangle]
 pub unsafe extern "C" fn dealloc(ptr: *mut u8, size: u32) { osubot_plugin_sdk::dealloc(ptr, size) }
 
+// serialize_return 返回 RAII 类型 PluginReturn，Drop 时自动释放。
+// FFI 导出函数用 into_raw() 取出裸指针交给宿主（类似 Box::into_raw）。
+fn return_ptr<T: serde::Serialize>(val: &T) -> *const u8 {
+    osubot_plugin_sdk::serialize_return(val)
+        .map(|r| r.into_raw())
+        .unwrap_or(core::ptr::null())
+}
+
 #[no_mangle]
 pub extern "C" fn plugin_metadata() -> *const u8 {
-    serialize_return(&PluginMetadata {
+    return_ptr(&PluginMetadata {
         name: "my-plugin", version: "0.1.0", author: "me",
         description: "My first plugin", commands: vec!["!ping"],
     })
@@ -128,13 +134,13 @@ pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
     };
     let cmd: Command = match serde_json::from_str(cmd_json) {
         Ok(c) => c,
-        Err(_) => return serialize_return(&PluginAction::Next),
+        Err(_) => return return_ptr(&PluginAction::Next),
     };
     if cmd.command_type == "!ping" {
         let _ = CTX.send_group_msg(cmd.group_id.unwrap_or(0), "pong!");
-        serialize_return(&PluginAction::Intercepted)
+        return_ptr(&PluginAction::Intercepted)
     } else {
-        serialize_return(&PluginAction::Next)
+        return_ptr(&PluginAction::Next)
     }
 }
 ```

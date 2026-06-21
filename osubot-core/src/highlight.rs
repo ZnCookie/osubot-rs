@@ -99,7 +99,10 @@ pub async fn get_highlight(
         let username = username.clone();
 
         join_set.spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore unexpectedly closed");
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("highlight semaphore should never be closed");
             let result =
                 api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await;
 
@@ -116,7 +119,10 @@ pub async fn get_highlight(
                     new_playtime: current.playtime,
                     playtime_increase: current.playtime - baseline.playtime,
                 }),
-                Err(_) => None,
+                Err(e) => {
+                    tracing::warn!(?e, user_id, "{}", log_fmt!("highlight.fetch_failed"));
+                    None
+                }
             }
         });
     }

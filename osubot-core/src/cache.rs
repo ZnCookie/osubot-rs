@@ -104,6 +104,13 @@ pub(crate) fn beatmap_cache_dir() -> PathBuf {
         .join("beatmaps")
 }
 
+pub fn preview_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("osubot")
+        .join("previews")
+}
+
 /// Clean up expired replay cache files.
 pub async fn cleanup_replays(retention_days: u64) {
     cleanup_dir(replay_cache_dir(), "replay", retention_days).await;
@@ -112,6 +119,11 @@ pub async fn cleanup_replays(retention_days: u64) {
 /// Clean up expired beatmap cache files (.osu).
 pub async fn cleanup_beatmaps(retention_days: u64) {
     cleanup_dir(beatmap_cache_dir(), "beatmap", retention_days).await;
+}
+
+/// Clean up expired beatmap preview cache files (rendered GIF/PNG).
+pub async fn cleanup_previews(retention_days: u64) {
+    cleanup_dir(preview_cache_dir(), "preview", retention_days).await;
 }
 
 #[cfg(test)]
@@ -126,5 +138,10 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_beatmaps_noop_when_disabled() {
         cleanup_beatmaps(0).await;
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_previews_noop_when_disabled() {
+        cleanup_previews(0).await;
     }
 }

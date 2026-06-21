@@ -26,6 +26,7 @@ pub struct UserStats {
 pub enum CommandGroup {
     Query,
     Score,
+    BeatmapPreview,
     Profile,
     Highlight,
     Bind,
@@ -73,6 +74,8 @@ pub enum Command {
         mode: Option<GameMode>,
         username: Option<String>,
         qq: Option<i64>,
+        beatmap_id: Option<u32>,
+        score_id: Option<u64>,
         limit: u32,
         limit_end: Option<u32>,
         is_summary: bool,
@@ -82,6 +85,8 @@ pub enum Command {
         mode: Option<GameMode>,
         username: Option<String>,
         qq: Option<i64>,
+        beatmap_id: Option<u32>,
+        score_id: Option<u64>,
         limit: u32,
         limit_end: Option<u32>,
         is_summary: bool,
@@ -89,6 +94,14 @@ pub enum Command {
     },
     SetDefaultMode {
         mode: Option<GameMode>,
+    },
+    BeatmapPreview {
+        score_id: Option<u64>,
+        beatmap_id: Option<u32>,
+        mode: Option<GameMode>,
+        mods: Option<Vec<String>>,
+        gif: bool,
+        times: Option<Vec<i64>>,
     },
     Help,
 }
@@ -101,6 +114,7 @@ impl Command {
             | Command::QueryUser { .. }
             | Command::QueryMentionedUser { .. } => CommandGroup::Query,
             Command::Pass { .. } | Command::Recent { .. } => CommandGroup::Score,
+            Command::BeatmapPreview { .. } => CommandGroup::BeatmapPreview,
             Command::ProfileCard { .. } => CommandGroup::Profile,
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
@@ -124,6 +138,7 @@ impl Command {
             Command::Recent { .. } => "!r",
             Command::ScoreOnBeatmap { .. } => "!s",
             Command::SetDefaultMode { .. } => "!mode",
+            Command::BeatmapPreview { .. } => "!rv",
             Command::Help => "!help",
         }
     }

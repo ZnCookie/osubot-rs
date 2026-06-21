@@ -32,6 +32,17 @@ pub struct XfsUpstream {
     api_rate_limiter: Arc<RateLimiter>,
 }
 
+fn parse_xfs_username(resp_text: &str) -> Option<&str> {
+    let first_line = resp_text.lines().next()?;
+    let pos = first_line.find("的个人信息")?;
+    let username = first_line[..pos].trim();
+    if username.is_empty() {
+        None
+    } else {
+        Some(username)
+    }
+}
+
 impl XfsUpstream {
     pub fn from_config(
         cfg: &ProviderConfig,
@@ -47,7 +58,10 @@ impl XfsUpstream {
 
         Self {
             url: cfg.url.clone().unwrap_or_else(default_upstream_url),
-            access_token: cfg.access_token.clone(),
+            access_token: cfg
+                .access_token
+                .clone()
+                .unwrap_or_else(|| "bleatingsheep.org".to_string()),
             self_id,
             timeout: Duration::from_secs(cfg.timeout_secs),
             rate_limiter: RateLimiter::with_config(cfg.burst, cfg.rate_per_minute),
@@ -88,11 +102,13 @@ impl UpstreamBindingProvider for XfsUpstream {
             warn!("{}", log_fmt!("xfs.invalid_self_id"));
             return Ok(None);
         }
-        if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
-            request.headers_mut().insert("Authorization", val);
-        } else {
-            warn!("{}", log_fmt!("xfs.invalid_access_token"));
-            return Ok(None);
+        if !self.access_token.is_empty() {
+            if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
+                request.headers_mut().insert("Authorization", val);
+            } else {
+                warn!("{}", log_fmt!("xfs.invalid_access_token"));
+                return Ok(None);
+            }
         }
         if let Ok(val) = "Universal".parse() {
             request.headers_mut().insert("X-Client-Role", val);
@@ -182,42 +198,69 @@ impl UpstreamBindingProvider for XfsUpstream {
                 return Ok(None);
             }
 
-            let first_line = resp_text.lines().next().unwrap_or("");
-            if let Some(pos) = first_line.find("的个人信息") {
-                let username = first_line[..pos].trim();
-                if username.is_empty() {
-                    return Ok(None);
-                }
+            let Some(username) = parse_xfs_username(&resp_text) else {
+                return Ok(None);
+            };
 
-                debug!(username, "{}", log_fmt!("xfs.resolved_username"));
-                if !self.oauth.is_configured() {
-                    warn!("{}", log_fmt!("xfs.skipping_api"));
-                    return Ok(None);
-                }
-                let user_id = match api::fetch_user_stats_by_username(
-                    &self.api_rate_limiter,
-                    &self.oauth,
-                    username,
-                    GameMode::Osu,
-                )
-                .await
-                {
-                    Ok(stats) => stats.user_id,
-                    Err(_) => {
-                        warn!(username, "{}", log_fmt!("xfs.resolve_failed"));
-                        return Ok(None);
-                    }
-                };
-
-                debug!(target: "xfs_upstream", %username, user_id, "{}", log_fmt!("xfs.parse_result"));
-                return Ok(Some((user_id, username.to_string())));
+            debug!(username, "{}", log_fmt!("xfs.resolved_username"));
+            if !self.oauth.is_configured() {
+                warn!("{}", log_fmt!("xfs.skipping_api"));
+                return Ok(None);
             }
+            let user_id = match api::fetch_user_stats_by_username(
+                &self.api_rate_limiter,
+                &self.oauth,
+                username,
+                GameMode::Osu,
+            )
+            .await
+            {
+                Ok(stats) => stats.user_id,
+                Err(_) => {
+                    warn!(username, "{}", log_fmt!("xfs.resolve_failed"));
+                    return Ok(None);
+                }
+            };
 
-            return Ok(None);
+            debug!(target: "xfs_upstream", %username, user_id, "{}", log_fmt!("xfs.parse_result"));
+            return Ok(Some((user_id, username.to_string())));
         }
 
         warn!("{}", log_fmt!("xfs.response_timeout"));
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_xfs_username;
+
+    #[test]
+    fn test_parse_xfs_username_found() {
+        assert_eq!(parse_xfs_username("peppy的个人信息"), Some("peppy"));
+        assert_eq!(
+            parse_xfs_username("  空格用户 的个人信息"),
+            Some("空格用户")
+        );
+    }
+
+    #[test]
+    fn test_parse_xfs_username_unbound() {
+        assert_eq!(parse_xfs_username("未绑定 osu! 账号"), None);
+    }
+
+    #[test]
+    fn test_parse_xfs_username_empty() {
+        assert_eq!(parse_xfs_username(""), None);
+        assert_eq!(parse_xfs_username("的个人信息"), None);
+    }
+
+    #[test]
+    fn test_parse_xfs_username_no_match() {
+        assert_eq!(
+            parse_xfs_username("some random text that doesn't match"),
+            None
+        );
     }
 }
 
@@ -241,7 +284,7 @@ mod integration_tests {
             rate_per_minute: 10,
             burst: 20,
             url: Some("wss://public-service.b11p.com/".into()),
-            access_token: "bleatingsheep.org".into(),
+            access_token: Some("bleatingsheep.org".into()),
             self_id: None,
             timeout_secs: 10,
         };

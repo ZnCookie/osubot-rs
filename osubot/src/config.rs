@@ -24,11 +24,20 @@ pub struct Config {
     pub plugin: PluginConfig,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct OsuConfig {
     #[serde(alias = "api_key")]
     pub client_secret: String,
     pub client_id: String,
+}
+
+impl std::fmt::Debug for OsuConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OsuConfig")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -132,7 +141,7 @@ impl Default for SchedulerConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct IrcConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -144,6 +153,18 @@ pub struct IrcConfig {
     pub nickname: String,
     #[serde(default)]
     pub password: String,
+}
+
+impl std::fmt::Debug for IrcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrcConfig")
+            .field("enabled", &self.enabled)
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("nickname", &self.nickname)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 fn default_irc_server() -> String {
@@ -209,6 +230,7 @@ impl GroupFilterConfig {
 pub struct GroupConfig {
     pub query: Option<bool>,
     pub score: Option<bool>,
+    pub beatmap_preview: Option<bool>,
     pub profile: Option<bool>,
     pub highlight: Option<bool>,
     pub bind: Option<bool>,
@@ -222,6 +244,7 @@ impl GroupConfig {
         match group_name {
             CommandGroup::Query => self.query.unwrap_or(default),
             CommandGroup::Score => self.score.unwrap_or(default),
+            CommandGroup::BeatmapPreview => self.beatmap_preview.unwrap_or(default),
             CommandGroup::Profile => self.profile.unwrap_or(default),
             CommandGroup::Highlight => self.highlight.unwrap_or(default),
             CommandGroup::Bind => self.bind.unwrap_or(default),
@@ -247,6 +270,9 @@ impl GroupsConfig {
             GroupConfig {
                 query: override_cfg.query.or(self.default.query),
                 score: override_cfg.score.or(self.default.score),
+                beatmap_preview: override_cfg
+                    .beatmap_preview
+                    .or(self.default.beatmap_preview),
                 profile: override_cfg.profile.or(self.default.profile),
                 highlight: override_cfg.highlight.or(self.default.highlight),
                 bind: override_cfg.bind.or(self.default.bind),
@@ -263,10 +289,6 @@ pub(crate) fn default_upstream_url() -> String {
     "wss://public-service.b11p.com/".to_string()
 }
 
-fn default_access_token() -> String {
-    "bleatingsheep.org".to_string()
-}
-
 fn default_timeout_secs() -> u64 {
     10
 }
@@ -279,7 +301,7 @@ fn default_burst() -> u32 {
     20
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct ProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: String,
@@ -289,12 +311,26 @@ pub struct ProviderConfig {
     pub burst: u32,
     #[serde(default)]
     pub url: Option<String>,
-    #[serde(default = "default_access_token")]
-    pub access_token: String,
+    #[serde(default)]
+    pub access_token: Option<String>,
     #[serde(default)]
     pub self_id: Option<i64>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("provider_type", &self.provider_type)
+            .field("rate_per_minute", &self.rate_per_minute)
+            .field("burst", &self.burst)
+            .field("url", &self.url)
+            .field("access_token", &"<redacted>")
+            .field("self_id", &self.self_id)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -334,6 +370,94 @@ impl Config {
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.bot.onebot_url.is_empty() {
+            return Err("onebot_url 为空".into());
+        }
+        if self.bot.command_timeout_secs < 5 {
+            return Err(format!(
+                "command_timeout_secs 过小（{} < 5 秒）",
+                self.bot.command_timeout_secs
+            ));
+        }
+        if self.bot.render_timeout_secs < 5 {
+            return Err(format!(
+                "render_timeout_secs 过小（{} < 5 秒）",
+                self.bot.render_timeout_secs
+            ));
+        }
+        if self.bot.onebot_api_timeout_secs < 2 {
+            return Err(format!(
+                "onebot_api_timeout_secs 过小（{} < 2 秒）",
+                self.bot.onebot_api_timeout_secs
+            ));
+        }
+        if self.bot.ur_timeout_secs < 3 {
+            return Err(format!(
+                "ur_timeout_secs 过小（{} < 3 秒）",
+                self.bot.ur_timeout_secs
+            ));
+        }
+        if self.bot.command_timeout_secs > 3600 {
+            return Err(format!(
+                "command_timeout_secs 过大（{} > 3600 秒）",
+                self.bot.command_timeout_secs
+            ));
+        }
+        if self.bot.render_timeout_secs > 600 {
+            return Err(format!(
+                "render_timeout_secs 过大（{} > 600 秒）",
+                self.bot.render_timeout_secs
+            ));
+        }
+        if self.bot.onebot_api_timeout_secs > 120 {
+            return Err(format!(
+                "onebot_api_timeout_secs 过大（{} > 120 秒）",
+                self.bot.onebot_api_timeout_secs
+            ));
+        }
+        if self.bot.ur_timeout_secs > 300 {
+            return Err(format!(
+                "ur_timeout_secs 过大（{} > 300 秒）",
+                self.bot.ur_timeout_secs
+            ));
+        }
+        if self.scheduler.interval_minutes > 1440 {
+            return Err(format!(
+                "scheduler.interval_minutes 过大（{} > 1440 分钟 = 1 天）",
+                self.scheduler.interval_minutes
+            ));
+        }
+        // 5 个 i64 间隔字段下界检查：负值会让 Duration::hours(负) 行为异常
+        for (name, val) in [
+            (
+                "semi_active_interval_hours",
+                self.scheduler.semi_active_interval_hours,
+            ),
+            (
+                "normal_interval_hours",
+                self.scheduler.normal_interval_hours,
+            ),
+            (
+                "inactive_interval_hours",
+                self.scheduler.inactive_interval_hours,
+            ),
+            (
+                "no_recent_interval_hours",
+                self.scheduler.no_recent_interval_hours,
+            ),
+            (
+                "user_not_exists_interval_hours",
+                self.scheduler.user_not_exists_interval_hours,
+            ),
+        ] {
+            if val < 0 {
+                return Err(format!("scheduler.{name} 不能为负（{val}）"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -406,6 +530,7 @@ mod tests {
         let cfg = GroupConfig::default();
         assert!(cfg.is_enabled(CommandGroup::Query));
         assert!(cfg.is_enabled(CommandGroup::Score));
+        assert!(cfg.is_enabled(CommandGroup::BeatmapPreview));
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
@@ -418,6 +543,7 @@ mod tests {
         let cfg = GroupConfig {
             query: Some(true),
             score: Some(false),
+            beatmap_preview: None,
             profile: None,
             highlight: Some(false),
             bind: None,
@@ -623,5 +749,46 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.osu.client_secret, "old-api-key");
+    }
+
+    #[test]
+    fn test_debug_does_not_leak_client_secret() {
+        let osu = OsuConfig {
+            client_secret: "super-secret-key".into(),
+            client_id: "12345".into(),
+        };
+        let s = format!("{:?}", osu);
+        assert!(!s.contains("super-secret-key"));
+        assert!(s.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_debug_does_not_leak_irc_password() {
+        let irc = IrcConfig {
+            enabled: false,
+            server: "irc.ppy.sh".into(),
+            port: 6667,
+            nickname: "test".into(),
+            password: "super-secret-pass".into(),
+        };
+        let s = format!("{:?}", irc);
+        assert!(!s.contains("super-secret-pass"));
+        assert!(s.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_debug_does_not_leak_access_token() {
+        let provider = ProviderConfig {
+            provider_type: "xfa".into(),
+            rate_per_minute: 10,
+            burst: 20,
+            url: None,
+            access_token: Some("secret-token".into()),
+            self_id: None,
+            timeout_secs: 10,
+        };
+        let s = format!("{:?}", provider);
+        assert!(!s.contains("secret-token"));
+        assert!(s.contains("<redacted>"));
     }
 }

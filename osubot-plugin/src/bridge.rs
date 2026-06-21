@@ -5,6 +5,7 @@ use std::sync::Arc;
 use wasmtime::Result as WasmResult;
 use wasmtime::{Caller, Linker, StoreLimits};
 
+use crate::types::TickRegistration;
 use osubot_core::strings::user_str;
 
 // 信任模型：所有宿主函数默认信任 WASM 插件的调用意图。
@@ -13,7 +14,7 @@ use osubot_core::strings::user_str;
 // 宿主仅提供进程级保护（wasmtime 沙箱 + 限流 + 超时），不做应用层权限控制。
 
 /// HTTP 响应体最大大小限制（10MB），防止恶意或意外的大响应耗尽进程内存。
-const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_HTTP_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum BridgeError {
@@ -92,8 +93,7 @@ pub struct HostServices {
     pub send_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
     pub runtime_handle: tokio::runtime::Handle,
     pub instance_idx: usize,
-    #[allow(clippy::type_complexity)]
-    pub tick_registry: Arc<std::sync::Mutex<Vec<(usize, String, u64, u32)>>>,
+    pub tick_registry: Arc<std::sync::Mutex<Vec<TickRegistration>>>,
     pub tick_id_counter: Arc<AtomicU32>,
     pub instance_config: Option<serde_json::Value>,
     pub limiter: StoreLimits,
@@ -289,7 +289,7 @@ fn dispatch_host_call(
 
             // 检查 Content-Length 头，提前拒绝超大响应
             if let Some(len) = response.content_length() {
-                if len as usize > MAX_HTTP_RESPONSE_BYTES {
+                if len > MAX_HTTP_RESPONSE_BYTES {
                     return Err(BridgeError::HttpRequest(format!(
                         "HTTP response exceeds {}MB limit (Content-Length: {} bytes)",
                         MAX_HTTP_RESPONSE_BYTES / (1024 * 1024),
@@ -308,7 +308,7 @@ fn dispatch_host_call(
                 if n == 0 {
                     break;
                 }
-                if body.len() + n > MAX_HTTP_RESPONSE_BYTES {
+                if body.len() as u64 + n as u64 > MAX_HTTP_RESPONSE_BYTES {
                     return Err(BridgeError::HttpRequest(format!(
                         "HTTP response exceeds {}MB limit",
                         MAX_HTTP_RESPONSE_BYTES / (1024 * 1024)
@@ -403,30 +403,36 @@ fn dispatch_host_call(
                 .map_err(|e| BridgeError::Database(e.to_string()))?;
             let plugin_tick_count = registry
                 .iter()
-                .filter(|(idx, _, _, _)| *idx == services.instance_idx)
+                .filter(|t| t.plugin_idx == services.instance_idx)
                 .count();
             if plugin_tick_count >= MAX_TICKS_PER_PLUGIN
                 && !registry
                     .iter()
-                    .any(|(idx, name, _, _)| *idx == services.instance_idx && name == &tick_name)
+                    .any(|t| t.plugin_idx == services.instance_idx && t.name == tick_name)
             {
                 return Err(BridgeError::Validation(
                     user_str("bridge.tick_limit_exceeded")
                         .replace("{limit}", &MAX_TICKS_PER_PLUGIN.to_string()),
                 ));
             }
-            if let Some((existing_pos, _)) = registry
+            if let Some(existing_pos) = registry
                 .iter()
                 .enumerate()
-                .find(|(_, (idx, name, _, _))| *idx == services.instance_idx && name == &tick_name)
+                .find(|(_, t)| t.plugin_idx == services.instance_idx && t.name == tick_name)
+                .map(|(pos, _)| pos)
             {
-                registry[existing_pos].2 = interval_secs;
-                return Ok(registry[existing_pos].3.to_string());
+                registry[existing_pos].interval_secs = interval_secs;
+                return Ok(registry[existing_pos].tick_id.to_string());
             }
             let tick_id = services
                 .tick_id_counter
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            registry.push((services.instance_idx, tick_name, interval_secs, tick_id));
+            registry.push(TickRegistration {
+                plugin_idx: services.instance_idx,
+                name: tick_name,
+                interval_secs,
+                tick_id,
+            });
             Ok(tick_id.to_string())
         }
         _ => Err(BridgeError::UnknownHostCall(name.to_string())),

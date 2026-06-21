@@ -1,15 +1,19 @@
+mod app_state;
+mod background;
 mod config;
 mod constants;
 mod last_beatmap_cache;
+mod plugin_runtime;
 mod reload;
+mod runtime;
 mod scheduler;
+mod ws_loop;
 mod xfs_upstream;
 mod yumu_upstream;
 
-use reload::ReloadHandle;
-
+use app_state::AppState;
 use config::Config;
-use futures_util::{future::join_all, SinkExt, StreamExt};
+use futures_util::{future::join_all, SinkExt};
 use last_beatmap_cache::LastBeatmapCache;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
@@ -25,9 +29,7 @@ use osubot_core::{
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
-use osubot_plugin::{
-    HostServices, PluginActionResult, PluginDispatchPanic, PluginDispatchResult, PluginManager,
-};
+use osubot_plugin::{PluginActionResult, PluginManager};
 use osubot_render::cache as render_cache;
 use osubot_render::PROFILE_VIEWPORT_WIDTH;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
@@ -43,14 +45,19 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+
+/// Type alias for the WebSocket write half used per-connection.
+pub type WriteSink = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Message,
+>;
 
 /// Maximum number of scores to fetch when filters are active.
 const SCORE_API_FETCH_LIMIT: u32 = 100;
 
-struct InFlightGuard(Arc<AtomicUsize>);
+pub(crate) struct InFlightGuard(Arc<AtomicUsize>);
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
@@ -67,29 +74,29 @@ struct QQMessage {
 }
 
 #[derive(Debug, Deserialize)]
-struct OneBotResponse {
+pub(crate) struct OneBotResponse {
     status: Option<String>,
     data: Option<serde_json::Value>,
     echo: Option<String>,
 }
 
-struct UserRateLimit {
+pub struct UserRateLimit {
     last_command: std::time::Instant,
     command_timestamps: Vec<std::time::Instant>,
 }
 
-struct PendingEntry {
+pub struct PendingEntry {
     sender: oneshot::Sender<serde_json::Value>,
     created_at: std::time::Instant,
 }
 
-struct OneBotApi {
+pub struct OneBotApi {
     pending: Mutex<HashMap<String, PendingEntry>>,
     timeout: Arc<AtomicU64>,
 }
 
 impl OneBotApi {
-    fn new(timeout_secs: Arc<AtomicU64>) -> Self {
+    pub fn new(timeout_secs: Arc<AtomicU64>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
             timeout: timeout_secs,
@@ -119,7 +126,7 @@ struct OneBotMessage {
 
 /// Parse a OneBot JSON message into a `QQMessage`.
 /// Returns `None` if the message is not a group message or lacks required fields.
-fn parse_onebot_message(json: &str) -> Option<QQMessage> {
+pub(crate) fn parse_onebot_message(json: &str) -> Option<QQMessage> {
     let msg: OneBotMessage = serde_json::from_str(json).ok()?;
 
     if msg.post_type != "message" || msg.message_type.as_deref() != Some("group") {
@@ -190,7 +197,7 @@ fn extract_message_and_mention(message: &serde_json::Value) -> (String, Option<i
 }
 
 #[derive(Clone)]
-struct BotContext {
+pub(crate) struct BotContext {
     storage: Arc<Storage>,
     scheduler: Scheduler,
     oauth: Arc<OauthTokenCache>,
@@ -202,6 +209,30 @@ struct BotContext {
     last_beatmap: LastBeatmapCache,
     upstream_chain: Arc<tokio::sync::RwLock<UpstreamChain>>,
     plugin_manager: Arc<tokio::sync::Mutex<Option<PluginManager>>>,
+}
+
+impl BotContext {
+    /// 从 `AppState` + per-connection 状态派生 `BotContext`。
+    /// 字段赋值与直接构造完全一致（参见原 main.rs:4344-4356）。
+    pub fn for_dispatch(
+        state: &AppState,
+        write: Arc<Mutex<WriteSink>>,
+        last_beatmap: LastBeatmapCache,
+    ) -> Self {
+        Self {
+            storage: state.storage.clone(),
+            scheduler: state.scheduler.clone(),
+            oauth: state.oauth.clone(),
+            rate_limiter: state.rate_limiter.clone(),
+            command_rate_limits: state.user_rate_limits.clone(),
+            config: state.config.clone(),
+            write,
+            onebot_api: state.onebot_api.clone(),
+            last_beatmap,
+            upstream_chain: state.upstream_chain.clone(),
+            plugin_manager: state.plugin_manager.clone(),
+        }
+    }
 }
 
 fn api_error_msg(qq: i64, e: &ApiError) -> String {
@@ -220,6 +251,13 @@ fn api_error_msg(qq: i64, e: &ApiError) -> String {
         }
         _ => user_str("error.query_failed").replace("{qq}", &qq.to_string()),
     }
+}
+
+/// Send an error message to the response channel.
+async fn send_error(resp_tx: &mpsc::Sender<String>, qq: i64, key: &str) {
+    let _ = resp_tx
+        .send(user_str(key).replace("{qq}", &qq.to_string()))
+        .await;
 }
 
 impl BotContext {
@@ -463,6 +501,8 @@ struct ScoreQueryParams<'a> {
     username: &'a Option<String>,
     qq: &'a Option<i64>,
     is_pass: bool,
+    beatmap_id: Option<u32>,
+    score_id: Option<u64>,
     limit: u32,
     is_single: bool,
     limit_end: Option<u32>,
@@ -678,7 +718,10 @@ async fn handle_score_query(
     let is_self = params.username.is_none() && params.qq.is_none();
     let include_fails = !params.is_pass;
     let raw_limit = params.limit_end.unwrap_or(params.limit);
-    let api_limit = if params.filters.is_some_and(|f| !f.is_empty()) {
+    let has_client_filter = params.filters.is_some_and(|f| !f.is_empty())
+        || params.beatmap_id.is_some()
+        || params.score_id.is_some();
+    let api_limit = if has_client_filter {
         raw_limit.max(SCORE_API_FETCH_LIMIT)
     } else {
         raw_limit
@@ -880,6 +923,38 @@ async fn handle_score_query(
             ctx.last_beatmap
                 .set(msg.group_id, scores[0].beatmap_id as u32);
 
+            // beatmap_id client-side filter
+            if let Some(bid) = params.beatmap_id {
+                let scores_arc = Arc::make_mut(&mut scores);
+                scores_arc.retain(|s| s.beatmap_id == bid as i64);
+                if scores_arc.is_empty() {
+                    let _ = resp_tx
+                        .send(
+                            user_str("query.no_match")
+                                .replace("{qq}", &msg.user_id.to_string())
+                                .replace("{name}", user_str("query.noun_replay")),
+                        )
+                        .await;
+                    return;
+                }
+            }
+
+            // score_id client-side filter
+            if let Some(sid) = params.score_id {
+                let scores_arc = Arc::make_mut(&mut scores);
+                scores_arc.retain(|s| s.score_id == sid as i64);
+                if scores_arc.is_empty() {
+                    let _ = resp_tx
+                        .send(
+                            user_str("query.no_match")
+                                .replace("{qq}", &msg.user_id.to_string())
+                                .replace("{name}", user_str("query.noun_replay")),
+                        )
+                        .await;
+                    return;
+                }
+            }
+
             if let Some(filters) = params.filters {
                 let scores_arc = Arc::make_mut(&mut scores);
                 scores_arc.retain(|s| score_matches_filters(s, filters));
@@ -910,16 +985,16 @@ async fn handle_score_query(
                     return;
                 }
                 let score = &scores[index];
-                render_and_send_single_score(
+                render_and_send_single_score(SingleScoreRenderParams {
                     ctx,
                     msg,
                     resp_tx,
                     score,
                     mode,
-                    &user_stats,
-                    Some(index),
-                    params.is_pass,
-                )
+                    user_stats: &user_stats,
+                    position: Some(index),
+                    is_pass: params.is_pass,
+                })
                 .await;
             } else {
                 if let Some(end) = params.limit_end {
@@ -1202,8 +1277,17 @@ async fn handle_beatmap_score_query(
                 return;
             }
         };
-        render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
-            .await;
+        render_and_send_single_score(SingleScoreRenderParams {
+            ctx,
+            msg,
+            resp_tx,
+            score: &score,
+            mode,
+            user_stats: &user_stats,
+            position: None,
+            is_pass: true,
+        })
+        .await;
         return;
     }
 
@@ -1403,8 +1487,17 @@ async fn handle_beatmap_score_query(
             }
             let score = scores.swap_remove(0);
             ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-            render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
-                .await;
+            render_and_send_single_score(SingleScoreRenderParams {
+                ctx,
+                msg,
+                resp_tx,
+                score: &score,
+                mode,
+                user_stats: &user_stats,
+                position: None,
+                is_pass: true,
+            })
+            .await;
         } else {
             let key = (_user_id, resolved_bid as i64, mode);
             let dedup_rscore = ctx.rate_limiter.clone();
@@ -1450,8 +1543,17 @@ async fn handle_beatmap_score_query(
                 }
             };
             ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-            render_and_send_single_score(ctx, msg, resp_tx, &score, mode, &user_stats, None, true)
-                .await;
+            render_and_send_single_score(SingleScoreRenderParams {
+                ctx,
+                msg,
+                resp_tx,
+                score: &score,
+                mode,
+                user_stats: &user_stats,
+                position: None,
+                is_pass: true,
+            })
+            .await;
         }
     } else {
         let raw_limit = limit_end.unwrap_or(limit);
@@ -1567,32 +1669,43 @@ async fn handle_beatmap_score_query(
             }
             let score = scores.into_iter().nth(n - 1).expect("len checked above");
             ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-            render_and_send_single_score(
+            render_and_send_single_score(SingleScoreRenderParams {
                 ctx,
                 msg,
                 resp_tx,
-                &score,
+                score: &score,
                 mode,
-                &user_stats,
-                Some(n - 1),
-                true,
-            )
+                user_stats: &user_stats,
+                position: Some(n - 1),
+                is_pass: true,
+            })
             .await;
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn render_and_send_single_score(
-    ctx: &BotContext,
-    msg: &QQMessage,
-    resp_tx: &mpsc::Sender<String>,
-    score: &Score,
+struct SingleScoreRenderParams<'a> {
+    ctx: &'a BotContext,
+    msg: &'a QQMessage,
+    resp_tx: &'a mpsc::Sender<String>,
+    score: &'a Score,
     mode: GameMode,
-    user_stats: &UserStats,
+    user_stats: &'a UserStats,
     position: Option<usize>,
     is_pass: bool,
-) {
+}
+
+async fn render_and_send_single_score(params: SingleScoreRenderParams<'_>) {
+    let SingleScoreRenderParams {
+        ctx,
+        msg,
+        resp_tx,
+        score,
+        mode,
+        user_stats,
+        position,
+        is_pass,
+    } = params;
     let mut score = score.clone();
     enrich_score_with_pp(&mut score, mode, true).await;
 
@@ -2036,6 +2149,7 @@ fn build_cmd_payload(
         | Command::Pass { username, .. }
         | Command::Recent { username, .. }
         | Command::ProfileCard { username, .. } => username.as_deref(),
+        Command::BeatmapPreview { .. } => None,
         _ => None,
     };
     serde_json::json!({
@@ -2052,14 +2166,21 @@ fn build_cmd_payload(
             | Command::Recent { qq, .. }
             | Command::ScoreOnBeatmap { qq, .. }
             | Command::ProfileCard { qq, .. } => *qq,
+            Command::BeatmapPreview { .. } => None,
             _ => None,
         },
         "beatmap_id": match cmd {
-            Command::ScoreOnBeatmap { beatmap_id, .. } => *beatmap_id,
+            Command::ScoreOnBeatmap { beatmap_id, .. }
+            | Command::Pass { beatmap_id, .. }
+            | Command::Recent { beatmap_id, .. }
+            | Command::BeatmapPreview { beatmap_id, .. } => *beatmap_id,
             _ => None,
         },
         "score_id": match cmd {
-            Command::ScoreOnBeatmap { score_id, .. } => *score_id,
+            Command::ScoreOnBeatmap { score_id, .. }
+            | Command::Pass { score_id, .. }
+            | Command::Recent { score_id, .. }
+            | Command::BeatmapPreview { score_id, .. } => *score_id,
             _ => None,
         },
         "limit": match cmd {
@@ -2083,16 +2204,9 @@ fn build_cmd_payload(
 
 /// Main command dispatcher. Parses the command text, resolves the target user,
 /// executes the appropriate query, and sends the response via `resp_tx`.
-async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
-    // ==== Plugin on_message dispatch (brief locks, never across .await) ====
-    let msg_indices: Vec<usize> = {
-        let pm_guard = ctx.plugin_manager.lock().await;
-        pm_guard
-            .as_ref()
-            .map(|pm| pm.sorted_message_indices())
-            .unwrap_or_default()
-    };
-    if !msg_indices.is_empty() {
+pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
+    // ==== Plugin on_message dispatch ====
+    {
         let msg_payload = serde_json::json!({
             "group_id": msg.group_id,
             "user_id": msg.user_id,
@@ -2100,56 +2214,18 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             "mentioned_user_id": msg.mentioned_user_id,
         });
         let msg_payload_str = msg_payload.to_string();
-        for idx in msg_indices {
-            // Take instance (brief lock, no .await)
-            let (mut instance, pname, ptimeout) = {
-                let mut pm_guard = ctx.plugin_manager.lock().await;
-                match pm_guard.as_mut().and_then(|pm| {
-                    let inst = pm.take_instance(idx)?;
-                    let params = pm.instance_params(idx)?;
-                    Some((inst, params.name.clone(), params.timeout))
-                }) {
-                    Some(v) => v,
-                    None => continue,
-                }
-            };
-            let payload = msg_payload_str.clone();
-            let timeout = ptimeout;
-            let exec_result = tokio::time::timeout(
-                timeout,
-                tokio::task::spawn_blocking(move || {
-                    let r = instance.on_message(&payload);
-                    (r, instance)
-                }),
-            )
-            .await;
-            // Wrap result for complete_exec
-            let (wrapped, instance_opt) = match exec_result {
-                Ok(Ok((Ok(action), inst))) => (Ok(PluginDispatchResult::Ok(action)), Some(inst)),
-                Ok(Ok((Err(e), inst))) => (Ok(PluginDispatchResult::PluginError(e)), Some(inst)),
-                Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
-                Err(_) => (Err(PluginDispatchPanic::Timeout), None),
-            };
-            // Complete (brief lock, no .await)
-            let action = {
-                let mut pm_guard = ctx.plugin_manager.lock().await;
-                match pm_guard.as_mut() {
-                    Some(pm) => pm.complete_exec(idx, &pname, instance_opt, "on_message", wrapped),
-                    None => PluginActionResult::Next,
-                }
-            };
-            match action {
-                PluginActionResult::Handled(response) => {
-                    let _ = resp_tx.send(response).await;
-                    return;
-                }
-                PluginActionResult::Intercepted => return,
-                PluginActionResult::Next => {}
+        let action = PluginManager::dispatch_message(&ctx.plugin_manager, &msg_payload_str).await;
+        match action {
+            PluginActionResult::Handled(response) => {
+                let _ = resp_tx.send(response).await;
+                return;
             }
+            PluginActionResult::Intercepted => return,
+            PluginActionResult::Next => {}
         }
     }
 
-    // ==== Plugin on_command dispatch (brief locks, never across .await) ====
+    // ==== Plugin on_command dispatch (brief locks managed inside dispatch_command) ====
     let cmd_opt = parse_command(&msg.message, msg.mentioned_user_id);
 
     // Pre-resolve mode once for both plugin dispatch and native handlers.
@@ -2166,64 +2242,17 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
 
     if let Some(ref cmd) = cmd_opt {
         let cmd_name = cmd.command_name();
-        let cmd_indices: Vec<usize> = {
-            let pm_guard = ctx.plugin_manager.lock().await;
-            pm_guard
-                .as_ref()
-                .map(|pm| pm.command_indices(cmd_name))
-                .unwrap_or_default()
-        };
-        if !cmd_indices.is_empty() {
-            let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg, resolved_mode);
-            let cmd_payload_str = cmd_payload.to_string();
-            for idx in cmd_indices {
-                let (mut instance, pname, ptimeout) = {
-                    let mut pm_guard = ctx.plugin_manager.lock().await;
-                    match pm_guard.as_mut().and_then(|pm| {
-                        let inst = pm.take_instance(idx)?;
-                        let params = pm.instance_params(idx)?;
-                        Some((inst, params.name.clone(), params.timeout))
-                    }) {
-                        Some(v) => v,
-                        None => continue,
-                    }
-                };
-                let payload = cmd_payload_str.clone();
-                let timeout = ptimeout;
-                let exec_result = tokio::time::timeout(
-                    timeout,
-                    tokio::task::spawn_blocking(move || {
-                        let r = instance.on_command(&payload);
-                        (r, instance)
-                    }),
-                )
-                .await;
-                let (wrapped, instance_opt) = match exec_result {
-                    Ok(Ok((Ok(action), inst))) => {
-                        (Ok(PluginDispatchResult::Ok(action)), Some(inst))
-                    }
-                    Ok(Ok((Err(e), inst))) => {
-                        (Ok(PluginDispatchResult::PluginError(e)), Some(inst))
-                    }
-                    Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
-                    Err(_) => (Err(PluginDispatchPanic::Timeout), None),
-                };
-                let action = {
-                    let mut pm_guard = ctx.plugin_manager.lock().await;
-                    match pm_guard.as_mut() {
-                        Some(pm) => pm.complete_exec(idx, &pname, instance_opt, "command", wrapped),
-                        None => PluginActionResult::Next,
-                    }
-                };
-                match action {
-                    PluginActionResult::Handled(response) => {
-                        let _ = resp_tx.send(response).await;
-                        return;
-                    }
-                    PluginActionResult::Intercepted => return,
-                    PluginActionResult::Next => {}
-                }
+        let cmd_payload = build_cmd_payload(cmd, cmd_name, &msg, resolved_mode);
+        let cmd_payload_str = cmd_payload.to_string();
+        let action =
+            PluginManager::dispatch_command(&ctx.plugin_manager, cmd_name, &cmd_payload_str).await;
+        match action {
+            PluginActionResult::Handled(response) => {
+                let _ = resp_tx.send(response).await;
+                return;
             }
+            PluginActionResult::Intercepted => return,
+            PluginActionResult::Next => {}
         }
     }
 
@@ -3097,6 +3126,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             mode: _,
             username,
             qq,
+            beatmap_id,
+            score_id,
             limit,
             limit_end,
             is_summary,
@@ -3111,6 +3142,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     username: &username,
                     qq: &qq,
                     is_pass: true,
+                    beatmap_id,
+                    score_id,
                     limit,
                     is_single: !is_summary,
                     limit_end,
@@ -3124,6 +3157,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
             mode: _,
             username,
             qq,
+            beatmap_id,
+            score_id,
             limit,
             limit_end,
             is_summary,
@@ -3138,6 +3173,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                     username: &username,
                     qq: &qq,
                     is_pass: false,
+                    beatmap_id,
+                    score_id,
                     limit,
                     is_single: !is_summary,
                     limit_end,
@@ -3146,6 +3183,278 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
                 mode,
             )
             .await;
+        }
+        Command::BeatmapPreview {
+            score_id,
+            beatmap_id,
+            mode,
+            mods,
+            gif,
+            times,
+        } => {
+            let qq = msg.user_id;
+            let group_id = msg.group_id;
+
+            // 1. Resolve beatmap_id
+            let resolved_bid_i64: i64 = match (score_id, beatmap_id) {
+                (None, Some(bid)) => bid as i64,
+                (Some(sid), None) => {
+                    let dedup_rate_limiter = ctx.rate_limiter.clone();
+                    let dedup_oauth = ctx.oauth.clone();
+                    let qq_for_dedup = qq;
+                    let sid_owned = sid;
+                    let result = score_by_id_dedup()
+                        .run_or_wait((sid_owned as i64, GameMode::Osu), move || {
+                            let rl = dedup_rate_limiter.clone();
+                            let oauth = dedup_oauth.clone();
+                            let qq_inner = qq_for_dedup;
+                            async move {
+                                api::get_score_by_id(&rl, &oauth, sid_owned)
+                                    .await
+                                    .map_err(|e| match e {
+                                        ApiError::NotFound => user_str("query.score_not_found")
+                                            .replace("{qq}", &qq_inner.to_string()),
+                                        _ => user_str("query.score_fetch_failed")
+                                            .replace("{qq}", &qq_inner.to_string()),
+                                    })
+                            }
+                        })
+                        .await;
+                    match result {
+                        Ok(score) => score.beatmap_id,
+                        Err(err_msg) => {
+                            let _ = resp_tx.send(err_msg).await;
+                            return;
+                        }
+                    }
+                }
+                (None, None) => match ctx.last_beatmap.get(group_id) {
+                    Some(bid) => bid as i64,
+                    None => {
+                        send_error(&resp_tx, qq, "query.need_beatmap_or_cache").await;
+                        return;
+                    }
+                },
+                (Some(_), Some(_)) => {
+                    send_error(&resp_tx, qq, "error.data_fetch_failed").await;
+                    return;
+                }
+            };
+            let resolved_bid = match u32::try_from(resolved_bid_i64) {
+                Ok(b) => b,
+                Err(_) => {
+                    send_error(&resp_tx, qq, "error.data_fetch_failed").await;
+                    return;
+                }
+            };
+            ctx.last_beatmap.set(group_id, resolved_bid);
+
+            // 2. Download .osu file
+            let beatmap_path = match api::download_beatmap_osu(resolved_bid_i64).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                    return;
+                }
+            };
+
+            // 3. Parse beatmap (in spawn_blocking — CPU-bound)
+            let parse_result = tokio::task::spawn_blocking({
+                let path = beatmap_path.clone();
+                move || -> std::result::Result<osubot_beatmap_preview::Beatmap, osubot_beatmap_preview::PreviewError> {
+                    let meta = std::fs::metadata(&path)
+                        .map_err(|e| osubot_beatmap_preview::PreviewError::new(
+                            format!("read beatmap metadata: {e}")))?;
+                    if meta.len() > 50 * 1024 * 1024 {
+                        return Err(osubot_beatmap_preview::PreviewError::new(
+                            "beatmap file too large (>50MB)"));
+                    }
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| osubot_beatmap_preview::PreviewError::new(
+                            format!("read beatmap file: {e}")))?;
+                    osubot_beatmap_preview::parse_beatmap_from_bytes(&bytes)
+                }
+            })
+            .await;
+
+            let mut beatmap = match parse_result {
+                Ok(Ok(b)) => b,
+                Ok(Err(e)) => {
+                    warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_parse_failed", error = &e.to_string()));
+                    send_error(&resp_tx, qq, "error.data_fetch_failed").await;
+                    return;
+                }
+                Err(_) => {
+                    send_error(&resp_tx, qq, "error.render_failed").await;
+                    return;
+                }
+            };
+
+            // 4. Parse mods (join vec with "+" then call library's parse_mods)
+            let mod_settings = match mods {
+                Some(m) if !m.is_empty() => {
+                    let joined = m.join("+");
+                    match osubot_beatmap_preview::parse_mods(&joined) {
+                        Ok(s) if s.has_any_mod() => Some(s),
+                        Ok(_) => None,
+                        Err(e) => {
+                            warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_mods_parse_failed", error = &e.to_string()));
+                            send_error(&resp_tx, qq, "error.data_fetch_failed").await;
+                            return;
+                        }
+                    }
+                }
+                _ => None,
+            };
+
+            // 5. Compute target mode and validate mod compatibility.
+            // `target_mode` is needed for mode-aware mod checks (DA/EZ/HR in
+            // osu!, IN/HO in mania) and is also used to pick the renderer.
+            let target_mode = mode.map(|m| m as i32).unwrap_or_else(|| beatmap.mode());
+            if let Some(ref s) = mod_settings {
+                let validation_errors = osubot_beatmap_preview::validate_mods(s, Some(target_mode));
+                if let Some(first) = validation_errors.first() {
+                    warn!(error = %first, "{}", log_fmt!("main.beatmap_preview_mods_invalid", error = &first));
+                    let msg =
+                        user_str("error.beatmap_preview_mods_invalid").replace("{error}", first);
+                    let _ = resp_tx.send(msg).await;
+                    return;
+                }
+            }
+
+            // 6. Convert mode if user explicitly requested one different from beatmap mode
+            if target_mode != beatmap.mode() {
+                if beatmap.mode() != 0 {
+                    warn!(
+                        source_mode = beatmap.mode(),
+                        target_mode = target_mode,
+                        "{}",
+                        log_fmt!(
+                            "main.beatmap_preview_convert_unsupported",
+                            source_mode = beatmap.mode(),
+                            target_mode = target_mode
+                        )
+                    );
+                    send_error(&resp_tx, qq, "error.beatmap_preview_convert_unsupported").await;
+                    return;
+                }
+                let mods_for_conv = mod_settings.clone();
+                let convert_result = tokio::task::spawn_blocking(move || {
+                    osubot_beatmap_preview::convert_beatmap(
+                        &beatmap,
+                        target_mode,
+                        mods_for_conv.as_ref(),
+                    )
+                })
+                .await;
+                beatmap = match convert_result {
+                    Ok(Ok(b)) => b,
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_convert_failed", error = &e.to_string()));
+                        send_error(&resp_tx, qq, "error.data_fetch_failed").await;
+                        return;
+                    }
+                    Err(_) => {
+                        send_error(&resp_tx, qq, "error.render_failed").await;
+                        return;
+                    }
+                };
+            }
+
+            // 7. Determine output format and path
+            let use_gif = gif || target_mode == 0;
+            let fmt = if use_gif { "gif" } else { "png" };
+            let mod_suffix = match &mod_settings {
+                Some(s) if s.has_any_mod() => s
+                    .tokens
+                    .iter()
+                    .map(|t| t.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                _ => String::new(),
+            };
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let filename = if mod_suffix.is_empty() {
+                format!("{}_{:x}.{}", resolved_bid, nanos, fmt)
+            } else {
+                format!("{}_{}_{:x}.{}", resolved_bid, mod_suffix, nanos, fmt)
+            };
+            let output_path = osubot_core::cache::preview_cache_dir().join(&filename);
+
+            // 7.5. Compute times_ms from user-specified anchor/range
+            let times_ms: Option<Vec<i64>> = match times {
+                None => None,
+                Some(t) if t.len() == 1 => {
+                    let anchor = t[0];
+                    let half_window = 30_000_i64;
+                    let window_start = (anchor - half_window).max(0);
+                    let window_end = (anchor + half_window).min(beatmap.end_time());
+                    let window_end = window_end.max(window_start);
+                    Some(generate_linear_samples(window_start, window_end, 4))
+                }
+                Some(t) if t.len() == 2 => {
+                    let start = t[0].min(t[1]);
+                    let end = t[0].max(t[1]).min(beatmap.end_time());
+                    let end = end.max(start);
+                    Some(generate_linear_samples(start, end, 4))
+                }
+                _ => None,
+            };
+
+            // 8. Render (spawn_blocking with timeout)
+            let mode_for_render = target_mode;
+            let output_path_for_render = output_path.clone();
+            let mods_for_render = mod_settings.clone();
+            let use_gif_for_render = use_gif;
+            let render_join = tokio::task::spawn_blocking(move || {
+                render_beatmap_preview(
+                    &beatmap,
+                    mode_for_render,
+                    mods_for_render.as_ref(),
+                    &output_path_for_render,
+                    use_gif_for_render,
+                    times_ms,
+                )
+            });
+            let render_timeout =
+                Duration::from_secs(ctx.config.read().await.bot.render_timeout_secs);
+            let timed = tokio::time::timeout(render_timeout, render_join).await;
+
+            match timed {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => {
+                    warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_render_failed", error = &e.to_string()));
+                    send_error(&resp_tx, qq, "error.render_failed").await;
+                    return;
+                }
+                Ok(Err(_)) => {
+                    send_error(&resp_tx, qq, "error.render_failed").await;
+                    return;
+                }
+                Err(_) => {
+                    warn!("{}", log_fmt!("main.beatmap_preview_render_timeout"));
+                    send_error(&resp_tx, qq, "error.render_timeout").await;
+                    return;
+                }
+            }
+
+            // 9. Read rendered file and send
+            let image_data = match tokio::fs::read(&output_path).await {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!(error = %e, path = ?output_path, "{}", log_fmt!("main.beatmap_preview_read_failed", error = &e.to_string()));
+                    send_error(&resp_tx, qq, "error.render_failed").await;
+                    return;
+                }
+            };
+
+            let write = ctx.write.clone();
+            if let Err(e) = send_group_msg_with_image(&write, group_id, &image_data).await {
+                warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
+            }
         }
         Command::Help => {
             info!(
@@ -3162,14 +3471,8 @@ async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<S
 }
 
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMsg};
-use tracing_subscriber::fmt::time::LocalTime;
-type WriteSink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    WsMsg,
->;
-
 /// Send a text message to a QQ group via the OneBot WebSocket connection.
-async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &str) {
+pub(crate) async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &str) {
     let json = serde_json::json!({
         "action": "send_group_msg",
         "params": {
@@ -3212,6 +3515,56 @@ async fn send_group_msg_with_image(
         .inspect_err(|e| {
             warn!(error = %e, group_id = group_id, "{}", log_fmt!("main.send_image_failed"));
         })
+}
+
+/// Render beatmap preview to file. Returns Ok(()) on success.
+fn render_beatmap_preview(
+    beatmap: &osubot_beatmap_preview::Beatmap,
+    target_mode: i32,
+    mods: Option<&osubot_beatmap_preview::ModSettings>,
+    output_path: &std::path::Path,
+    use_gif: bool,
+    times_ms: Option<Vec<i64>>,
+) -> std::result::Result<(), osubot_beatmap_preview::PreviewError> {
+    let fmt = if use_gif { "gif" } else { "png" };
+
+    std::fs::create_dir_all(
+        output_path
+            .parent()
+            .expect("preview output path must have a parent dir"),
+    )
+    .map_err(|e| {
+        osubot_beatmap_preview::PreviewError::new(format!("[{fmt}] create output dir: {e}"))
+    })?;
+
+    let result = match target_mode {
+        0 => osubot_beatmap_preview::render_standard_gif(beatmap, mods, times_ms, output_path),
+        1 if use_gif => {
+            osubot_beatmap_preview::render_taiko_gif(beatmap, mods, times_ms.clone(), output_path)
+        }
+        1 => osubot_beatmap_preview::render_taiko_grid(beatmap, output_path, mods).map(|_| ()),
+        2 if use_gif => {
+            osubot_beatmap_preview::render_catch_gif(beatmap, mods, times_ms.clone(), output_path)
+        }
+        2 => osubot_beatmap_preview::render_catch_grid(beatmap, output_path, mods).map(|_| ()),
+        3 if use_gif => {
+            osubot_beatmap_preview::render_mania_gif(beatmap, mods, times_ms.clone(), output_path)
+        }
+        3 => osubot_beatmap_preview::render_mania_grid(beatmap, output_path, mods).map(|_| ()),
+        _ => Err(osubot_beatmap_preview::PreviewError::new(format!(
+            "unsupported mode: {target_mode}"
+        ))),
+    };
+    result.map_err(|e| osubot_beatmap_preview::PreviewError::new(format!("[{fmt}] {e}")))
+}
+
+/// Generate `n` linearly-spaced sampling points in `[start, end]`.
+fn generate_linear_samples(start: i64, end: i64, n: usize) -> Vec<i64> {
+    if n <= 1 || start >= end {
+        return vec![start];
+    }
+    let step = (end - start) / (n - 1) as i64;
+    (0..n).map(|i| start + step * i as i64).collect()
 }
 
 async fn call_onebot_api(
@@ -3279,7 +3632,7 @@ async fn get_group_member_list(
     Ok(members)
 }
 
-async fn handle_irc_message(
+pub(crate) async fn handle_irc_message(
     storage: Arc<Storage>,
     irc_msg: osubot_core::irc::IrcPrivateMessage,
     write: Arc<Mutex<WriteSink>>,
@@ -3382,692 +3735,31 @@ async fn handle_irc_message(
 
 #[tokio::main]
 async fn main() {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("osubot=info,osubot_core=info,info"));
-
-    let subscriber = fmt::Subscriber::builder()
-        .with_env_filter(env_filter)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_file(true)
-        .with_line_number(true)
-        .with_timer(LocalTime::new(
-            time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-                .expect("valid time format"),
-        ))
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
-
+    runtime::init_tracing();
     info!("{}", log_fmt!("main.startup"));
-
     osubot_render::ensure_cache_dir().await;
 
-    let config = Config::from_path("osubot.toml").expect("Failed to load config");
-    let config = Arc::new(tokio::sync::RwLock::new(config));
+    let handles = runtime::build_runtime_handles().await;
 
-    info!(
-        "{}",
-        log_fmt!("main.onebot_url", url = &config.read().await.bot.onebot_url)
-    );
+    background::backfill_user_ids(&handles).await;
+    background::spawn_scheduler(&handles);
+    background::spawn_irc(&handles);
+    background::spawn_onebot_cleanup(&handles);
+    background::spawn_watcher(&handles).await;
+    background::spawn_shutdown_signal(handles.app_state.shutdown.clone());
 
-    let db_path = config.read().await.database.path.clone();
-    let storage = Arc::new(
-        Storage::new(&db_path)
-            .await
-            .expect("Failed to open database"),
-    );
+    // Extract state + drain/in_flight before handles is consumed by spawn_irc_bridge.
+    // AppState derives Clone (all fields are Arc), so this is cheap.
+    let state = handles.app_state.clone();
+    let drain = handles.reload_handle.drain.clone();
+    let in_flight = handles.reload_handle.in_flight.clone();
 
-    let (client_id, client_secret) = {
-        let cfg = config.read().await;
-        (cfg.osu.client_id.clone(), cfg.osu.client_secret.clone())
-    };
-    let oauth = Arc::new(OauthTokenCache::new(client_id, client_secret));
+    background::spawn_irc_bridge(handles);
 
-    let rate_limiter = Arc::new(RateLimiter::new());
+    ws_loop::run_ws_reconnect_loop(state.clone(), drain, in_flight).await;
 
-    // Trigger lazy initialization of the shared reqwest HTTP client early, so any
-    // build failure (e.g. missing TLS backend) is surfaced at startup rather than
-    // crashing the process mid-flight on the first API call.
-    let _ = osubot_core::api::http_client();
-
-    let onebot_api_timeout = {
-        let cfg = config.read().await;
-        Arc::new(AtomicU64::new(cfg.bot.onebot_api_timeout_secs))
-    };
-
-    let upstream_chain = {
-        let cfg = config.read().await;
-        Arc::new(tokio::sync::RwLock::new(reload::build_upstream_chain(
-            &cfg.upstream,
-            &oauth,
-            &rate_limiter,
-        )))
-    };
-
-    match storage.get_users_without_ids().await {
-        Ok(users) if !users.is_empty() => {
-            info!("{}", log_fmt!("main.backfilling", count = users.len()));
-            for username in &users {
-                match api::get_user_info(&rate_limiter, &oauth, username).await {
-                    Ok(Some(info)) => {
-                        if let Err(e) = storage.set_user_id(username, info.id).await {
-                            warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
-                        } else {
-                            info!(
-                                "{}",
-                                log_fmt!("main.backfilled", username = username, user_id = info.id)
-                            );
-                        }
-                    }
-                    Ok(None) => {
-                        warn!(
-                            "{}",
-                            log_fmt!("main.backfill_not_found", username = username)
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "{}",
-                            log_fmt!(
-                                "main.backfill_fetch_failed",
-                                username = username,
-                                error = &e
-                            )
-                        );
-                    }
-                }
-            }
-        }
-        Ok(_) => info!("{}", log_fmt!("main.all_users_cached")),
-        Err(e) => error!("{}", log_fmt!("main.backfill_query_failed", error = &e)),
-    }
-
-    let scheduler = Scheduler::new(
-        storage.clone(),
-        oauth.clone(),
-        rate_limiter.clone(),
-        config.clone(),
-    );
-
-    let scheduler_clone = scheduler.clone();
-    let _scheduler_handle = tokio::spawn(async move {
-        scheduler_clone.run().await;
-    });
-
-    let (irc_tx, mut irc_rx) = mpsc::channel::<osubot_core::irc::IrcPrivateMessage>(100);
-
-    let irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
-        Arc::new(std::sync::Mutex::new(None));
-
-    let irc_tx_for_reload = irc_tx.clone();
-    let irc_handle_for_reload = irc_handle.clone();
-
-    {
-        let cfg = config.read().await;
-        let irc_enabled = cfg.irc.enabled;
-
-        if irc_enabled && (cfg.irc.nickname.is_empty() || cfg.irc.password.is_empty()) {
-            panic!("IRC is enabled but nickname or password is not set in osubot.toml");
-        }
-
-        if irc_enabled {
-            let irc_config = osubot_core::IrcConfig::new(
-                cfg.irc.enabled,
-                &cfg.irc.server,
-                cfg.irc.port,
-                &cfg.irc.nickname,
-                &cfg.irc.password,
-            );
-            let irc_client = osubot_core::irc::IrcClient::new(irc_config, irc_tx);
-            *irc_handle.lock().unwrap() = Some(tokio::spawn(async move {
-                if let Err(e) = irc_client.run().await {
-                    error!(error = %e, "{}", log_fmt!("main.irc_client_error"));
-                }
-            }));
-        }
-    };
-
-    {
-        let cfg = config.read().await;
-        if cfg.osu.client_secret.is_empty() || cfg.osu.client_secret == "your-client-secret-here" {
-            warn!("{}", log_fmt!("main.oauth_not_configured"));
-        }
-    }
-
-    let onebot_api = Arc::new(OneBotApi::new(onebot_api_timeout.clone()));
-
-    let onebot_cleanup = onebot_api.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            let mut pending = onebot_cleanup.pending.lock().await;
-            let before = pending.len();
-            pending.retain(|_, entry| entry.created_at.elapsed() < Duration::from_secs(30));
-            let removed = before.saturating_sub(pending.len());
-            if removed > 0 {
-                tracing::warn!(removed, "{}", log_fmt!("main.cleanup_stale_pending"));
-            }
-        }
-    });
-
-    // Ensure plugin directory exists
-    let plugin_dir = {
-        let cfg = config.read().await;
-        let dir = cfg.plugin.dir.clone();
-        std::fs::create_dir_all(&dir).ok();
-        dir
-    };
-
-    // Create ReloadHandle (pm starts as None, updated in reconnect loop)
-    let pm: Arc<tokio::sync::Mutex<Option<PluginManager>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
-    let reload_handle = ReloadHandle::new(
-        config.clone(),
-        pm.clone(),
-        onebot_api_timeout,
-        upstream_chain.clone(),
-        oauth.clone(),
-        rate_limiter.clone(),
-        scheduler.clone(),
-        irc_handle_for_reload,
-        Some(irc_tx_for_reload),
-    );
-
-    // Extract drain/in_flight/force_reconnect refs for message loop
-    let drain = reload_handle.drain.clone();
-    let in_flight = reload_handle.in_flight.clone();
-    let force_reconnect = reload_handle.force_reconnect.clone();
-
-    // Start file watcher coordinator
-    let coordinator = reload::ReloadCoordinator::new(
-        reload_handle,
-        std::path::PathBuf::from("osubot.toml"),
-        std::path::PathBuf::from(plugin_dir),
-    );
-    // Coordinator::start() 内部已通过 error! 日志处理异常退出
-    let watcher_monitor_handle = coordinator.start();
-    tokio::spawn(async move {
-        let _ = watcher_monitor_handle.await;
-        warn!("{}", log_fmt!("main.file_watcher_exited"));
-    });
-
-    let user_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>> =
-        Arc::new(dashmap::DashMap::new());
-
-    // Shared write handle: the IRC bridge reads from this on each message,
-    // and the reconnection loop updates it when a new connection is established.
-    let current_write: Arc<Mutex<Option<Arc<Mutex<WriteSink>>>>> = Arc::new(Mutex::new(None));
-
-    let cw_for_irc = current_write.clone();
-    let storage_for_irc = storage.clone();
-    let rate_limiter_for_irc = rate_limiter.clone();
-    let oauth_for_irc = oauth.clone();
-    tokio::spawn(async move {
-        while let Some(irc_msg) = irc_rx.recv().await {
-            let write_opt = { cw_for_irc.lock().await.clone() };
-            if let Some(write) = write_opt {
-                let storage = storage_for_irc.clone();
-                let rate_limiter = rate_limiter_for_irc.clone();
-                let oauth = oauth_for_irc.clone();
-                tokio::spawn(async move {
-                    handle_irc_message(storage, irc_msg, write, rate_limiter, oauth).await;
-                });
-            } else {
-                warn!("{}", log_fmt!("main.no_ws_dropping_irc"));
-            }
-        }
-    });
-
-    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    let shutdown_clone = shutdown.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("{}", log_fmt!("main.shutdown_signal"));
-        shutdown_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
-
-    let mut reconnect_delay = 1u64;
-    loop {
-        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::info!("{}", log_fmt!("main.shutdown_no_reconnect"));
-            break;
-        }
-        let onebot_url = config.read().await.bot.onebot_url.clone();
-        info!(url = %onebot_url, "{}", log_fmt!("main.connecting_ws"));
-        let ws_stream = match connect_async(&onebot_url).await {
-            Ok((stream, _)) => {
-                reconnect_delay = 1;
-                stream
-            }
-            Err(e) => {
-                error!(error = %e, delay = reconnect_delay, "{}", log_fmt!("main.ws_connect_failed", secs = reconnect_delay));
-                tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
-                reconnect_delay = (reconnect_delay * 2).min(60);
-                continue;
-            }
-        };
-
-        info!("{}", log_fmt!("main.ws_connected"));
-
-        let (write, mut read) = ws_stream.split();
-        let write = Arc::new(Mutex::new(write));
-
-        // Update the shared write handle for the IRC bridge
-        {
-            let mut cw = current_write.lock().await;
-            let old = cw.replace(write.clone());
-            if let Some(old) = old {
-                let mut sink = old.lock().await;
-                if let Err(e) = sink.close().await {
-                    tracing::debug!(error = %e, "{}", log_fmt!("main.ws_sink_close_failed"));
-                }
-            }
-        }
-
-        let connection_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-
-        // Periodic ping to keep connection alive
-        let ping_write = write.clone();
-        let ping_shutdown = shutdown.clone();
-        let ping_connection_alive = connection_alive.clone();
-        let ping_handle = tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_secs(constants::PING_INTERVAL_SECS));
-            loop {
-                interval.tick().await;
-                if ping_shutdown.load(std::sync::atomic::Ordering::Relaxed)
-                    || !ping_connection_alive.load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    break;
-                }
-                let mut sink = ping_write.lock().await;
-                if let Err(e) = sink.send(Message::Ping(vec![].into())).await {
-                    tracing::debug!(error = %e, "{}", log_fmt!("main.ws_ping_failed"));
-                    break;
-                }
-            }
-        });
-
-        let last_beatmap = last_beatmap_cache::LastBeatmapCache::new();
-
-        let plugin_cfg = {
-            let cfg = config.read().await;
-            cfg.plugin.clone()
-        };
-
-        let new_pm = if plugin_cfg.instances.iter().any(|p| p.enabled) {
-            let (plugin_tx, mut plugin_rx) = mpsc::channel::<(i64, serde_json::Value)>(256);
-
-            let write_consumer = write.clone();
-            tokio::spawn(async move {
-                while let Some((group_id, message)) = plugin_rx.recv().await {
-                    let json = serde_json::json!({
-                        "action": "send_group_msg",
-                        "params": {
-                            "group_id": group_id,
-                            "message": message
-                        }
-                    });
-                    let mut sink = write_consumer.lock().await;
-                    if let Err(e) = sink.send(Message::Text(json.to_string().into())).await {
-                        tracing::debug!(error = %e, "{}", log_fmt!("main.plugin_channel_closed"));
-                    }
-                }
-            });
-
-            let msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
-                Arc::new(move |group_id, message| {
-                    plugin_tx.try_send((group_id, message)).map_err(|e| {
-                        log_fmt!("main.plugin_msg_channel_busy", error = &e).to_string()
-                    })
-                });
-
-            let services = HostServices {
-                http_client: reqwest::Client::new(),
-                blocking_http_client: reqwest::blocking::Client::new(),
-                rate_limiter: rate_limiter.clone(),
-                oauth: oauth.clone(),
-                storage: storage.clone(),
-                send_msg_fn: msg_fn,
-                runtime_handle: tokio::runtime::Handle::current(),
-                instance_idx: 0,
-                tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),
-                tick_id_counter: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                instance_config: None,
-                limiter: osubot_plugin::StoreLimitsBuilder::new()
-                    .memory_size(100 * 1024 * 1024)
-                    .build(),
-            };
-
-            match PluginManager::new(&plugin_cfg, services).await {
-                Ok(mgr) => {
-                    info!(
-                        "{}",
-                        log_fmt!("main.plugin_manager_init", count = mgr.len())
-                    );
-                    Some(mgr)
-                }
-                Err(e) => {
-                    warn!("{}", log_fmt!("main.plugin_init_failed", error = &e));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Update shared pm (same Arc as coordinator)
-        {
-            let mut guard = pm.lock().await;
-            *guard = new_pm;
-        }
-
-        // Spawn plugin tick loop
-        let pm_for_tick = pm.clone();
-        let tick_drain = drain.clone();
-        let tick_in_flight = in_flight.clone();
-        let mut tick_handle = tokio::spawn(async move {
-            let mut last_fired: HashMap<(usize, u32), std::time::Instant> = HashMap::new();
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                interval.tick().await;
-                // 热重载 drain 期间暂停 tick 分派，避免 phase 1 收集的索引
-                // 在 phase 2 使用前被 reload_all()→compact() 重映射
-                if tick_drain.load(Ordering::SeqCst) {
-                    continue;
-                }
-                let now = std::time::Instant::now();
-                // 第一阶段：收集到期 tick（短暂持锁，读取后立即释放）
-                let due_ticks: Vec<(usize, u32)> = {
-                    let mut guard = pm_for_tick.lock().await;
-                    guard
-                        .as_mut()
-                        .map(|pm| {
-                            let all_ticks = pm.get_ticks();
-                            let valid_keys: std::collections::HashSet<_> =
-                                all_ticks.iter().map(|(idx, _, tid)| (*idx, *tid)).collect();
-                            last_fired.retain(|k, _| valid_keys.contains(k));
-                            all_ticks
-                                .into_iter()
-                                .filter(|(idx, interval_secs, tid)| {
-                                    let key = (*idx, *tid);
-                                    last_fired.get(&key).is_none_or(|last| {
-                                        now.duration_since(*last)
-                                            >= Duration::from_secs(*interval_secs)
-                                    })
-                                })
-                                .map(|(idx, _, tid)| (idx, tid))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                // 第二阶段：逐个触发 tick
-                // 采用 take → execute（无锁）→ put 模式：
-                // dispatch 内部有 spawn_blocking + timeout 的 .await 点，
-                // 若在此期间持有 pm 锁，会阻塞消息分发和热重载。
-                for (plugin_idx, tick_id) in due_ticks {
-                    if tick_drain.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    // 取出实例（短暂持锁），同时注册 in_flight 防止 reload_all()→compact()
-                    // 在 spawn_blocking 执行期间重排索引导致 put_instance 用旧 idx 污染其他槽位。
-                    // InFlightGuard 确保 wait_drain() 等待 tick 完成后再执行 compact()。
-                    //
-                    // phase 1 收集 due_ticks 后释放锁，在 phase 2 获取锁前 compact() 可能
-                    // 已完成并重映射索引。通过 has_tick 验证 (plugin_idx, tick_id) 仍注册在
-                    // 该索引，防止对错误插件分派 tick。
-                    let (instance, _tick_guard) = {
-                        let mut guard = pm_for_tick.lock().await;
-                        // 验证 tick 仍注册在该索引（compact 可能已重映射）
-                        let tick_valid = guard.as_ref().is_some_and(|pm| {
-                            pm.has_instance(plugin_idx) && pm.has_tick(plugin_idx, tick_id)
-                        });
-                        if !tick_valid {
-                            continue;
-                        }
-                        let inst = guard.as_mut().and_then(|pm| pm.take_instance(plugin_idx));
-                        if tick_drain.load(Ordering::SeqCst) {
-                            // 放回实例，热重载会接管
-                            if let Some(inst) = inst {
-                                if let Some(ref mut pm) = *guard {
-                                    pm.put_instance(plugin_idx, inst);
-                                }
-                            }
-                            break; // 跳出 for 循环，不再处理后续到期 tick
-                        }
-                        tick_in_flight.fetch_add(1, Ordering::SeqCst);
-                        let tick_guard = InFlightGuard(tick_in_flight.clone());
-                        (inst, tick_guard)
-                    };
-
-                    let Some(mut inst) = instance else {
-                        continue;
-                    };
-
-                    // 检查导出（不持锁）
-                    if !inst.has_export("on_tick") {
-                        let mut guard = pm_for_tick.lock().await;
-                        if let Some(ref mut pm) = *guard {
-                            pm.put_instance(plugin_idx, inst);
-                        }
-                        last_fired.insert((plugin_idx, tick_id), now);
-                        continue;
-                    }
-
-                    // 执行 tick（不持锁，允许消息分发/热重载在此期间获取 pm）
-                    let timeout_dur = inst.timeout;
-                    let result = tokio::time::timeout(
-                        timeout_dur,
-                        tokio::task::spawn_blocking(move || {
-                            let res = inst.on_tick(tick_id);
-                            (res, inst)
-                        }),
-                    )
-                    .await;
-
-                    // 处理结果并放回实例
-                    {
-                        let mut guard = pm_for_tick.lock().await;
-                        if let Some(ref mut pm) = *guard {
-                            match result {
-                                Ok(Ok((Ok(()), inst))) | Ok(Ok((Err(_), inst))) => {
-                                    // 成功或插件错误：放回实例
-                                    // （handle_tick 原本也忽略 PluginError，
-                                    //   lost_instances 跟踪由其他 dispatch 路径处理）
-                                    pm.put_instance(plugin_idx, inst);
-                                }
-                                Ok(Err(_)) | Err(_) => {
-                                    // spawn_blocking join error 或 timeout：实例已丢失，重载
-                                    let _ = pm.reload_instance(plugin_idx);
-                                }
-                            }
-                        }
-                    }
-
-                    last_fired.insert((plugin_idx, tick_id), now);
-                }
-            }
-        });
-
-        // Message loop
-        loop {
-            const SPAWN_COUNT: usize = 2; // 必须与下方两个 tokio::spawn 中各持有的 InFlightGuard 数量一致
-                                          // 编译期断言：若编译失败，请更新 SPAWN_COUNT
-            const _: [(); SPAWN_COUNT] = [(); 2];
-            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
-            }
-            // onebot_url hot-reload triggers a forced reconnect
-            if force_reconnect.load(Ordering::SeqCst) {
-                info!("{}", log_fmt!("main.force_reconnect_url_changed"));
-                break;
-            }
-            match read.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    if let Ok(resp) = serde_json::from_str::<OneBotResponse>(&text) {
-                        if resp.status.is_some() {
-                            if let Some(echo) = resp.echo {
-                                let mut pending = onebot_api.pending.lock().await;
-                                if let Some(entry) = pending.remove(&echo) {
-                                    let _ = entry
-                                        .sender
-                                        .send(resp.data.unwrap_or(serde_json::Value::Null));
-                                }
-                                continue;
-                            }
-                        }
-                    }
-
-                    if let Some(qq_msg) = parse_onebot_message(&text) {
-                        // 群黑白名单检查
-                        {
-                            let cfg = config.read().await;
-                            if !cfg.group_filter.is_group_allowed(qq_msg.group_id) {
-                                debug!(group_id = qq_msg.group_id, mode = ?cfg.group_filter.mode, "{}", log_fmt!("main.group_filtered"));
-                                continue;
-                            }
-                        }
-
-                        let (resp_tx, mut resp_rx) = mpsc::channel::<String>(1);
-
-                        // 原子操作：检查 drain 并增加 in_flight（消除 TOCTOU 窗口）
-                        let increment_result =
-                            in_flight.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                                if drain.load(Ordering::SeqCst) {
-                                    None // drain 为 true，不增加
-                                } else {
-                                    Some(current + SPAWN_COUNT) // 两个任务各 +1
-                                }
-                            });
-                        if increment_result.is_err() {
-                            info!(
-                                group_id = qq_msg.group_id,
-                                "{}",
-                                log_fmt!("main.hot_reload_skip")
-                            );
-                            continue;
-                        }
-
-                        let write_clone = write.clone();
-                        let group_id = qq_msg.group_id;
-                        let in_flight1 = in_flight.clone();
-                        tokio::spawn(async move {
-                            let _guard = InFlightGuard(in_flight1);
-                            if let Some(response) = resp_rx.recv().await {
-                                send_group_msg(&write_clone, group_id, &response).await;
-                            }
-                        });
-
-                        let ctx = BotContext {
-                            storage: storage.clone(),
-                            scheduler: scheduler.clone(),
-                            oauth: oauth.clone(),
-                            rate_limiter: rate_limiter.clone(),
-                            command_rate_limits: user_rate_limits.clone(),
-                            config: config.clone(),
-                            write: write.clone(),
-                            onebot_api: onebot_api.clone(),
-                            last_beatmap: last_beatmap.clone(),
-                            upstream_chain: upstream_chain.clone(),
-                            plugin_manager: pm.clone(),
-                        };
-                        let in_flight2 = in_flight.clone();
-                        tokio::spawn(async move {
-                            let _guard = InFlightGuard(in_flight2);
-                            let command_timeout = Duration::from_secs(
-                                ctx.config.read().await.bot.command_timeout_secs,
-                            );
-                            let qq = qq_msg.user_id;
-                            if tokio::time::timeout(
-                                command_timeout,
-                                handle_command(ctx, qq_msg, resp_tx.clone()),
-                            )
-                            .await
-                            .is_err()
-                            {
-                                tracing::warn!(
-                                    "{}",
-                                    log_fmt!(
-                                        "main.command_timeout",
-                                        secs = command_timeout.as_secs()
-                                    )
-                                );
-                                let _ = resp_tx
-                                    .send(
-                                        user_str("error.command_timeout")
-                                            .replace("{qq}", &qq.to_string()),
-                                    )
-                                    .await;
-                            }
-                        });
-                    }
-                }
-                Some(Ok(Message::Close(_))) => {
-                    warn!(
-                        "{}",
-                        log_fmt!("main.ws_closed_reconnect", secs = reconnect_delay)
-                    );
-                    break;
-                }
-                Some(Err(e)) => {
-                    error!(error = %e, "{}", log_fmt!("main.ws_error_reconnect", secs = reconnect_delay));
-                    break;
-                }
-                None => {
-                    warn!(
-                        "{}",
-                        log_fmt!("main.ws_stream_ended", secs = reconnect_delay)
-                    );
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        connection_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-        force_reconnect.store(false, Ordering::SeqCst);
-        ping_handle.abort();
-        // 等待 tick 完成（插件 dispatch 超时 10s，留足余量），超时后强制 abort
-        if tokio::time::timeout(
-            Duration::from_secs(constants::TICK_HANDLE_SHUTDOWN_SECS),
-            &mut tick_handle,
-        )
-        .await
-        .is_err()
-        {
-            tick_handle.abort();
-        }
-
-        // Clear the write handle so the IRC bridge doesn't use a stale connection
-        {
-            let mut cw = current_write.lock().await;
-            *cw = None;
-        }
-
-        // Shutdown plugin instances for this connection
-        {
-            let mut guard = pm.lock().await;
-            if let Some(ref mut mgr) = *guard {
-                mgr.shutdown().await;
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
-        reconnect_delay = (reconnect_delay * 2).min(60);
-    }
-
-    // Shutdown plugin instances on SIGINT (calls on_unload hooks)
-    {
-        let mut guard = pm.lock().await;
-        if let Some(ref mut mgr) = *guard {
-            mgr.shutdown().await;
-        }
-    }
-
-    scheduler.shutdown();
+    plugin_runtime::shutdown_all(&state.plugin_manager).await;
+    state.scheduler.shutdown();
 }
 
 #[cfg(test)]

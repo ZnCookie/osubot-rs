@@ -8,17 +8,9 @@ use phf::phf_map;
 
 /// 将用户统计数据格式化为中文个人信息文本，包含 pp、排名、国家排名、准确率、游玩次数等。
 pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
-    let username = &stats.username;
-    let mode_name = mode.name();
-
-    let pp = trim_trailing_zeros(&format!("{:.2}", stats.pp));
+    let c = collect_common(stats, mode);
     let rank = stats.rank.to_string();
     let country_rank = stats.country_rank.to_string();
-    let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64);
-    let acc = format_accuracy((stats.accuracy / 100.0 * 10000.0).round() / 10000.0);
-    let playcount = stats.playcount.to_string();
-    let hits = format_number(stats.hits);
-    let playtime = format_playtime(stats.playtime);
 
     let rank_change = format_change(stats.rank_change);
     let country_rank_change = format_change(stats.country_rank_change);
@@ -45,22 +37,22 @@ pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
          {playcount}{playcount_label}\n\
          {hits}{hits_label}\n\
          {playtime}{playtime_label}",
-        username = username,
+        username = c.username,
         header = user_str("fmt.profile_header"),
-        mode_name = mode_name,
-        pp = pp,
+        mode_name = c.mode_name,
+        pp = c.pp,
         pp_label = user_str("fmt.profile_pp"),
         rank_str = rank_str,
         country_rank_str = country_rank_str,
-        ranked_score = ranked_score,
+        ranked_score = c.ranked_score,
         score_label = user_str("fmt.profile_ranked_score"),
-        acc = acc,
+        acc = c.acc,
         acc_label = user_str("fmt.profile_accuracy"),
-        playcount = playcount,
+        playcount = c.playcount,
         playcount_label = user_str("fmt.profile_playcount"),
-        hits = hits,
+        hits = c.hits,
         hits_label = user_str("fmt.profile_hits"),
-        playtime = playtime,
+        playtime = c.playtime,
         playtime_label = user_str("fmt.profile_playtime"),
     )
 }
@@ -559,16 +551,8 @@ pub fn format_stats_with_change(
     change: &Option<UserChange>,
     mode: GameMode,
 ) -> String {
-    let username = &stats.username;
-    let mode_name = mode.name();
-
-    let pp = trim_trailing_zeros(&format!("{:.2}", stats.pp));
+    let c = collect_common(stats, mode);
     let rank = stats.rank.to_string();
-    let ranked_score = format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64); // 转成 m
-    let acc = format_accuracy((stats.accuracy / 100.0 * 10000.0).round() / 10000.0);
-    let playcount = stats.playcount.to_string();
-    let hits = format_number(stats.hits);
-    let playtime = format_playtime(stats.playtime);
 
     let rank_str = match change {
         Some(c) if c.rank_change != Some(0) => {
@@ -633,29 +617,53 @@ pub fn format_stats_with_change(
          {playcount}{playcount_label}{playcount_change_str}\n\
          {hits}{hits_label}{hits_change_str}\n\
          {playtime}{playtime_label}{playtime_change_str}",
-        username = username,
+        username = c.username,
         header = user_str("fmt.profile_header"),
-        mode_name = mode_name,
-        pp = pp,
+        mode_name = c.mode_name,
+        pp = c.pp,
         pp_label = user_str("fmt.profile_pp"),
         pp_change_str = pp_change_str,
         rank_str = rank_str,
         country_rank_change_str = country_rank_change_str,
-        ranked_score = ranked_score,
+        ranked_score = c.ranked_score,
         score_label = user_str("fmt.profile_ranked_score"),
-        acc = acc,
+        acc = c.acc,
         acc_label = user_str("fmt.profile_accuracy"),
         acc_change_str = acc_change_str,
-        playcount = playcount,
+        playcount = c.playcount,
         playcount_label = user_str("fmt.profile_playcount"),
         playcount_change_str = playcount_change_str,
-        hits = hits,
+        hits = c.hits,
         hits_label = user_str("fmt.profile_hits"),
         hits_change_str = hits_change_str,
-        playtime = playtime,
+        playtime = c.playtime,
         playtime_label = user_str("fmt.profile_playtime"),
         playtime_change_str = playtime_change_str,
     )
+}
+
+struct CommonStats<'a> {
+    username: &'a str,
+    mode_name: String,
+    pp: String,
+    ranked_score: String,
+    acc: String,
+    playcount: String,
+    hits: String,
+    playtime: String,
+}
+
+fn collect_common(stats: &UserStats, mode: GameMode) -> CommonStats<'_> {
+    CommonStats {
+        username: &stats.username,
+        mode_name: mode.name().to_string(),
+        pp: trim_trailing_zeros(&format!("{:.2}", stats.pp)),
+        ranked_score: format_number((stats.ranked_score as f64 / 1_000_000.0).round() as i64),
+        acc: format_accuracy((stats.accuracy / 100.0 * 10000.0).round() / 10000.0),
+        playcount: stats.playcount.to_string(),
+        hits: format_number(stats.hits),
+        playtime: format_playtime(stats.playtime),
+    }
 }
 
 #[cfg(test)]

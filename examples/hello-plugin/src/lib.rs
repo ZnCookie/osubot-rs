@@ -4,6 +4,12 @@ use osubot_plugin_sdk::*;
 
 static CTX: PluginContext = PluginContext;
 
+fn return_ptr<T: serde::Serialize>(val: &T) -> *const u8 {
+    osubot_plugin_sdk::serialize_return(val)
+        .map(|r| r.into_raw())
+        .unwrap_or(core::ptr::null())
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn alloc(size: u32) -> *mut u8 {
     osubot_plugin_sdk::alloc(size)
@@ -23,16 +29,16 @@ pub extern "C" fn plugin_metadata() -> *const u8 {
         description: "A simple hello plugin for testing, demonstrating CTX and host calls".to_string(),
         commands: vec!["!hello".to_string(), "!ping".to_string()],
     };
-    serialize_return(&meta)
+    return_ptr(&meta)
 }
 
 #[no_mangle]
 pub extern "C" fn on_load() -> *const u8 {
     // Register a tick every 3600 seconds (1 hour) as a demo
     if let Err(e) = CTX.register_tick("hello_tick", 3600) {
-        return serialize_return(&e);
+        return return_ptr(&e);
     }
-    serialize_return(&"")
+    return_ptr(&"")
 }
 
 #[no_mangle]
@@ -44,7 +50,7 @@ pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
 
     let cmd: Command = match serde_json::from_str(cmd_json) {
         Ok(c) => c,
-        Err(_) => return serialize_return(&PluginAction::Next),
+        Err(_) => return return_ptr(&PluginAction::Next),
     };
 
     match cmd.command_type.as_str() {
@@ -54,13 +60,13 @@ pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
             if let Some(gid) = cmd.group_id {
                 let _ = CTX.send_group_msg(gid, "你好，这是来自 WASM 插件的消息！");
             }
-            serialize_return(&PluginAction::Intercepted)
+            return_ptr(&PluginAction::Intercepted)
         }
         "!ping" => {
             // 使用 Handled 让宿主代为发送响应——插件无需主动调用 send_group_msg
-            serialize_return(&PluginAction::Handled("pong from WASM plugin".to_string()))
+            return_ptr(&PluginAction::Handled("pong from WASM plugin".to_string()))
         }
-        _ => serialize_return(&PluginAction::Next),
+        _ => return_ptr(&PluginAction::Next),
     }
 }
 
@@ -73,22 +79,22 @@ pub extern "C" fn on_message(msg_ptr: u32, msg_len: u32) -> *const u8 {
 
     let msg: QQMessage = match serde_json::from_str(msg_json) {
         Ok(m) => m,
-        Err(_) => return serialize_return(&PluginAction::Next),
+        Err(_) => return return_ptr(&PluginAction::Next),
     };
 
     if msg.message.contains("hello") || msg.message.contains("你好") {
-        serialize_return(&PluginAction::Handled(format!(
+        return_ptr(&PluginAction::Handled(format!(
             "WASM 插件收到消息: {}",
             msg.message
         )))
     } else {
-        serialize_return(&PluginAction::Next)
+        return_ptr(&PluginAction::Next)
     }
 }
 
 #[no_mangle]
 pub extern "C" fn on_unload() -> *const u8 {
-    serialize_return(&serde_json::json!({"ok": true}))
+    return_ptr(&serde_json::json!({"ok": true}))
 }
 
 #[no_mangle]
@@ -99,7 +105,7 @@ pub extern "C" fn on_tick(tick_ptr: u32, tick_len: u32) -> *const u8 {
     };
     let tick_data: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
-        Err(_) => return serialize_return(&serde_json::json!({"ok": true})),
+        Err(_) => return return_ptr(&serde_json::json!({"ok": true})),
     };
     let tick_id = tick_data
         .get("tick_id")
@@ -108,5 +114,5 @@ pub extern "C" fn on_tick(tick_ptr: u32, tick_len: u32) -> *const u8 {
     // on_tick 没有群号上下文。实际插件应当在 on_command 或 on_message 中
     // 通过 Command::group_id 或 QQMessage::group_id 获取并存储群号，
     // 然后在 on_tick 中使用存储的群号调用 send_group_msg。
-    serialize_return(&serde_json::json!({"ok": true, "tick_id": tick_id}))
+    return_ptr(&serde_json::json!({"ok": true, "tick_id": tick_id}))
 }

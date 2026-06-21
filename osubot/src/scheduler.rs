@@ -100,6 +100,7 @@ impl Scheduler {
         osubot_render::cleanup_expired(scheduler_cfg.cache_retention_days).await;
         osubot_core::cache::cleanup_replays(scheduler_cfg.cache_retention_days).await;
         osubot_core::cache::cleanup_beatmaps(scheduler_cfg.cache_retention_days).await;
+        osubot_core::cache::cleanup_previews(scheduler_cfg.cache_retention_days).await;
 
         *last = Some(now);
     }

@@ -30,7 +30,7 @@ body {
   --hsl-b5: var(--base-hue), 10%, 15%;
   --hsl-b6: var(--base-hue), 10%, 10%;
 
-  font-size: 45px;
+  font-size: 18px;
   max-width: {{VIEWPORT_WIDTH}}px;
   margin: 0 auto;
   padding: 20px;
@@ -38,8 +38,6 @@ body {
   background: hsl(var(--hsl-b6));
   color: hsl(var(--hsl-c1));
   font-family: var(--font-content);
-  line-height: 1.35;
-  scroll-behavior: smooth;
 }
 
 /* ---- base elements ---- */
@@ -56,7 +54,6 @@ h2 {
   font-style: normal;
   font-weight: bold;
   color: hsl(var(--hsl-l1));
-  margin: 10px 0 0 0;
 }
 
 blockquote {
@@ -94,7 +91,6 @@ iframe {
 
 .bbcode {
   font-family: var(--font-content);
-  line-height: 1.5;
   overflow-wrap: break-word;
   white-space: pre-wrap;
   text-align: left;
@@ -219,10 +215,6 @@ iframe {
 
 /* ---- spoilerbox ---- */
 
-.bbcode-spoilerbox {
-  margin: 10px 0;
-}
-
 .bbcode-spoilerbox__link {
   text-align: left;
   display: flex;
@@ -333,10 +325,24 @@ iframe {
 /* ---- bbcode image and paragraph alignment ---- */
 
 .bbcode img {
-  display: block;
-  margin: 0 auto;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
 }
 
 .bbcode p {
   text-align: left;
+}
+
+.bbcode__image-link {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.bbcode__image-link > img,
+.bbcode__image-link > svg {
+  display: block;
+  max-width: 100% !important;
+  height: auto !important;
 }

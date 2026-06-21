@@ -66,9 +66,7 @@ pub fn render_html_to_image(
 
     for _ in 0..MAX_RESOURCE_ITERATIONS {
         if cancelled.load(Ordering::Acquire) {
-            return Err(RenderError::Render(
-                log_fmt!("render.err_cancelled").to_string(),
-            ));
+            return Err(RenderError::Cancelled);
         }
         document.resolve(0.0);
         let resources: Vec<Resource> = loaded_resources
@@ -105,9 +103,7 @@ pub fn render_html_to_image(
     let total_physical_height = needed_logical_height as u32;
 
     if cancelled.load(Ordering::Acquire) {
-        return Err(RenderError::Render(
-            log_fmt!("render.err_cancelled").to_string(),
-        ));
+        return Err(RenderError::Cancelled);
     }
     if total_physical_height <= MAX_TILE_HEIGHT {
         let buffer = render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
@@ -134,7 +130,7 @@ pub fn render_html_to_image(
             .saturating_mul(total_physical_height as usize)
             .saturating_mul(4);
         if buffer.len() != expected {
-            return Err(RenderError::Render(
+            return Err(RenderError::HtmlRender(
                 log_fmt!(
                     "render.err_size_mismatch",
                     expected = expected,
@@ -156,9 +152,7 @@ pub fn render_html_to_image(
 
         for tile_idx in 0..num_tiles {
             if cancelled.load(Ordering::Acquire) {
-                return Err(RenderError::Render(
-                    log_fmt!("render.err_cancelled").to_string(),
-                ));
+                return Err(RenderError::Cancelled);
             }
             let y_offset_css = tile_idx as f64 * tile_logical_height;
             let this_tile_phy_h = if tile_idx == num_tiles - 1 {
@@ -191,7 +185,7 @@ pub fn render_html_to_image(
                 .saturating_mul(this_tile_phy_h as usize)
                 .saturating_mul(4);
             if tile_buffer.len() != expected_tile_size {
-                return Err(RenderError::Render(
+                return Err(RenderError::HtmlRender(
                     log_fmt!(
                         "render.err_tile_size_mismatch",
                         tile = tile_idx,

@@ -20,6 +20,7 @@ use osubot_plugin::PluginManager;
 /// 热重载 drain 超时（秒），超时后强制切换不再等待进行中任务
 const DRAIN_TIMEOUT_SECS: u64 = 30;
 
+#[derive(Clone)]
 pub struct ReloadHandle {
     pub config: Arc<RwLock<Config>>,
     pub pm: Arc<Mutex<Option<PluginManager>>>,
@@ -35,32 +36,33 @@ pub struct ReloadHandle {
     pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
 }
 
+pub struct ReloadHandleParams {
+    pub config: Arc<RwLock<Config>>,
+    pub pm: Arc<Mutex<Option<PluginManager>>>,
+    pub onebot_api_timeout: Arc<AtomicU64>,
+    pub upstream_chain: Arc<RwLock<UpstreamChain>>,
+    pub oauth: Arc<OauthTokenCache>,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub scheduler: Scheduler,
+    pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
+}
+
 impl ReloadHandle {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        config: Arc<RwLock<Config>>,
-        pm: Arc<Mutex<Option<PluginManager>>>,
-        onebot_api_timeout: Arc<AtomicU64>,
-        upstream_chain: Arc<RwLock<UpstreamChain>>,
-        oauth: Arc<OauthTokenCache>,
-        rate_limiter: Arc<RateLimiter>,
-        scheduler: Scheduler,
-        irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
-        irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
-    ) -> Self {
+    pub fn new(params: ReloadHandleParams) -> Self {
         Self {
-            config,
-            pm,
+            config: params.config,
+            pm: params.pm,
             drain: Arc::new(AtomicBool::new(false)),
             in_flight: Arc::new(AtomicUsize::new(0)),
-            onebot_api_timeout,
-            upstream_chain,
-            oauth,
-            rate_limiter,
+            onebot_api_timeout: params.onebot_api_timeout,
+            upstream_chain: params.upstream_chain,
+            oauth: params.oauth,
+            rate_limiter: params.rate_limiter,
             force_reconnect: Arc::new(AtomicBool::new(false)),
-            scheduler,
-            irc_handle,
-            irc_tx,
+            scheduler: params.scheduler,
+            irc_handle: params.irc_handle,
+            irc_tx: params.irc_tx,
         }
     }
 }
@@ -176,8 +178,10 @@ impl ReloadCoordinator {
 
         if !drained {
             error!("{}", log_fmt!("reload.drain_timeout"));
-            self.apply_side_effects(&old_config, &new_config).await;
-            *self.handle.config.write().await = new_config.clone();
+            // 修复：drain 超时不要调 apply_side_effects / 写新 config。
+            // 在飞的旧任务仍持 plugin 索引 + config read guard，此时并发新调度
+            // 会让新/旧 config 行为不确定。保持 drain=true 让后续 dispatch 跳过，
+            // 下次 reload 重新尝试或等 SIGINT/SIGHUP 强制退出。
             self.handle.drain.store(false, Ordering::SeqCst);
             return;
         }
@@ -233,73 +237,7 @@ impl ReloadCoordinator {
             plugin: mutable.plugin,
         };
 
-        // validate
-        if new_config.bot.onebot_url.is_empty() {
-            return Err(log_fmt!("reload.err_onebot_url_empty").to_string());
-        }
-        if new_config.bot.command_timeout_secs < 5 {
-            return Err(log_fmt!(
-                "reload.err_cmd_timeout_too_small",
-                value = new_config.bot.command_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.render_timeout_secs < 5 {
-            return Err(log_fmt!(
-                "reload.err_render_timeout_too_small",
-                value = new_config.bot.render_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.onebot_api_timeout_secs < 2 {
-            return Err(log_fmt!(
-                "reload.err_api_timeout_too_small",
-                value = new_config.bot.onebot_api_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.ur_timeout_secs < 3 {
-            return Err(log_fmt!(
-                "reload.err_ur_timeout_too_small",
-                value = new_config.bot.ur_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.command_timeout_secs > 3600 {
-            return Err(log_fmt!(
-                "reload.err_cmd_timeout_too_large",
-                value = new_config.bot.command_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.render_timeout_secs > 600 {
-            return Err(log_fmt!(
-                "reload.err_render_timeout_too_large",
-                value = new_config.bot.render_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.onebot_api_timeout_secs > 120 {
-            return Err(log_fmt!(
-                "reload.err_api_timeout_too_large",
-                value = new_config.bot.onebot_api_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.bot.ur_timeout_secs > 300 {
-            return Err(log_fmt!(
-                "reload.err_ur_timeout_too_large",
-                value = new_config.bot.ur_timeout_secs
-            )
-            .to_string());
-        }
-        if new_config.scheduler.interval_minutes > 1440 {
-            return Err(log_fmt!(
-                "reload.err_sched_interval_too_large",
-                value = new_config.scheduler.interval_minutes
-            )
-            .to_string());
-        }
+        new_config.validate()?;
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
         let dir_changed = {

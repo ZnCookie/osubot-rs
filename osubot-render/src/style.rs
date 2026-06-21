@@ -30,11 +30,10 @@ pub fn wrap_osu_profile_html(
         escape_html(username),
     );
     let css = PROFILE_CSS
-        .replacen("{{PROFILE_HUE}}", &profile_hue.to_string(), 1)
-        .replacen(
+        .replace("{{PROFILE_HUE}}", &profile_hue.to_string())
+        .replace(
             "{{VIEWPORT_WIDTH}}",
             &crate::PROFILE_VIEWPORT_WIDTH.to_string(),
-            2,
         );
     format!(
         r#"<!DOCTYPE html>
@@ -51,6 +50,22 @@ pub fn wrap_osu_profile_html(
 </body>
 </html>"#
     )
+}
+
+/// 构造 `render_profile_card` 喂给渲染器的最终 HTML 字符串：
+/// 先用 `cache::inline_external_images` 把 BBcode 里的外链图片下载并转成 base64 data URI，
+/// 再用 `wrap_osu_profile_html` 包上 avatar 头部和 CSS。
+///
+/// 这是 profile 卡片"输入渲染器之前"的中间表示。`render_profile_card` 内部也走这里，
+/// 集成测试 `osubot-render/tests/dump_profile_html.rs` 复用同一入口 dump 到磁盘。
+pub async fn build_profile_html(
+    html: &str,
+    profile_hue: u16,
+    avatar_url: &str,
+    username: &str,
+) -> String {
+    let inlined = crate::cache::inline_external_images(html).await;
+    wrap_osu_profile_html(&inlined, profile_hue, avatar_url, username)
 }
 
 /// 格式化 pp 变化量的小数位(整数去掉小数点,小数保留 2 位)

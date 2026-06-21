@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use turso::{params, Connection, Database, Result as DbResult};
+use turso::{params, Connection, Database, Result as DbResult, Row};
 
 use crate::types::{GameMode, UserChange, UserStats};
 
@@ -84,6 +84,25 @@ async fn has_column(
         }
     }
     Ok(false)
+}
+
+fn row_to_user_stats(row: &Row, col_offset: usize) -> DbResult<UserStats> {
+    Ok(UserStats {
+        user_id: 0,
+        username: String::new(),
+        pp: row.get(col_offset)?,
+        rank: row.get(col_offset + 1)?,
+        country_rank: row.get(col_offset + 2)?,
+        country_code: "XX".to_string(),
+        ranked_score: row.get(col_offset + 3)?,
+        accuracy: row.get(col_offset + 4)?,
+        playcount: row.get(col_offset + 5)?,
+        hits: row.get(col_offset + 6)?,
+        playtime: row.get(col_offset + 7)?,
+        rank_change: None,
+        country_rank_change: None,
+        cover_url: None,
+    })
 }
 
 impl Storage {
@@ -505,22 +524,7 @@ impl Storage {
             )
             .await?;
         if let Some(row) = rows.next().await? {
-            Ok(Some(UserStats {
-                user_id: 0,
-                username: String::new(),
-                pp: row.get(0)?,
-                rank: row.get(1)?,
-                country_rank: row.get(2)?,
-                country_code: "XX".to_string(),
-                ranked_score: row.get(3)?,
-                accuracy: row.get(4)?,
-                playcount: row.get(5)?,
-                hits: row.get(6)?,
-                playtime: row.get(7)?,
-                rank_change: None,
-                country_rank_change: None,
-                cover_url: None,
-            }))
+            Ok(Some(row_to_user_stats(&row, 0)?))
         } else {
             Ok(None)
         }
@@ -550,25 +554,7 @@ impl Storage {
         while let Some(row) = rows.next().await? {
             let recorded_str: String = row.get(0)?;
             if let Ok(dt) = DateTime::parse_from_rfc3339(&recorded_str) {
-                results.push((
-                    dt.with_timezone(&Utc),
-                    UserStats {
-                        user_id: 0,
-                        username: String::new(),
-                        pp: row.get(1)?,
-                        rank: row.get(2)?,
-                        country_rank: row.get(3)?,
-                        country_code: "XX".to_string(),
-                        ranked_score: row.get(4)?,
-                        accuracy: row.get(5)?,
-                        playcount: row.get(6)?,
-                        hits: row.get(7)?,
-                        playtime: row.get(8)?,
-                        rank_change: None,
-                        country_rank_change: None,
-                        cover_url: None,
-                    },
-                ));
+                results.push((dt.with_timezone(&Utc), row_to_user_stats(&row, 1)?));
             }
         }
         Ok(results)
@@ -624,22 +610,7 @@ impl Storage {
             let distance = (recorded_at.with_timezone(&Utc) - target)
                 .num_seconds()
                 .unsigned_abs();
-            let stats = UserStats {
-                user_id: 0,
-                username: String::new(),
-                pp: row.get(2)?,
-                rank: row.get(3)?,
-                country_rank: row.get(4)?,
-                country_code: "XX".to_string(),
-                ranked_score: row.get(5)?,
-                accuracy: row.get(6)?,
-                playcount: row.get(7)?,
-                hits: row.get(8)?,
-                playtime: row.get(9)?,
-                rank_change: None,
-                country_rank_change: None,
-                cover_url: None,
-            };
+            let stats = row_to_user_stats(&row, 2)?;
 
             match closest.get(&user_id) {
                 Some((best_distance, _)) if *best_distance <= distance => {}

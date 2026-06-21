@@ -53,6 +53,7 @@ path = "osubot.db"
 # 命令开关（可选，默认全部开启）
 # query = true              # ~、where、查
 # score = true              # !p、!ps、!r、!rs、!s、!ss
+# beatmap_preview = true    # !rv
 # profile = true            # !profile
 # highlight = true          # 今日高光
 # bind = true               # 绑定、解绑
@@ -83,7 +84,8 @@ path = "osubot.db"
 # timeout_secs = 10
 # rate_per_minute = 10
 # burst = 20
-# yumu 无需 access_token 和 self_id，直接伪装目标 QQ 连接
+# yumu 默认不鉴权（无需 access_token），但支持配置——设了就会按 OneBot 11 协议发 Authorization 头
+# self_id 无关，yumu 直接用目标 QQ 号作为身份标识
 
 [plugin]
 # .wasm 插件文件存放目录
