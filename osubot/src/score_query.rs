@@ -1,3 +1,9 @@
+//! 分数查询与渲染。
+//!
+//! 行号注释约定：`L<n>-` / `L<a>-<b>` 标注紧随其后的代码块对应的行号范围，
+//! 便于定位与维护。`FnOnce` 闭包传入 `RequestDedup::run_or_wait` 时，
+//! 在闭包内重新 clone `ctx.rate_limiter` / `ctx.oauth` 以满足 `'static`。
+
 use crate::score_filter::{score_matches_filters, ScoreQueryParams};
 use crate::BotContext;
 use futures_util::future::join_all;
@@ -130,6 +136,10 @@ pub(crate) async fn handle_score_query(
     params: ScoreQueryParams<'_>,
     mode: GameMode,
 ) {
+    // L132-: handle_score_query 主流程
+    //   L156-225: is_self 分支（已绑定用户）
+    //   L228-285: 非 is_self 分支（指定用户/qq）
+    //   L295-544: score_result 处理与渲染
     tracing::trace!("{}", log_fmt!("main.handle_score_query_start"));
 
     let is_self = params.username.is_none() && params.qq.is_none();
@@ -164,18 +174,16 @@ pub(crate) async fn handle_score_query(
         );
         ctx.scheduler.trigger_update(uid, mode).await;
 
+        // 第一个 future 直接借用 ctx 字段；第二个 future 需在 FnOnce 闭包内
+        // 重新 clone（move 进 async 块以满足 'static）。
         let is_pass = params.is_pass;
         let qq = msg.user_id;
-        let rate_limiter = ctx.rate_limiter.clone();
-        let oauth = ctx.oauth.clone();
-        let rl2 = rate_limiter.clone();
-        let oa2 = oauth.clone();
 
         let (stats_result, scores) = tokio::join!(
-            api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, uid, mode),
+            api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
             score_dedup().run_or_wait((uid, is_pass, api_limit, mode), move || {
-                let rate_limiter = rl2.clone();
-                let oauth = oa2.clone();
+                let rate_limiter = ctx.rate_limiter.clone();
+                let oauth = ctx.oauth.clone();
 
                 async move {
                     api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, api_limit)
@@ -240,8 +248,6 @@ pub(crate) async fn handle_score_query(
 
         ctx.scheduler.trigger_update(uid, mode).await;
         let dedup_key = (uid, params.is_pass, api_limit, mode);
-        let dedup_rate_limiter = ctx.rate_limiter.clone();
-        let dedup_oauth = ctx.oauth.clone();
         let dedup_mode = mode;
 
         tracing::trace!(
@@ -255,8 +261,8 @@ pub(crate) async fn handle_score_query(
         );
         let scores: Result<Arc<Vec<Score>>, String> = score_dedup()
             .run_or_wait(dedup_key, move || {
-                let dedup_rate_limiter = dedup_rate_limiter.clone();
-                let dedup_oauth = dedup_oauth.clone();
+                let dedup_rate_limiter = ctx.rate_limiter.clone();
+                let dedup_oauth = ctx.oauth.clone();
 
                 async move {
                     api::get_user_recent(
@@ -545,6 +551,10 @@ pub(crate) async fn handle_beatmap_score_query(
     cmd: &Command,
     mode: GameMode,
 ) {
+    // L547-: handle_beatmap_score_query 主流程
+    //   L582-669: score_id 单独查分
+    //   L671-685: 解析 beatmap_id（cmd/缓存）
+    //   L715-887: 按 limit/limit_end/is_all/filters 分支处理
     let (username, qq, beatmap_id, score_id, filters, limit, limit_end, is_all) = match cmd {
         Command::ScoreOnBeatmap {
             username,
@@ -570,15 +580,14 @@ pub(crate) async fn handle_beatmap_score_query(
     };
 
     if let Some(sid) = score_id {
+        // L582-: 通过 score_id 查分流程
         info!(score_id = sid, "{}", log_fmt!("main.score_by_id"));
         let qq = msg.user_id;
-        let dedup_rate_limiter = ctx.rate_limiter.clone();
-        let dedup_oauth = ctx.oauth.clone();
         let sid_key = sid as i64;
         let score_result = score_by_id_dedup()
             .run_or_wait((sid_key, mode), move || {
-                let rate_limiter = dedup_rate_limiter.clone();
-                let oauth = dedup_oauth.clone();
+                let rate_limiter = ctx.rate_limiter.clone();
+                let oauth = ctx.oauth.clone();
 
                 async move {
                     api::get_score_by_id(&rate_limiter, &oauth, sid)
@@ -709,46 +718,16 @@ pub(crate) async fn handle_beatmap_score_query(
             (Some(n), true) => Some(n.max(SCORE_API_FETCH_LIMIT)),
             (other, _) => other,
         };
-        let key = (_user_id, resolved_bid as i64, mode, api_limit);
-        let dedup_rall = ctx.rate_limiter.clone();
-        let dedup_oall = ctx.oauth.clone();
-        let scores_result = beatmap_scores_dedup()
-            .run_or_wait(key, move || {
-                let rate_limiter = dedup_rall.clone();
-                let oauth = dedup_oall.clone();
-
-                async move {
-                    api::get_user_beatmap_scores_all(
-                        &rate_limiter,
-                        &oauth,
-                        resolved_bid as i64,
-                        _user_id,
-                        mode,
-                        api_limit,
-                    )
-                    .await
-                    .map_err(|e| {
-                        if !matches!(e, api::ApiError::NotFound) {
-                            warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                        }
-                        match e {
-                            api::ApiError::NotFound => {
-                                user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
-                            }
-                            other => api_error_msg(qq, &other),
-                        }
-                    })
+        let scores =
+            match fetch_scores_with_dedup(ctx, resolved_bid as i64, _user_id, mode, api_limit, qq)
+                .await
+            {
+                Ok(s) => s,
+                Err(err_msg) => {
+                    let _ = resp_tx.send(err_msg).await;
+                    return;
                 }
-            })
-            .await;
-
-        let scores = match scores_result {
-            Ok(s) => s,
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
-                return;
-            }
-        };
+            };
         if scores.is_empty() {
             let _ = resp_tx
                 .send(user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()))
@@ -775,87 +754,30 @@ pub(crate) async fn handle_beatmap_score_query(
         let active_filters = filters.filter(|f| !f.is_empty());
         if let Some(filters) = active_filters {
             let api_limit = SCORE_API_FETCH_LIMIT;
-            let key = (_user_id, resolved_bid as i64, mode, Some(api_limit));
-            let dedup_rscores = ctx.rate_limiter.clone();
-            let dedup_oscores = ctx.oauth.clone();
-            let scores_result =
-                beatmap_scores_dedup()
-                    .run_or_wait(key, move || {
-                        let rate_limiter = dedup_rscores.clone();
-                        let oauth = dedup_oscores.clone();
-
-                        async move {
-                            api::get_user_beatmap_scores_all(
-                                &rate_limiter,
-                                &oauth,
-                                resolved_bid as i64,
-                                _user_id,
-                                mode,
-                                Some(api_limit),
-                            )
-                            .await
-                            .map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound) {
-                                    warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                                }
-                                match e {
-                                    api::ApiError::NotFound => user_str("query.no_score_on_map")
-                                        .replace("{qq}", &qq.to_string()),
-                                    other => api_error_msg(qq, &other),
-                                }
-                            })
-                        }
-                    })
-                    .await;
-            let scores = match scores_result {
+            let scores = match fetch_scores_with_dedup(
+                ctx,
+                resolved_bid as i64,
+                _user_id,
+                mode,
+                Some(api_limit),
+                qq,
+            )
+            .await
+            {
                 Ok(s) => s,
                 Err(err_msg) => {
                     let _ = resp_tx.send(err_msg).await;
                     return;
                 }
             };
-            if scores.is_empty() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()),
-                    )
-                    .await;
-                return;
-            }
-            let total_scores = scores.len();
-            let scores = match process_scores(scores, Some(filters), limit, None) {
-                Ok(s) => s,
-                Err(key) => {
-                    let msg_text = user_str(key)
-                        .replace("{qq}", &msg.user_id.to_string())
-                        .replace("{pos}", &limit.to_string())
-                        .replace("{name}", user_str("query.noun_score"))
-                        .replace("{total}", &total_scores.to_string());
-                    let _ = resp_tx.send(msg_text).await;
-                    return;
-                }
-            };
-            let score = &scores[0];
-            ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-            render_and_send_single_score(SingleScoreRenderParams {
-                ctx,
-                msg,
-                resp_tx,
-                score,
-                mode,
-                user_stats: &user_stats,
-                position: None,
-                is_pass: true,
-            })
-            .await;
+            handle_score_with_filters(ctx, msg, resp_tx, scores, filters, &user_stats, mode).await;
         } else {
+            // L774-: 单谱面单分查询（无 limit_end 且 limit=1 且无 filters）
             let key = (_user_id, resolved_bid as i64, mode);
-            let dedup_rscore = ctx.rate_limiter.clone();
-            let dedup_oscore = ctx.oauth.clone();
             let score_result = beatmap_score_dedup()
                 .run_or_wait(key, move || {
-                    let rate_limiter = dedup_rscore.clone();
-                    let oauth = dedup_oscore.clone();
+                    let rate_limiter = ctx.rate_limiter.clone();
+                    let oauth = ctx.oauth.clone();
 
                     async move {
                         api::get_user_beatmap_score(
@@ -913,39 +835,16 @@ pub(crate) async fn handle_beatmap_score_query(
             raw_limit
         };
         let n = limit as usize;
-        let key = (_user_id, resolved_bid as i64, mode, Some(api_limit));
-        let dedup_rscores = ctx.rate_limiter.clone();
-        let dedup_oscores = ctx.oauth.clone();
-        let scores_result = beatmap_scores_dedup()
-            .run_or_wait(key, move || {
-                let rate_limiter = dedup_rscores.clone();
-                let oauth = dedup_oscores.clone();
-
-                async move {
-                    api::get_user_beatmap_scores_all(
-                        &rate_limiter,
-                        &oauth,
-                        resolved_bid as i64,
-                        _user_id,
-                        mode,
-                        Some(api_limit),
-                    )
-                    .await
-                    .map_err(|e| {
-                        if !matches!(e, api::ApiError::NotFound) {
-                            warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                        }
-                        match e {
-                            api::ApiError::NotFound => {
-                                user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
-                            }
-                            other => api_error_msg(qq, &other),
-                        }
-                    })
-                }
-            })
-            .await;
-        let scores = match scores_result {
+        let scores = match fetch_scores_with_dedup(
+            ctx,
+            resolved_bid as i64,
+            _user_id,
+            mode,
+            Some(api_limit),
+            qq,
+        )
+        .await
+        {
             Ok(s) => s,
             Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
@@ -983,20 +882,117 @@ pub(crate) async fn handle_beatmap_score_query(
                 return;
             }
             let score = scores.into_iter().nth(n - 1).expect("len checked above");
-            ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-            render_and_send_single_score(SingleScoreRenderParams {
-                ctx,
-                msg,
-                resp_tx,
-                score: &score,
-                mode,
-                user_stats: &user_stats,
-                position: Some(n - 1),
-                is_pass: true,
-            })
-            .await;
+            render_single_score(ctx, msg, resp_tx, &score, &user_stats, mode, n).await;
         }
     }
+}
+
+async fn render_single_score(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    score: &Score,
+    user_stats: &UserStats,
+    mode: GameMode,
+    n: usize,
+) {
+    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+    render_and_send_single_score(SingleScoreRenderParams {
+        ctx,
+        msg,
+        resp_tx,
+        score,
+        mode,
+        user_stats,
+        position: Some(n - 1),
+        is_pass: true,
+    })
+    .await;
+}
+
+async fn handle_score_with_filters(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    scores: Vec<Score>,
+    filters: &[String],
+    user_stats: &UserStats,
+    mode: GameMode,
+) {
+    if scores.is_empty() {
+        let _ = resp_tx
+            .send(user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()))
+            .await;
+        return;
+    }
+    let total_scores = scores.len();
+    let scores = match process_scores(scores, Some(filters), 1, None) {
+        Ok(s) => s,
+        Err(key) => {
+            let msg_text = user_str(key)
+                .replace("{qq}", &msg.user_id.to_string())
+                .replace("{pos}", "1")
+                .replace("{name}", user_str("query.noun_score"))
+                .replace("{total}", &total_scores.to_string());
+            let _ = resp_tx.send(msg_text).await;
+            return;
+        }
+    };
+    let score = &scores[0];
+    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+    render_and_send_single_score(SingleScoreRenderParams {
+        ctx,
+        msg,
+        resp_tx,
+        score,
+        mode,
+        user_stats,
+        position: None,
+        is_pass: true,
+    })
+    .await;
+}
+
+async fn fetch_scores_with_dedup(
+    ctx: &BotContext,
+    resolved_bid: i64,
+    user_id: i64,
+    mode: GameMode,
+    api_limit: Option<u32>,
+    qq: i64,
+) -> Result<Vec<Score>, String> {
+    // FnOnce 闭包捕获 ctx，在闭包内 clone 以满足 'static
+    let key = (user_id, resolved_bid, mode, api_limit);
+
+    beatmap_scores_dedup()
+        .run_or_wait(key, move || {
+            let rate_limiter = ctx.rate_limiter.clone();
+            let oauth = ctx.oauth.clone();
+
+            async move {
+                api::get_user_beatmap_scores_all(
+                    &rate_limiter,
+                    &oauth,
+                    resolved_bid,
+                    user_id,
+                    mode,
+                    api_limit,
+                )
+                .await
+                .map_err(|e| {
+                    if !matches!(e, api::ApiError::NotFound) {
+                        warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                    }
+                    match e {
+                        api::ApiError::NotFound => {
+                            user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
+                        }
+                        other => api_error_msg(qq, &other),
+                    }
+                })
+            }
+        })
+        .await
 }
 
 fn filter_scores(scores: Vec<Score>, filters: Option<&[String]>) -> Vec<Score> {
@@ -1091,8 +1087,6 @@ async fn render_and_send_single_score(params: SingleScoreRenderParams<'_>) {
 
     let ur_value = if mode == GameMode::Osu && score.score_id > 0 && score.has_replay {
         tracing::trace!(score_id = score.score_id, mode = ?mode, is_lazer = score.is_lazer, length = score.length_seconds, "{}", log_fmt!("main.ur_calculation_start"));
-        let rl = ctx.rate_limiter.clone();
-        let oa = ctx.oauth.clone();
         let ur_params = osubot_core::ur::ScoreUrParams {
             score_id: score.score_id,
             legacy_score_id: score.legacy_score_id,
@@ -1103,7 +1097,7 @@ async fn render_and_send_single_score(params: SingleScoreRenderParams<'_>) {
         let ur_timeout = Duration::from_secs(ctx.config.read().await.bot.ur_timeout_secs);
         match tokio::time::timeout(
             ur_timeout,
-            osubot_core::ur::calculate_score_ur(&rl, &oa, ur_params),
+            osubot_core::ur::calculate_score_ur(&ctx.rate_limiter, &ctx.oauth, ur_params),
         )
         .await
         {
