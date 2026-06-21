@@ -1046,29 +1046,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
                         GameMode::Osu,
                     )
                     .await
-                    .map_err(|e| match e {
-                        ApiError::NotFound => {
-                            user_str("error.not_found").replace("{qq}", &qq.to_string())
-                        }
-                        ApiError::MissingApiKey => {
-                            user_str("error.api_key").replace("{qq}", &qq.to_string())
-                        }
-                        ApiError::OAuthError => {
-                            user_str("error.oauth").replace("{qq}", &qq.to_string())
-                        }
-                        ApiError::RateLimitedWithRetryAfter(Some(secs)) => {
-                            user_str("error.rate_limit")
-                                .replace("{qq}", &qq.to_string())
-                                .replace("{secs}", &secs.to_string())
-                        }
-                        ApiError::RateLimitedWithRetryAfter(None) => {
-                            user_str("error.rate_limit_generic")
-                                .replace("{qq}", &qq.to_string())
-                        }
-                        ApiError::ClientRateLimited => user_str("error.client_rate_limit")
-                            .replace("{qq}", &qq.to_string()),
-                        _ => user_str("error.query_failed").replace("{qq}", &qq.to_string()),
-                    })?;
+                    .map_err(|e| api_error_msg(qq, &e))?;
                     info!(
                         user_id = dedup_target_id,
                         html_len = profile.html.len(),
@@ -1233,8 +1211,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
                                     .map_err(|e| match e {
                                         ApiError::NotFound => user_str("query.score_not_found")
                                             .replace("{qq}", &qq_inner.to_string()),
-                                        _ => user_str("query.score_fetch_failed")
-                                            .replace("{qq}", &qq_inner.to_string()),
+                                        other => api_error_msg(qq_inner, &other),
                                     })
                             }
                         })
