@@ -1,0 +1,325 @@
+use crate::instance::PluginInstance;
+use crate::PluginManager;
+use osubot_core::log_fmt;
+use std::sync::atomic::Ordering;
+
+impl PluginManager {
+    /// Returns sorted indices of on_message plugins (priority descending, no instance taken).
+    /// Brief `&self`, no `.await`.
+    pub fn sorted_message_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<usize> = self.on_message_indices.iter().copied().collect();
+        indices.sort_by_key(|&i| {
+            std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+        });
+        indices
+    }
+
+    /// Returns command-map indices for a command name (no instance taken).
+    /// Brief `&self`, no `.await`.
+    pub fn command_indices(&self, cmd_name: &str) -> Vec<usize> {
+        self.command_map.get(cmd_name).cloned().unwrap_or_default()
+    }
+
+    /// Returns the instance params for a given index.
+    /// Brief `&self`, no `.await`.
+    pub fn instance_params(&self, idx: usize) -> Option<&crate::instance::PluginInstanceParams> {
+        self.instance_params.get(idx)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.instances.iter().all(|i| i.is_none())
+    }
+
+    pub fn len(&self) -> usize {
+        self.instances.iter().filter(|i| i.is_some()).count()
+    }
+
+    pub fn get_ticks(&self) -> Vec<(usize, u64, u32)> {
+        let registry = self.tick_registry.lock().unwrap_or_else(|e| {
+            tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
+            e.into_inner()
+        });
+        registry
+            .iter()
+            .map(|t| (t.plugin_idx, t.interval_secs, t.tick_id))
+            .collect()
+    }
+
+    /// 检查指定索引处是否存在有效实例。
+    pub fn has_instance(&self, idx: usize) -> bool {
+        self.instances.get(idx).is_some_and(|s| s.is_some())
+    }
+
+    /// 检查指定 (plugin_idx, tick_id) 是否仍在 tick_registry 中注册。
+    /// 用于 tick loop phase 2 验证 stale index（compact 可能已重映射索引）。
+    pub fn has_tick(&self, plugin_idx: usize, tick_id: u32) -> bool {
+        let registry = self.tick_registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .iter()
+            .any(|t| t.plugin_idx == plugin_idx && t.tick_id == tick_id)
+    }
+
+    /// 从指定槽位取出实例（不持锁时调用方负责同步）。
+    /// 返回 None 表示槽位越界或为空。
+    pub fn take_instance(&mut self, idx: usize) -> Option<PluginInstance> {
+        self.instances.get_mut(idx).and_then(|slot| slot.take())
+    }
+
+    /// 将实例放回指定槽位。如果槽位越界则静默丢弃。
+    pub fn put_instance(&mut self, idx: usize, instance: PluginInstance) {
+        if idx < self.instances.len() {
+            self.instances[idx] = Some(instance);
+        }
+    }
+
+    pub async fn handle_tick(&mut self, plugin_idx: usize, tick_id: u32) {
+        if plugin_idx >= self.instances.len() {
+            return;
+        }
+        let has = self.instances[plugin_idx]
+            .as_mut()
+            .map(|i| i.has_export("on_tick"))
+            .unwrap_or(false);
+        if !has {
+            return;
+        }
+
+        let name = self
+            .instance_params
+            .get(plugin_idx)
+            .map_or("unknown", |p| p.name.as_str())
+            .to_owned();
+
+        let mut instance = match self.take_instance(plugin_idx) {
+            Some(inst) => inst,
+            None => return,
+        };
+        let timeout_dur = instance.timeout;
+
+        let result = tokio::time::timeout(
+            timeout_dur,
+            tokio::task::spawn_blocking(move || {
+                let r = instance.on_tick(tick_id);
+                (r, instance)
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(Ok((Ok(()), instance))) => {
+                self.put_instance(plugin_idx, instance);
+            }
+            Ok(Ok((Err(e), instance))) => {
+                self.put_instance(plugin_idx, instance);
+                self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
+                if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_tick_consecutive_error",
+                            kind = "on_tick",
+                            name = &name
+                        )
+                    );
+                    if let Err(re) = self.reload_instance(plugin_idx) {
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
+                    }
+                }
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_tick_error",
+                        kind = "on_tick",
+                        name = &name,
+                        error = e
+                    )
+                );
+            }
+            Ok(Err(join_err)) => {
+                tracing::error!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_tick_panicked",
+                        kind = "on_tick",
+                        name = &name,
+                        error = join_err
+                    )
+                );
+                self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
+                if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_tick_consecutive_panic",
+                            kind = "on_tick",
+                            name = &name
+                        )
+                    );
+                    if let Err(e) = self.reload_instance(plugin_idx) {
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "{}",
+                    log_fmt!("plugin.on_tick_timeout", kind = "on_tick", name = &name)
+                );
+                self.engine.increment_epoch();
+                self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
+                if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_tick_consecutive_timeout",
+                            kind = "on_tick",
+                            name = &name
+                        )
+                    );
+                    if let Err(re) = self.reload_instance(plugin_idx) {
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
+                    }
+                } else {
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!("plugin.timeout_skip_reload", kind = "on_tick", name = &name)
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn unload_single_instance(
+        &mut self,
+        idx: usize,
+        context: &str,
+        allow_reload: bool,
+    ) {
+        let has = self.instances[idx]
+            .as_mut()
+            .map(|i| i.has_export("on_unload"))
+            .unwrap_or(false);
+        if !has {
+            return;
+        }
+
+        let name = self
+            .instance_params
+            .get(idx)
+            .map_or("unknown", |p| p.name.as_str())
+            .to_owned();
+
+        let mut instance = match self.take_instance(idx) {
+            Some(inst) => inst,
+            None => return,
+        };
+        let timeout_dur = instance.timeout;
+
+        let result = tokio::time::timeout(
+            timeout_dur,
+            tokio::task::spawn_blocking(move || {
+                let r = instance.on_unload();
+                (r, instance)
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(Ok((Ok(()), instance))) => {
+                self.put_instance(idx, instance);
+            }
+            Ok(Ok((Err(e), instance))) => {
+                self.put_instance(idx, instance);
+                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
+                if allow_reload && self.lost_instances[idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_unload_consecutive_error",
+                            kind = "on_unload",
+                            name = &name
+                        )
+                    );
+                    if let Err(re) = self.reload_instance(idx) {
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
+                    }
+                }
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_unload_error",
+                        kind = "on_unload",
+                        name = &name,
+                        error = e
+                    )
+                );
+            }
+            Ok(Err(join_err)) => {
+                tracing::error!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_unload_panicked",
+                        kind = "on_unload",
+                        name = &name,
+                        error = join_err
+                    )
+                );
+                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
+                if allow_reload && self.lost_instances[idx] >= self.lost_instances_threshold {
+                    tracing::warn!(
+                        "{}",
+                        log_fmt!(
+                            "plugin.on_unload_consecutive_panic",
+                            kind = "on_unload",
+                            name = &name
+                        )
+                    );
+                    if let Err(e) = self.reload_instance(idx) {
+                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "plugin.on_unload_timeout",
+                        kind = "on_unload",
+                        name = &name,
+                        context = context
+                    )
+                );
+                self.engine.increment_epoch();
+            }
+        }
+    }
+
+    pub async fn shutdown(&mut self) {
+        self.epoch_running.store(false, Ordering::Relaxed);
+        self.epoch_handle.abort();
+
+        for idx in 0..self.instances.len() {
+            // shutdown 路径：禁止触发 reload（即将被 clear 的 instance 不需要重新加载）
+            self.unload_single_instance(idx, "unload", false).await;
+            if self.instances[idx].is_some() {
+                let name = self
+                    .instance_params
+                    .get(idx)
+                    .map_or("unknown", |p| p.name.as_str());
+                tracing::info!("{}", log_fmt!("plugin.unloaded", name = name));
+            }
+        }
+        self.instances.clear();
+        self.modules.clear();
+        self.instance_params.clear();
+        self.wasm_paths.clear();
+        self.wasm_mtimes.clear();
+        self.lost_instances.clear();
+        self.reload_failures.clear();
+        self.on_message_indices.clear();
+        self.command_map.clear();
+        if let Ok(mut reg) = self.tick_registry.lock() {
+            reg.clear();
+        }
+    }
+}

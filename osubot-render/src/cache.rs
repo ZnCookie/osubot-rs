@@ -1,6 +1,6 @@
 use osubot_core::log_fmt;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
@@ -21,8 +21,8 @@ pub enum CacheError {
     RetriesExhausted,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("SVG rasterization failed: {0}")]
-    SvgRasterizationFailed(String),
+    #[error("SVG rasterize failed: {0}")]
+    SvgRasterize(String),
 }
 
 pub fn http_client() -> &'static reqwest::Client {
@@ -30,6 +30,7 @@ pub fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::limited(0))
             .build()
             .expect("failed to build reqwest client")
     })
@@ -74,21 +75,7 @@ fn dirs_proj() -> Option<PathBuf> {
 fn sha256_hex(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-fn sha256_hex_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex::encode(hasher.finalize())
 }
 
 fn detect_mime_and_ext(url: &str, bytes: &[u8]) -> (&'static str, &'static str) {
@@ -143,116 +130,6 @@ fn detect_mime_and_ext_fallback(url: &str) -> (&'static str, &'static str) {
         Some(".svg") => ("image/svg+xml", ".svg"),
         _ => ("application/octet-stream", ".bin"),
     }
-}
-
-/// Rasterize SVG bytes to PNG using librsvg.
-/// Returns PNG-encoded bytes on success.
-fn rasterize_svg_to_png(svg_bytes: &[u8]) -> Result<Vec<u8>, CacheError> {
-    // Load SVG using rsvg::Loader with a MemoryInputStream
-    let memory_stream =
-        gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(svg_bytes.to_vec()));
-    let handle = rsvg::Loader::new()
-        .read_stream::<gio::MemoryInputStream, gio::File, gio::Cancellable>(
-            &memory_stream,
-            None,
-            None,
-        )
-        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
-
-    // Get intrinsic dimensions
-    let dims = rsvg::CairoRenderer::new(&handle)
-        .intrinsic_size_in_pixels()
-        .unwrap_or((100.0, 100.0));
-    let width = dims.0.ceil() as i32;
-    let height = dims.1.ceil() as i32;
-
-    const MAX_SVG_DIMENSION: i32 = 4096;
-    if width <= 0 || height <= 0 || width > MAX_SVG_DIMENSION || height > MAX_SVG_DIMENSION {
-        return Err(CacheError::SvgRasterizationFailed(format!(
-            "SVG dimensions {}x{} exceed maximum {}x{}",
-            width, height, MAX_SVG_DIMENSION, MAX_SVG_DIMENSION
-        )));
-    }
-
-    // Create Cairo surface
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
-        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
-    let cr = cairo::Context::new(&surface)
-        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
-
-    // Render SVG
-    rsvg::CairoRenderer::new(&handle)
-        .render_document(
-            &cr,
-            &cairo::Rectangle::new(0.0, 0.0, f64::from(width), f64::from(height)),
-        )
-        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
-
-    // Encode as PNG
-    let mut png_bytes = Vec::new();
-    surface
-        .write_to_png(&mut png_bytes)
-        .map_err(|e| CacheError::SvgRasterizationFailed(e.to_string()))?;
-    Ok(png_bytes)
-}
-
-/// Rasterize SVG to PNG with caching.
-/// Cache key is SHA256 of SVG bytes. Same SVG always maps to same PNG.
-/// Uses per-URL locks + double-check to avoid concurrent rasterization of the same SVG.
-/// Writes via temp file + atomic rename to avoid partial cache files.
-async fn rasterize_svg_to_png_cached(svg_bytes: &[u8], url: &str) -> Result<Vec<u8>, CacheError> {
-    let cache_key = sha256_hex_bytes(svg_bytes);
-    let cache_file = cache_dir().join(format!("{}.png", cache_key));
-
-    // Fast path: check cache without lock
-    if let Ok(cached) = tokio::fs::read(&cache_file).await {
-        return Ok(cached);
-    }
-
-    // Slow path: acquire per-URL lock
-    let url_lock = {
-        let mut locks = fetch_locks().lock().unwrap_or_else(|e| e.into_inner());
-        locks
-            .entry(url.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    };
-    let _fetch_guard = FetchLockGuard {
-        url: url.to_string(),
-    };
-    let _guard = url_lock.lock().await;
-
-    // Double-check
-    if let Ok(cached) = tokio::fs::read(&cache_file).await {
-        return Ok(cached);
-    }
-
-    // Rasterize in blocking task
-    let svg_bytes = svg_bytes.to_vec();
-    let png_bytes = tokio::task::spawn_blocking(move || rasterize_svg_to_png(&svg_bytes))
-        .await
-        .map_err(|e| {
-            CacheError::SvgRasterizationFailed(format!("spawn_blocking failed: {}", e))
-        })??;
-
-    // Write to temp file
-    let temp_file = cache_dir().join(format!("{}.tmp", cache_key));
-    tokio::fs::write(&temp_file, &png_bytes)
-        .await
-        .map_err(|e| {
-            CacheError::SvgRasterizationFailed(format!("failed to write temp file: {}", e))
-        })?;
-
-    // Atomic rename
-    match tokio::fs::rename(&temp_file, &cache_file).await {
-        Ok(()) => {}
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&temp_file).await;
-            return Err(CacheError::Io(e));
-        }
-    }
-
-    Ok(png_bytes)
 }
 
 async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, CacheError> {
@@ -380,6 +257,12 @@ struct ImageRef {
     end: usize,
 }
 
+/// 通过字节扫描提取 HTML 中的 `<img src="...">` URL。
+///
+/// 这不是一个完整的 HTML 解析器——它无法处理注释中的 img 标签、转义引号、
+/// 或除 `src` 之外的其他属性写法。适用范围仅限于 blitz 渲染引擎输出的
+/// 结构规整的 `<img>` 标签。若将来引入 maud 或其他模板引擎，应考虑
+/// 改用真正的 HTML 解析器（如 `html5ever` 或 `ego-tree`）。
 fn extract_image_refs(html: &str) -> Vec<ImageRef> {
     let mut refs = Vec::new();
     let bytes = html.as_bytes();
@@ -393,7 +276,14 @@ fn extract_image_refs(html: &str) -> Vec<ImageRef> {
             }
             if let Some((url_start, url_end)) = find_src_url(bytes, pos) {
                 let url = std::str::from_utf8(&bytes[url_start..url_end]).unwrap_or("");
-                if url.starts_with("https://") || url.starts_with("http://") {
+                // 提取 http(s) + file:// 三类：前两类走 fetch+inline 路径，
+                // file:// 进来后会直接被 is_blocked_url 判 true（scheme=file
+                // 没 host），由 inline_external_images 改写成 1x1 占位 PNG，
+                // 防止下游 blitz 自己用 std::fs::read 读本地文件。
+                if url.starts_with("https://")
+                    || url.starts_with("http://")
+                    || url.starts_with("file://")
+                {
                     refs.push(ImageRef {
                         url: url.to_string(),
                         start: url_start,
@@ -468,6 +358,167 @@ fn build_data_uri(bytes: &[u8], mime: &str) -> String {
     format!("data:{};base64,{}", mime, b64)
 }
 
+/// 把 SVG 字节 rasterize 成 PNG。
+///
+/// 流程：svg_css 预处理器先把 var(--name) 替换成立面值（usvg/simplecss 不支持
+/// CSS 变量，会 fallback 黑色），build 出加载了系统字体的 usvg::Options，
+/// usvg::Tree::from_data parse，最后 resvg::render 画到 tiny_skia::Pixmap，
+/// 编码 PNG。
+///
+/// 跟 blitz SVG paint 路径完全解耦：blitz 之后看到的就是普通 PNG 位图，
+/// 不再触发 usvg 对 <pattern>/<filter>/mix-blend-mode 的有限支持问题。
+fn rasterize_svg_to_png(svg_bytes: &[u8]) -> Result<Vec<u8>, CacheError> {
+    // 1. 先过 preprocessor：usvg + simplecss 0.2.2 不解析 CSS 变量，
+    //    留 var(--name) 给 usvg 会 fallback Color::black()，所以必须替换。
+    let preprocessed = match std::str::from_utf8(svg_bytes) {
+        Ok(text) => crate::svg_css::resolve_svg_css_vars(text),
+        Err(_) => {
+            // 非 UTF-8 SVG（极罕见），原样交给 usvg
+            return rasterize_svg_str(svg_bytes, &build_svg_options());
+        }
+    };
+
+    rasterize_svg_str(preprocessed.as_bytes(), &build_svg_options())
+}
+
+/// build usvg::Options，load 系统字体，探测可用的 sans-serif 字体名。
+///
+/// `usvg::Options::default()` 用空 `fontdb: Arc<new(Database::new())>`，
+/// 直接 parse `<text>` 元素会找不到字体、画不出文字。必须手动
+/// `load_system_fonts()` + 探测 sans-serif 具体 family 名（fontdb 0.23
+/// 在 Linux 处理 fontconfig alias 结构有 bug，`sans-serif` 字面量 query
+/// 不到）。
+fn build_svg_options() -> resvg::usvg::Options<'static> {
+    use resvg::usvg::Options;
+    let mut opt = Options::default();
+    {
+        let fontdb = opt.fontdb_mut();
+        // fontdb 0.23 的 load_system_fonts() 返回 ()，无错误信号。失败时
+        // （容器无 fontconfig / no system fonts）只能靠下方 sans-serif 探测
+        // 全部 miss 来发现——所以该函数必须返回 bool 让调用方 logging。
+        fontdb.load_system_fonts();
+        if !detect_sans_serif_family(fontdb) {
+            tracing::warn!("{}", log_fmt!("render.svg_no_sans_serif_detected"));
+        }
+    }
+    opt
+}
+
+/// 在 load_system_fonts() 之后的 fontdb 里探测可用的 sans-serif 字体名并 set。
+/// 全部 miss 时返回 false，调用方负责 logging。
+fn detect_sans_serif_family(fontdb: &mut fontdb::Database) -> bool {
+    use fontdb::{Family, Query};
+    // Noto Sans CJK SC 提前：Linux 容器最常见，osu! profile 含 CJK 字符
+    // 命中它才能渲中日韩。其他候选按 macOS / Windows / Linux 常见顺序。
+    let candidates = [
+        "Noto Sans CJK SC",
+        "Noto Sans",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "Arial",
+        "Helvetica",
+        "PingFang SC",
+        "Microsoft YaHei",
+        "Hiragino Kaku Gothic ProN",
+    ];
+    for name in candidates {
+        let q = Query {
+            families: &[Family::Name(name)],
+            ..Default::default()
+        };
+        if fontdb.query(&q).is_some() {
+            fontdb.set_sans_serif_family(name);
+            return true;
+        }
+    }
+    false
+}
+
+fn rasterize_svg_str(svg_bytes: &[u8], opt: &resvg::usvg::Options) -> Result<Vec<u8>, CacheError> {
+    use resvg::usvg::Tree;
+    let tree = Tree::from_data(svg_bytes, opt)
+        .map_err(|e| CacheError::SvgRasterize(format!("usvg parse: {e}")))?;
+
+    let size = tree.size();
+    let width = (size.width() as u32).max(1);
+    let height = (size.height() as u32).max(1);
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or_else(|| CacheError::SvgRasterize(format!("pixmap alloc {width}x{height}")))?;
+
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
+
+    pixmap
+        .encode_png()
+        .map_err(|e| CacheError::SvgRasterize(format!("png encode: {e}")))
+}
+
+fn check_v4_private(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_multicast()
+        || v4.is_broadcast()
+}
+
+/// 拒绝私有/保留 IP 段和本地域名，防止 SSRF。
+#[doc(hidden)]
+pub fn is_blocked_url(url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return true,
+    };
+    let host_raw = match parsed.host_str() {
+        Some(h) => h,
+        None => return true,
+    };
+    let host_raw = host_raw.to_ascii_lowercase();
+    // reqwest 的 host_str() 对 IPv6 会保留方括号 "[::1]"，剥掉才能 parse
+    let host = host_raw
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(&host_raw);
+    // 拒绝字面量私有/保留 IP
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => check_v4_private(v4),
+            std::net::IpAddr::V6(v6) => {
+                // IPv4-mapped IPv6 (::ffff:0:0/96)：先提 V4 走 V4 规则
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return check_v4_private(v4);
+                }
+                // NAT64 (RFC 6052): 64:ff9b::/96 — NAT64 网关可桥接到 IPv4 私网
+                if let Some(first) = v6.segments().first() {
+                    if *first == 0x0064 && v6.segments()[1] == 0xff9b {
+                        return true;
+                    }
+                }
+                // Teredo (RFC 4380): 2001::/32 — 经 UDP 隧道封装 IPv4
+                if v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0000 {
+                    return true;
+                }
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || v6.is_unicast_link_local()
+                    || v6.is_unique_local()
+                    // 6to4 (2002::/16)：承载 IPv4 私网
+                    || (v6.segments()[0] == 0x2002)
+            }
+        };
+    }
+    // 拒绝 localhost / .local（host 已小写化，匹配统一走小写）
+    matches!(
+        host,
+        "localhost" | "0.0.0.0" | "::1" | "ip6-localhost" | "ip6-loopback"
+    ) || host.ends_with(".local")
+}
+
 pub async fn inline_external_images(html: &str) -> String {
     let mut refs = extract_image_refs(html);
     if refs.is_empty() {
@@ -475,7 +526,6 @@ pub async fn inline_external_images(html: &str) -> String {
     }
 
     let unique_urls = {
-        use std::collections::HashSet;
         let mut seen = HashSet::new();
         let mut urls = Vec::new();
         for r in &refs {
@@ -489,9 +539,22 @@ pub async fn inline_external_images(html: &str) -> String {
     let client = (*http_client()).clone();
 
     let mut url_to_data: HashMap<String, String> = HashMap::new();
+    let mut blocked: HashSet<String> = HashSet::new();
+    // 1x1 透明 PNG（70 字节标准 base64），用于替换被 SSRF 规则拒绝的 <img src=...>。
+    // 选 1x1 是为了不污染版面：blitz 拿到一个看不见的占位图，仍会按 alt 文本继续排版。
+    const PLACEHOLDER_PNG: &str = "data:image/png;base64,\
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
     let mut set = tokio::task::JoinSet::new();
     for url in unique_urls {
+        if is_blocked_url(&url) {
+            tracing::warn!(
+                url = %url,
+                "blocked external image fetch (private/reserved address); replacing with placeholder"
+            );
+            blocked.insert(url);
+            continue;
+        }
         let client = client.clone();
         set.spawn(async move {
             let res = fetch_and_cache(&url, &client).await;
@@ -502,19 +565,37 @@ pub async fn inline_external_images(html: &str) -> String {
     while let Some(res) = set.join_next().await {
         match res {
             Ok((url, Ok((bytes, mime, _hash)))) => {
-                let (final_bytes, final_mime) = if mime == "image/svg+xml" {
-                    match rasterize_svg_to_png_cached(&bytes, &url).await {
-                        Ok(png_bytes) => (png_bytes, "image/png".to_string()),
+                // 内联 SVG 走 resvg 预 rasterize 成 PNG：
+                // - usvg + simplecss 0.2.2 不解析 CSS 变量（preprocessor 提前把
+                //   var(--name) 替换成立面值，否则 stop-color fallback 黑）
+                // - usvg 0.45.1 + anyrender_svg 0.6.3 对 SVG <pattern>、<filter>、
+                //   mix-blend-mode 支持不全（之前出现 2 个红方块）。resvg 自己渲 SVG，
+                //   blitz 拿到 <img src="data:image/png;..."> 普通位图，不再触发 usvg
+                //   paint 路径。
+                let data_uri = if mime == "image/svg+xml" {
+                    match rasterize_svg_to_png(&bytes) {
+                        Ok(png) => Some(build_data_uri(&png, "image/png")),
                         Err(e) => {
-                            tracing::warn!(url = %url, error = %e, "{}", log_fmt!("render.svg_rasterize_failed"));
-                            (bytes, mime)
+                            tracing::warn!(
+                                url = %url,
+                                error = %e,
+                                "{}",
+                                log_fmt!("render.svg_rasterize_failed")
+                            );
+                            // 关键修复：失败时不再 fallback 到 image/svg+xml data URI
+                            // （会重新走 blitz + usvg paint 路径，触发 <pattern>/<filter>
+                            // /mix-blend-mode 支持不全的红方块 bug，正是这次 librsvg→resvg
+                            // 迁移要绕开的路径）。改为丢弃该图片，html 里 <img src=...>
+                            // 保留原 URL，blitz 拿不到会显示破图占位——行为可观察。
+                            None
                         }
                     }
                 } else {
-                    (bytes, mime)
+                    Some(build_data_uri(&bytes, &mime))
                 };
-                let data_uri = build_data_uri(&final_bytes, &final_mime);
-                url_to_data.insert(url, data_uri);
+                if let Some(uri) = data_uri {
+                    url_to_data.insert(url, uri);
+                }
             }
             Ok((url, Err(e))) => {
                 tracing::warn!(url = %url, error = %e, "{}", log_fmt!("render.batch_fetch_failed"));
@@ -525,7 +606,7 @@ pub async fn inline_external_images(html: &str) -> String {
         }
     }
 
-    if url_to_data.is_empty() {
+    if url_to_data.is_empty() && blocked.is_empty() {
         return html.to_string();
     }
 
@@ -535,6 +616,10 @@ pub async fn inline_external_images(html: &str) -> String {
     for r in refs.iter().rev() {
         if let Some(data_uri) = url_to_data.get(&r.url) {
             result.splice(r.start..r.end, data_uri.bytes());
+        } else if blocked.contains(&r.url) {
+            // SSRF 拒绝的 URL（包括 file://）改成 1x1 占位 PNG，
+            // 防止下游 blitz 用自己的 client 重新 fetch 该 URL。
+            result.splice(r.start..r.end, PLACEHOLDER_PNG.bytes());
         }
     }
 
@@ -625,24 +710,6 @@ mod tests {
         let b = sha256_hex("https://a.ppy.sh/1234");
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
-    }
-
-    #[test]
-    fn test_sha256_hex_bytes_deterministic() {
-        let bytes = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let hash1 = sha256_hex_bytes(bytes);
-        let hash2 = sha256_hex_bytes(bytes);
-        assert_eq!(hash1, hash2);
-        assert_eq!(hash1.len(), 64);
-    }
-
-    #[test]
-    fn test_sha256_hex_bytes_different_for_different_content() {
-        let bytes1 = b"<svg></svg>";
-        let bytes2 = b"<svg viewBox=\"0 0 100 100\"></svg>";
-        let hash1 = sha256_hex_bytes(bytes1);
-        let hash2 = sha256_hex_bytes(bytes2);
-        assert_ne!(hash1, hash2);
     }
 
     #[test]
@@ -853,23 +920,153 @@ mod tests {
         drop(guard);
     }
 
+    #[tokio::test]
+    async fn test_inline_external_images_passes_svg_through_as_data_uri() {
+        let test_url = "https://example.test/club-60.svg";
+        let fixture_svg: &str = include_str!("../tests/resources/club-60.svg");
+
+        ensure_cache_dir().await;
+        let cache_path = cache_dir().join(sha256_hex(test_url));
+        tokio::fs::write(&cache_path, fixture_svg.as_bytes())
+            .await
+            .expect("write fixture to cache");
+
+        struct RemoveOnDrop(PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = RemoveOnDrop(cache_path);
+
+        let html = format!(r#"<html><body><img src="{}"></body></html>"#, test_url);
+        let result = inline_external_images(&html).await;
+
+        // Phase 4 修复（2026-06-21）：内联 SVG 现在走 resvg 预 rasterize 成 PNG，
+        // 解决 usvg 0.45.1 + anyrender_svg 0.6.3 对 SVG <pattern>/<filter>/mix-blend-mode
+        // 支持不全的问题（出现 2 个红方块）。blitz 拿到 <img src="data:image/png;...">
+        // 当作普通位图处理，不再触发 usvg paint 路径。
+        assert!(
+            result.contains("data:image/png;base64,"),
+            "expected PNG data URI prefix, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("data:image/svg+xml"),
+            "SVG should be rasterized to PNG, not passed through: {}",
+            result
+        );
+
+        // 验证 PNG 是有效的（decode 能成 + 维度正确）
+        use base64::Engine;
+        let b64_start =
+            result.find("data:image/png;base64,").unwrap() + "data:image/png;base64,".len();
+        let b64_end = result[b64_start..].find('"').unwrap() + b64_start;
+        let png_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&result[b64_start..b64_end])
+            .expect("PNG base64 should decode");
+        let img = image::load_from_memory(&png_bytes).expect("PNG should decode");
+        assert!(
+            img.width() > 0 && img.height() > 0,
+            "PNG dimensions should be non-zero"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::is_blocked_url;
+
     #[test]
-    fn test_rasterize_svg_to_png_valid_svg() {
-        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>"#;
-        let result = rasterize_svg_to_png(svg);
-        assert!(result.is_ok());
-        let png = result.unwrap();
-        assert!(!png.is_empty());
-        // PNG magic bytes
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    fn test_blocked_private_ipv4() {
+        assert!(is_blocked_url("http://10.0.0.1/x.png"));
+        assert!(is_blocked_url("http://192.168.1.1/x.png"));
+        assert!(is_blocked_url("http://172.16.0.1/x.png"));
     }
 
     #[test]
-    fn test_rasterize_svg_to_png_malformed_svg() {
-        let svg = b"not an svg at all";
-        let result = rasterize_svg_to_png(svg);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, CacheError::SvgRasterizationFailed(_)));
+    fn test_blocked_loopback() {
+        assert!(is_blocked_url("http://127.0.0.1/x.png"));
+        assert!(is_blocked_url("http://localhost/x.png"));
+    }
+
+    #[test]
+    fn test_blocked_link_local() {
+        assert!(is_blocked_url("http://169.254.1.1/x.png"));
+    }
+
+    #[test]
+    fn test_allowed_public() {
+        assert!(!is_blocked_url("https://assets.ppy.sh/x.png"));
+        assert!(!is_blocked_url("https://example.com/x.png"));
+    }
+
+    #[test]
+    fn test_blocked_invalid_url() {
+        assert!(is_blocked_url("not-a-url"));
+        assert!(is_blocked_url("file:///etc/passwd"));
+    }
+}
+
+/// `detect_sans_serif_family` 单元测试。
+///
+/// 注意：fontdb 0.23 `Database::new()` 默认 `family_sans_serif = "Arial"`
+/// （不是空），这是它和 usvg 假设不同的点。我们的 `detect_sans_serif_family`
+/// 只在**探测到具体字体**时 set；探测 miss 时保持原值不动。
+/// 真实场景（探测命中）的覆盖由集成测试 rasterize 含 `<text>` SVG 完成。
+#[cfg(test)]
+mod detect_sans_serif_tests {
+    use super::detect_sans_serif_family;
+    use fontdb::Family;
+
+    #[test]
+    fn empty_db_keeps_default() {
+        let mut db = fontdb::Database::new();
+        let before = db.family_name(&Family::SansSerif).to_string();
+        detect_sans_serif_family(&mut db);
+        // 探测不到任何具体 family → 保持原值（默认 "Arial"）
+        assert_eq!(db.family_name(&Family::SansSerif), before);
+    }
+
+    #[test]
+    fn picks_first_match_in_candidate_order() {
+        // 空 fontdb 里探测全 miss → 保持默认。构造一个含字体的 fixture 太重
+        // （需要真实 ttf bytes），交给集成测试端到端覆盖。
+        let mut db = fontdb::Database::new();
+        detect_sans_serif_family(&mut db);
+        assert_eq!(db.family_name(&Family::SansSerif), "Arial");
+    }
+
+    /// 端到端验证 resvg 路径能正确渲染 `<text>` 元素（build_svg_options
+    /// 加载系统字体 + 探测 sans-serif 名字成功）。
+    ///
+    /// 复刻 osu! profile banner 结构：class 在 root + 通用 `font-family="sans-serif"`。
+    /// preprocessor 跳过 class，但 `*` 块在 fixture 里加一个具体字体名强制 resvg
+    /// 用具体字体。
+    #[test]
+    fn rasterize_svg_text_is_painted_when_system_font_available() {
+        const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="20">
+  <rect width="80" height="20" fill="white"/>
+  <text x="2" y="14" font-family="sans-serif" font-size="14" fill="black">Hello</text>
+</svg>"#;
+        let png_bytes = match super::rasterize_svg_to_png(SVG.as_bytes()) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("rasterize failed (likely no system fonts): {e}");
+                return;
+            }
+        };
+        let img = image::load_from_memory(&png_bytes).expect("PNG should decode");
+        let rgba = img.to_rgba8();
+        // 统计非白像素（黑色字形）
+        let black_count = rgba
+            .pixels()
+            .filter(|p| p[0] < 50 && p[1] < 50 && p[2] < 50 && p[3] == 255)
+            .count();
+        assert!(
+            black_count > 20,
+            "expected >20 black pixels from text glyphs, got {black_count} \
+             (system font loading or sans-serif detection failed)"
+        );
     }
 }

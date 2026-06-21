@@ -475,16 +475,18 @@ fn render_detail_cards(data: &ScoreCardData) -> String {
         </div>"#,
     );
 
+    fn pp_breakdown_sum(b: &osubot_types::PpBreakdown) -> f64 {
+        b.aim.filter(|&v| v > 0.0).unwrap_or(0.0)
+            + b.speed.filter(|&v| v > 0.0).unwrap_or(0.0)
+            + if b.accuracy > 0.0 { b.accuracy } else { 0.0 }
+            + b.flashlight.filter(|&v| v > 0.0).unwrap_or(0.0)
+            + b.difficulty.filter(|&v| v > 0.0).unwrap_or(0.0)
+    }
+
     let has_breakdown = score
         .pp_breakdown
         .as_ref()
-        .map(|b| {
-            b.aim.filter(|&v| v > 0.0).unwrap_or(0.0)
-                + b.speed.filter(|&v| v > 0.0).unwrap_or(0.0)
-                + if b.accuracy > 0.0 { b.accuracy } else { 0.0 }
-                + b.flashlight.filter(|&v| v > 0.0).unwrap_or(0.0)
-                + b.difficulty.filter(|&v| v > 0.0).unwrap_or(0.0)
-        })
+        .map(pp_breakdown_sum)
         .unwrap_or(0.0)
         > 0.0;
     let has_if_acc = score.pp_if_acc.is_some();
@@ -493,43 +495,41 @@ fn render_detail_cards(data: &ScoreCardData) -> String {
         html.push_str(r#"<div class="subcard-pp-predict">"#);
     }
 
-    if has_breakdown {
-        let breakdown = score
-            .pp_breakdown
-            .as_ref()
-            .expect("guarded by has_breakdown check above");
-        html.push_str(r#"<div class="subcard-breakdown">"#);
-        if let Some(aim) = breakdown.aim.filter(|&v| v > 0.0) {
-            html.push_str(&format!(
+    if let Some(breakdown) = &score.pp_breakdown {
+        if pp_breakdown_sum(breakdown) > 0.0 {
+            html.push_str(r#"<div class="subcard-breakdown">"#);
+            if let Some(aim) = breakdown.aim.filter(|&v| v > 0.0) {
+                html.push_str(&format!(
                 r#"<span class="chip pp-chip-aim"><span class="chip-label">AIM</span> {:.0}<span class="chip-unit">pp</span></span>"#,
                 aim
             ));
-        }
-        if let Some(speed) = breakdown.speed.filter(|&v| v > 0.0) {
-            html.push_str(&format!(
+            }
+            if let Some(speed) = breakdown.speed.filter(|&v| v > 0.0) {
+                html.push_str(&format!(
                 r#"<span class="chip pp-chip-speed"><span class="chip-label">SPD</span> {:.0}<span class="chip-unit">pp</span></span>"#,
                 speed
             ));
-        }
-        if breakdown.accuracy > 0.0 {
-            html.push_str(&format!(
+            }
+            if breakdown.accuracy > 0.0 {
+                html.push_str(&format!(
                 r#"<span class="chip pp-chip-acc"><span class="chip-label">ACC</span> {:.0}<span class="chip-unit">pp</span></span>"#,
                 breakdown.accuracy
             ));
-        }
-        if let Some(fl) = breakdown.flashlight.filter(|&v| v > 0.0) {
-            html.push_str(&format!(
+            }
+            if let Some(fl) = breakdown.flashlight.filter(|&v| v > 0.0) {
+                html.push_str(&format!(
                 r#"<span class="chip pp-chip-fl"><span class="chip-label">FL</span> {:.0}<span class="chip-unit">pp</span></span>"#,
                 fl
             ));
-        }
-        if let Some(diff) = breakdown.difficulty.filter(|&v| v > 0.0) {
-            html.push_str(&format!(
+            }
+            if let Some(diff) = breakdown.difficulty.filter(|&v| v > 0.0) {
+                html.push_str(&format!(
                 r#"<span class="chip pp-chip-diff"><span class="chip-label">DIFF</span> {:.0}<span class="chip-unit">pp</span></span>"#,
                 diff
             ));
+            }
+            html.push_str(r#"</div>"#);
         }
-        html.push_str(r#"</div>"#);
     }
 
     if let Some(ref if_acc) = score.pp_if_acc {

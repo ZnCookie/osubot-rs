@@ -4,18 +4,23 @@ mod error;
 mod render;
 pub mod score_list_style;
 pub mod score_style;
-mod style;
+pub mod style;
+pub mod svg_css;
 
 use base64::Engine;
 use image::{imageops, GenericImageView};
 use osubot_core::log_fmt;
 use parley::FontContext;
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex as StdMutex, OnceLock,
+};
 
 pub use cache::{cleanup_expired, ensure_cache_dir};
 pub use error::RenderError;
+pub use render::render_html_to_image;
 
-pub const PROFILE_VIEWPORT_WIDTH: u32 = 1650;
+pub const PROFILE_VIEWPORT_WIDTH: u32 = 1000;
 
 /// !ps / !rs 渲染超时（秒）。比单 score card 渲染慢：4 列网格 HTML 体积更大，blitz 布局耗时增加。
 pub const SCORE_LIST_RENDER_TIMEOUT_SECS: u64 = 60;
@@ -55,6 +60,33 @@ fn extract_panic_message(e: tokio::task::JoinError) -> String {
     }
 }
 
+async fn run_render(
+    html: String,
+    width: u32,
+    height: u32,
+    timeout_secs: u64,
+    external_cancel: Option<Arc<AtomicBool>>,
+) -> Result<(Vec<u8>, u32, u32), RenderError> {
+    let cancel = external_cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let handle = tokio::task::spawn_blocking({
+        let cancel = cancel.clone();
+        move || {
+            let _guard = locked_render();
+            let font_ctx = get_font_context();
+            render::render_html_to_image(&html, font_ctx, width, height, &cancel)
+        }
+    });
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), handle).await {
+        Ok(Ok(Ok(r))) => Ok(r),
+        Ok(Ok(Err(e))) => Err(e),
+        Ok(Err(e)) => Err(RenderError::Panicked(extract_panic_message(e))),
+        Err(_) => {
+            cancel.store(true, Ordering::SeqCst);
+            Err(RenderError::Timeout)
+        }
+    }
+}
+
 pub fn crop_and_resize(
     img: &image::DynamicImage,
     target_w: u32,
@@ -66,11 +98,11 @@ pub fn crop_and_resize(
 
     let cropped = if current_ratio > target_ratio {
         let new_w = (h as f64 * target_ratio) as u32;
-        let left = (w - new_w) / 2;
+        let left = w.saturating_sub(new_w) / 2;
         img.crop_imm(left, 0, new_w, h)
     } else {
         let new_h = (w as f64 / target_ratio) as u32;
-        let top = (h - new_h) / 2;
+        let top = h.saturating_sub(new_h) / 2;
         img.crop_imm(0, top, w, new_h)
     };
 
@@ -82,13 +114,13 @@ pub fn extract_dominant_hue(img: &image::DynamicImage) -> (u16, u16) {
     let rgb = small.to_rgb8();
 
     let (mut r_sum, mut g_sum, mut b_sum) = (0u64, 0u64, 0u64);
-    let pixels: Vec<_> = rgb.pixels().collect();
-    let count = pixels.len() as u64;
+    let mut count = 0u64;
 
-    for p in &pixels {
+    for p in rgb.pixels() {
         r_sum += p[0] as u64;
         g_sum += p[1] as u64;
         b_sum += p[2] as u64;
+        count += 1;
     }
 
     let r = r_sum as f64 / count as f64 / 255.0;
@@ -119,7 +151,7 @@ pub fn extract_dominant_hue(img: &image::DynamicImage) -> (u16, u16) {
     };
 
     let sat = (s * 100.0).clamp(25.0, 80.0) as u16;
-    let hue = (h as u16) % 360;
+    let hue = (h as i64).rem_euclid(360) as u16;
 
     (hue, sat)
 }
@@ -259,32 +291,7 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     let html = score_style::wrap_score_html(&data);
     tracing::debug!("{}", log_fmt!("render.html_generated"));
 
-    let font_ctx = get_font_context();
-    let cancel =
-        external_cancel.unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    let cancel_flag = cancel.clone();
-
-    let join_handle = tokio::task::spawn_blocking(move || {
-        let _guard = locked_render();
-        render::render_html_to_image(&html, font_ctx, 2560, 1440, &cancel_flag)
-    });
-    let abort_handle = join_handle.abort_handle();
-
-    let render_result = tokio::time::timeout(std::time::Duration::from_secs(60), join_handle).await;
-
-    let (pixels, w, h) = match render_result {
-        Ok(Ok(result)) => result?,
-        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
-        Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Release);
-            abort_handle.abort();
-            tracing::warn!("{}", log_fmt!("render.score_card_timeout"));
-            return Err(RenderError::Render(
-                log_fmt!("render.err_render_timeout").to_string(),
-            ));
-        }
-    };
-
+    let (pixels, w, h) = run_render(html, 2560, 1440, 60, external_cancel).await?;
     let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;
     Ok(jpeg)
 }
@@ -297,33 +304,8 @@ pub async fn render_profile_card(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
-    let html_with_inlined_images = cache::inline_external_images(html).await;
-    let wrapped_html =
-        style::wrap_osu_profile_html(&html_with_inlined_images, profile_hue, avatar_url, username);
-    let font_ctx = get_font_context();
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let cancel_flag = cancel.clone();
-
-    let join_handle = tokio::task::spawn_blocking(move || {
-        let _guard = locked_render();
-        render::render_html_to_image(&wrapped_html, font_ctx, width, height, &cancel_flag)
-    });
-    let abort_handle = join_handle.abort_handle();
-
-    let render_result = tokio::time::timeout(std::time::Duration::from_secs(60), join_handle).await;
-
-    let (mut pixels, mut w, mut h) = match render_result {
-        Ok(Ok(result)) => result?,
-        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
-        Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Release);
-            abort_handle.abort();
-            tracing::warn!("{}", log_fmt!("render.profile_card_timeout"));
-            return Err(RenderError::Render(
-                log_fmt!("render.err_render_timeout").to_string(),
-            ));
-        }
-    };
+    let wrapped_html = style::build_profile_html(html, profile_hue, avatar_url, username).await;
+    let (mut pixels, mut w, mut h) = run_render(wrapped_html, width, height, 60, None).await?;
 
     const MAX_PHYSICAL_HEIGHT: u32 = 24000;
     if h > MAX_PHYSICAL_HEIGHT {
@@ -480,45 +462,14 @@ pub async fn render_score_list_card(
     let rows = (scores.len() as u32).div_ceil(4);
     let estimated_height = 640 + 36 + rows * 400;
 
-    let font_ctx = get_font_context();
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let cancel_flag = cancel.clone();
-
-    let join_handle = tokio::task::spawn_blocking(move || {
-        let _guard = locked_render();
-        render::render_html_to_image(&html, font_ctx, 2560, estimated_height, &cancel_flag)
-    });
-    let abort_handle = join_handle.abort_handle();
-
-    let render_result = tokio::time::timeout(
-        std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
-        join_handle,
+    let (pixels, w, h) = run_render(
+        html,
+        2560,
+        estimated_height,
+        SCORE_LIST_RENDER_TIMEOUT_SECS,
+        None,
     )
-    .await;
-
-    let (pixels, w, h) = match render_result {
-        Ok(Ok(result)) => result?,
-        Ok(Err(e)) => return Err(RenderError::Render(extract_panic_message(e))),
-        Err(_) => {
-            cancel.store(true, std::sync::atomic::Ordering::Release);
-            abort_handle.abort();
-            tracing::warn!(
-                "{}",
-                log_fmt!(
-                    "render.score_list_timeout",
-                    secs = SCORE_LIST_RENDER_TIMEOUT_SECS
-                )
-            );
-            return Err(RenderError::Render(
-                log_fmt!(
-                    "render.err_score_list_timeout",
-                    secs = SCORE_LIST_RENDER_TIMEOUT_SECS
-                )
-                .to_string(),
-            ));
-        }
-    };
-
+    .await?;
     let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;
     Ok(jpeg)
 }
@@ -526,6 +477,76 @@ pub async fn render_score_list_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_extract_panic_message_from_str_panic() {
+        let err = tokio::task::spawn_blocking(|| {
+            panic!("intentional test panic: something went wrong");
+        })
+        .await
+        .unwrap_err();
+        let msg = extract_panic_message(err);
+        assert!(msg.contains("intentional test panic: something went wrong"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_panic_message_from_string_panic() {
+        let s = String::from("owned string panic");
+        let err = tokio::task::spawn_blocking(move || {
+            panic!("{}", s);
+        })
+        .await
+        .unwrap_err();
+        let msg = extract_panic_message(err);
+        assert!(msg.contains("owned string panic"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_panic_message_cancelled() {
+        let handle = tokio::task::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        });
+        handle.abort_handle().abort();
+        let err = handle.await.unwrap_err();
+        let msg = extract_panic_message(err);
+        assert!(msg.contains("cancelled") || msg.contains("Cancelled") || msg.contains("task"));
+    }
+
+    #[test]
+    fn test_render_error_timeout_variant() {
+        let err = RenderError::Timeout;
+        assert_eq!(err.to_string(), "Render timeout");
+    }
+
+    #[test]
+    fn test_render_error_cancelled_variant() {
+        let err = RenderError::Cancelled;
+        assert_eq!(err.to_string(), "Render cancelled");
+    }
+
+    #[test]
+    fn test_render_error_panicked_variant() {
+        let err = RenderError::Panicked("something broke".to_string());
+        assert_eq!(err.to_string(), "Render panicked: something broke");
+    }
+
+    #[test]
+    fn test_render_error_html_render_variant() {
+        let err = RenderError::HtmlRender("layout error".to_string());
+        assert_eq!(err.to_string(), "HTML render error: layout error");
+    }
+
+    #[test]
+    fn test_render_error_render_variant() {
+        let err = RenderError::Render("test error".to_string());
+        assert_eq!(err.to_string(), "Render failed: test error");
+    }
+
+    #[test]
+    fn test_render_error_encode_variant() {
+        let err = RenderError::Encode("encode error".to_string());
+        assert_eq!(err.to_string(), "Encode failed: encode error");
+    }
 
     #[tokio::test]
     #[ignore = "requires display server for font rendering; run with --ignored"]

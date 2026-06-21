@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <style>* { --accent: 135, 206, 235; }</style>
+  <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="100" y2="100">
+    <stop offset="0%" stop-color="rgb(var(--accent))" />
+    <stop offset="100%" stop-color="rgb(0, 0, 128)" />
+  </linearGradient>
+  <rect width="100" height="100" fill="url(#g)" />
+</svg>

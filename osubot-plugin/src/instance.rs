@@ -3,7 +3,11 @@ use osubot_core::log_fmt;
 use crate::bridge::HostServices;
 use crate::types::{PluginAction, PluginMetadata};
 use std::time::Duration;
-use wasmtime::{Engine, Instance, Memory, Module, Store};
+use wasmtime::{Instance, Memory, Module, Store};
+
+/// 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）。
+/// epoch 每 500μs 递增一次，20_000 个 tick = 10 秒。
+const EPOCH_DEADLINE_TICKS: u64 = 20_000;
 
 fn read_json_from_memory(
     memory: &Memory,
@@ -45,15 +49,13 @@ pub struct PluginInstanceParams {
 
 impl PluginInstance {
     pub fn new(
-        _engine: &Engine,
         linker: &wasmtime::Linker<HostServices>,
         module: &Module,
         params: PluginInstanceParams,
         mut store: Store<HostServices>,
     ) -> Result<Self, String> {
         // 10 秒 epoch deadline（与 dispatch() 中的 tokio::timeout 一致）。
-        // epoch 每 500μs 递增一次，20_000 个 tick = 10 秒。
-        store.set_epoch_deadline(20_000);
+        store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
         let instance = linker
             .instantiate(&mut store, module)
             .map_err(|e| format!("instantiate {}: {e}", params.name))?;
@@ -73,6 +75,10 @@ impl PluginInstance {
             .map_err(|e| format!("metadata type error: {e}"))?
             .call(&mut store, ())
             .map_err(|e| format!("metadata call failed: {e}"))?;
+
+        if metadata_ptr == 0 {
+            return Err("plugin returned null pointer (OOM?)".into());
+        }
 
         let metadata_json = read_json_from_memory(&memory, &store, metadata_ptr)?;
         let metadata: PluginMetadata =
@@ -132,18 +138,23 @@ impl PluginInstance {
             .and_then(|e| e.into_func())
             .ok_or("missing on_load export")?;
         // 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）
-        self.store.set_epoch_deadline(20_000);
+        self.store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
         let ptr: u32 = func
             .typed::<(), u32>(&self.store)
             .map_err(|e| e.to_string())?
             .call(&mut self.store, ())
             .map_err(|e| format!("on_load failed: {e}"))?;
-        self.dealloc_result(ptr);
+        if ptr != 0 {
+            self.dealloc_result(ptr);
+        }
         Ok(())
     }
 
     pub fn on_command(&mut self, cmd_json: &str) -> Result<PluginAction, String> {
         let result_ptr = self.call_with_json("on_command", cmd_json)?;
+        if result_ptr == 0 {
+            return Err("plugin returned null pointer (OOM?)".into());
+        }
         let result_json = read_json_from_memory(&self.memory, &self.store, result_ptr);
         self.dealloc_result(result_ptr);
         serde_json::from_str(&result_json?).map_err(|e| format!("invalid PluginAction: {e}"))
@@ -151,6 +162,9 @@ impl PluginInstance {
 
     pub fn on_message(&mut self, msg_json: &str) -> Result<PluginAction, String> {
         let result_ptr = self.call_with_json("on_message", msg_json)?;
+        if result_ptr == 0 {
+            return Err("plugin returned null pointer (OOM?)".into());
+        }
         let result_json = read_json_from_memory(&self.memory, &self.store, result_ptr);
         self.dealloc_result(result_ptr);
         serde_json::from_str(&result_json?).map_err(|e| format!("invalid PluginAction: {e}"))
@@ -162,7 +176,9 @@ impl PluginInstance {
         }
         let payload = serde_json::json!({"tick_id": tick_id});
         let ptr = self.call_with_json("on_tick", &payload.to_string())?;
-        self.dealloc_result(ptr);
+        if ptr != 0 {
+            self.dealloc_result(ptr);
+        }
         Ok(())
     }
 
@@ -176,19 +192,21 @@ impl PluginInstance {
             .and_then(|e| e.into_func())
             .ok_or("missing on_unload export")?;
         // 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）
-        self.store.set_epoch_deadline(20_000);
+        self.store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
         let ptr: u32 = func
             .typed::<(), u32>(&self.store)
             .map_err(|e| e.to_string())?
             .call(&mut self.store, ())
             .map_err(|e| format!("on_unload failed: {e}"))?;
-        self.dealloc_result(ptr);
+        if ptr != 0 {
+            self.dealloc_result(ptr);
+        }
         Ok(())
     }
 
     fn call_with_json(&mut self, export_name: &str, json: &str) -> Result<u32, String> {
         // 10 秒 epoch deadline（与 dispatch() tokio::timeout 一致）
-        self.store.set_epoch_deadline(20_000);
+        self.store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
 
         let func = self
             .instance
@@ -208,6 +226,11 @@ impl PluginInstance {
             .map_err(|e| e.to_string())?
             .call(&mut self.store, (bytes.len() as u32,))
             .map_err(|e| format!("alloc failed: {e}"))?;
+        // plugin alloc OOM 时返回 null；如果直接写 wasm 内存 offset 0
+        // 会破坏 runtime 状态（函数指针 / 长度前缀）。拒绝而不是覆盖。
+        if ptr == 0 {
+            return Err("plugin alloc returned null pointer (OOM?)".into());
+        }
 
         self.memory
             .write(&mut self.store, ptr as usize, bytes)
@@ -245,9 +268,12 @@ impl PluginInstance {
             .get_export(&mut self.store, "dealloc")
             .and_then(|e| e.into_func())
         {
-            let _ = func
+            if let Err(e) = func
                 .typed::<(u32, u32), ()>(&self.store)
-                .and_then(|f| f.call(&mut self.store, (ptr, size)));
+                .and_then(|f| f.call(&mut self.store, (ptr, size)))
+            {
+                tracing::warn!(plugin = %self.name, error = %e, "{}", log_fmt!("plugin.dealloc_failed"));
+            }
         }
     }
 }

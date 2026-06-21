@@ -9,18 +9,18 @@ pub async fn encode_jpeg(
     height: u32,
     quality: u8,
 ) -> Result<Vec<u8>, RenderError> {
-    tokio::task::spawn_blocking(move || encode_jpeg_sync(&rgba, width, height, quality))
+    tokio::task::spawn_blocking(move || encode_jpeg_sync(rgba, width, height, quality))
         .await
         .map_err(|e| RenderError::Encode(e.to_string()))?
 }
 
 fn encode_jpeg_sync(
-    rgba: &[u8],
+    rgba: Vec<u8>,
     width: u32,
     height: u32,
     quality: u8,
 ) -> Result<Vec<u8>, RenderError> {
-    let pixel_count = (width * height) as usize;
+    let pixel_count = (width as u64 * height as u64) as usize;
 
     if rgba.len() < pixel_count * 4 {
         return Err(RenderError::Encode(format!(
@@ -31,7 +31,7 @@ fn encode_jpeg_sync(
     }
 
     let img = DynamicImage::ImageRgba8(
-        image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        image::RgbaImage::from_raw(width, height, rgba)
             .ok_or_else(|| RenderError::Encode("Invalid buffer".into()))?,
     );
     let rgb_img = img.to_rgb8();

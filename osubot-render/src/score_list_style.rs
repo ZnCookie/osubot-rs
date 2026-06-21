@@ -55,11 +55,13 @@ impl ScoreListCardData {
             mods_html.push_str(r#"<span class="mod-tag">Lazer</span>"#);
         }
         if !score.mods.is_empty() {
+            use std::fmt::Write;
             for m in &score.mods {
-                mods_html.push_str(&format!(
+                let _ = write!(
+                    mods_html,
                     r#"<span class="mod-tag">{}</span>"#,
                     escape_html(m.acronym().as_str())
-                ));
+                );
             }
         }
 

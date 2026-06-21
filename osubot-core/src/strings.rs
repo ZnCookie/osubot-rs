@@ -49,6 +49,8 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "error.get_group_member_failed" => "[CQ:at,qq={qq}] 无法获取群成员列表，请稍后重试",
     "error.render_timeout" => "[CQ:at,qq={qq}] 渲染超时，请稍后重试",
     "error.render_failed" => "[CQ:at,qq={qq}] 渲染失败，请稍后重试",
+    "error.beatmap_preview_convert_unsupported" => "[CQ:at,qq={qq}] 非 osu! 谱面不支持模式转换",
+    "error.beatmap_preview_mods_invalid" => "[CQ:at,qq={qq}] !rv mod 互斥或不支持: {error}",
     "error.command_timeout" => "[CQ:at,qq={qq}] 命令处理超时，请稍后重试",
     "error.request_cancelled" => "请求已取消",
     "error.request_timeout" => "请求超时",
@@ -122,7 +124,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "mode.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 osu! 账号，无法设置默认模式",
 
     // ── 系统 ──
-    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!mode/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!ps/!rs/!ss/!profile/!mode/!rv/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",
@@ -248,6 +250,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.oauth_not_configured" => "osu! API v2 client_secret 未配置。请在 osubot.toml 中设置 osu.client_secret",
     "main.cleanup_stale_pending" => "已清理过期的待处理 OneBot API 条目",
     "main.file_watcher_exited" => "文件监控任务已退出，热重载功能不可用",
+    "main.file_watcher_join_error" => "文件监控任务 JoinHandle 错误: {error}",
     "main.no_ws_dropping_irc" => "没有活动的 WebSocket 连接，丢弃 IRC 消息",
     "main.shutdown_signal" => "收到关闭信号，正在优雅关闭...",
     "main.shutdown_no_reconnect" => "正在关闭，不再重连",
@@ -267,6 +270,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.ws_closed_reconnect" => "WebSocket 连接关闭，{secs}秒后重连",
     "main.ws_error_reconnect" => "WebSocket 错误，{secs}秒后重连",
     "main.ws_stream_ended" => "WebSocket 流结束，{secs}秒后重连",
+    "main.ws_message_rate_limited" => "WebSocket 消息速率超限（{limit} 条/秒），已丢弃",
 
     // ===== osubot/src/reload.rs =====
     "reload.coordinator_fatal" => "ReloadCoordinator 致命错误: {error}",
@@ -291,16 +295,6 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "reload.unknown_upstream" => "未知的上游 provider 类型: {provider}",
     "reload.err_read_failed" => "读取配置文件失败: {error}",
     "reload.err_toml_parse" => "TOML 解析失败: {error}",
-    "reload.err_onebot_url_empty" => "onebot_url 为空",
-    "reload.err_cmd_timeout_too_small" => "command_timeout_secs 过小（{value} < 5 秒）",
-    "reload.err_render_timeout_too_small" => "render_timeout_secs 过小（{value} < 5 秒）",
-    "reload.err_api_timeout_too_small" => "onebot_api_timeout_secs 过小（{value} < 2 秒）",
-    "reload.err_ur_timeout_too_small" => "ur_timeout_secs 过小（{value} < 3 秒）",
-    "reload.err_cmd_timeout_too_large" => "command_timeout_secs 过大（{value} > 3600 秒）",
-    "reload.err_render_timeout_too_large" => "render_timeout_secs 过大（{value} > 600 秒）",
-    "reload.err_api_timeout_too_large" => "onebot_api_timeout_secs 过大（{value} > 120 秒）",
-    "reload.err_ur_timeout_too_large" => "ur_timeout_secs 过大（{value} > 300 秒）",
-    "reload.err_sched_interval_too_large" => "scheduler.interval_minutes 过大（{value} > 1440 分钟 = 1 天）",
     "reload.unwatch_old_dir_failed" => "unwatch old plugin dir failed: {error}",
     "reload.watch_new_dir_failed" => "watch new plugin dir failed: {error}",
 
@@ -347,6 +341,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
 
     // ===== osubot/src/yumu_upstream.rs =====
     "yumu.build_request_failed" => "yumu: 构建 WS 请求失败: {error}",
+    "yumu.invalid_access_token" => "yumu: 无效的 access_token 头",
     "yumu.invalid_client_role" => "yumu: 无效的 X-Client-Role 头",
     "yumu.invalid_self_id" => "yumu: 无效的 X-Self-ID 头",
     "yumu.connect_failed" => "yumu: WS 连接失败: {error}",
@@ -576,6 +571,17 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ===== osubot-render/src/render.rs =====
     "render.resource_channel_disconnected" => "资源 channel 已断开，使用部分资源继续",
     "render.err_cancelled" => "渲染已取消",
+
+    // ===== osubot/src/main.rs (!rv) =====
+    "main.beatmap_preview_parse_failed" => "!rv 参数解析失败: {error}",
+    "main.beatmap_preview_mods_parse_failed" => "!rv mod 解析失败: {error}",
+    "main.beatmap_preview_mods_invalid" => "!rv mod 校验失败: {error}",
+    "main.beatmap_preview_convert_unsupported" => "!rv 非 osu! 谱面不支持模式转换 (source_mode={source_mode}, target_mode={target_mode})",
+    "main.beatmap_preview_convert_failed" => "!rv 谱面转换失败: {error}",
+    "main.beatmap_preview_render_failed" => "!rv 预览渲染失败: {error}",
+    "main.beatmap_preview_render_timeout" => "!rv 预览渲染超时",
+    "main.beatmap_preview_read_failed" => "!rv 读取渲染结果失败: {error}",
+    "main.beatmap_preview_send_failed" => "!rv 发送预览图片失败: {error}",
 };
 
 pub fn log_str(key: &str) -> &'static str {

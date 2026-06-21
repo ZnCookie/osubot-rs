@@ -47,7 +47,7 @@ impl IrcClient {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if !self.config.enabled {
             info!("{}", log_fmt!("irc.disabled"));
-            std::future::pending::<()>().await;
+            return Ok(());
         }
 
         let addr = format!("{}:{}", self.config.server, self.config.port);

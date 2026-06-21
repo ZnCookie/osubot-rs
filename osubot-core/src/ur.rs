@@ -107,8 +107,9 @@ async fn download_replay(
     let write_path = cache_path.clone();
     let bytes_clone = bytes.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = std::fs::create_dir_all(write_path.parent().unwrap()) {
-            tracing::warn!(error = %e, path = %write_path.parent().unwrap().display(), "{}", log_fmt!("ur.create_cache_dir_failed"));
+        let parent = write_path.parent().unwrap_or(std::path::Path::new("."));
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(error = %e, path = %parent.display(), "{}", log_fmt!("ur.create_cache_dir_failed"));
         } else if let Err(e) = std::fs::write(&write_path, &bytes_clone) {
             tracing::warn!(error = %e, path = %write_path.display(), "{}", log_fmt!("ur.write_cache_failed"));
         }
@@ -203,11 +204,15 @@ fn extract_raw_replay_frames(osr_bytes: &[u8]) -> Option<Vec<(i32, f32, f32, u32
     if pos + 4 > osr_bytes.len() {
         return None;
     }
-    let replay_len = i32::from_le_bytes(osr_bytes[pos..pos + 4].try_into().ok()?) as usize;
+    let replay_len_i32 = i32::from_le_bytes(osr_bytes[pos..pos + 4].try_into().ok()?);
+    if replay_len_i32 < 0 {
+        return None;
+    }
+    let replay_len = replay_len_i32 as usize;
     pos += 4;
 
     // Extract compressed data
-    if pos + replay_len > osr_bytes.len() {
+    if pos.checked_add(replay_len)? > osr_bytes.len() {
         return None;
     }
     let compressed = &osr_bytes[pos..pos + replay_len];

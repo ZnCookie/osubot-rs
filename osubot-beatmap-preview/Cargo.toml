@@ -1,0 +1,13 @@
+[package]
+name = "osubot-beatmap-preview"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0"
+description = "osu! beatmap preview renderer ported from osu-beatmap-preview"
+
+[dependencies]
+gif = "0.13"
+png = "0.17"
+color_quant = "1.1"
+font8x8 = "0.3"

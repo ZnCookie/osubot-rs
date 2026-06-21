@@ -22,7 +22,6 @@ fn std_breakdown_populates_aim_speed_acc() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("should return breakdown");
@@ -44,7 +43,6 @@ fn taiko_breakdown_has_difficulty_not_aim() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("should return breakdown");
@@ -79,7 +77,6 @@ fn mania_breakdown_difficulty_only_and_no_aim() {
         miss_count: 2,
         is_lazer: true,
         statistics: Some(&stats),
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("should return breakdown");
@@ -101,7 +98,6 @@ fn catch_breakdown_returns_minimal() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     });
     let pp = result.expect("catch should return breakdown");
@@ -134,7 +130,6 @@ fn std_to_mania_convert_produces_mania_breakdown() {
         miss_count: 2,
         is_lazer: true,
         statistics: Some(&stats),
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("should return breakdown for convert");
@@ -159,7 +154,6 @@ fn std_to_taiko_convert_produces_taiko_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("should return breakdown for convert");
@@ -183,7 +177,6 @@ fn std_to_catch_convert_returns_minimal() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     });
     let pp = result.expect("catch convert should return breakdown");
@@ -220,7 +213,6 @@ fn mania_if_acc_fc_has_reasonable_values() {
             miss_count: 10,
             is_lazer: true,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         1000,
@@ -258,7 +250,6 @@ fn mania_acc_95_differs_from_acc_100() {
             miss_count: 10,
             is_lazer: true,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         1000,
@@ -295,7 +286,6 @@ fn mania_acc_95_on_convert_uses_accuracy_path() {
             miss_count: 2,
             is_lazer: true,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         500,
@@ -320,7 +310,6 @@ fn std_no_mods_with_star_rating_calculates_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: Some(5.5),
         passed: true,
     })
     .expect("should return breakdown");
@@ -347,7 +336,6 @@ fn std_with_hd_populates_star_rating() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: Some(5.5),
         passed: true,
     })
     .expect("should return breakdown");
@@ -368,7 +356,6 @@ fn std_nf_only_calculates_pp() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: Some(5.5),
         passed: true,
     })
     .expect("should return breakdown");
@@ -389,7 +376,6 @@ fn std_cl_only_calculates_pp() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: Some(5.5),
         passed: true,
     })
     .expect("should return breakdown");
@@ -408,7 +394,6 @@ fn std_to_taiko_convert_populates_star_rating() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("should return breakdown for convert");
@@ -433,7 +418,6 @@ fn std_to_catch_convert_returns_star_rating() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     });
     assert!(
@@ -466,7 +450,6 @@ fn std_with_hdhr_populates_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("HDHR should return breakdown");
@@ -492,7 +475,6 @@ fn std_with_dt_populates_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("DT should return breakdown");
@@ -518,7 +500,6 @@ fn std_to_taiko_with_hd_populates_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("convert with HD should return breakdown");
@@ -546,7 +527,6 @@ fn std_to_mania_with_hd_populates_breakdown() {
         miss_count: 1,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("mania convert with HD should return breakdown");
@@ -586,7 +566,6 @@ fn failed_score_n300_zeroed() {
         miss_count: 5,
         is_lazer: false,
         statistics: Some(&stats),
-        beatmap_star_rating: None,
         passed: false,
     })
     .expect("failed score should return breakdown");
@@ -610,7 +589,6 @@ fn failed_score_nf_cl_only_does_not_take_fast_path() {
         miss_count: 10,
         is_lazer: false,
         statistics: None,
-        beatmap_star_rating: Some(5.0),
         passed: false,
     })
     .expect("failed CL score should return breakdown");
@@ -649,7 +627,6 @@ fn failed_score_mania_n300_zeroed() {
         miss_count: 3,
         is_lazer: true,
         statistics: Some(&stats),
-        beatmap_star_rating: None,
         passed: false,
     })
     .expect("failed Mania score should return breakdown");
@@ -690,7 +667,6 @@ fn if_acc_ignores_passed_field_and_assumes_full_play() {
             miss_count: 5,
             is_lazer: false,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         1000,
@@ -706,7 +682,6 @@ fn if_acc_ignores_passed_field_and_assumes_full_play() {
             miss_count: 5,
             is_lazer: false,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: false,
         },
         1000,
@@ -767,7 +742,6 @@ fn ss_ezhd_acc_100_gte_total_pp() {
         miss_count: 0,
         is_lazer: false,
         statistics: Some(&stats),
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("SS EZHD should return breakdown");
@@ -782,7 +756,6 @@ fn ss_ezhd_acc_100_gte_total_pp() {
             miss_count: 0,
             is_lazer: false,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         bm_max_combo,
@@ -853,7 +826,6 @@ fn ss_ezhd_slider_tick_miss_acc_100_is_full_map_ss() {
         miss_count: 0,
         is_lazer: false,
         statistics: Some(&stats),
-        beatmap_star_rating: None,
         passed: true,
     })
     .expect("SS tick-miss should return breakdown");
@@ -868,7 +840,6 @@ fn ss_ezhd_slider_tick_miss_acc_100_is_full_map_ss() {
             miss_count: 0,
             is_lazer: false,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         bm_max_combo,
@@ -928,7 +899,6 @@ fn ss_ezhd_acc100_equals_perfect_pp() {
             miss_count: 0,
             is_lazer: false,
             statistics: Some(&stats),
-            beatmap_star_rating: None,
             passed: true,
         },
         bm_max_combo,

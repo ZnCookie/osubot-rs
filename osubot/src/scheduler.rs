@@ -100,6 +100,7 @@ impl Scheduler {
         osubot_render::cleanup_expired(scheduler_cfg.cache_retention_days).await;
         osubot_core::cache::cleanup_replays(scheduler_cfg.cache_retention_days).await;
         osubot_core::cache::cleanup_beatmaps(scheduler_cfg.cache_retention_days).await;
+        osubot_core::cache::cleanup_previews(scheduler_cfg.cache_retention_days).await;
 
         *last = Some(now);
     }
@@ -121,7 +122,10 @@ impl Scheduler {
                 let cfg = self.config.read().await;
                 60 * cfg.scheduler.interval_minutes.max(1)
             };
-            time::sleep(time::Duration::from_secs(interval_secs)).await;
+            tokio::select! {
+                _ = time::sleep(time::Duration::from_secs(interval_secs)) => {}
+                _ = wait_for_shutdown(self.shutdown.clone()) => break,
+            }
             self.process_due_users().await;
             self.try_cleanup().await;
         }
@@ -475,5 +479,14 @@ impl Scheduler {
             }
         }
         false
+    }
+}
+
+async fn wait_for_shutdown(flag: Arc<AtomicBool>) {
+    loop {
+        if flag.load(Ordering::Acquire) {
+            return;
+        }
+        time::sleep(time::Duration::from_millis(200)).await;
     }
 }

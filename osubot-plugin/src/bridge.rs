@@ -5,6 +5,7 @@ use std::sync::Arc;
 use wasmtime::Result as WasmResult;
 use wasmtime::{Caller, Linker, StoreLimits};
 
+use crate::types::TickRegistration;
 use osubot_core::strings::user_str;
 
 // 信任模型：所有宿主函数默认信任 WASM 插件的调用意图。
@@ -13,7 +14,7 @@ use osubot_core::strings::user_str;
 // 宿主仅提供进程级保护（wasmtime 沙箱 + 限流 + 超时），不做应用层权限控制。
 
 /// HTTP 响应体最大大小限制（10MB），防止恶意或意外的大响应耗尽进程内存。
-const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_HTTP_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum BridgeError {
@@ -92,11 +93,61 @@ pub struct HostServices {
     pub send_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
     pub runtime_handle: tokio::runtime::Handle,
     pub instance_idx: usize,
-    #[allow(clippy::type_complexity)]
-    pub tick_registry: Arc<std::sync::Mutex<Vec<(usize, String, u64, u32)>>>,
+    pub tick_registry: Arc<std::sync::Mutex<Vec<TickRegistration>>>,
     pub tick_id_counter: Arc<AtomicU32>,
     pub instance_config: Option<serde_json::Value>,
     pub limiter: StoreLimits,
+}
+
+/// 测试用单线程 runtime（`OnceLock` 共享），用于构造 `Storage` 等需要 tokio 上下文的字段。
+/// 仅在 `cfg(test)` 下使用。
+#[cfg(test)]
+fn test_runtime() -> &'static tokio::runtime::Runtime {
+    use std::sync::OnceLock;
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build test tokio runtime")
+    })
+}
+
+#[cfg(test)]
+impl Default for HostServices {
+    fn default() -> Self {
+        let runtime = test_runtime();
+        // `RateLimiter::new()` 内部调用 `tokio::spawn`，需要当前线程在 runtime 上下文里。
+        let _guard = runtime.enter();
+        let storage = runtime
+            .block_on(async { osubot_core::Storage::new(":memory:").await })
+            .expect("failed to create in-memory storage");
+        Self {
+            http_client: reqwest::Client::new(),
+            blocking_http_client: reqwest::blocking::Client::new(),
+            rate_limiter: Arc::new(osubot_core::RateLimiter::new()),
+            oauth: Arc::new(osubot_core::OauthTokenCache::new(
+                String::new(),
+                String::new(),
+            )),
+            storage: Arc::new(storage),
+            send_msg_fn: Arc::new(|_group_id, _text| Ok(())),
+            runtime_handle: runtime.handle().clone(),
+            instance_idx: 0,
+            tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tick_id_counter: Arc::new(AtomicU32::new(0)),
+            instance_config: None,
+            limiter: StoreLimits::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl HostServices {
+    /// 与 `Self::default()` 等价；保留该名称以明确测试意图。
+    pub fn default_for_test() -> Self {
+        Self::default()
+    }
 }
 
 pub fn register_host_functions(linker: &mut Linker<HostServices>) -> Result<(), wasmtime::Error> {
@@ -158,6 +209,14 @@ pub fn register_host_functions(linker: &mut Linker<HostServices>) -> Result<(), 
                 .map_err(|_| wasmtime::format_err!("alloc type mismatch"))?
                 .call(&mut caller, (alloc_total,))
                 .map_err(|e| wasmtime::format_err!("alloc call: {e}"))?;
+
+            // 与 osubot-plugin/src/instance.rs:231-233 对齐：plugin alloc OOM 时
+            // 返回 0；直接写 wasm 内存 offset 0 会破坏 runtime 状态。拒绝而不是覆盖。
+            if result_ptr == 0 {
+                return Err(wasmtime::format_err!(
+                    "plugin alloc returned null pointer (OOM?)"
+                ));
+            }
 
             if let Err(e) =
                 memory.write(&mut caller, result_ptr as usize, &result_len.to_le_bytes())
@@ -289,7 +348,7 @@ fn dispatch_host_call(
 
             // 检查 Content-Length 头，提前拒绝超大响应
             if let Some(len) = response.content_length() {
-                if len as usize > MAX_HTTP_RESPONSE_BYTES {
+                if len > MAX_HTTP_RESPONSE_BYTES {
                     return Err(BridgeError::HttpRequest(format!(
                         "HTTP response exceeds {}MB limit (Content-Length: {} bytes)",
                         MAX_HTTP_RESPONSE_BYTES / (1024 * 1024),
@@ -308,7 +367,7 @@ fn dispatch_host_call(
                 if n == 0 {
                     break;
                 }
-                if body.len() + n > MAX_HTTP_RESPONSE_BYTES {
+                if body.len() as u64 + n as u64 > MAX_HTTP_RESPONSE_BYTES {
                     return Err(BridgeError::HttpRequest(format!(
                         "HTTP response exceeds {}MB limit",
                         MAX_HTTP_RESPONSE_BYTES / (1024 * 1024)
@@ -403,30 +462,36 @@ fn dispatch_host_call(
                 .map_err(|e| BridgeError::Database(e.to_string()))?;
             let plugin_tick_count = registry
                 .iter()
-                .filter(|(idx, _, _, _)| *idx == services.instance_idx)
+                .filter(|t| t.plugin_idx == services.instance_idx)
                 .count();
             if plugin_tick_count >= MAX_TICKS_PER_PLUGIN
                 && !registry
                     .iter()
-                    .any(|(idx, name, _, _)| *idx == services.instance_idx && name == &tick_name)
+                    .any(|t| t.plugin_idx == services.instance_idx && t.name == tick_name)
             {
                 return Err(BridgeError::Validation(
                     user_str("bridge.tick_limit_exceeded")
                         .replace("{limit}", &MAX_TICKS_PER_PLUGIN.to_string()),
                 ));
             }
-            if let Some((existing_pos, _)) = registry
+            if let Some(existing_pos) = registry
                 .iter()
                 .enumerate()
-                .find(|(_, (idx, name, _, _))| *idx == services.instance_idx && name == &tick_name)
+                .find(|(_, t)| t.plugin_idx == services.instance_idx && t.name == tick_name)
+                .map(|(pos, _)| pos)
             {
-                registry[existing_pos].2 = interval_secs;
-                return Ok(registry[existing_pos].3.to_string());
+                registry[existing_pos].interval_secs = interval_secs;
+                return Ok(registry[existing_pos].tick_id.to_string());
             }
             let tick_id = services
                 .tick_id_counter
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            registry.push((services.instance_idx, tick_name, interval_secs, tick_id));
+            registry.push(TickRegistration {
+                plugin_idx: services.instance_idx,
+                name: tick_name,
+                interval_secs,
+                tick_id,
+            });
             Ok(tick_id.to_string())
         }
         _ => Err(BridgeError::UnknownHostCall(name.to_string())),

@@ -58,6 +58,7 @@ fn parse_send_msg_action(action_text: &str) -> Option<String> {
 
 pub struct YumuUpstream {
     url: String,
+    access_token: String,
     timeout: Duration,
     rate_limiter: RateLimiter,
 }
@@ -65,9 +66,11 @@ pub struct YumuUpstream {
 impl YumuUpstream {
     pub fn from_config(cfg: &ProviderConfig) -> Self {
         let url = cfg.url.clone().unwrap_or_else(|| YUMU_DEFAULT_URL.into());
+        let access_token = cfg.access_token.clone().unwrap_or_default();
 
         Self {
             url,
+            access_token,
             timeout: Duration::from_secs(cfg.timeout_secs),
             rate_limiter: RateLimiter::with_config(cfg.burst, cfg.rate_per_minute),
         }
@@ -100,6 +103,14 @@ impl UpstreamBindingProvider for YumuUpstream {
             }
         };
 
+        if !self.access_token.is_empty() {
+            if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
+                request.headers_mut().insert("Authorization", val);
+            } else {
+                warn!("{}", log_fmt!("yumu.invalid_access_token"));
+                return Ok(None);
+            }
+        }
         if let Ok(val) = "Universal".parse() {
             request.headers_mut().insert("X-Client-Role", val);
         } else {
@@ -296,7 +307,7 @@ mod integration_tests {
             rate_per_minute: 10,
             burst: 20,
             url: Some(YUMU_DEFAULT_URL.into()),
-            access_token: String::new(),
+            access_token: None,
             self_id: None,
             timeout_secs: 10,
         };
