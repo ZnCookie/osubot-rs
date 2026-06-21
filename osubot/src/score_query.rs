@@ -592,7 +592,9 @@ pub(crate) async fn handle_beatmap_score_query(
                     api::get_score_by_id(&rate_limiter, &oauth, sid)
                         .await
                         .map_err(|e| {
-                            warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                            if !matches!(e, api::ApiError::NotFound) {
+                                warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                            }
                             match e {
                                 api::ApiError::NotFound => user_str("query.score_not_found")
                                     .replace("{qq}", &qq.to_string()),
@@ -644,7 +646,9 @@ pub(crate) async fn handle_beatmap_score_query(
                 stats
             }
             Err(e) => {
-                warn!(user_id = user_id, error = ?e, "{}", log_fmt!("main.fetch_stats_score_id_failed"));
+                if !matches!(e, api::ApiError::NotFound) {
+                    warn!(user_id = user_id, error = ?e, "{}", log_fmt!("main.fetch_stats_score_id_failed"));
+                }
                 let _ = resp_tx
                     .send(
                         user_str("error.data_fetch_failed")
