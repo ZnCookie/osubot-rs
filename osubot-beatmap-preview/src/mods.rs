@@ -245,7 +245,9 @@ fn set_da_param(param: &str, val: f64, s: &mut ModSettings) -> Result<()> {
             check(0.0, 11.0, "HP")?;
             s.da_hp = Some(val);
         }
-        _ => unreachable!(),
+        _ => {
+            return Err(PreviewError::new(format!("unknown DA param: {param}")));
+        }
     }
     Ok(())
 }

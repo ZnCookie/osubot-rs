@@ -56,7 +56,7 @@ pub(crate) fn lane_palette(key_count: i32) -> Vec<Rgba> {
         16 => vec![G, W, Y, B, W, G, W, Y, Y, W, G, W, B, Y, W, G],
         17 => vec![G, W, Y, B, W, G, W, Y, R, Y, W, G, W, B, Y, W, G],
         18 => vec![B, G, W, Y, B, W, G, W, Y, Y, W, G, W, B, Y, W, G, B],
-        _ => unreachable!("key count clamped to [1, 18]"),
+        _ => vec![W, B, B, W],
     }
 }
 

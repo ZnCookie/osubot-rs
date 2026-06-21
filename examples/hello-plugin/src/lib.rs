@@ -4,10 +4,25 @@ use osubot_plugin_sdk::*;
 
 static CTX: PluginContext = PluginContext;
 
+/// 宿主传入的指针/长度上限，防止恶意或 buggy host 导致 OOB 读取
+const MAX_HOST_BUF: u32 = 65536;
+
 fn return_ptr<T: serde::Serialize>(val: &T) -> *const u8 {
     osubot_plugin_sdk::serialize_return(val)
         .map(|r| r.into_raw())
-        .unwrap_or(core::ptr::null())
+        .unwrap_or_else(|| {
+            // 序列化失败是 SDK 内部错误，返回 null 会导致宿主 UB
+            panic!("serialize_return failed")
+        })
+}
+
+/// 从宿主传入的指针/长度安全构造 &str，校验通过返回 Some，否则返回 None
+unsafe fn read_host_str(ptr: u32, len: u32) -> Option<&'static str> {
+    if ptr == 0 || len == 0 || len > MAX_HOST_BUF {
+        return None;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    core::str::from_utf8(slice).ok()
 }
 
 #[no_mangle]
@@ -43,9 +58,9 @@ pub extern "C" fn on_load() -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
-    let cmd_json = unsafe {
-        let slice = core::slice::from_raw_parts(cmd_ptr as *const u8, cmd_len as usize);
-        core::str::from_utf8(slice).unwrap_or("")
+    let cmd_json = match unsafe { read_host_str(cmd_ptr, cmd_len) } {
+        Some(s) => s,
+        None => return return_ptr(&PluginAction::Next),
     };
 
     let cmd: Command = match serde_json::from_str(cmd_json) {
@@ -58,7 +73,9 @@ pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
             // 使用 Intercepted 表示插件已处理（通过 send_group_msg 主动发送），
             // 宿主无需再使用 Handled 的返回值重复发送响应。
             if let Some(gid) = cmd.group_id {
-                let _ = CTX.send_group_msg(gid, "你好，这是来自 WASM 插件的消息！");
+                if let Err(e) = CTX.send_group_msg(gid, "你好，这是来自 WASM 插件的消息！") {
+                    return return_ptr(&PluginAction::Handled(format!("发送失败: {e}")));
+                }
             }
             return_ptr(&PluginAction::Intercepted)
         }
@@ -72,9 +89,9 @@ pub extern "C" fn on_command(cmd_ptr: u32, cmd_len: u32) -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn on_message(msg_ptr: u32, msg_len: u32) -> *const u8 {
-    let msg_json = unsafe {
-        let slice = core::slice::from_raw_parts(msg_ptr as *const u8, msg_len as usize);
-        core::str::from_utf8(slice).unwrap_or("")
+    let msg_json = match unsafe { read_host_str(msg_ptr, msg_len) } {
+        Some(s) => s,
+        None => return return_ptr(&PluginAction::Next),
     };
 
     let msg: QQMessage = match serde_json::from_str(msg_json) {
@@ -99,9 +116,9 @@ pub extern "C" fn on_unload() -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn on_tick(tick_ptr: u32, tick_len: u32) -> *const u8 {
-    let json = unsafe {
-        let slice = core::slice::from_raw_parts(tick_ptr as *const u8, tick_len as usize);
-        core::str::from_utf8(slice).unwrap_or("")
+    let json = match unsafe { read_host_str(tick_ptr, tick_len) } {
+        Some(s) => s,
+        None => return return_ptr(&serde_json::json!({"ok": true})),
     };
     let tick_data: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
