@@ -357,8 +357,8 @@ async fn main() {
     // Extract state + drain/in_flight before handles is consumed by spawn_irc_bridge.
     // AppState derives Clone (all fields are Arc), so this is cheap.
     let state = handles.app_state.clone();
-    let drain = handles.reload_handle.drain.clone();
-    let in_flight = handles.reload_handle.in_flight.clone();
+    let drain = handles.reload_handle.plugin.drain.clone();
+    let in_flight = handles.reload_handle.plugin.in_flight.clone();
 
     let irc_bridge_h = background::spawn_irc_bridge(handles);
 

@@ -21,19 +21,34 @@ use osubot_plugin::PluginManager;
 const DRAIN_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Clone)]
-pub struct ReloadHandle {
-    pub config: Arc<RwLock<Config>>,
-    pub pm: Arc<Mutex<Option<PluginManager>>>,
-    pub drain: Arc<AtomicBool>,
-    pub in_flight: Arc<AtomicUsize>,
-    pub onebot_api_timeout: Arc<AtomicU64>,
+pub struct NetworkHandle {
     pub upstream_chain: Arc<RwLock<UpstreamChain>>,
     pub oauth: Arc<OauthTokenCache>,
     pub rate_limiter: Arc<RateLimiter>,
     pub force_reconnect: Arc<AtomicBool>,
-    pub scheduler: Scheduler,
+}
+
+#[derive(Clone)]
+pub struct PluginHandle {
+    pub pm: Arc<Mutex<Option<PluginManager>>>,
+    pub drain: Arc<AtomicBool>,
+    pub in_flight: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+pub struct IrcHandle {
     pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
+}
+
+#[derive(Clone)]
+pub struct ReloadHandle {
+    pub network: NetworkHandle,
+    pub plugin: PluginHandle,
+    pub irc: IrcHandle,
+    pub config: Arc<RwLock<Config>>,
+    pub onebot_api_timeout: Arc<AtomicU64>,
+    pub scheduler: Scheduler,
 }
 
 pub struct ReloadHandleParams {
@@ -51,18 +66,24 @@ pub struct ReloadHandleParams {
 impl ReloadHandle {
     pub fn new(params: ReloadHandleParams) -> Self {
         Self {
+            network: NetworkHandle {
+                upstream_chain: params.upstream_chain,
+                oauth: params.oauth,
+                rate_limiter: params.rate_limiter,
+                force_reconnect: Arc::new(AtomicBool::new(false)),
+            },
+            plugin: PluginHandle {
+                pm: params.pm,
+                drain: Arc::new(AtomicBool::new(false)),
+                in_flight: Arc::new(AtomicUsize::new(0)),
+            },
+            irc: IrcHandle {
+                irc_handle: params.irc_handle,
+                irc_tx: params.irc_tx,
+            },
             config: params.config,
-            pm: params.pm,
-            drain: Arc::new(AtomicBool::new(false)),
-            in_flight: Arc::new(AtomicUsize::new(0)),
             onebot_api_timeout: params.onebot_api_timeout,
-            upstream_chain: params.upstream_chain,
-            oauth: params.oauth,
-            rate_limiter: params.rate_limiter,
-            force_reconnect: Arc::new(AtomicBool::new(false)),
             scheduler: params.scheduler,
-            irc_handle: params.irc_handle,
-            irc_tx: params.irc_tx,
         }
     }
 }
@@ -162,7 +183,7 @@ impl ReloadCoordinator {
     ) {
         info!("{}", log_fmt!("reload.file_change_detected"));
 
-        self.handle.drain.store(true, Ordering::SeqCst);
+        self.handle.plugin.drain.store(true, Ordering::SeqCst);
         let drained = self.wait_drain().await;
 
         let old_config = self.handle.config.read().await.clone();
@@ -171,7 +192,7 @@ impl ReloadCoordinator {
             Ok(cfg) => cfg,
             Err(e) => {
                 error!("{}", log_fmt!("reload.config_reload_failed", error = &e));
-                self.handle.drain.store(false, Ordering::SeqCst);
+                self.handle.plugin.drain.store(false, Ordering::SeqCst);
                 return;
             }
         };
@@ -182,7 +203,7 @@ impl ReloadCoordinator {
             // 在飞的旧任务仍持 plugin 索引 + config read guard，此时并发新调度
             // 会让新/旧 config 行为不确定。保持 drain=true 让后续 dispatch 跳过，
             // 下次 reload 重新尝试或等 SIGINT/SIGHUP 强制退出。
-            self.handle.drain.store(true, Ordering::SeqCst);
+            self.handle.plugin.drain.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -197,7 +218,7 @@ impl ReloadCoordinator {
             *self.handle.config.write().await = old_config;
             // 保持 drain=true 直到下次 reload 成功——与超时分支一致，
             // 避免在 plugin 不可用时新消息继续派发到坏状态。
-            self.handle.drain.store(true, Ordering::SeqCst);
+            self.handle.plugin.drain.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -205,7 +226,7 @@ impl ReloadCoordinator {
         *self.handle.config.write().await = new_config.clone();
         self.apply_side_effects(&old_config, &new_config).await;
 
-        self.handle.drain.store(false, Ordering::SeqCst);
+        self.handle.plugin.drain.store(false, Ordering::SeqCst);
     }
 
     async fn reload_config(
@@ -292,6 +313,7 @@ impl ReloadCoordinator {
         {
             info!("{}", log_fmt!("reload.oauth_credentials_changed"));
             self.handle
+                .network
                 .oauth
                 .update_credentials(new_osu.client_id.clone(), new_osu.client_secret.clone())
                 .await;
@@ -315,18 +337,21 @@ impl ReloadCoordinator {
                 "{}",
                 log_fmt!("reload.onebot_url_changed")
             );
-            self.handle.force_reconnect.store(true, Ordering::SeqCst);
+            self.handle
+                .network
+                .force_reconnect
+                .store(true, Ordering::SeqCst);
         }
 
         self.handle.scheduler.reschedule_all().await;
 
         let new_chain = build_upstream_chain(
             upstream_config,
-            &self.handle.oauth,
-            &self.handle.rate_limiter,
+            &self.handle.network.oauth,
+            &self.handle.network.rate_limiter,
         );
         {
-            let mut chain = self.handle.upstream_chain.write().await;
+            let mut chain = self.handle.network.upstream_chain.write().await;
             *chain = new_chain;
         }
 
@@ -340,7 +365,7 @@ impl ReloadCoordinator {
         };
 
         {
-            let mut guard = self.handle.pm.lock().await;
+            let mut guard = self.handle.plugin.pm.lock().await;
             if let Some(ref mut pm) = *guard {
                 pm.reload_all(&plugin_config).await?;
             } else if plugin_config.instances.iter().any(|p| p.enabled) {
@@ -356,7 +381,7 @@ impl ReloadCoordinator {
         let start = tokio::time::Instant::now();
         let timeout = Duration::from_secs(DRAIN_TIMEOUT_SECS);
         loop {
-            let count = self.handle.in_flight.load(Ordering::SeqCst);
+            let count = self.handle.plugin.in_flight.load(Ordering::SeqCst);
             if count == 0 {
                 return true;
             }
@@ -375,6 +400,7 @@ impl ReloadCoordinator {
     async fn restart_irc(&self, irc_cfg: &crate::config::IrcConfig) {
         let mut guard = self
             .handle
+            .irc
             .irc_handle
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -392,7 +418,7 @@ impl ReloadCoordinator {
             return;
         }
 
-        if let Some(ref tx) = self.handle.irc_tx {
+        if let Some(ref tx) = self.handle.irc.irc_tx {
             let client_config = CoreIrcConfig::new(
                 irc_cfg.enabled,
                 &irc_cfg.server,

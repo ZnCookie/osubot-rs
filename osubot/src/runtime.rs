@@ -175,7 +175,7 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
         plugin_manager: pm.clone(),
         user_rate_limits: Arc::new(dashmap::DashMap::new()),
         shutdown: Arc::new(AtomicBool::new(false)),
-        force_reconnect: reload_handle.force_reconnect.clone(),
+        force_reconnect: reload_handle.network.force_reconnect.clone(),
     };
 
     RuntimeHandles {
