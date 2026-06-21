@@ -184,51 +184,86 @@ pub struct ScoreUser {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Score {
+    /// 成绩 ID，osu! API 唯一标识符
     pub score_id: i64,
+    /// 谱面 ID
     pub beatmap_id: i64,
+    /// 谱面集 ID
     pub beatmapset_id: i64,
+    /// 曲目艺术家/歌手
     pub artist: String,
+    /// 曲目标题
     pub title: String,
+    /// 谱面难度名称
     pub version: String,
+    /// 谱面作者
     pub creator: String,
+    /// 谱面星级（含 mod 调整），范围约 0~11
     pub star_rating: f64,
+    /// 谱面 BPM（含 mod 调整）
     pub bpm: f64,
+    /// Approach Rate（含 mod 调整），范围 0~10
     pub ar: f64,
+    /// Overall Difficulty（含 mod 调整），范围 0~10
     pub od: f64,
+    /// Circle Size（含 mod 调整），范围 0~10，Catch 模式可超过 10
     pub cs: f64,
+    /// HP Drain（含 mod 调整），范围 0~10
     pub hp: f64,
+    /// 谱面总时长（秒），不含开场等待时间
     pub length_seconds: i64,
+    /// 本次成绩的总分
     pub score_value: i64,
+    /// 准确率，范围 0.0~1.0（即 0%~100%）
     pub accuracy: f64,
+    /// 本次成绩的最大连击
     pub max_combo: i64,
+    /// 谱面理论最大连击
     pub beatmap_max_combo: i64,
+    /// PP 值，`None` 表示未计算或非 ranked 谱面
     #[serde(default)]
     pub pp: Option<f64>,
+    /// PP 分项详情（Aim/Speed/Accuracy 等），仅 Std 模式且请求时包含
     #[serde(default)]
     pub pp_breakdown: Option<PpBreakdown>,
+    /// 不同准确率下的 PP 预测值，仅请求时包含
     #[serde(default)]
     pub pp_if_acc: Option<PpIfAcc>,
     /// 理论 Perfect (SS) PP，来自 PpIfAcc
     #[serde(default)]
     pub perfect_pp: Option<f64>,
+    /// 成绩等级字母（如 "XH"、"X"、"SH"、"S"、"A"、"B"、"C"、"D"）
     pub rank: String,
+    /// 是否通过谱面
     #[serde(default = "default_true")]
     pub passed: bool,
+    /// 使用的 mods 集合
     #[serde(skip)]
     pub mods: GameMods,
+    /// 是否全连（Full Combo）
     pub is_perfect: bool,
+    /// 成绩提交时间，ISO 8601 格式（UTC）
     pub created_at: String,
+    /// 是否来自 osu!lazer 客户端
     pub is_lazer: bool,
+    /// 是否有可回放的 replay 数据
     pub has_replay: bool,
+    /// 旧版成绩 ID，仅 lazer 模式下存在
     #[serde(default)]
     pub legacy_score_id: Option<i64>,
+    /// 各判定命中次数统计
     pub statistics: ScoreStatistics,
+    /// 谱面封面图片 URL（全尺寸）
     pub cover_url: String,
+    /// 提交成绩的玩家信息
     pub user: ScoreUser,
+    /// 谱面收藏数，`None` 表示未获取
     #[serde(default)]
     pub fav_count: Option<i64>,
+    /// 谱面游玩次数，`None` 表示未获取
     #[serde(default)]
     pub play_count: Option<i64>,
+    /// 谱面状态（"ranked"、"loved"、"graveyard" 等）
     pub status: String,
 }
 
