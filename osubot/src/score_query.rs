@@ -756,13 +756,15 @@ pub(crate) async fn handle_beatmap_score_query(
             return;
         }
 
+        let total_scores = scores.len();
         let scores = match process_scores(scores, filters, limit, limit_end) {
             Ok(s) => s,
             Err(key) => {
                 let msg_text = user_str(key)
                     .replace("{qq}", &msg.user_id.to_string())
                     .replace("{pos}", &limit.to_string())
-                    .replace("{name}", user_str("query.noun_score"));
+                    .replace("{name}", user_str("query.noun_score"))
+                    .replace("{total}", &total_scores.to_string());
                 let _ = resp_tx.send(msg_text).await;
                 return;
             }
@@ -820,13 +822,15 @@ pub(crate) async fn handle_beatmap_score_query(
                     .await;
                 return;
             }
+            let total_scores = scores.len();
             let scores = match process_scores(scores, Some(filters), limit, None) {
                 Ok(s) => s,
                 Err(key) => {
                     let msg_text = user_str(key)
                         .replace("{qq}", &msg.user_id.to_string())
                         .replace("{pos}", &limit.to_string())
-                        .replace("{name}", user_str("query.noun_score"));
+                        .replace("{name}", user_str("query.noun_score"))
+                        .replace("{total}", &total_scores.to_string());
                     let _ = resp_tx.send(msg_text).await;
                     return;
                 }
@@ -949,13 +953,15 @@ pub(crate) async fn handle_beatmap_score_query(
             }
         };
 
+        let total_scores = scores.len();
         let scores = match process_scores(scores, filters, limit, limit_end) {
             Ok(s) => s,
             Err(key) => {
                 let msg_text = user_str(key)
                     .replace("{qq}", &msg.user_id.to_string())
                     .replace("{pos}", &limit.to_string())
-                    .replace("{name}", user_str("query.noun_score"));
+                    .replace("{name}", user_str("query.noun_score"))
+                    .replace("{total}", &total_scores.to_string());
                 let _ = resp_tx.send(msg_text).await;
                 return;
             }
