@@ -30,7 +30,7 @@ pub fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(0))
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .expect("failed to build reqwest client")
     })
