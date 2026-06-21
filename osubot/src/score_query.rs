@@ -737,7 +737,9 @@ pub(crate) async fn handle_beatmap_score_query(
                     )
                     .await
                     .map_err(|e| {
-                        warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                        if !matches!(e, api::ApiError::NotFound) {
+                            warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                        }
                         match e {
                             api::ApiError::NotFound => {
                                 user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
@@ -824,7 +826,9 @@ pub(crate) async fn handle_beatmap_score_query(
                             )
                             .await
                             .map_err(|e| {
-                                warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                                if !matches!(e, api::ApiError::NotFound) {
+                                    warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                                }
                                 match e {
                                     api::ApiError::NotFound => user_str("query.no_score_on_map")
                                         .replace("{qq}", &qq.to_string()),
@@ -893,12 +897,14 @@ pub(crate) async fn handle_beatmap_score_query(
                         )
                         .await
                         .map_err(|e| {
-                            warn!(
-                                error = ?e,
-                                beatmap_id = resolved_bid,
-                                "{}",
-                                log_fmt!("main.get_user_beatmap_score_failed")
-                            );
+                            if !matches!(e, api::ApiError::NotFound) {
+                                warn!(
+                                    error = ?e,
+                                    beatmap_id = resolved_bid,
+                                    "{}",
+                                    log_fmt!("main.get_user_beatmap_score_failed")
+                                );
+                            }
                             match e {
                                 api::ApiError::NotFound => user_str("query.no_score_on_map")
                                     .replace("{qq}", &qq.to_string()),
@@ -955,7 +961,9 @@ pub(crate) async fn handle_beatmap_score_query(
                     )
                     .await
                     .map_err(|e| {
-                        warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                        if !matches!(e, api::ApiError::NotFound) {
+                            warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                        }
                         match e {
                             api::ApiError::NotFound => {
                                 user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
