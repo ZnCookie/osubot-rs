@@ -4,8 +4,7 @@ use futures_util::future::join_all;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
 use osubot_core::{
-    api,
-    log_fmt,
+    api, log_fmt,
     response::{format_score, format_scores},
     strings::user_str,
     types::{format_play_datetime, Command, GameMode, Score, UserStats},
@@ -60,7 +59,13 @@ async fn resolve_score_user(
             }
             Err(e) => {
                 tracing::error!(error = ?e, username = %name, "{}", log_fmt!("main.resolve_score_user_api_failed"));
-                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                let err_msg = match e {
+                    api::ApiError::NotFound => user_str("error.not_found_named")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{name}", name),
+                    other => api_error_msg(msg.user_id, &other),
+                };
+                let _ = resp_tx.send(err_msg).await;
                 None
             }
         }
@@ -183,6 +188,9 @@ pub(crate) async fn handle_score_query(
                         .map(Arc::new)
                         .map_err(|e| {
                             warn!(user_id = uid, mode = ?mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
+                            if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
+                                tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                            }
                             api_error_msg(qq, &e)
                         })
                 }
@@ -273,6 +281,9 @@ pub(crate) async fn handle_score_query(
                     .map(Arc::new)
                     .map_err(|e| {
                         warn!(user_id = uid, mode = ?dedup_mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
+                        if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
+                            tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        }
                         api_error_msg(qq, &e)
                     })
                 }
@@ -582,7 +593,11 @@ pub(crate) async fn handle_beatmap_score_query(
                         .await
                         .map_err(|e| {
                             warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
-                            api_error_msg(qq, &e)
+                            match e {
+                                api::ApiError::NotFound => user_str("query.score_not_found")
+                                    .replace("{qq}", &qq.to_string()),
+                                other => api_error_msg(qq, &other),
+                            }
                         })
                 }
             })
@@ -723,7 +738,12 @@ pub(crate) async fn handle_beatmap_score_query(
                     .await
                     .map_err(|e| {
                         warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                        api_error_msg(qq, &e)
+                        match e {
+                            api::ApiError::NotFound => {
+                                user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
+                            }
+                            other => api_error_msg(qq, &other),
+                        }
                     })
                 }
             })
@@ -805,7 +825,11 @@ pub(crate) async fn handle_beatmap_score_query(
                             .await
                             .map_err(|e| {
                                 warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                                api_error_msg(qq, &e)
+                                match e {
+                                    api::ApiError::NotFound => user_str("query.no_score_on_map")
+                                        .replace("{qq}", &qq.to_string()),
+                                    other => api_error_msg(qq, &other),
+                                }
                             })
                         }
                     })
@@ -875,7 +899,11 @@ pub(crate) async fn handle_beatmap_score_query(
                                 "{}",
                                 log_fmt!("main.get_user_beatmap_score_failed")
                             );
-                            api_error_msg(qq, &e)
+                            match e {
+                                api::ApiError::NotFound => user_str("query.no_score_on_map")
+                                    .replace("{qq}", &qq.to_string()),
+                                other => api_error_msg(qq, &other),
+                            }
                         })
                     }
                 })
@@ -928,7 +956,12 @@ pub(crate) async fn handle_beatmap_score_query(
                     .await
                     .map_err(|e| {
                         warn!(error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                        api_error_msg(qq, &e)
+                        match e {
+                            api::ApiError::NotFound => {
+                                user_str("query.no_score_on_map").replace("{qq}", &qq.to_string())
+                            }
+                            other => api_error_msg(qq, &other),
+                        }
                     })
                 }
             })
