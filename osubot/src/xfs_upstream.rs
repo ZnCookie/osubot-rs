@@ -1,0 +1,308 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use chrono::Utc;
+use futures_util::{SinkExt, StreamExt};
+use rand::RngExt;
+use serde_json::json;
+use tokio::time::timeout;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message as WsMsg;
+use tracing::{debug, warn};
+
+use osubot_core::api;
+use osubot_core::log_fmt;
+use osubot_core::rate_limiter::RateLimiter;
+use osubot_core::types::GameMode;
+use osubot_core::upstream::{extract_text_from_message, SendAction};
+use osubot_core::OauthTokenCache;
+use osubot_core::UpstreamBindingProvider;
+
+use crate::config::{default_upstream_url, ProviderConfig};
+
+pub struct XfsUpstream {
+    url: String,
+    access_token: String,
+    self_id: i64,
+    timeout: Duration,
+    rate_limiter: RateLimiter,
+    oauth: Arc<OauthTokenCache>,
+    api_rate_limiter: Arc<RateLimiter>,
+}
+
+fn parse_xfs_username(resp_text: &str) -> Option<&str> {
+    let first_line = resp_text.lines().next()?;
+    let pos = first_line.find("的个人信息")?;
+    let username = first_line[..pos].trim();
+    if username.is_empty() {
+        None
+    } else {
+        Some(username)
+    }
+}
+
+impl XfsUpstream {
+    pub fn from_config(
+        cfg: &ProviderConfig,
+        oauth: Arc<OauthTokenCache>,
+        api_rate_limiter: Arc<RateLimiter>,
+    ) -> Self {
+        // Use random self_id when not explicitly configured, to avoid
+        // identity conflicts with other connected OneBot clients.
+        let self_id = cfg.self_id.unwrap_or_else(|| {
+            let mut rng = rand::rng();
+            rng.random_range(100000000..999999999i64)
+        });
+
+        Self {
+            url: cfg.url.clone().unwrap_or_else(default_upstream_url),
+            access_token: cfg
+                .access_token
+                .clone()
+                .unwrap_or_else(|| "bleatingsheep.org".to_string()),
+            self_id,
+            timeout: Duration::from_secs(cfg.timeout_secs),
+            rate_limiter: RateLimiter::with_config(cfg.burst, cfg.rate_per_minute),
+            oauth,
+            api_rate_limiter,
+        }
+    }
+}
+
+#[async_trait]
+impl UpstreamBindingProvider for XfsUpstream {
+    async fn query_binding(&self, qq: i64) -> Result<Option<(i64, String)>, String> {
+        let _permit = self
+            .rate_limiter
+            .acquire()
+            .await
+            .map_err(|_| "rate limited")?;
+
+        let group_id: i64 = {
+            let mut rng = rand::rng();
+            rng.random_range(1000000000..9999999999i64)
+        };
+        let message_id: i32 = {
+            let mut rng = rand::rng();
+            rng.random_range(1..i32::MAX)
+        };
+
+        let mut request = match self.url.as_str().into_client_request() {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("{}", log_fmt!("xfs.build_request_failed", error = &e));
+                return Ok(None);
+            }
+        };
+        if let Ok(val) = self.self_id.to_string().parse() {
+            request.headers_mut().insert("X-Self-ID", val);
+        } else {
+            warn!("{}", log_fmt!("xfs.invalid_self_id"));
+            return Ok(None);
+        }
+        if !self.access_token.is_empty() {
+            if let Ok(val) = format!("Bearer {}", self.access_token).parse() {
+                request.headers_mut().insert("Authorization", val);
+            } else {
+                warn!("{}", log_fmt!("xfs.invalid_access_token"));
+                return Ok(None);
+            }
+        }
+        if let Ok(val) = "Universal".parse() {
+            request.headers_mut().insert("X-Client-Role", val);
+        } else {
+            warn!("{}", log_fmt!("xfs.invalid_client_role"));
+            return Ok(None);
+        }
+
+        let ws_stream = match timeout(self.timeout, connect_async(request)).await {
+            Ok(Ok((stream, _))) => stream,
+            Ok(Err(e)) => {
+                warn!("{}", log_fmt!("xfs.connect_failed", error = &e));
+                return Ok(None);
+            }
+            Err(_) => {
+                warn!("{}", log_fmt!("xfs.connect_timeout"));
+                return Ok(None);
+            }
+        };
+
+        let (mut write, mut read) = ws_stream.split();
+
+        let event = json!({
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "group_id": group_id,
+            "user_id": qq,
+            "message": format!("where qq={qq}"),
+            "self_id": self.self_id,
+            "time": Utc::now().timestamp(),
+            "message_id": message_id,
+        });
+
+        debug!(target: "xfs_upstream", %event, "{}", log_fmt!("xfs.plan_request"));
+
+        let event_str = event.to_string();
+        debug!(target: "xfs_upstream", text = %event_str, "{}", log_fmt!("xfs.actual_send"));
+        let deadline = Instant::now() + self.timeout;
+
+        let send_timeout = deadline.saturating_duration_since(Instant::now());
+        if timeout(send_timeout, write.send(WsMsg::Text(event_str.into())))
+            .await
+            .is_err()
+        {
+            warn!("{}", log_fmt!("xfs.send_event_failed"));
+            return Ok(None);
+        }
+
+        while let Ok(Some(msg)) = timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            read.next(),
+        )
+        .await
+        {
+            let msg = match msg {
+                Ok(m) => m,
+                Err(_) => {
+                    warn!("{}", log_fmt!("xfs.ws_read_error"));
+                    return Ok(None);
+                }
+            };
+
+            let text = match msg.to_text() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            debug!(target: "xfs_upstream", %text, "{}", log_fmt!("xfs.server_response"));
+
+            let action: SendAction = match serde_json::from_str(text) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+            if action.action != "send_msg" && action.action != "send_group_msg" {
+                continue;
+            }
+
+            let resp_text = extract_text_from_message(&action.params["message"]);
+
+            if resp_text.is_empty() {
+                continue;
+            }
+
+            if resp_text.contains("未绑定 osu! 账号") {
+                return Ok(None);
+            }
+
+            let Some(username) = parse_xfs_username(&resp_text) else {
+                return Ok(None);
+            };
+
+            debug!(username, "{}", log_fmt!("xfs.resolved_username"));
+            if !self.oauth.is_configured() {
+                warn!("{}", log_fmt!("xfs.skipping_api"));
+                return Ok(None);
+            }
+            let user_id = match api::fetch_user_stats_by_username(
+                &self.api_rate_limiter,
+                &self.oauth,
+                username,
+                GameMode::Osu,
+            )
+            .await
+            {
+                Ok(stats) => stats.user_id,
+                Err(_) => {
+                    warn!(username, "{}", log_fmt!("xfs.resolve_failed"));
+                    return Ok(None);
+                }
+            };
+
+            debug!(target: "xfs_upstream", %username, user_id, "{}", log_fmt!("xfs.parse_result"));
+            return Ok(Some((user_id, username.to_string())));
+        }
+
+        warn!("{}", log_fmt!("xfs.response_timeout"));
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_xfs_username;
+
+    #[test]
+    fn test_parse_xfs_username_found() {
+        assert_eq!(parse_xfs_username("peppy的个人信息"), Some("peppy"));
+        assert_eq!(
+            parse_xfs_username("  空格用户 的个人信息"),
+            Some("空格用户")
+        );
+    }
+
+    #[test]
+    fn test_parse_xfs_username_unbound() {
+        assert_eq!(parse_xfs_username("未绑定 osu! 账号"), None);
+    }
+
+    #[test]
+    fn test_parse_xfs_username_empty() {
+        assert_eq!(parse_xfs_username(""), None);
+        assert_eq!(parse_xfs_username("的个人信息"), None);
+    }
+
+    #[test]
+    fn test_parse_xfs_username_no_match() {
+        assert_eq!(
+            parse_xfs_username("some random text that doesn't match"),
+            None
+        );
+    }
+}
+
+#[cfg(all(test, feature = "integration-tests"))]
+mod integration_tests {
+    use super::*;
+    use crate::config::ProviderConfig;
+    use osubot_core::OauthTokenCache;
+    use osubot_core::RateLimiter;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_xfs_query_known_user() {
+        let _ = tracing_subscriber::fmt()
+            .without_time()
+            .with_writer(std::io::stdout)
+            .try_init();
+
+        let cfg = ProviderConfig {
+            provider_type: "xfs".into(),
+            rate_per_minute: 10,
+            burst: 20,
+            url: Some("wss://public-service.b11p.com/".into()),
+            access_token: Some("bleatingsheep.org".into()),
+            self_id: None,
+            timeout_secs: 10,
+        };
+
+        let oauth = Arc::new(OauthTokenCache::new(String::new(), String::new()));
+        let rate_limiter = Arc::new(RateLimiter::new());
+        let provider = XfsUpstream::from_config(&cfg, oauth, rate_limiter);
+
+        let result = provider.query_binding(3628905173).await;
+
+        assert!(
+            result.is_ok(),
+            "xfs query should not error, got {:?}",
+            result
+        );
+        let binding = result.unwrap();
+        if binding.is_none() {
+            tracing::info!("{}", log_fmt!("xfs.relay_api_failed"));
+        }
+    }
+}

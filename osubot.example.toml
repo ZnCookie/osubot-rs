@@ -1,0 +1,109 @@
+[osu]
+# osu! API v2 OAuth 客户端凭证（https://osu.ppy.sh/home/account/edit#oauth）
+# client_secret 曾用字段名 "api_key"——旧配置仍兼容
+client_secret = "your-client-secret-here"
+client_id = "your-client-id-here"
+
+[bot]
+# OneBot 11 WebSocket 地址
+onebot_url = "ws://127.0.0.1:8080"
+
+# 命令处理总超时（秒），默认 120
+# command_timeout_secs = 120
+
+# profile 渲染超时（秒），默认 60
+# render_timeout_secs = 60
+
+# OneBot API 请求超时（秒），默认 5
+# onebot_api_timeout_secs = 5
+
+# UR 计算超时（秒），默认 10
+# ur_timeout_secs = 10
+
+[database]
+path = "osubot.db"
+
+# [scheduler]
+# 所有字段均有默认值——可选，有需要才覆盖。
+# interval_minutes = 1
+# semi_active_interval_hours = 4      # 4h内有游玩记录
+# normal_interval_hours = 8           # 当日有游玩记录
+# inactive_interval_hours = 48       # 48h以上无游玩记录
+# no_recent_interval_hours = 6       # 无最近游玩记录
+# user_not_exists_interval_hours = 24 # 用户不存在
+# group_trigger_cooldown_hours = 1
+# retention_days = 180
+# cache_retention_days = 7
+
+# [irc]
+# IRC 鉴权绑定（需在 https://osu.ppy.sh/p/irc 获取密码）
+# 可选，关闭时绑定无需验证。
+# enabled = true
+# server = "irc.ppy.sh"
+# port = 6667
+# nickname = "你的osu用户名"
+# password = "IRC密码"
+
+# [group_filter]
+# 群聊黑白名单（可选，默认黑名单模式，名单为空=所有群可用）
+# mode = "blacklist"        # "blacklist" 或 "whitelist"
+# group_ids = []            # 黑名单/白名单的群号列表
+
+# [groups.default]
+# 命令开关（可选，默认全部开启）
+# query = true              # ~、where、查
+# score = true              # !p、!ps、!r、!rs、!s、!ss
+# beatmap_preview = true    # !rv
+# profile = true            # !profile
+# highlight = true          # 今日高光
+# bind = true               # 绑定、解绑
+# mode = true               # !mode（设置/查询默认模式）
+# help = true               # !help
+
+# [groups.123456789]
+# 特定群的覆盖配置（可选，节名 = 群号）
+# highlight = false         # 该群禁用今日高光
+
+# [upstream]
+# 上游自动绑定（可选，不配置则不启用）
+# 当本地未绑定 QQ→osu! 时，自动向上游 bot 查询并完成绑定。
+# enabled = true
+#
+# [[upstream.providers]]
+# type = "xfs"              # 消防栓（hydrant）bot，通过 OneBot 中继查询
+# url = "wss://public-service.b11p.com/"
+# access_token = "bleatingsheep.org"
+# self_id = 100000000       # 不配则随机，避免与其他客户端冲突
+# timeout_secs = 10
+# rate_per_minute = 10      # 每分钟查询上限
+# burst = 20                # 突发排队上限
+#
+# [[upstream.providers]]
+# type = "yumu"             # yumu-bot，直接连接 OneBot 服务（伪装用户 QQ 发 !bi 命令）
+# url = "ws://121.41.63.60:11735/pub/onebotSocket"
+# timeout_secs = 10
+# rate_per_minute = 10
+# burst = 20
+# yumu 默认不鉴权（无需 access_token），但支持配置——设了就会按 OneBot 11 协议发 Authorization 头
+# self_id 无关，yumu 直接用目标 QQ 号作为身份标识
+
+[plugin]
+# .wasm 插件文件存放目录
+dir = "./plugins"
+
+# 插件实例连续错误计数超过此值则自动重载，默认 5
+# lost_instances_threshold = 5
+
+# 插件重载连续失败计数超过此值则要求手动干预，默认 3
+# reload_failures_threshold = 3
+
+# 插件实例列表
+[[plugin.instances]]
+name = "hello"
+path = "hello_plugin.wasm"
+enabled = false    # 默认禁用，改为 true 启用
+priority = 50
+
+# 可选：插件自定义配置（通过 get_plugin_config() 访问）
+# [plugin.instances.config]
+# endpoint = "https://api.example.com"

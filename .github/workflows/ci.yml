@@ -1,0 +1,237 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libcairo2-dev libpango1.0-dev librsvg2-dev
+
+      - name: Setup nightly for udeps
+        run: rustup toolchain install nightly
+
+      - name: Install cargo-audit and cargo-udeps
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            cargo-audit
+            cargo-udeps
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-index-${{ runner.os }}-
+
+      # Note: not caching target/ here to avoid stable/nightly compiler output pollution
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Audit
+        run: cargo audit
+
+      - name: Udeps
+        run: cargo +nightly udeps
+
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libcairo2-dev libpango1.0-dev librsvg2-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-index-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: cargo-target-linux-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-linux-
+
+      - name: Build
+        env:
+          RUSTFLAGS: -C link-args=-Wl,-rpath,$ORIGIN/lib
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          mkdir -p release-artifact/lib
+          cp target/release/osubot release-artifact/
+          for lib in $(ldd target/release/osubot | grep -oP '/\S+' || true); do
+            base=$(basename "$lib")
+            case "$base" in
+              libc.so*|libm.so*|libpthread*|libdl.so*|librt.so*|ld-linux*|libgcc_s*|libstdc++*|libresolv*)
+                ;;
+              *)
+                cp -L "$lib" release-artifact/lib/
+                ;;
+            esac
+          done
+          cp osubot.example.toml release-artifact/osubot.toml
+          (cd release-artifact && zip -r ../osubot-linux.zip .)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: osubot-linux
+          path: osubot-linux.zip
+          retention-days: 7
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-librsvg
+            mingw-w64-x86_64-cairo
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-pango
+            mingw-w64-x86_64-pkgconf
+            zip
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-index-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: cargo-target-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-windows-
+
+      - name: Build
+        env:
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
+          cargo build --release --locked --target x86_64-pc-windows-gnu
+
+      - name: Collect DLLs and package
+        run: |
+          set -e
+          export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
+          SRC="target/x86_64-pc-windows-gnu/release"
+          OUT="release-artifact"
+          mkdir -p "$OUT"
+          cp "$SRC/osubot.exe" "$OUT/"
+
+          collect_dlls() {
+            local target="$1"
+            for dll in $(ldd "$target" 2>/dev/null | grep -E '/mingw64/' | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' || true); do
+              local name=$(basename "$dll")
+              if [ ! -f "$OUT/$name" ]; then
+                cp "$dll" "$OUT/"
+              fi
+            done
+          }
+
+          collect_dlls "$OUT/osubot.exe"
+
+          changed=1
+          while [ "$changed" -ne 0 ]; do
+            changed=0
+            for dll in "$OUT"/*.dll; do
+              [ -f "$dll" ] || continue
+              for dep in $(ldd "$dll" 2>/dev/null | grep -E '/mingw64/' | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' || true); do
+                name=$(basename "$dep")
+                if [ ! -f "$OUT/$name" ]; then
+                  cp "$dep" "$OUT/"
+                  changed=1
+                fi
+              done
+            done
+          done
+
+          cp osubot.example.toml "$OUT/osubot.toml"
+          (cd "$OUT" && zip -r ../osubot-windows.zip .)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: osubot-windows
+          path: osubot-windows.zip
+          retention-days: 7

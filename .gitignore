@@ -1,0 +1,17 @@
+/target/
+*.db
+*.sqlite
+osubot.toml
+.env
+*.key
+*.pem
+.claude/
+docs/superpowers/
+.superpowers/
+.opencode/
+.omo/
+.mimocode/
+.worktrees/
+osubot-render/tests/dump/
+osubot.db
+osubot.db-wal

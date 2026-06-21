@@ -1,0 +1,47 @@
+[package]
+name = "osubot-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+osubot-core = { path = "../osubot-core" }
+osubot-types = { path = "../osubot-types" }
+chrono = "0.4"
+blitz = "0.2"
+# 显式启用 blitz-dom 的 svg feature（blitz 0.2 自己用 default-features = false 引用 blitz-dom，导致 svg feature 永远没启用，blitz 拿到 inline SVG 时无法解析）
+blitz-dom = { version = "0.2", default-features = false, features = ["svg"] }
+# 显式启用 blitz-paint 的 svg feature，否则 draw_svg 路径是死代码。
+# 原因：blitz 0.2 内部用 default-features = false 引用 blitz-paint，
+# 覆盖了 blitz-paint 自己的 default = ["svg"]，导致 anyrender_svg 永远不在依赖图里。
+blitz-paint = { version = "0.2", default-features = false, features = ["svg"] }
+# 显式启用 anyrender_svg 的 text feature。anyrender_svg 默认不含 text，
+# usvg 的 <text>/<tspan> 解析是 #[cfg(feature = "text")] gated。
+# text feature 同时启用 usvg/text + usvg/system-fonts + usvg/memmap-fonts。
+anyrender_svg = { version = "0.6", default-features = false, features = ["text"] }
+# fontdb 直接依赖：usvg 通过 system-fonts feature 拉它，但我们也需要在
+# preprocessor 里探测系统字体名（注入到 SVG 的 font-family 列表里）。
+# 锁版本 = 0.23.0 跟 usvg 0.45.1 内部一致。
+fontdb = "=0.23.0"
+# resvg 直接依赖：用 usvg 0.45.1 + tiny-skia 把内联 SVG 预 rasterize 成 PNG。
+# 解决 usvg 0.45.1 + anyrender_svg 0.6.3 对 SVG <pattern>、<filter>、mix-blend-mode
+# 支持不全的问题（dump 出 2 个红方块）。resvg 0.45.1 内部用 usvg 0.45.1，
+# 跟现有依赖版本对齐，不会有冲突。
+resvg = "=0.45.1"
+anyrender = "0.6"
+anyrender_vello_cpu = "0.8"
+image = "0.25"
+peniko = "0.5"
+parley = { version = "0.6", features = ["system"] }
+vello_cpu = { version = "0.0.4", default-features = false, features = ["std", "text", "png"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "fs", "macros"] }
+thiserror = "2"
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
+sha2 = "0.11"
+hex = "0.4"
+base64 = { version = "0.22", features = ["std"] }
+tracing = "0.1"
+futures-util = "0.3"
+dirs = "6"
+
+[dev-dependencies]
+rosu-mods = "0.4"

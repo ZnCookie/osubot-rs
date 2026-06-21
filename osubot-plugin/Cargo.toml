@@ -1,0 +1,17 @@
+[package]
+name = "osubot-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+osubot-core = { path = "../osubot-core" }
+osubot-types = { path = "../osubot-types" }
+wasmtime = "45"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+wat = "1"
