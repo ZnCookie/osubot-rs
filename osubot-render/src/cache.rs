@@ -30,7 +30,7 @@ pub fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(0))
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .expect("failed to build reqwest client")
     })
@@ -536,7 +536,7 @@ pub async fn inline_external_images(html: &str) -> String {
         urls
     };
 
-    let client = (*http_client()).clone();
+    let client = http_client();
 
     let mut url_to_data: HashMap<String, String> = HashMap::new();
     let mut blocked: HashSet<String> = HashSet::new();

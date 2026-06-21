@@ -189,6 +189,8 @@ impl PluginManager {
                 to_remove.push(entry.idx);
             }
         }
+        to_remove.sort_unstable();
+        to_remove.dedup();
 
         let to_add: Vec<&PluginInstanceConfig> = new_enabled
             .iter()
