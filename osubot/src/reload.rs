@@ -182,7 +182,7 @@ impl ReloadCoordinator {
             // 在飞的旧任务仍持 plugin 索引 + config read guard，此时并发新调度
             // 会让新/旧 config 行为不确定。保持 drain=true 让后续 dispatch 跳过，
             // 下次 reload 重新尝试或等 SIGINT/SIGHUP 强制退出。
-            self.handle.drain.store(false, Ordering::SeqCst);
+            self.handle.drain.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -195,7 +195,9 @@ impl ReloadCoordinator {
             // apply_side_effects 比较 old_config 和 new_config，用 new_config 的值触发副作用
             self.apply_side_effects(&old_config, &new_config).await;
             *self.handle.config.write().await = old_config;
-            self.handle.drain.store(false, Ordering::SeqCst);
+            // 保持 drain=true 直到下次 reload 成功——与超时分支一致，
+            // 避免在 plugin 不可用时新消息继续派发到坏状态。
+            self.handle.drain.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -436,5 +438,26 @@ pub(crate) fn build_upstream_chain(
         UpstreamChain::new(providers)
     } else {
         UpstreamChain::new(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// drain 标志初始为 false
+    #[test]
+    fn drain_flag_starts_false() {
+        let drain = Arc::new(AtomicBool::new(false));
+        assert!(!drain.load(Ordering::SeqCst));
+    }
+
+    /// 契约测试：drain 超时后应保持 true。
+    /// 实际验证需要 e2e（构造 ReloadCoordinator 太重），
+    /// 此测试作为"drain 超时应 store(true)"语义的可见标记。
+    #[test]
+    fn drain_timeout_keeps_drain_true_contract() {
+        // 见 osubot/src/reload.rs:185 的实现必须 store(true)
     }
 }

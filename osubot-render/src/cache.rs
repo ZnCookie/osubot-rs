@@ -1,6 +1,6 @@
 use osubot_core::log_fmt;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
@@ -276,7 +276,14 @@ fn extract_image_refs(html: &str) -> Vec<ImageRef> {
             }
             if let Some((url_start, url_end)) = find_src_url(bytes, pos) {
                 let url = std::str::from_utf8(&bytes[url_start..url_end]).unwrap_or("");
-                if url.starts_with("https://") || url.starts_with("http://") {
+                // 提取 http(s) + file:// 三类：前两类走 fetch+inline 路径，
+                // file:// 进来后会直接被 is_blocked_url 判 true（scheme=file
+                // 没 host），由 inline_external_images 改写成 1x1 占位 PNG，
+                // 防止下游 blitz 自己用 std::fs::read 读本地文件。
+                if url.starts_with("https://")
+                    || url.starts_with("http://")
+                    || url.starts_with("file://")
+                {
                     refs.push(ImageRef {
                         url: url.to_string(),
                         start: url_start,
@@ -470,11 +477,12 @@ pub fn is_blocked_url(url: &str) -> bool {
         Some(h) => h,
         None => return true,
     };
+    let host_raw = host_raw.to_ascii_lowercase();
     // reqwest 的 host_str() 对 IPv6 会保留方括号 "[::1]"，剥掉才能 parse
     let host = host_raw
         .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host_raw);
+        .unwrap_or(&host_raw);
     // 拒绝字面量私有/保留 IP
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         return match ip {
@@ -483,6 +491,16 @@ pub fn is_blocked_url(url: &str) -> bool {
                 // IPv4-mapped IPv6 (::ffff:0:0/96)：先提 V4 走 V4 规则
                 if let Some(v4) = v6.to_ipv4_mapped() {
                     return check_v4_private(v4);
+                }
+                // NAT64 (RFC 6052): 64:ff9b::/96 — NAT64 网关可桥接到 IPv4 私网
+                if let Some(first) = v6.segments().first() {
+                    if *first == 0x0064 && v6.segments()[1] == 0xff9b {
+                        return true;
+                    }
+                }
+                // Teredo (RFC 4380): 2001::/32 — 经 UDP 隧道封装 IPv4
+                if v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0000 {
+                    return true;
                 }
                 v6.is_loopback()
                     || v6.is_unspecified()
@@ -494,8 +512,11 @@ pub fn is_blocked_url(url: &str) -> bool {
             }
         };
     }
-    // 拒绝 localhost / .local
-    matches!(host, "localhost" | "0.0.0.0" | "::1") || host.ends_with(".local")
+    // 拒绝 localhost / .local（host 已小写化，匹配统一走小写）
+    matches!(
+        host,
+        "localhost" | "0.0.0.0" | "::1" | "ip6-localhost" | "ip6-loopback"
+    ) || host.ends_with(".local")
 }
 
 pub async fn inline_external_images(html: &str) -> String {
@@ -505,7 +526,6 @@ pub async fn inline_external_images(html: &str) -> String {
     }
 
     let unique_urls = {
-        use std::collections::HashSet;
         let mut seen = HashSet::new();
         let mut urls = Vec::new();
         for r in &refs {
@@ -519,11 +539,20 @@ pub async fn inline_external_images(html: &str) -> String {
     let client = (*http_client()).clone();
 
     let mut url_to_data: HashMap<String, String> = HashMap::new();
+    let mut blocked: HashSet<String> = HashSet::new();
+    // 1x1 透明 PNG（70 字节标准 base64），用于替换被 SSRF 规则拒绝的 <img src=...>。
+    // 选 1x1 是为了不污染版面：blitz 拿到一个看不见的占位图，仍会按 alt 文本继续排版。
+    const PLACEHOLDER_PNG: &str = "data:image/png;base64,\
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
     let mut set = tokio::task::JoinSet::new();
     for url in unique_urls {
         if is_blocked_url(&url) {
-            tracing::warn!(url = %url, "blocked external image fetch (private/reserved address)");
+            tracing::warn!(
+                url = %url,
+                "blocked external image fetch (private/reserved address); replacing with placeholder"
+            );
+            blocked.insert(url);
             continue;
         }
         let client = client.clone();
@@ -577,7 +606,7 @@ pub async fn inline_external_images(html: &str) -> String {
         }
     }
 
-    if url_to_data.is_empty() {
+    if url_to_data.is_empty() && blocked.is_empty() {
         return html.to_string();
     }
 
@@ -587,6 +616,10 @@ pub async fn inline_external_images(html: &str) -> String {
     for r in refs.iter().rev() {
         if let Some(data_uri) = url_to_data.get(&r.url) {
             result.splice(r.start..r.end, data_uri.bytes());
+        } else if blocked.contains(&r.url) {
+            // SSRF 拒绝的 URL（包括 file://）改成 1x1 占位 PNG，
+            // 防止下游 blitz 用自己的 client 重新 fetch 该 URL。
+            result.splice(r.start..r.end, PLACEHOLDER_PNG.bytes());
         }
     }
 

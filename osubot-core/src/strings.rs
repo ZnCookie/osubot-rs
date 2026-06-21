@@ -51,7 +51,6 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "error.render_failed" => "[CQ:at,qq={qq}] 渲染失败，请稍后重试",
     "error.beatmap_preview_convert_unsupported" => "[CQ:at,qq={qq}] 非 osu! 谱面不支持模式转换",
     "error.beatmap_preview_mods_invalid" => "[CQ:at,qq={qq}] !rv mod 互斥或不支持: {error}",
-    "error.beatmap_preview_invalid_arg" => "[CQ:at,qq={qq}] !rv 仅支持数字参数（谱面ID或成绩ID）",
     "error.command_timeout" => "[CQ:at,qq={qq}] 命令处理超时，请稍后重试",
     "error.request_cancelled" => "请求已取消",
     "error.request_timeout" => "请求超时",
@@ -251,6 +250,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.oauth_not_configured" => "osu! API v2 client_secret 未配置。请在 osubot.toml 中设置 osu.client_secret",
     "main.cleanup_stale_pending" => "已清理过期的待处理 OneBot API 条目",
     "main.file_watcher_exited" => "文件监控任务已退出，热重载功能不可用",
+    "main.file_watcher_join_error" => "文件监控任务 JoinHandle 错误: {error}",
     "main.no_ws_dropping_irc" => "没有活动的 WebSocket 连接，丢弃 IRC 消息",
     "main.shutdown_signal" => "收到关闭信号，正在优雅关闭...",
     "main.shutdown_no_reconnect" => "正在关闭，不再重连",
@@ -270,6 +270,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.ws_closed_reconnect" => "WebSocket 连接关闭，{secs}秒后重连",
     "main.ws_error_reconnect" => "WebSocket 错误，{secs}秒后重连",
     "main.ws_stream_ended" => "WebSocket 流结束，{secs}秒后重连",
+    "main.ws_message_rate_limited" => "WebSocket 消息速率超限（{limit} 条/秒），已丢弃",
 
     // ===== osubot/src/reload.rs =====
     "reload.coordinator_fatal" => "ReloadCoordinator 致命错误: {error}",

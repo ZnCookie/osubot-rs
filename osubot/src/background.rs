@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::reload::ReloadCoordinator;
@@ -69,16 +70,17 @@ pub(super) async fn backfill_user_ids(handles: &RuntimeHandles) {
 }
 
 /// 启动 scheduler 任务（提取自 main.rs:3860-3870）。
-pub(super) fn spawn_scheduler(handles: &RuntimeHandles) {
+pub(super) fn spawn_scheduler(handles: &RuntimeHandles) -> JoinHandle<()> {
     let scheduler = handles.app_state.scheduler.clone();
-    let _scheduler_handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         scheduler.run().await;
-    });
+    })
 }
 
 /// 启动 IRC 客户端（提取自 main.rs:3895-3910）。
 /// 凭据校验已在 runtime.rs::build_runtime_handles 中完成。
-pub(super) fn spawn_irc(handles: &RuntimeHandles) {
+/// 返回外层 setup 任务的 JoinHandle；内部 IRC 客户端 JoinHandle 存入 `RuntimeHandles::irc_handle`。
+pub(super) fn spawn_irc(handles: &RuntimeHandles) -> JoinHandle<()> {
     let irc_handle = handles.irc_handle.clone();
     let irc_tx = handles
         .irc_tx
@@ -105,11 +107,11 @@ pub(super) fn spawn_irc(handles: &RuntimeHandles) {
                 error!(error = %e, "{}", log_fmt!("main.irc_client_error"));
             }
         }));
-    });
+    })
 }
 
 /// 启动 OneBot API pending 清理任务（提取自 main.rs:3920-3935）。
-pub(super) fn spawn_onebot_cleanup(handles: &RuntimeHandles) {
+pub(super) fn spawn_onebot_cleanup(handles: &RuntimeHandles) -> JoinHandle<()> {
     let onebot_cleanup = handles.app_state.onebot_api.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -123,34 +125,67 @@ pub(super) fn spawn_onebot_cleanup(handles: &RuntimeHandles) {
                 tracing::warn!(removed, "{}", log_fmt!("main.cleanup_stale_pending"));
             }
         }
-    });
+    })
 }
 
 /// 启动文件 watcher coordinator（从 runtime.rs 移来，原 main.rs:3988-3999）。
 /// 同时确保插件目录存在。
-pub(super) async fn spawn_watcher(handles: &RuntimeHandles) {
-    let cfg = handles.app_state.config.read().await;
-    let plugin_dir = PathBuf::from(&cfg.plugin.dir);
-    drop(cfg);
-    std::fs::create_dir_all(&plugin_dir).ok();
-
-    let coordinator = ReloadCoordinator::new(
-        handles.reload_handle.clone(),
-        PathBuf::from("osubot.toml"),
-        plugin_dir,
-    );
-    let watcher_join = coordinator.start();
+pub(super) fn spawn_watcher(handles: &RuntimeHandles) -> JoinHandle<()> {
+    let config = handles.app_state.config.clone();
+    let reload_handle = handles.reload_handle.clone();
     tokio::spawn(async move {
-        let _ = watcher_join.await;
+        let cfg = config.read().await;
+        let plugin_dir = PathBuf::from(&cfg.plugin.dir);
+        drop(cfg);
+        std::fs::create_dir_all(&plugin_dir).ok();
+
+        let coordinator =
+            ReloadCoordinator::new(reload_handle, PathBuf::from("osubot.toml"), plugin_dir);
+        let watcher_join = coordinator.start();
+        if let Err(e) = watcher_join.await {
+            warn!("{}", log_fmt!("main.file_watcher_join_error", error = &e));
+        }
         warn!("{}", log_fmt!("main.file_watcher_exited"));
-    });
+    })
 }
 
 /// 启动 shutdown 信号监听（提取自 main.rs:4029-4035）。
 pub(super) fn spawn_shutdown_signal(shutdown: Arc<AtomicBool>) {
     let shutdown_clone = shutdown.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+        let ctrl_c = async {
+            tokio::signal::ctrl_c().await.ok();
+        };
+        #[cfg(unix)]
+        let term = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut s) => {
+                    s.recv().await;
+                }
+                Err(e) => {
+                    error!("failed to install SIGTERM handler: {e}");
+                }
+            }
+        };
+        #[cfg(unix)]
+        let hup = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                Ok(mut s) => {
+                    s.recv().await;
+                }
+                Err(e) => {
+                    error!("failed to install SIGHUP handler: {e}");
+                }
+            }
+        };
+        #[cfg(unix)]
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = term => {}
+            _ = hup => {}
+        }
+        #[cfg(not(unix))]
+        ctrl_c.await;
         info!("{}", log_fmt!("main.shutdown_signal"));
         shutdown_clone.store(true, Ordering::Release);
     });
@@ -158,7 +193,7 @@ pub(super) fn spawn_shutdown_signal(shutdown: Arc<AtomicBool>) {
 
 /// 启动 IRC-to-WebSocket 桥接任务（提取自 main.rs:4008-4026）。
 /// 消费 `RuntimeHandles` 中的 `irc_rx`。
-pub(super) fn spawn_irc_bridge(handles: RuntimeHandles) {
+pub(super) fn spawn_irc_bridge(handles: RuntimeHandles) -> JoinHandle<()> {
     let mut irc_rx = handles.irc_rx;
     let cw_for_irc = handles.app_state.current_write.clone();
     let storage = handles.app_state.storage.clone();
@@ -179,5 +214,5 @@ pub(super) fn spawn_irc_bridge(handles: RuntimeHandles) {
                 warn!("{}", log_fmt!("main.no_ws_dropping_irc"));
             }
         }
-    });
+    })
 }

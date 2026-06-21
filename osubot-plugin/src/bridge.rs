@@ -99,6 +99,57 @@ pub struct HostServices {
     pub limiter: StoreLimits,
 }
 
+/// 测试用单线程 runtime（`OnceLock` 共享），用于构造 `Storage` 等需要 tokio 上下文的字段。
+/// 仅在 `cfg(test)` 下使用。
+#[cfg(test)]
+fn test_runtime() -> &'static tokio::runtime::Runtime {
+    use std::sync::OnceLock;
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build test tokio runtime")
+    })
+}
+
+#[cfg(test)]
+impl Default for HostServices {
+    fn default() -> Self {
+        let runtime = test_runtime();
+        // `RateLimiter::new()` 内部调用 `tokio::spawn`，需要当前线程在 runtime 上下文里。
+        let _guard = runtime.enter();
+        let storage = runtime
+            .block_on(async { osubot_core::Storage::new(":memory:").await })
+            .expect("failed to create in-memory storage");
+        Self {
+            http_client: reqwest::Client::new(),
+            blocking_http_client: reqwest::blocking::Client::new(),
+            rate_limiter: Arc::new(osubot_core::RateLimiter::new()),
+            oauth: Arc::new(osubot_core::OauthTokenCache::new(
+                String::new(),
+                String::new(),
+            )),
+            storage: Arc::new(storage),
+            send_msg_fn: Arc::new(|_group_id, _text| Ok(())),
+            runtime_handle: runtime.handle().clone(),
+            instance_idx: 0,
+            tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tick_id_counter: Arc::new(AtomicU32::new(0)),
+            instance_config: None,
+            limiter: StoreLimits::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl HostServices {
+    /// 与 `Self::default()` 等价；保留该名称以明确测试意图。
+    pub fn default_for_test() -> Self {
+        Self::default()
+    }
+}
+
 pub fn register_host_functions(linker: &mut Linker<HostServices>) -> Result<(), wasmtime::Error> {
     linker.func_wrap(
         "osubot",
@@ -158,6 +209,14 @@ pub fn register_host_functions(linker: &mut Linker<HostServices>) -> Result<(), 
                 .map_err(|_| wasmtime::format_err!("alloc type mismatch"))?
                 .call(&mut caller, (alloc_total,))
                 .map_err(|e| wasmtime::format_err!("alloc call: {e}"))?;
+
+            // 与 osubot-plugin/src/instance.rs:231-233 对齐：plugin alloc OOM 时
+            // 返回 0；直接写 wasm 内存 offset 0 会破坏 runtime 状态。拒绝而不是覆盖。
+            if result_ptr == 0 {
+                return Err(wasmtime::format_err!(
+                    "plugin alloc returned null pointer (OOM?)"
+                ));
+            }
 
             if let Err(e) =
                 memory.write(&mut caller, result_ptr as usize, &result_len.to_le_bytes())

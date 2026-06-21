@@ -232,7 +232,9 @@ impl PluginManager {
         old_map: &HashMap<String, OldPluginEntry>,
     ) {
         for idx in to_remove.iter().rev() {
-            self.unload_single_instance(*idx, "reload", true).await;
+            // 不让 on_unload 失败嵌套触发 reload_instance：
+            // apply_removals 负责完整移除流程，on_unload 仅做清理。
+            self.unload_single_instance(*idx, "remove", false).await;
 
             for indices in self.command_map.values_mut() {
                 indices.retain(|i| *i != *idx);
@@ -363,7 +365,10 @@ impl PluginManager {
                     }
                 };
 
-                self.unload_single_instance(idx, "reload", true).await;
+                // 不让 on_unload 失败嵌套触发 reload_instance：
+                // apply_reloads 会自己 build+on_load 完整 instance，nested trigger
+                // 会浪费一次 build+on_load 并重复 increment reload_failures。
+                self.unload_single_instance(idx, "reload", false).await;
 
                 let old_ticks: Vec<_> = {
                     let registry = self.tick_registry.lock().unwrap_or_else(|e| {

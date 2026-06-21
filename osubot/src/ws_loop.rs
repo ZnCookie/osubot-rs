@@ -4,8 +4,8 @@
 #![allow(clippy::too_many_lines)]
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -38,6 +38,43 @@ type WsSplitSink =
 /// 单条 WS 文本帧大小上限。OneBot 实际单条消息远小于 1 MiB；
 /// tungstenite 默认 16 MiB 太宽松，恶意帧会直接 OOM 路径分配。
 const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
+/// Per-connection token bucket 上限。每秒最多处理 100 条 incoming message，
+/// 超出丢弃并 warn。防御 OneBot 上游 bug/恶意洪泛。
+const MAX_MESSAGES_PER_SECOND: u32 = 100;
+
+/// 同步 token bucket：每次 `try_acquire` 同步加锁、短持锁、不跨 await。
+/// 用 `std::sync::Mutex` 而非 `tokio::sync::Mutex`，避免在同步路径上 spawn。
+pub(crate) struct RateLimiter {
+    last_refill: StdMutex<Instant>,
+    tokens: StdMutex<u32>,
+}
+
+impl RateLimiter {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_refill: StdMutex::new(Instant::now()),
+            tokens: StdMutex::new(MAX_MESSAGES_PER_SECOND),
+        }
+    }
+    pub(crate) fn try_acquire(&self) -> bool {
+        let now = Instant::now();
+        let mut last = self.last_refill.lock().unwrap();
+        let mut tokens = self.tokens.lock().unwrap();
+        let elapsed = now.duration_since(*last).as_secs_f64();
+        let refill = (elapsed * MAX_MESSAGES_PER_SECOND as f64) as u32;
+        if refill > 0 {
+            *tokens = tokens.saturating_add(refill).min(MAX_MESSAGES_PER_SECOND);
+            *last = now;
+        }
+        if *tokens == 0 {
+            false
+        } else {
+            *tokens -= 1;
+            true
+        }
+    }
+}
 
 /// WebSocket 重连 + 消息循环主函数。
 /// 提取自原 main.rs:4011-4440。
@@ -239,6 +276,8 @@ async fn run_message_loop(
                                   // 编译期断言：若编译失败，请更新 SPAWN_COUNT
     const _: [(); SPAWN_COUNT] = [(); 2];
 
+    let limiter = RateLimiter::new();
+
     loop {
         if state.shutdown.load(std::sync::atomic::Ordering::Acquire) {
             break;
@@ -249,6 +288,16 @@ async fn run_message_loop(
         }
         match read.next().await {
             Some(Ok(Message::Text(text))) => {
+                if !limiter.try_acquire() {
+                    warn!(
+                        "{}",
+                        log_fmt!(
+                            "main.ws_message_rate_limited",
+                            limit = MAX_MESSAGES_PER_SECOND
+                        )
+                    );
+                    continue;
+                }
                 // 防御：恶意/故障 OneBot 框架发大帧（tungstenite 默认 16 MiB），
                 // 解析前先丢。OneBot 正常单条消息远小于 1 MiB。
                 if text.len() > MAX_WS_MESSAGE_SIZE {
@@ -380,4 +429,28 @@ async fn run_message_loop(
 async fn clear_current_write(state: &AppState) {
     let mut cw = state.current_write.lock().await;
     *cw = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limiter_burst_then_block() {
+        let l = RateLimiter::new();
+        for _ in 0..MAX_MESSAGES_PER_SECOND {
+            assert!(l.try_acquire());
+        }
+        assert!(!l.try_acquire(), "should be exhausted");
+    }
+
+    #[test]
+    fn rate_limiter_refills_over_time() {
+        let l = RateLimiter::new();
+        for _ in 0..MAX_MESSAGES_PER_SECOND {
+            assert!(l.try_acquire());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(l.try_acquire(), "should refill after sleep");
+    }
 }

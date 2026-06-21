@@ -383,7 +383,7 @@ pub(crate) fn draw_slider_reverse_arrows(
     }
 
     let span_count = ctx.hit_object.slider_repeats.max(1) as f64;
-    let duration = (ctx.hit_object.end_time - ctx.hit_object.start_time) as f64;
+    let duration = ((ctx.hit_object.end_time - ctx.hit_object.start_time) as f64).max(0.0);
     let fade_out_ratio = (300.0_f64).min(duration / span_count) / duration.max(1.0);
 
     for (i, &center) in ctx.slider_data.reverse_centers.iter().enumerate() {

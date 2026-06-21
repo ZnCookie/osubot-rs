@@ -4512,6 +4512,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wasmtime",
+ "wat",
 ]
 
 [[package]]

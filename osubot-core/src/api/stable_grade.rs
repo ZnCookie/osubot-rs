@@ -185,3 +185,115 @@ pub(super) fn get_stable_accuracy(
 
     (hit / total).clamp(0.0, 1.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn osu_stats(
+        count_300: i64,
+        count_100: i64,
+        count_50: i64,
+        count_miss: i64,
+    ) -> OsuApiScoreStatistics {
+        OsuApiScoreStatistics {
+            count_300,
+            count_100,
+            count_50,
+            count_miss,
+            ..Default::default()
+        }
+    }
+
+    fn taiko_stats(count_300: i64, count_100: i64, count_miss: i64) -> OsuApiScoreStatistics {
+        OsuApiScoreStatistics {
+            count_300,
+            count_100,
+            count_miss,
+            ..Default::default()
+        }
+    }
+
+    fn catch_stats(
+        fruits: i64,
+        large_hit: i64,
+        small_hit: i64,
+        miss: i64,
+    ) -> OsuApiScoreStatistics {
+        OsuApiScoreStatistics {
+            count_300: fruits,
+            osu_large_tick_hits: large_hit,
+            osu_small_tick_hits: small_hit,
+            count_miss: miss,
+            ..Default::default()
+        }
+    }
+
+    fn mania_stats(
+        count_geki: i64,
+        count_300: i64,
+        count_katu: i64,
+        count_100: i64,
+        count_50: i64,
+        count_miss: i64,
+    ) -> OsuApiScoreStatistics {
+        OsuApiScoreStatistics {
+            count_geki,
+            count_300,
+            count_katu,
+            count_100,
+            count_50,
+            count_miss,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rank_x_100_percent_all_modes() {
+        assert_eq!(
+            get_stable_rank(&osu_stats(100, 0, 0, 0), GameMode::Osu, true, false),
+            "X"
+        );
+        assert_eq!(
+            get_stable_rank(&taiko_stats(100, 0, 0), GameMode::Taiko, true, false),
+            "X"
+        );
+        assert_eq!(
+            get_stable_rank(&catch_stats(100, 0, 0, 0), GameMode::Catch, true, false),
+            "X"
+        );
+        assert_eq!(
+            get_stable_rank(
+                &mania_stats(100, 0, 0, 0, 0, 0),
+                GameMode::Mania,
+                true,
+                false
+            ),
+            "X"
+        );
+    }
+
+    #[test]
+    fn rank_s_below_x_osu() {
+        let rank = get_stable_rank(&osu_stats(95, 5, 0, 0), GameMode::Osu, true, false);
+        assert_eq!(rank, "S");
+    }
+
+    #[test]
+    fn rank_d_low_accuracy_osu() {
+        let rank = get_stable_rank(&osu_stats(5, 0, 5, 0), GameMode::Osu, true, false);
+        assert!(matches!(rank.as_str(), "D" | "C"), "got {rank}");
+    }
+
+    #[test]
+    fn accuracy_unpassed_is_zero() {
+        let acc = get_stable_accuracy(&osu_stats(0, 0, 0, 0), GameMode::Osu, false);
+        assert_eq!(acc, 0.0);
+    }
+
+    #[test]
+    fn accuracy_perfect_osu_is_one() {
+        let acc = get_stable_accuracy(&osu_stats(300, 0, 0, 0), GameMode::Osu, true);
+        assert!((acc - 1.0).abs() < 1e-6);
+    }
+}

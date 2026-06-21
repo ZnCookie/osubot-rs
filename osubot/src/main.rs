@@ -3742,10 +3742,10 @@ async fn main() {
     let handles = runtime::build_runtime_handles().await;
 
     background::backfill_user_ids(&handles).await;
-    background::spawn_scheduler(&handles);
-    background::spawn_irc(&handles);
-    background::spawn_onebot_cleanup(&handles);
-    background::spawn_watcher(&handles).await;
+    let scheduler_h = background::spawn_scheduler(&handles);
+    let irc_h = background::spawn_irc(&handles);
+    let cleanup_h = background::spawn_onebot_cleanup(&handles);
+    let watcher_h = background::spawn_watcher(&handles);
     background::spawn_shutdown_signal(handles.app_state.shutdown.clone());
 
     // Extract state + drain/in_flight before handles is consumed by spawn_irc_bridge.
@@ -3754,12 +3754,19 @@ async fn main() {
     let drain = handles.reload_handle.drain.clone();
     let in_flight = handles.reload_handle.in_flight.clone();
 
-    background::spawn_irc_bridge(handles);
+    let irc_bridge_h = background::spawn_irc_bridge(handles);
 
     ws_loop::run_ws_reconnect_loop(state.clone(), drain, in_flight).await;
 
     plugin_runtime::shutdown_all(&state.plugin_manager).await;
     state.scheduler.shutdown();
+
+    let drain_timeout = std::time::Duration::from_secs(10);
+    let _ = tokio::time::timeout(drain_timeout, scheduler_h).await;
+    let _ = tokio::time::timeout(drain_timeout, irc_h).await;
+    let _ = tokio::time::timeout(drain_timeout, cleanup_h).await;
+    let _ = tokio::time::timeout(drain_timeout, watcher_h).await;
+    let _ = tokio::time::timeout(drain_timeout, irc_bridge_h).await;
 }
 
 #[cfg(test)]

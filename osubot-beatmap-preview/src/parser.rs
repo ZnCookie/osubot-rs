@@ -189,13 +189,13 @@ fn parse_timing_points(lines: &[&str]) -> Option<Vec<TimingPoint>> {
         if parts.len() < 2 {
             continue;
         }
-        let time: f64 = match parts[0].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
+        let time: f64 = match parts[0].parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => continue,
         };
-        let beat_length: f64 = match parts[1].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
+        let beat_length: f64 = match parts[1].parse::<f64>() {
+            Ok(v) if v.is_finite() && v > 0.0 => v,
+            _ => continue,
         };
         let mut meter = if parts.len() > 2 && !parts[2].is_empty() {
             parts[2].parse::<i32>().unwrap_or(4)
@@ -280,6 +280,9 @@ fn parse_slider_fields(parts: &[&str]) -> Option<SliderFields> {
     }
     let repeats: i32 = parts.get(6)?.parse().ok()?;
     let pixel_length: f64 = parts.get(7)?.parse().ok()?;
+    if !pixel_length.is_finite() || !(0.0..=1e6).contains(&pixel_length) {
+        return None;
+    }
     let mut edge_hitsounds = Vec::new();
     if let Some(eh) = parts.get(8) {
         if !eh.is_empty() {
@@ -564,7 +567,8 @@ fn parse_slider_end_time(
     if !duration.is_finite() {
         return Some(start_time);
     }
-    Some(start_time + round_half_even(duration))
+    let end = start_time.saturating_add(round_half_even(duration));
+    Some(if end < start_time { start_time } else { end })
 }
 
 pub fn resolve_slider_timing(start_time: i64, timing_points: &[TimingPoint]) -> (f64, f64) {
@@ -651,5 +655,108 @@ mod tests {
         assert!(result.is_ok());
         let beatmap = result.unwrap();
         assert_eq!(beatmap.metadata.get("Title"), Some("Test"));
+    }
+
+    /// 恶意谱面：slider_pixel_length = "NaN" / "inf" / "-1" / "1e30" / 正常值。
+    /// 期望：非有限 / 负数 / 超过 1e6 的 pixel_length 不能传播到 `obj.slider_pixel_length`。
+    /// 字段位置：parts[7] 是 pixelLength，所以 raw 放在第 7 段。
+    fn parse_one_slider_pixel_length(raw: &str) -> Option<f64> {
+        let line = format!("256,192,1000,2,0,B|0:0|0:1,1,{},0:0:0:0:", raw);
+        let kvs = KvSection::default();
+        let timing = vec![TimingPoint {
+            time: 0.0,
+            beat_length: 500.0,
+            meter: 4,
+            uninherited: true,
+            kiai_mode: false,
+        }];
+        let lines = vec![line.as_str()];
+        let objs = parse_standard(&lines, &kvs, &timing)?;
+        let obj = objs.into_iter().next()?;
+        if obj.hit_type & 2 == 0 {
+            return None;
+        }
+        Some(obj.slider_pixel_length)
+    }
+
+    #[test]
+    fn slider_pixel_length_rejects_nan() {
+        assert_eq!(parse_one_slider_pixel_length("NaN"), None);
+    }
+
+    #[test]
+    fn slider_pixel_length_rejects_inf() {
+        assert_eq!(parse_one_slider_pixel_length("inf"), None);
+    }
+
+    #[test]
+    fn slider_pixel_length_rejects_negative() {
+        assert_eq!(parse_one_slider_pixel_length("-1"), None);
+    }
+
+    #[test]
+    fn slider_pixel_length_rejects_huge() {
+        // 1e30 -> saturate 或 reject；本测试断言"未传播到 obj"
+        let out = parse_one_slider_pixel_length("1e30");
+        assert!(out.is_none() || out.unwrap() <= 1e6, "got {out:?}");
+    }
+
+    #[test]
+    fn slider_pixel_length_accepts_normal() {
+        let out = parse_one_slider_pixel_length("100").expect("normal");
+        assert!((out - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn timing_point_rejects_nan_beat_length() {
+        let lines = vec!["0,NaN,4,1,0,100,1,0"];
+        let points = parse_timing_points(&lines);
+        if let Some(pts) = points {
+            for p in &pts {
+                assert!(p.beat_length.is_finite(), "got {:?}", p);
+            }
+        }
+    }
+
+    #[test]
+    fn timing_point_rejects_inf_time() {
+        let lines = vec!["inf,500,4,1,0,100,1,0"];
+        let points = parse_timing_points(&lines);
+        if let Some(pts) = points {
+            for p in &pts {
+                assert!(p.time.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn parse_end_time_saturates_on_huge_duration() {
+        // 构造使 duration 远超 i64::MAX 的极值场景：
+        // beat_length=1e15, slides=1, pixel_length=1e6, SliderMultiplier=0.4
+        // duration = 1e6 / (0.4 * 100 * 1) * 1e15 * 1 = 2.5e19 ms  ->  i64 overflow.
+        let mut kvs = KvSection::default();
+        kvs.insert("SliderMultiplier", "0.4".to_string());
+        let timing = vec![TimingPoint {
+            time: 0.0,
+            beat_length: 1.0e15,
+            meter: 4,
+            uninherited: true,
+            kiai_mode: false,
+        }];
+        let line = "256,192,1000,2,0,B|0:0|0:1,1,1000000,0:0:0:0:";
+        let lines = vec![line];
+        let objs = parse_standard(&lines, &kvs, &timing).expect("parse");
+        let obj = &objs[0];
+        assert!(
+            obj.end_time >= obj.start_time,
+            "end {} < start {}",
+            obj.end_time,
+            obj.start_time
+        );
+        assert!(
+            obj.end_time - obj.start_time > 0,
+            "duration must be positive, got {}",
+            obj.end_time - obj.start_time
+        );
     }
 }

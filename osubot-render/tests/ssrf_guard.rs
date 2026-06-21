@@ -74,3 +74,53 @@ fn allows_public_hostname() {
     assert!(!is_blocked_url("https://osu.ppy.sh/foo.png"));
     assert!(!is_blocked_url("https://a.ppy.sh/foo.png"));
 }
+
+#[tokio::test]
+async fn test_inline_external_images_replaces_blocked_url_with_placeholder() {
+    let html = r#"<p>hi</p><img src="http://127.0.0.1/x.png" alt="x"><p>bye</p>"#;
+    let out = osubot_render::cache::inline_external_images(html).await;
+    assert!(
+        !out.contains("127.0.0.1"),
+        "blocked URL must not appear in output: {out}"
+    );
+    assert!(
+        out.contains("data:image/png;base64,"),
+        "blocked <img> must be replaced by placeholder data URI: {out}"
+    );
+    assert!(
+        out.contains("hi") && out.contains("bye"),
+        "siblings preserved"
+    );
+}
+
+#[tokio::test]
+async fn test_inline_external_images_replaces_file_url_with_placeholder() {
+    let html = r#"<img src="file:///etc/passwd">"#;
+    let out = osubot_render::cache::inline_external_images(html).await;
+    assert!(
+        !out.contains("file://"),
+        "file:// URL must be blocked: {out}"
+    );
+    assert!(out.contains("data:image/png;base64,"));
+}
+
+#[test]
+fn test_is_blocked_url_blocks_nat64() {
+    // RFC 6052 NAT64 prefix
+    assert!(osubot_render::cache::is_blocked_url(
+        "http://[64:ff9b::7f00:1]/x"
+    ));
+}
+
+#[test]
+fn test_is_blocked_url_blocks_teredo() {
+    // RFC 4380 Teredo prefix
+    assert!(osubot_render::cache::is_blocked_url("http://[2001::1]/x"));
+}
+
+#[test]
+fn test_is_blocked_url_hostname_case_insensitive() {
+    // RFC 3986 host part is case-insensitive
+    assert!(osubot_render::cache::is_blocked_url("http://LocalHost/x"));
+    assert!(osubot_render::cache::is_blocked_url("http://LOCALHOST/x"));
+}

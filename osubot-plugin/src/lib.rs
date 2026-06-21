@@ -1204,4 +1204,47 @@ mod tests {
         rt.block_on(pm.shutdown());
         drop(_guard);
     }
+
+    #[test]
+    fn host_call_impl_rejects_null_alloc() {
+        use crate::bridge::register_host_functions;
+        use wasmtime::{Config, Engine, Linker, Module, Store};
+
+        // Wasm 模拟一个 plugin：alloc 始终返回 0（模拟 OOM），
+        // host_call 透传 4 个 i32 参数到宿主函数 `osubot.host_call_impl`。
+        let wat = r#"
+            (module
+                (import "osubot" "host_call_impl" (func $host_call_impl (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "alloc") (param $sz i32) (result i32)
+                    i32.const 0)
+                (func (export "host_call")
+                    (param $name_ptr i32) (param $name_len i32)
+                    (param $payload_ptr i32) (param $payload_len i32)
+                    (result i32)
+                    local.get $name_ptr
+                    local.get $name_len
+                    local.get $payload_ptr
+                    local.get $payload_len
+                    call $host_call_impl))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse wat");
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+
+        let services = HostServices::default_for_test();
+        let mut store: Store<HostServices> = Store::new(&engine, services);
+        store.set_fuel(u64::MAX).unwrap();
+        let mut linker = Linker::<HostServices>::new(&engine);
+        register_host_functions(&mut linker).unwrap();
+        let pre = linker.instantiate_pre(&module).unwrap();
+        let inst = pre.instantiate(&mut store).unwrap();
+        let f = inst
+            .get_typed_func::<(u32, u32, u32, u32), u32>(&mut store, "host_call")
+            .unwrap();
+        let result = f.call(&mut store, (0, 0, 0, 0));
+        assert!(result.is_err(), "must reject null alloc: {result:?}");
+    }
 }

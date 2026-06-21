@@ -194,3 +194,50 @@ pub(crate) async fn authenticated_get(
     })
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_attempt_zero_within_first_window() {
+        let delay = backoff_with_jitter(0);
+        assert!(
+            delay >= Duration::from_millis(750) && delay <= Duration::from_millis(1250),
+            "got {delay:?}"
+        );
+    }
+
+    #[test]
+    fn backoff_attempt_one_doubles() {
+        let delay = backoff_with_jitter(1);
+        assert!(
+            delay >= Duration::from_millis(1500) && delay <= Duration::from_millis(2500),
+            "got {delay:?}"
+        );
+    }
+
+    #[test]
+    fn backoff_attempt_thirtyone_saturates() {
+        let delay = backoff_with_jitter(31);
+        assert!(
+            delay >= Duration::from_secs(3600),
+            "got {delay:?}, expected >= 1 hour"
+        );
+    }
+
+    #[test]
+    fn backoff_attempt_large_caps_at_thirtyone() {
+        let delay_31 = backoff_with_jitter(31);
+        let delay_100 = backoff_with_jitter(100);
+        let diff = if delay_31 > delay_100 {
+            delay_31 - delay_100
+        } else {
+            delay_100 - delay_31
+        };
+        assert!(
+            diff < delay_31,
+            "attempt=31 and attempt=100 should share same magnitude, got {delay_31:?} vs {delay_100:?}"
+        );
+    }
+}

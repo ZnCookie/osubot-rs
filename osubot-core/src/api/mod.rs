@@ -1,3 +1,4 @@
+mod beatmap_attrs;
 mod http;
 mod oauth;
 mod osu_api;
@@ -5,6 +6,7 @@ mod pp;
 mod score_convert;
 mod stable_grade;
 
+pub use beatmap_attrs::apply_mod_adjustment_to_stats;
 pub use http::download_beatmap_osu;
 pub(crate) use http::{classify_http_error, retry_on_transient, API_VERSION};
 pub(crate) use oauth::retry_on_401;
@@ -15,7 +17,6 @@ pub use osu_api::{
     OsuUserInfo,
 };
 pub use pp::{calculate_pp_breakdown, calculate_pp_if_acc, enrich_score_with_pp, PpCalcParams};
-pub use score_convert::apply_mod_adjustment_to_stats;
 
 use std::sync::OnceLock;
 use std::time::Duration;
