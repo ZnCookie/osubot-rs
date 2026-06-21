@@ -140,22 +140,22 @@ fn render_top_row(data: &ScoreCardData) -> Markup {
                         @if let Some(ref chip) = plays_chip {
                             (chip)
                         }
-                        div.info-chips {
-                            span.chip.chip-info {
-                                span.chip-icon { "\u{266B}" }
-                                span.chip-label { "BPM" }
-                                span.chip-num { (format!("{:.0}", score.bpm)) }
-                            }
-                            span.chip.chip-info {
-                                span.chip-icon { "\u{25F7}" }
-                                span.chip-label { "Length" }
-                                span.chip-num { (length) }
-                            }
-                            span.chip.chip-info {
-                                span.chip-icon { "\u{270E}" }
-                                span.chip-label { "Mapper" }
-                                span.chip-num { (score.creator) }
-                            }
+                    }
+                    div.info-chips {
+                        span.chip.chip-info {
+                            span.chip-icon { "\u{266B}" }
+                            span.chip-label { "BPM" }
+                            span.chip-num { (format!("{:.0}", score.bpm)) }
+                        }
+                        span.chip.chip-info {
+                            span.chip-icon { "\u{25F7}" }
+                            span.chip-label { "Length" }
+                            span.chip-num { (length) }
+                        }
+                        span.chip.chip-info {
+                            span.chip-icon { "\u{270E}" }
+                            span.chip-label { "Mapper" }
+                            span.chip-num { (score.creator) }
                         }
                     }
                 }
