@@ -116,12 +116,7 @@ async fn resolve_score_user(
             }
             Err(e) => {
                 tracing::error!(error = ?e, user_id, "{}", log_fmt!("main.resolve_score_user_lookup_bound_failed"));
-                let _ = resp_tx
-                    .send(
-                        user_str("error.data_fetch_failed")
-                            .replace("{qq}", &msg.user_id.to_string()),
-                    )
-                    .await;
+                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                 None
             }
         }
@@ -216,12 +211,7 @@ pub(crate) async fn handle_score_query(
             }
             Err(e) => {
                 tracing::error!(error = ?e, user_id = uid, "{}", log_fmt!("main.resolve_bound_user_failed"));
-                let _ = resp_tx
-                    .send(
-                        user_str("error.data_fetch_failed")
-                            .replace("{qq}", &msg.user_id.to_string()),
-                    )
-                    .await;
+                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                 return;
             }
         };
@@ -649,12 +639,7 @@ pub(crate) async fn handle_beatmap_score_query(
                 if !matches!(e, api::ApiError::NotFound) {
                     warn!(user_id = user_id, error = ?e, "{}", log_fmt!("main.fetch_stats_score_id_failed"));
                 }
-                let _ = resp_tx
-                    .send(
-                        user_str("error.data_fetch_failed")
-                            .replace("{qq}", &msg.user_id.to_string()),
-                    )
-                    .await;
+                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                 return;
             }
         };
