@@ -1,6 +1,5 @@
+use maud::{html, Markup, PreEscaped};
 use osubot_types::{format_accuracy, format_length, format_number, Score};
-
-use crate::style::escape_html;
 
 const SCORE_CSS: &str = include_str!("../styles/score.css");
 
@@ -31,10 +30,7 @@ pub struct ScoreCardData {
     pub hp_eff: Option<f64>,
 }
 
-const BPM_ICON: &str = "♫";
-const LENGTH_ICON: &str = "◷";
-
-fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> String {
+fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
     let base_pct = (base / 10.0 * 100.0).min(100.0);
     let (track_html, val_str) = match eff {
         Some(e) if (e - base).abs() < 0.01 => {
@@ -74,33 +70,35 @@ fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> String {
             (track, format!("<span>{:.1}</span>", base))
         }
     };
-    format!(
-        r#"<div class="stat-row"><span class="label">{label}</span><div class="track">{track_html}</div><span class="val">{val_str}</span></div>"#
-    )
+    html! {
+        div.stat-row {
+            span.label { (label) }
+            div.track { (PreEscaped(track_html)) }
+            span.val { (PreEscaped(val_str)) }
+        }
+    }
 }
 
-fn render_top_row(data: &ScoreCardData) -> String {
+fn render_top_row(data: &ScoreCardData) -> Markup {
     let score = &data.score;
     let length = format_length(score.length_seconds);
 
-    let fav_chip = data
-        .fav_count
-        .map(|c| {
-            format!(
-                r#"<span class="chip chip-fav"><span class="chip-icon">♥</span><span class="chip-num">{}</span></span>"#,
-                format_number(c)
-            )
-        })
-        .unwrap_or_default();
-    let plays_chip = data
-        .play_count
-        .map(|c| {
-            format!(
-                r#"<span class="chip chip-plays"><span class="chip-icon"></span><span class="chip-num">{}</span></span>"#,
-                format_plays(c)
-            )
-        })
-        .unwrap_or_default();
+    let fav_chip = data.fav_count.map(|c| {
+        html! {
+            span.chip.chip-fav {
+                span.chip-icon { "\u{2665}" }
+                span.chip-num { (format_number(c)) }
+            }
+        }
+    });
+    let plays_chip = data.play_count.map(|c| {
+        html! {
+            span.chip.chip-plays {
+                span.chip-icon {}
+                span.chip-num { (format_plays(c)) }
+            }
+        }
+    });
 
     let status_lower = data.ranked_status.to_lowercase();
     let status_class = match status_lower.as_str() {
@@ -121,89 +119,68 @@ fn render_top_row(data: &ScoreCardData) -> String {
         }
     };
 
-    let mut html = String::with_capacity(4096);
-    html.push_str(
-        r#"    <div class="top-row">
-      <div class="beatmap-card surface">
-        <div class="cover-wrap"><img src=""#,
-    );
-    html.push_str(&data.thumb_data_uri);
-    html.push_str(
-        r#"" /></div>
-        <div class="beatmap-text">
-          <div class="beatmap-title">"#,
-    );
-    html.push_str(&escape_html(&score.title));
-    html.push_str(
-        r#"</div>
-          <div class="beatmap-artist">"#,
-    );
-    html.push_str(&escape_html(&score.artist));
-    html.push_str(
-        r#"</div>
-          <div class="bottom-chips">
-            "#,
-    );
-    html.push_str(&format!(
-        r#"
-            <span class="chip chip-status {}">{}</span>
-            <span class="chip chip-diff"><span class="star">★ {:.2}</span><span class="diff-name">{}</span></span>"#,
-        status_class,
-        escape_html(&status_display),
-        score.star_rating,
-        escape_html(&score.version),
-    ));
-    html.push_str(&fav_chip);
-    html.push_str(&plays_chip);
-    html.push_str(
-        r#"
-          </div>
-          <div class="info-chips">
-            <span class="chip chip-info"><span class="chip-icon">"#,
-    );
-    html.push_str(BPM_ICON);
-    html.push_str(r#"</span><span class="chip-label">BPM</span><span class="chip-num">"#);
-    html.push_str(&format!("{:.0}", score.bpm));
-    html.push_str(
-        r#"</span></span>
-            <span class="chip chip-info"><span class="chip-icon">"#,
-    );
-    html.push_str(LENGTH_ICON);
-    html.push_str(r#"</span><span class="chip-label">Length</span><span class="chip-num">"#);
-    html.push_str(&length);
-    html.push_str(
-        r#"</span></span>
-            <span class="chip chip-info"><span class="chip-icon">✎</span><span class="chip-label">Mapper</span><span class="chip-num">"#,
-    );
-    html.push_str(&escape_html(&score.creator));
-    html.push_str(
-        r#"</span></span>
-          </div>
-        </div>
-      </div>
-      <div class="meta-card surface">
-        <div class="meta-line"><span class="meta-label">BID</span><span class="meta-val meta-val-big">"#,
-    );
-    html.push_str(&score.beatmap_id.to_string());
-    html.push_str(r#"</span></div>"#);
-    let play_display = if data.play_time.is_empty() {
-        "--"
-    } else {
-        &data.play_time
-    };
-    html.push_str(
-        r#"<div class="meta-line"><span class="meta-label">Played</span><span class="meta-val">"#,
-    );
-    html.push_str(&escape_html(play_display));
-    html.push_str(
-        r#"</span></div>
-      </div>
-    </div>"#,
-    );
-    html
+    html! {
+        div.top-row {
+            div.beatmap-card.surface {
+                div.cover-wrap {
+                    img src=(data.thumb_data_uri);
+                }
+                div.beatmap-text {
+                    div.beatmap-title { (score.title) }
+                    div.beatmap-artist { (score.artist) }
+                    div.bottom-chips {
+                        span.chip.chip-status class=(status_class) { (status_display) }
+                        span.chip.chip-diff {
+                            span.star { "\u{2605} " (format!("{:.2}", score.star_rating)) }
+                            span.diff-name { (score.version) }
+                        }
+                        @if let Some(ref chip) = fav_chip {
+                            (chip)
+                        }
+                        @if let Some(ref chip) = plays_chip {
+                            (chip)
+                        }
+                        div.info-chips {
+                            span.chip.chip-info {
+                                span.chip-icon { "\u{266B}" }
+                                span.chip-label { "BPM" }
+                                span.chip-num { (format!("{:.0}", score.bpm)) }
+                            }
+                            span.chip.chip-info {
+                                span.chip-icon { "\u{25F7}" }
+                                span.chip-label { "Length" }
+                                span.chip-num { (length) }
+                            }
+                            span.chip.chip-info {
+                                span.chip-icon { "\u{270E}" }
+                                span.chip-label { "Mapper" }
+                                span.chip-num { (score.creator) }
+                            }
+                        }
+                    }
+                }
+            }
+            div.meta-card.surface {
+                div.meta-line {
+                    span.meta-label { "BID" }
+                    span.meta-val.meta-val-big { (score.beatmap_id) }
+                }
+                div.meta-line {
+                    span.meta-label { "Played" }
+                    span.meta-val {
+                        @if data.play_time.is_empty() {
+                            "--"
+                        } @else {
+                            (data.play_time)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
-fn render_middle_row(data: &ScoreCardData) -> String {
+fn render_middle_row(data: &ScoreCardData) -> Markup {
     let score = &data.score;
 
     let global_rank = data
@@ -220,96 +197,87 @@ fn render_middle_row(data: &ScoreCardData) -> String {
     let country_rank_change_html = crate::style::format_rank_change_html(data.country_rank_change);
 
     let pp_val_display = format!("{:.0}", data.user_pp);
-    let user_pp_change_section = if data.pp_change.is_some() {
-        pp_change_html
-    } else {
-        String::new()
-    };
-
-    let mut html = String::with_capacity(4096);
-    html.push_str(
-        r#"
-    <div class="middle-row">
-      <div class="user-card surface">
-        <div class="user-avatar"><img src=""#,
-    );
-    html.push_str(&data.avatar_data_uri);
-    html.push_str(
-        r#"" /></div>
-        <div class="user-info-mid">
-          <div class="user-name">"#,
-    );
-    html.push_str(&escape_html(&data.username));
-    html.push_str(
-        r#"</div>
-          <div class="user-ranks">
-            <div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">"#,
-    );
-    html.push_str(&global_rank);
-    html.push_str(r#"</span>"#);
-    html.push_str(&global_rank_change_html);
-    html.push_str(
-        r#"<span class="rank-label">Global</span></div>
-            <div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">"#,
-    );
-    html.push_str(&country_rank);
-    html.push_str(r#"</span>"#);
-    html.push_str(&country_rank_change_html);
-    html.push_str(r#"<span class="rank-label">"#);
-    html.push_str(&escape_html(&data.country_code));
-    html.push_str(
-        r#"</span></div>
-          </div>
-        </div>
-        <div class="user-pp-section">
-          <span class="user-pp-val">"#,
-    );
-    html.push_str(&pp_val_display);
-    html.push_str(
-        r#"pp</span>
-          "#,
-    );
-    html.push_str(&user_pp_change_section);
-    html.push_str(
-        r#"
-        </div>
-      </div>
-      <div class="stats-card surface">"#,
-    );
 
     let no_ar_cs = matches!(
         data.mode,
         osubot_types::GameMode::Taiko | osubot_types::GameMode::Mania
     );
     let ar_row = if no_ar_cs {
-        r#"<div class="stat-row"><span class="label">AR</span><div class="track"></div><span class="val"><span>-</span></span></div>"#.to_string()
+        html! {
+            div.stat-row {
+                span.label { "AR" }
+                div.track {}
+                span.val { span { "-" } }
+            }
+        }
     } else {
         stat_bar("AR", score.ar, data.ar_eff)
     };
-    html.push_str(&ar_row);
     let od_row = if matches!(data.mode, osubot_types::GameMode::Catch) {
-        r#"<div class="stat-row"><span class="label">OD</span><div class="track"></div><span class="val"><span>-</span></span></div>"#.to_string()
+        html! {
+            div.stat-row {
+                span.label { "OD" }
+                div.track {}
+                span.val { span { "-" } }
+            }
+        }
     } else {
         stat_bar("OD", score.od, data.od_eff)
     };
-    html.push_str(&od_row);
     let cs_row = if no_ar_cs {
-        r#"<div class="stat-row"><span class="label">CS</span><div class="track"></div><span class="val"><span>-</span></span></div>"#.to_string()
+        html! {
+            div.stat-row {
+                span.label { "CS" }
+                div.track {}
+                span.val { span { "-" } }
+            }
+        }
     } else {
         stat_bar("CS", score.cs, data.cs_eff)
     };
-    html.push_str(&cs_row);
     let hp_row = stat_bar("HP", score.hp, data.hp_eff);
-    html.push_str(&hp_row);
 
-    html.push_str(
-        r#"</div>
-    </div>"#,
-    );
-    html
+    html! {
+        div.middle-row {
+            div.user-card.surface {
+                div.user-avatar {
+                    img src=(data.avatar_data_uri);
+                }
+                div.user-info-mid {
+                    div.user-name { (data.username) }
+                    div.user-ranks {
+                        div.rank-item {
+                            span.rank-hash { "#" }
+                            span.rank-val { (global_rank) }
+                            (PreEscaped(global_rank_change_html))
+                            span.rank-label { "Global" }
+                        }
+                        div.rank-item {
+                            span.rank-hash { "#" }
+                            span.rank-val { (country_rank) }
+                            (PreEscaped(country_rank_change_html))
+                            span.rank-label { (data.country_code) }
+                        }
+                    }
+                }
+                div.user-pp-section {
+                    span.user-pp-val { (pp_val_display) "pp" }
+                    @if data.pp_change.is_some() {
+                        (PreEscaped(pp_change_html))
+                    }
+                }
+            }
+            div.stats-card.surface {
+                (ar_row)
+                (od_row)
+                (cs_row)
+                (hp_row)
+            }
+        }
+    }
 }
 
-fn render_score_row(data: &ScoreCardData) -> String {
+fn render_score_row(data: &ScoreCardData) -> Markup {
     let score = &data.score;
     let is_mania = data.mode == osubot_types::GameMode::Mania;
     let is_taiko = data.mode == osubot_types::GameMode::Taiko;
@@ -321,87 +289,12 @@ fn render_score_row(data: &ScoreCardData) -> String {
     let h50 = score.statistics.count_50;
     let miss = score.statistics.count_miss;
 
-    let mut mods_html = String::new();
-    if score.is_lazer {
-        mods_html.push_str(r#"<span class="chip chip-filled">Lazer</span>"#);
-    }
-    if !score.mods.is_empty() {
-        mods_html.push_str(
-            &score
-                .mods
-                .iter()
-                .map(|m| {
-                    format!(
-                        r#"<span class="chip chip-filled">{}</span>"#,
-                        escape_html(m.acronym().as_str())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(""),
-        );
-    }
-
     let score_formatted = if score.score_value > 0 {
         format_number(score.score_value)
     } else {
         "--".to_string()
     };
 
-    let mut html = String::with_capacity(4096);
-    html.push_str(
-        r#"
-      <div class="hits-card surface">
-        <div class="hits-row">"#,
-    );
-
-    if is_mania {
-        html.push_str(r#"<div class="hit-card hit-300-mania"><div class="num mania-geki">"#);
-        html.push_str(&hgeki.to_string());
-        html.push_str(r#"×</div><div class="num mania-300">"#);
-        html.push_str(&h300.to_string());
-        html.push_str(r#"×</div></div>"#);
-        html.push_str(r#"<div class="hit-card hit-katu"><div class="num">"#);
-        html.push_str(&hkatu.to_string());
-        html.push_str(r#"×</div><div class="label">200</div></div>"#);
-    } else {
-        html.push_str(r#"<div class="hit-card hit-300"><div class="num">"#);
-        html.push_str(&h300.to_string());
-        html.push_str(r#"×</div><div class="label">300</div></div>"#);
-    }
-
-    if !is_taiko {
-        html.push_str(r#"<div class="hit-card hit-100"><div class="num">"#);
-        html.push_str(&h100.to_string());
-        html.push_str(r#"×</div><div class="label">100</div></div>"#);
-    }
-    if is_taiko {
-        html.push_str(r#"<div class="hit-card hit-100"><div class="num">"#);
-        html.push_str(&h100.to_string());
-        html.push_str(r#"×</div><div class="label">150</div></div>"#);
-    }
-    if is_mania {
-        html.push_str(r#"<div class="hit-card hit-50-mania"><div class="num mania-50">"#);
-        html.push_str(&h50.to_string());
-        html.push_str(r#"×</div><div class="num mania-miss">"#);
-        html.push_str(&miss.to_string());
-        html.push_str(r#"×</div></div>"#);
-    } else if is_taiko {
-        html.push_str(r#"<div class="hit-card hit-miss"><div class="num">"#);
-        html.push_str(&miss.to_string());
-        html.push_str(r#"×</div><div class="label">miss</div></div>"#);
-    } else {
-        html.push_str(r#"<div class="hit-card hit-50"><div class="num">"#);
-        html.push_str(&h50.to_string());
-        html.push_str(r#"×</div><div class="label">50</div></div>"#);
-        html.push_str(r#"<div class="hit-card hit-miss"><div class="num">"#);
-        html.push_str(&miss.to_string());
-        html.push_str(r#"×</div><div class="label">miss</div></div>"#);
-    }
-    html.push_str(
-        r#"</div>
-        <div class="score-acc-row">
-          <div class="rank-badge "#,
-    );
     let rank_class = match score.rank.as_str() {
         "XH" | "SH" | "X" | "S" => {
             if score.rank.ends_with('H') {
@@ -416,64 +309,97 @@ fn render_score_row(data: &ScoreCardData) -> String {
         "D" => "rank-d",
         _ => "rank-f",
     };
-    html.push_str(rank_class);
-    html.push_str(r#"">"#);
     let rank_display = match score.rank.as_str() {
         "XH" | "X" => "X",
         "SH" | "S" => "S",
         other => other,
     };
-    html.push_str(&escape_html(rank_display));
-    html.push_str(
-        r#"</div>
-          <div class="score-acc-stack">
-            <div class="stat-mod stat-mod-score"><div class="stat-val">"#,
-    );
-    html.push_str(&score_formatted);
-    html.push_str(
-        r#"</div><div class="stat-label">SCORE</div></div>
-            <div class="stat-mod stat-mod-acc"><div class="stat-val">"#,
-    );
-    html.push_str(&format_accuracy(score.accuracy));
-    html.push_str(
-        r#"</div><div class="stat-label">ACC</div></div>
-          </div>
-        </div>
-        <div class="mod-chips">"#,
-    );
-    html.push_str(&mods_html);
-    html.push_str(
-        r#"</div>
-      </div>"#,
-    );
-    html
+
+    html! {
+        div.hits-card.surface {
+            div.hits-row {
+                @if is_mania {
+                    div.hit-card.hit-300-mania {
+                        div.num.mania-geki { (hgeki) "\u{00D7}" }
+                        div.num.mania-300 { (h300) "\u{00D7}" }
+                    }
+                    div.hit-card.hit-katu {
+                        div.num { (hkatu) "\u{00D7}" }
+                        div.label { "200" }
+                    }
+                } @else {
+                    div.hit-card.hit-300 {
+                        div.num { (h300) "\u{00D7}" }
+                        div.label { "300" }
+                    }
+                }
+                @if !is_taiko {
+                    div.hit-card.hit-100 {
+                        div.num { (h100) "\u{00D7}" }
+                        div.label { "100" }
+                    }
+                }
+                @if is_taiko {
+                    div.hit-card.hit-100 {
+                        div.num { (h100) "\u{00D7}" }
+                        div.label { "150" }
+                    }
+                }
+                @if is_mania {
+                    div.hit-card.hit-50-mania {
+                        div.num.mania-50 { (h50) "\u{00D7}" }
+                        div.num.mania-miss { (miss) "\u{00D7}" }
+                    }
+                } @else if is_taiko {
+                    div.hit-card.hit-miss {
+                        div.num { (miss) "\u{00D7}" }
+                        div.label { "miss" }
+                    }
+                } @else {
+                    div.hit-card.hit-50 {
+                        div.num { (h50) "\u{00D7}" }
+                        div.label { "50" }
+                    }
+                    div.hit-card.hit-miss {
+                        div.num { (miss) "\u{00D7}" }
+                        div.label { "miss" }
+                    }
+                }
+            }
+            div.score-acc-row {
+                div.rank-badge class=(rank_class) {
+                    (rank_display)
+                }
+                div.score-acc-stack {
+                    div.stat-mod.stat-mod-score {
+                        div.stat-val { (score_formatted) }
+                        div.stat-label { "SCORE" }
+                    }
+                    div.stat-mod.stat-mod-acc {
+                        div.stat-val { (format_accuracy(score.accuracy)) }
+                        div.stat-label { "ACC" }
+                    }
+                }
+            }
+            div.mod-chips {
+                @if score.is_lazer {
+                    span.chip.chip-filled { "Lazer" }
+                }
+                @for m in &score.mods {
+                    span.chip.chip-filled { (m.acronym()) }
+                }
+            }
+        }
+    }
 }
 
-fn render_detail_cards(data: &ScoreCardData) -> String {
+fn render_detail_cards(data: &ScoreCardData) -> Markup {
     let score = &data.score;
 
     let pp_str = score
         .pp
         .map(|p| format!("{:.0}", p))
         .unwrap_or_else(|| "--".to_string());
-
-    let mut html = String::with_capacity(4096);
-    html.push_str(
-        r#"
-      <div class="detail-card surface">
-        <div class="detail-subcard-row">
-          <div class="subcard-pp">
-            <div class="subcard-valwrap">
-              <div class="pp-val">"#,
-    );
-    html.push_str(&pp_str);
-    html.push_str(
-        r#"<span class="pp-unit">pp</span></div>
-            </div>
-            <div class="pp-label">PERFORMANCE</div>
-          </div>
-        </div>"#,
-    );
 
     fn pp_breakdown_sum(b: &osubot_types::PpBreakdown) -> f64 {
         b.aim.filter(|&v| v > 0.0).unwrap_or(0.0)
@@ -491,102 +417,109 @@ fn render_detail_cards(data: &ScoreCardData) -> String {
         > 0.0;
     let has_if_acc = score.pp_if_acc.is_some();
 
-    if has_breakdown || has_if_acc {
-        html.push_str(r#"<div class="subcard-pp-predict">"#);
-    }
+    let combo_pct =
+        (score.max_combo as f64 / score.beatmap_max_combo.max(1) as f64 * 100.0).min(100.0);
+    let combo_classes = if score.max_combo == score.beatmap_max_combo {
+        "subcard-combo combo-fc"
+    } else {
+        "subcard-combo"
+    };
 
-    if let Some(breakdown) = &score.pp_breakdown {
-        if pp_breakdown_sum(breakdown) > 0.0 {
-            html.push_str(r#"<div class="subcard-breakdown">"#);
-            if let Some(aim) = breakdown.aim.filter(|&v| v > 0.0) {
-                html.push_str(&format!(
-                r#"<span class="chip pp-chip-aim"><span class="chip-label">AIM</span> {:.0}<span class="chip-unit">pp</span></span>"#,
-                aim
-            ));
+    html! {
+        div.detail-card.surface {
+            div.detail-subcard-row {
+                div.subcard-pp {
+                    div.subcard-valwrap {
+                        div.pp-val { (pp_str) span.pp-unit { "pp" } }
+                    }
+                    div.pp-label { "PERFORMANCE" }
+                }
             }
-            if let Some(speed) = breakdown.speed.filter(|&v| v > 0.0) {
-                html.push_str(&format!(
-                r#"<span class="chip pp-chip-speed"><span class="chip-label">SPD</span> {:.0}<span class="chip-unit">pp</span></span>"#,
-                speed
-            ));
+            @if has_breakdown || has_if_acc {
+                div.subcard-pp-predict {
+                    @if let Some(ref breakdown) = score.pp_breakdown {
+                        @if pp_breakdown_sum(breakdown) > 0.0 {
+                            div.subcard-breakdown {
+                                @if let Some(aim) = breakdown.aim.filter(|&v| v > 0.0) {
+                                    span.chip.pp-chip-aim {
+                                        span.chip-label { "AIM" }
+                                        " " (format!("{:.0}", aim))
+                                        span.chip-unit { "pp" }
+                                    }
+                                }
+                                @if let Some(speed) = breakdown.speed.filter(|&v| v > 0.0) {
+                                    span.chip.pp-chip-speed {
+                                        span.chip-label { "SPD" }
+                                        " " (format!("{:.0}", speed))
+                                        span.chip-unit { "pp" }
+                                    }
+                                }
+                                @if breakdown.accuracy > 0.0 {
+                                    span.chip.pp-chip-acc {
+                                        span.chip-label { "ACC" }
+                                        " " (format!("{:.0}", breakdown.accuracy))
+                                        span.chip-unit { "pp" }
+                                    }
+                                }
+                                @if let Some(fl) = breakdown.flashlight.filter(|&v| v > 0.0) {
+                                    span.chip.pp-chip-fl {
+                                        span.chip-label { "FL" }
+                                        " " (format!("{:.0}", fl))
+                                        span.chip-unit { "pp" }
+                                    }
+                                }
+                                @if let Some(diff) = breakdown.difficulty.filter(|&v| v > 0.0) {
+                                    span.chip.pp-chip-diff {
+                                        span.chip-label { "DIFF" }
+                                        " " (format!("{:.0}", diff))
+                                        span.chip-unit { "pp" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    @if let Some(ref if_acc) = score.pp_if_acc {
+                        div.subcard-if-acc {
+                            @for (label, val) in [
+                                ("95%", if_acc.acc_95),
+                                ("97%", if_acc.acc_97),
+                                ("98%", if_acc.acc_98),
+                                ("99%", if_acc.acc_99),
+                                ("100%", if_acc.acc_100),
+                            ] {
+                                div.if-acc-item {
+                                    span.val { (format!("{:.0}", val)) span.val-unit { "pp" } }
+                                    span.label { (label) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            if breakdown.accuracy > 0.0 {
-                html.push_str(&format!(
-                r#"<span class="chip pp-chip-acc"><span class="chip-label">ACC</span> {:.0}<span class="chip-unit">pp</span></span>"#,
-                breakdown.accuracy
-            ));
+            div.detail-subcard-footer-row {
+                @if let Some(ref if_acc) = score.pp_if_acc {
+                    div.subcard-if-fc {
+                        span.fc-label { "IF FC" }
+                        span.fc-val { (format!("{:.0}", if_acc.if_fc)) span.pp-unit { "pp" } }
+                    }
+                }
+                div class=(combo_classes) style=(format!("--combo-pct: {combo_pct:.0}%")) {
+                    span.fc-label { "COMBO" }
+                    span.fc-val {
+                        span.combo-cur { (score.max_combo) span.combo-unit { "x" } }
+                        span.combo-sep { " / " }
+                        span.combo-max { (score.beatmap_max_combo) span.combo-unit { "x" } }
+                    }
+                }
+                @if let Some(ur) = data.ur_value {
+                    div.subcard-ur {
+                        span.ur-label { "UR" }
+                        span.ur-val { (format!("{:.0}", ur)) }
+                    }
+                }
             }
-            if let Some(fl) = breakdown.flashlight.filter(|&v| v > 0.0) {
-                html.push_str(&format!(
-                r#"<span class="chip pp-chip-fl"><span class="chip-label">FL</span> {:.0}<span class="chip-unit">pp</span></span>"#,
-                fl
-            ));
-            }
-            if let Some(diff) = breakdown.difficulty.filter(|&v| v > 0.0) {
-                html.push_str(&format!(
-                r#"<span class="chip pp-chip-diff"><span class="chip-label">DIFF</span> {:.0}<span class="chip-unit">pp</span></span>"#,
-                diff
-            ));
-            }
-            html.push_str(r#"</div>"#);
         }
     }
-
-    if let Some(ref if_acc) = score.pp_if_acc {
-        html.push_str(r#"<div class="subcard-if-acc">"#);
-        for (label, val) in [
-            ("95%", if_acc.acc_95),
-            ("97%", if_acc.acc_97),
-            ("98%", if_acc.acc_98),
-            ("99%", if_acc.acc_99),
-            ("100%", if_acc.acc_100),
-        ] {
-            html.push_str(&format!(
-                r#"<div class="if-acc-item"><span class="val">{:.0}<span class="val-unit">pp</span></span><span class="label">{}</span></div>"#,
-                val, label
-            ));
-        }
-        html.push_str(r#"</div>"#);
-    }
-
-    if has_breakdown || has_if_acc {
-        html.push_str(r#"</div>"#);
-    }
-
-    html.push_str(r#"<div class="detail-subcard-footer-row">"#);
-    if let Some(ref if_acc) = score.pp_if_acc {
-        html.push_str(&format!(
-            r#"<div class="subcard-if-fc"><span class="fc-label">IF FC</span><span class="fc-val">{:.0}<span class="pp-unit">pp</span></span></div>"#,
-            if_acc.if_fc
-        ));
-    }
-    let combo_pct = if score.beatmap_max_combo > 0 {
-        (score.max_combo as f64 / score.beatmap_max_combo as f64 * 100.0).min(100.0)
-    } else {
-        100.0
-    };
-    let combo_fc_class = if score.max_combo == score.beatmap_max_combo {
-        " combo-fc"
-    } else {
-        ""
-    };
-    html.push_str(&format!(
-        r#"<div class="subcard-combo{combo_fc}" style="--combo-pct: {combo_pct:.0}%"><span class="fc-label">COMBO</span><span class="fc-val"><span class="combo-cur">{max}<span class="combo-unit">x</span></span><span class="combo-sep"> / </span><span class="combo-max">{beatmap}<span class="combo-unit">x</span></span></span></div>"#,
-        combo_fc = combo_fc_class,
-        combo_pct = combo_pct,
-        max = score.max_combo,
-        beatmap = score.beatmap_max_combo
-    ));
-    if let Some(ur) = data.ur_value {
-        html.push_str(&format!(
-            r#"<div class="subcard-ur"><span class="ur-label">UR</span><span class="ur-val">{:.0}</span></div>"#,
-            ur
-        ));
-    }
-    html.push_str(r#"</div>"#);
-
-    html.push_str(r#"      </div>"#);
-    html
 }
 
 pub fn wrap_score_html(data: &ScoreCardData) -> String {
@@ -594,44 +527,29 @@ pub fn wrap_score_html(data: &ScoreCardData) -> String {
         .replace("{{SCORE_HUE}}", &data.hue.to_string())
         .replace("{{SCORE_SAT}}", &data.sat.to_string());
 
-    let mut html = String::with_capacity(16384);
-    html.push_str(
-        r#"<!DOCTYPE html>
-<html><head><style>"#,
-    );
-    html.push_str(&css);
-    html.push_str(
-        r#"</style></head><body>
-<div class="score-card">
-  <img class="bg-img" src=""#,
-    );
-    html.push_str(&data.bg_data_uri);
-    html.push_str(
-        r#"" />
-  <div class="bg-gradient"></div>
-  <div class="content">
-"#,
-    );
-
-    html.push_str(&render_top_row(data));
-    html.push('\n');
-    html.push_str(&render_middle_row(data));
-    html.push_str(
-        r#"
-
-    <div class="score-row">"#,
-    );
-    html.push_str(&render_score_row(data));
-    html.push_str(&render_detail_cards(data));
-    html.push_str(
-        r#"
-    </div>
-  </div>
-</div>
-</body></html>"#,
-    );
-
-    html
+    html! {
+        (PreEscaped("<!DOCTYPE html>"))
+        html {
+            head {
+                style { (PreEscaped(css)) }
+            }
+            body {
+                div.score-card {
+                    img.bg-img src=(data.bg_data_uri);
+                    div.bg-gradient {}
+                    div.content {
+                        (render_top_row(data))
+                        (render_middle_row(data))
+                        div.score-row {
+                            (render_score_row(data))
+                            (render_detail_cards(data))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    .into_string()
 }
 
 fn format_plays(val: i64) -> String {
