@@ -756,43 +756,19 @@ pub(crate) async fn handle_beatmap_score_query(
             return;
         }
 
-        let mut scores = scores;
-        if let Some(filters) = filters {
-            scores.retain(|s| score_matches_filters(s, filters));
-            if scores.is_empty() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.no_match")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{name}", user_str("query.noun_score")),
-                    )
-                    .await;
+        let scores = match process_scores(scores, filters, limit, limit_end) {
+            Ok(s) => s,
+            Err(key) => {
+                let msg_text = user_str(key)
+                    .replace("{qq}", &msg.user_id.to_string())
+                    .replace("{pos}", &limit.to_string())
+                    .replace("{name}", user_str("query.noun_score"));
+                let _ = resp_tx.send(msg_text).await;
                 return;
             }
-        }
+        };
 
-        if let Some(end) = limit_end {
-            let start = (limit - 1) as usize;
-            let end = end as usize;
-            if start >= scores.len() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.index_out_of_range")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{pos}", &limit.to_string())
-                            .replace("{name}", user_str("query.noun_score"))
-                            .replace("{total}", &scores.len().to_string()),
-                    )
-                    .await;
-                return;
-            }
-            let end = end.min(scores.len());
-            let _ = scores.drain(..start);
-            scores.truncate(end - start);
-        }
-
-        render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode)
-            .await;
+        render_scores(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode).await;
     } else if limit == 1 && limit_end.is_none() {
         let active_filters = filters.filter(|f| !f.is_empty());
         if let Some(filters) = active_filters {
@@ -829,7 +805,7 @@ pub(crate) async fn handle_beatmap_score_query(
                         }
                     })
                     .await;
-            let mut scores = match scores_result {
+            let scores = match scores_result {
                 Ok(s) => s,
                 Err(err_msg) => {
                     let _ = resp_tx.send(err_msg).await;
@@ -844,24 +820,24 @@ pub(crate) async fn handle_beatmap_score_query(
                     .await;
                 return;
             }
-            scores.retain(|s| score_matches_filters(s, filters));
-            if scores.is_empty() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.no_match")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{name}", user_str("query.noun_score")),
-                    )
-                    .await;
-                return;
-            }
-            let score = scores.swap_remove(0);
+            let scores = match process_scores(scores, Some(filters), limit, None) {
+                Ok(s) => s,
+                Err(key) => {
+                    let msg_text = user_str(key)
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{pos}", &limit.to_string())
+                        .replace("{name}", user_str("query.noun_score"));
+                    let _ = resp_tx.send(msg_text).await;
+                    return;
+                }
+            };
+            let score = &scores[0];
             ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
             render_and_send_single_score(SingleScoreRenderParams {
                 ctx,
                 msg,
                 resp_tx,
-                score: &score,
+                score,
                 mode,
                 user_stats: &user_stats,
                 position: None,
@@ -965,7 +941,7 @@ pub(crate) async fn handle_beatmap_score_query(
                 }
             })
             .await;
-        let mut scores = match scores_result {
+        let scores = match scores_result {
             Ok(s) => s,
             Err(err_msg) => {
                 let _ = resp_tx.send(err_msg).await;
@@ -973,58 +949,20 @@ pub(crate) async fn handle_beatmap_score_query(
             }
         };
 
-        if let Some(filters) = filters {
-            scores.retain(|s| score_matches_filters(s, filters));
-            if scores.is_empty() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.no_match")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{name}", user_str("query.noun_score")),
-                    )
-                    .await;
+        let scores = match process_scores(scores, filters, limit, limit_end) {
+            Ok(s) => s,
+            Err(key) => {
+                let msg_text = user_str(key)
+                    .replace("{qq}", &msg.user_id.to_string())
+                    .replace("{pos}", &limit.to_string())
+                    .replace("{name}", user_str("query.noun_score"));
+                let _ = resp_tx.send(msg_text).await;
                 return;
             }
-        }
+        };
 
-        if let Some(end) = limit_end {
-            let start = (limit - 1) as usize;
-            let end = end as usize;
-            if start >= scores.len() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.index_out_of_range")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{pos}", &limit.to_string())
-                            .replace("{name}", user_str("query.noun_score"))
-                            .replace("{total}", &scores.len().to_string()),
-                    )
-                    .await;
-                return;
-            }
-            let end = end.min(scores.len());
-            let _ = scores.drain(..start);
-            scores.truncate(end - start);
-            if scores.is_empty() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.no_match")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{name}", user_str("query.noun_score")),
-                    )
-                    .await;
-                return;
-            }
-            render_and_send_score_list(
-                ctx,
-                msg,
-                resp_tx,
-                &scores,
-                &user_stats,
-                &username_str,
-                mode,
-            )
-            .await;
+        if limit_end.is_some() {
+            render_scores(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode).await;
         } else {
             if scores.len() < n {
                 let _ = resp_tx
@@ -1052,6 +990,71 @@ pub(crate) async fn handle_beatmap_score_query(
             })
             .await;
         }
+    }
+}
+
+fn filter_scores(scores: Vec<Score>, filters: Option<&[String]>) -> Vec<Score> {
+    if let Some(filters) = filters {
+        scores
+            .into_iter()
+            .filter(|s| score_matches_filters(s, filters))
+            .collect()
+    } else {
+        scores
+    }
+}
+
+fn process_scores(
+    scores: Vec<Score>,
+    filters: Option<&[String]>,
+    limit: u32,
+    limit_end: Option<u32>,
+) -> Result<Vec<Score>, &'static str> {
+    let mut scores = filter_scores(scores, filters);
+    if scores.is_empty() {
+        return Err("query.no_match");
+    }
+
+    if let Some(end) = limit_end {
+        let start = (limit - 1) as usize;
+        let end = end as usize;
+        if start >= scores.len() {
+            return Err("query.index_out_of_range");
+        }
+        let end = end.min(scores.len());
+        let _ = scores.drain(..start);
+        scores.truncate(end - start);
+        if scores.is_empty() {
+            return Err("query.index_out_of_range");
+        }
+    }
+
+    Ok(scores)
+}
+
+async fn render_scores(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    scores: &[Score],
+    user_stats: &UserStats,
+    username: &str,
+    mode: GameMode,
+) {
+    if scores.len() == 1 {
+        render_and_send_single_score(SingleScoreRenderParams {
+            ctx,
+            msg,
+            resp_tx,
+            score: &scores[0],
+            mode,
+            user_stats,
+            position: None,
+            is_pass: true,
+        })
+        .await;
+    } else {
+        render_and_send_score_list(ctx, msg, resp_tx, scores, user_stats, username, mode).await;
     }
 }
 
