@@ -472,20 +472,22 @@ pub(crate) async fn handle_score_query(
                 let render_result = tokio::time::timeout(
                     std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
                     osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
+                        user: osubot_render::UserContext {
+                            username: &dedup_username,
+                            mode,
+                            user_pp: user_stats.pp,
+                            user_global_rank,
+                            user_country_rank,
+                            country_code: &user_stats.country_code,
+                            avatar_url: &avatar_url,
+                            pp_change,
+                            global_rank_change,
+                            country_rank_change,
+                        },
                         scores: &scores,
-                        username: &dedup_username,
-                        mode,
                         label: score_label,
                         count_text: score_count_text,
-                        avatar_url: &avatar_url,
                         cover_images,
-                        user_pp: user_stats.pp,
-                        user_global_rank,
-                        user_country_rank,
-                        country_code: &user_stats.country_code,
-                        pp_change,
-                        global_rank_change,
-                        country_rank_change,
                         hero_cover_url: &hero_cover_url,
                     }),
                 )
@@ -1181,28 +1183,30 @@ async fn render_and_send_single_score(params: SingleScoreRenderParams<'_>) {
     let render_result = tokio::time::timeout(
         render_timeout,
         render_score_card(osubot_render::ScoreCardParams {
+            user: osubot_render::UserContext {
+                username: &user_stats.username,
+                mode,
+                user_pp: user_stats.pp,
+                user_global_rank: if user_stats.rank > 0 {
+                    Some(user_stats.rank)
+                } else {
+                    None
+                },
+                user_country_rank: if user_stats.country_rank > 0 {
+                    Some(user_stats.country_rank)
+                } else {
+                    None
+                },
+                country_code: &user_stats.country_code,
+                avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
+                pp_change,
+                global_rank_change,
+                country_rank_change,
+            },
             score: &score,
-            username: &user_stats.username,
-            mode,
-            user_pp: user_stats.pp,
-            user_global_rank: if user_stats.rank > 0 {
-                Some(user_stats.rank)
-            } else {
-                None
-            },
-            user_country_rank: if user_stats.country_rank > 0 {
-                Some(user_stats.country_rank)
-            } else {
-                None
-            },
-            country_code: &user_stats.country_code,
-            avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
             play_time: &play_time,
             fav_count: score.fav_count,
             play_count: score.play_count,
-            pp_change,
-            global_rank_change,
-            country_rank_change,
             ranked_status: &score.status,
             ur_value,
             ar_eff,
@@ -1328,20 +1332,22 @@ async fn render_and_send_score_list(
     let render_result = tokio::time::timeout(
         Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
         render_score_list_card(osubot_render::ScoreListCardParams {
+            user: osubot_render::UserContext {
+                username,
+                mode,
+                user_pp: user_stats.pp,
+                user_global_rank,
+                user_country_rank,
+                country_code: &user_stats.country_code,
+                avatar_url: &avatar_url,
+                pp_change,
+                global_rank_change,
+                country_rank_change,
+            },
             scores: &scores_mut,
-            username,
-            mode,
             label: score_label,
             count_text: score_count_text,
-            avatar_url: &avatar_url,
             cover_images,
-            user_pp: user_stats.pp,
-            user_global_rank,
-            user_country_rank,
-            country_code: &user_stats.country_code,
-            pp_change,
-            global_rank_change,
-            country_rank_change,
             hero_cover_url: &hero_cover_url,
         }),
     )

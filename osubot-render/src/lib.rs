@@ -167,8 +167,7 @@ pub fn image_to_data_uri(img: &image::DynamicImage, quality: u8) -> Result<Strin
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
-pub struct ScoreCardParams<'a> {
-    pub score: &'a osubot_types::Score,
+pub struct UserContext<'a> {
     pub username: &'a str,
     pub mode: osubot_types::GameMode,
     pub user_pp: f64,
@@ -176,12 +175,17 @@ pub struct ScoreCardParams<'a> {
     pub user_country_rank: Option<i64>,
     pub country_code: &'a str,
     pub avatar_url: &'a str,
-    pub play_time: &'a str,
-    pub fav_count: Option<i64>,
-    pub play_count: Option<i64>,
     pub pp_change: Option<f64>,
     pub global_rank_change: Option<i64>,
     pub country_rank_change: Option<i64>,
+}
+
+pub struct ScoreCardParams<'a> {
+    pub user: UserContext<'a>,
+    pub score: &'a osubot_types::Score,
+    pub play_time: &'a str,
+    pub fav_count: Option<i64>,
+    pub play_count: Option<i64>,
     pub ranked_status: &'a str,
     pub ur_value: Option<f64>,
     pub ar_eff: Option<f64>,
@@ -194,20 +198,11 @@ pub struct ScoreCardParams<'a> {
 
 pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, RenderError> {
     let ScoreCardParams {
+        user,
         score,
-        username,
-        mode,
-        user_pp,
-        user_global_rank,
-        user_country_rank,
-        country_code,
-        avatar_url,
         play_time,
         fav_count,
         play_count,
-        pp_change,
-        global_rank_change,
-        country_rank_change,
         ranked_status,
         ur_value,
         ar_eff,
@@ -217,6 +212,18 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
         cover_image: preloaded_cover_image,
         cancel_flag: external_cancel,
     } = params;
+    let UserContext {
+        username,
+        mode,
+        user_pp,
+        user_global_rank,
+        user_country_rank,
+        country_code,
+        avatar_url,
+        pp_change,
+        global_rank_change,
+        country_rank_change,
+    } = user;
     let client = cache::http_client();
 
     tracing::debug!("{}", log_fmt!("render.download_avatar", url = avatar_url));
@@ -332,20 +339,11 @@ pub async fn render_profile_card(
 }
 
 pub struct ScoreListCardParams<'a> {
+    pub user: UserContext<'a>,
     pub scores: &'a [osubot_types::Score],
-    pub username: &'a str,
-    pub mode: osubot_types::GameMode,
     pub label: &'a str,
     pub count_text: &'a str,
-    pub avatar_url: &'a str,
     pub cover_images: Vec<Option<image::DynamicImage>>,
-    pub user_pp: f64,
-    pub user_global_rank: Option<i64>,
-    pub user_country_rank: Option<i64>,
-    pub country_code: &'a str,
-    pub pp_change: Option<f64>,
-    pub global_rank_change: Option<i64>,
-    pub country_rank_change: Option<i64>,
     pub hero_cover_url: &'a str,
 }
 
@@ -353,22 +351,25 @@ pub async fn render_score_list_card(
     params: ScoreListCardParams<'_>,
 ) -> Result<Vec<u8>, RenderError> {
     let ScoreListCardParams {
+        user,
         scores,
-        username,
-        mode,
         label,
         count_text,
-        avatar_url,
         cover_images,
+        hero_cover_url,
+    } = params;
+    let UserContext {
+        username,
+        mode,
         user_pp,
         user_global_rank,
         user_country_rank,
         country_code,
+        avatar_url,
         pp_change,
         global_rank_change,
         country_rank_change,
-        hero_cover_url,
-    } = params;
+    } = user;
 
     // Download avatar and hero banner in parallel
     let client = cache::http_client();
