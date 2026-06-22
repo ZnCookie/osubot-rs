@@ -995,6 +995,65 @@ fn filter_scores(scores: Vec<Score>, filters: Option<&[String]>) -> Vec<Score> {
     }
 }
 
+/// 描述单次谱面分数查询的 fetch 配置。
+/// 用于将 is_all / limit==1 / else 三分支的参数差异封装到一个类型。
+// 过渡：字段将在 Task 4 引入 `run_score_query` 时被读取。
+#[allow(
+    dead_code,
+    reason = "Transitional: fields read in Task 4 of handle-beatmap-score-query-unification plan"
+)]
+struct ScoreQueryPlan {
+    /// osu! API 单次请求的最大数量。`None` 表示使用 API 默认。
+    api_limit: Option<u32>,
+    /// 是否跳过过滤阶段（limit==1 + 无 filters 时为 true）
+    bypass_filter: bool,
+    /// 是否单分模式（limit==1 + limit_end 为 None）
+    single_score: bool,
+}
+
+// 过渡：构造器将在 Task 4 引入 `run_score_query` 时使用。
+#[allow(
+    dead_code,
+    reason = "Transitional: used in Task 4 of handle-beatmap-score-query-unification plan"
+)]
+impl ScoreQueryPlan {
+    /// `!sb` 不带 limit_end 的默认单分查询。
+    fn single() -> Self {
+        Self {
+            api_limit: None,
+            bypass_filter: true,
+            single_score: true,
+        }
+    }
+
+    /// `!sb <n>` 单分查询，可能带 filters。
+    fn single_with_filters(api_limit: u32) -> Self {
+        Self {
+            api_limit: Some(api_limit),
+            bypass_filter: false,
+            single_score: true,
+        }
+    }
+
+    /// `!sb *` 列出所有分（按 limit / limit_end 截取）。
+    fn list(api_limit: Option<u32>) -> Self {
+        Self {
+            api_limit,
+            bypass_filter: false,
+            single_score: false,
+        }
+    }
+
+    /// `!sb [n, m]` 范围查询。
+    fn range(api_limit: u32) -> Self {
+        Self {
+            api_limit: Some(api_limit),
+            bypass_filter: false,
+            single_score: false,
+        }
+    }
+}
+
 fn process_scores(
     scores: Vec<Score>,
     filters: Option<&[String]>,
