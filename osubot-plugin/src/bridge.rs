@@ -277,9 +277,7 @@ fn send_msg_sync(
     tokio::task::block_in_place(|| send_fn(group_id, message).map_err(BridgeError::SendMsg))
 }
 
-fn parse_fetch_user_mode(
-    payload: &str,
-) -> Result<(String, osubot_game_mode::GameMode), BridgeError> {
+fn parse_fetch_user_mode(payload: &str) -> Result<(String, osubot_types::GameMode), BridgeError> {
     let v = parse_payload(payload)?;
     let username = get_field(&v, "username")?;
     let mode = serde_json::from_value(v["mode"].clone())
@@ -503,7 +501,7 @@ fn dispatch_host_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osubot_game_mode::GameMode;
+    use osubot_types::GameMode;
 
     fn call(payload: &str) -> Result<(String, GameMode), BridgeError> {
         parse_fetch_user_mode(payload)
@@ -514,6 +512,12 @@ mod tests {
         let (u, m) = call(r#"{"username":"cookie","mode":"osu"}"#).unwrap();
         assert_eq!(u, "cookie");
         assert_eq!(m, GameMode::Osu);
+    }
+
+    #[test]
+    fn parse_fetch_user_mode_returns_osubot_types_game_mode() {
+        let (_, m) = call(r#"{"username":"a","mode":"osu"}"#).unwrap();
+        let _: osubot_types::GameMode = m;
     }
 
     #[test]
