@@ -32,49 +32,49 @@ pub struct ScoreCardData {
 
 fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
     let base_pct = (base / 10.0 * 100.0).min(100.0);
-    let (track_html, val_str) = match eff {
-        Some(e) if (e - base).abs() < 0.01 => {
-            let track = format!(r#"<div class="fill" style="width:{base_pct:.0}%"></div>"#);
-            (track, format!("<span>{:.1}</span>", base))
+    let eff_pct = eff.map(|e| (e / 10.0 * 100.0).min(100.0));
+
+    let (track, val_class) = match (eff_pct, base_pct) {
+        (Some(e), b) if (e - b).abs() < 1.0 => {
+            (html! { div.fill style=(format!("width:{b:.0}%")) {} }, "")
         }
-        Some(e) if e > base => {
-            let eff_pct = (e / 10.0 * 100.0).min(100.0);
-            let overflow_pct = eff_pct - base_pct;
-            let track = format!(
-                r#"<div class="fill" style="width:{base_pct:.0}%"></div><div class="fill-over" style="left:calc({base_pct:.0}% - 2px); width:calc({overflow_pct:.0}% + 2px)"></div>"#
-            );
+        (Some(e), b) if e > b => {
+            let overflow = e - b;
             (
-                track,
-                format!(
-                    r#"<span class="val-eff-up">{:.1}</span><span>[{:.1}]</span>"#,
-                    e, base
-                ),
+                html! {
+                    div.fill style=(format!("width:{b:.0}%")) {}
+                    div.fill-over style=(format!("left:calc({b:.0}% - 2px); width:calc({overflow:.0}% + 2px)")) {}
+                },
+                "val-eff-up",
             )
         }
-        Some(e) => {
-            let eff_pct = (e / 10.0 * 100.0).min(100.0);
-            let under_pct = base_pct - eff_pct;
-            let track = format!(
-                r#"<div class="fill" style="width:{eff_pct:.0}%"></div><div class="fill-under" style="left:calc({eff_pct:.0}% - 2px); width:calc({under_pct:.0}% + 2px)"></div>"#
-            );
+        (Some(e), b) => {
+            let under = b - e;
             (
-                track,
-                format!(
-                    r#"<span class="val-eff-down">{:.1}</span><span>[{:.1}]</span>"#,
-                    e, base
-                ),
+                html! {
+                    div.fill style=(format!("width:{e:.0}%")) {}
+                    div.fill-under style=(format!("left:calc({e:.0}% - 2px); width:calc({under:.0}% + 2px)")) {}
+                },
+                "val-eff-down",
             )
         }
-        None => {
-            let track = format!(r#"<div class="fill" style="width:{base_pct:.0}%"></div>"#);
-            (track, format!("<span>{:.1}</span>", base))
-        }
+        (None, b) => (html! { div.fill style=(format!("width:{b:.0}%")) {} }, ""),
     };
+
+    let val_span = match (eff, val_class) {
+        (Some(e), "") => html! { span { (format!("{:.1}", e)) } },
+        (Some(e), c) => html! {
+            span class=(c) { (format!("{:.1}", e)) }
+            span { (format!("[{:.1}]", base)) }
+        },
+        (None, _) => html! { span { (format!("{:.1}", base)) } },
+    };
+
     html! {
         div.stat-row {
             span.label { (label) }
-            div.track { (PreEscaped(track_html)) }
-            span.val { (PreEscaped(val_str)) }
+            div.track { (track) }
+            span.val { (val_span) }
         }
     }
 }
@@ -763,6 +763,68 @@ mod tests {
         assert_eq!(format_plays(1000), "1K");
         assert_eq!(format_plays(1000000), "1M");
         assert_eq!(format_plays(1500), "1.5K");
+    }
+
+    #[test]
+    fn test_stat_bar_no_eff() {
+        let html = stat_bar("AR", 9.3, None).into_string();
+        assert!(
+            html.contains(r#"class="stat-row""#),
+            "missing stat-row class"
+        );
+        assert!(html.contains("AR"), "missing AR label");
+        assert!(html.contains(r#"width:93%"#), "missing fill width for 9.3");
+        assert!(html.contains(">9.3<"), "missing AR value");
+        assert!(
+            !html.contains("val-eff-up"),
+            "should not have up class without eff"
+        );
+        assert!(
+            !html.contains("val-eff-down"),
+            "should not have down class without eff"
+        );
+    }
+
+    #[test]
+    fn test_stat_bar_eff_equals_base() {
+        let html = stat_bar("OD", 8.5, Some(8.5)).into_string();
+        assert!(html.contains(r#"width:85%"#));
+        assert!(
+            !html.contains("fill-over"),
+            "should not have over fill when eff==base"
+        );
+        assert!(
+            !html.contains("fill-under"),
+            "should not have under fill when eff==base"
+        );
+    }
+
+    #[test]
+    fn test_stat_bar_eff_greater_than_base() {
+        let html = stat_bar("AR", 9.3, Some(11.5)).into_string();
+        assert!(
+            html.contains("fill-over"),
+            "should have over fill when eff>base"
+        );
+        assert!(
+            html.contains("val-eff-up"),
+            "should have up class when eff>base"
+        );
+        assert!(html.contains(">11.5<"), "missing eff value");
+        assert!(html.contains("[9.3]"), "missing base value in brackets");
+    }
+
+    #[test]
+    fn test_stat_bar_eff_less_than_base() {
+        let html = stat_bar("CS", 4.0, Some(3.2)).into_string();
+        assert!(
+            html.contains("fill-under"),
+            "should have under fill when eff<base"
+        );
+        assert!(
+            html.contains("val-eff-down"),
+            "should have down class when eff<base"
+        );
     }
 
     #[test]
