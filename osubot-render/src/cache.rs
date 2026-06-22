@@ -229,10 +229,13 @@ pub async fn fetch_and_cache(
         return Ok((cached, mime.to_string(), hash));
     }
 
-    let _fetch_permit = fetch_semaphore()
-        .acquire()
-        .await
-        .expect("fetch semaphore never closed");
+    let _fetch_permit = match fetch_semaphore().acquire().await {
+        Ok(permit) => permit,
+        Err(e) => {
+            tracing::warn!(error = %e, url = url, "fetch semaphore closed during image fetch");
+            return Err(CacheError::RetriesExhausted);
+        }
+    };
 
     let bytes = match try_fetch_image(url, client).await {
         Ok(b) => b,
