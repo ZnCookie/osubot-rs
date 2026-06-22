@@ -1257,7 +1257,7 @@ async fn handle_beatmap_preview(
         _ => None,
     };
 
-    let target_mode = mode.map(|m| m as i32).unwrap_or_else(|| beatmap.mode());
+    let target_mode = mode.map(i32::from).unwrap_or_else(|| beatmap.mode());
     if let Some(ref s) = mod_settings {
         let validation_errors = osubot_beatmap_preview::validate_mods(s, Some(target_mode));
         if let Some(first) = validation_errors.first() {
