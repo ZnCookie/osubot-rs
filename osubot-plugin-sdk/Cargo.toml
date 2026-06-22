@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+osubot-game-mode = { path = "../osubot-game-mode" }
 
 [lib]
 crate-type = ["lib"]
