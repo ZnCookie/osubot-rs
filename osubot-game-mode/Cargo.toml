@@ -1,0 +1,16 @@
+[package]
+name = "osubot-game-mode"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive"] }
+rosu-mods = { version = "0.4", optional = true }
+rosu-pp = { version = "4", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = []
+rosu-conversions = ["rosu-mods", "rosu-pp"]
