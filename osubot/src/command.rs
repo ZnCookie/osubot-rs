@@ -844,12 +844,14 @@ async fn handle_utility_commands(
                 ctx,
                 msg,
                 resp_tx,
-                score_id,
-                beatmap_id,
-                preview_mode,
-                mods,
-                gif,
-                times,
+                BeatmapPreviewParams {
+                    score_id: *score_id,
+                    beatmap_id: *beatmap_id,
+                    mode: *preview_mode,
+                    mods: mods.clone(),
+                    gif: *gif,
+                    times: times.clone(),
+                },
             )
             .await;
         }
@@ -1135,22 +1137,25 @@ async fn handle_profile_card(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct BeatmapPreviewParams {
+    score_id: Option<u64>,
+    beatmap_id: Option<u32>,
+    mode: Option<GameMode>,
+    mods: Option<Vec<String>>,
+    gif: bool,
+    times: Option<Vec<i64>>,
+}
+
 async fn handle_beatmap_preview(
     ctx: &BotContext,
     msg: &QQMessage,
     resp_tx: &mpsc::Sender<String>,
-    score_id: &Option<u64>,
-    beatmap_id: &Option<u32>,
-    mode: &Option<GameMode>,
-    mods: &Option<Vec<String>>,
-    gif: &bool,
-    times: &Option<Vec<i64>>,
+    params: BeatmapPreviewParams,
 ) {
     let qq = msg.user_id;
     let group_id = msg.group_id;
 
-    let resolved_bid_i64: i64 = match (score_id, beatmap_id) {
+    let resolved_bid_i64: i64 = match (&params.score_id, &params.beatmap_id) {
         (None, Some(bid)) => *bid as i64,
         (Some(sid), None) => {
             let dedup_rate_limiter = ctx.rate_limiter.clone();
@@ -1241,7 +1246,7 @@ async fn handle_beatmap_preview(
         }
     };
 
-    let mod_settings = match mods {
+    let mod_settings = match &params.mods {
         Some(m) if !m.is_empty() => {
             let joined = m.join("+");
             match osubot_beatmap_preview::parse_mods(&joined) {
@@ -1257,7 +1262,7 @@ async fn handle_beatmap_preview(
         _ => None,
     };
 
-    let target_mode = mode.map(i32::from).unwrap_or_else(|| beatmap.mode());
+    let target_mode = params.mode.map(i32::from).unwrap_or_else(|| beatmap.mode());
     if let Some(ref s) = mod_settings {
         let validation_errors = osubot_beatmap_preview::validate_mods(s, Some(target_mode));
         if let Some(first) = validation_errors.first() {
@@ -1302,7 +1307,7 @@ async fn handle_beatmap_preview(
         };
     }
 
-    let use_gif = *gif || target_mode == 0;
+    let use_gif = params.gif || target_mode == 0;
     let fmt = if use_gif { "gif" } else { "png" };
     let mod_suffix = match &mod_settings {
         Some(s) if s.has_any_mod() => s
@@ -1324,7 +1329,7 @@ async fn handle_beatmap_preview(
     };
     let output_path = osubot_core::cache::preview_cache_dir().join(&filename);
 
-    let times_ms: Option<Vec<i64>> = match times {
+    let times_ms: Option<Vec<i64>> = match &params.times {
         None => None,
         Some(t) if t.len() == 1 => {
             let anchor = t[0];
