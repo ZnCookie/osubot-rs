@@ -1,6 +1,8 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use rosu_mods::GameMods;
 
+pub use osubot_game_mode::GameMode;
+
 fn default_true() -> bool {
     true
 }
@@ -20,77 +22,6 @@ pub fn format_number(value: i64) -> String {
         result.push('-');
     }
     result.chars().rev().collect()
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GameMode {
-    Osu = 0,
-    Taiko = 1,
-    Catch = 2,
-    Mania = 3,
-}
-
-impl GameMode {
-    /// 将用户输入的 mode 字符串解析为 [`GameMode`]。
-    ///
-    /// 接受 `"0"` / `"1"` / `"2"` / `"3"`（trim 后精确匹配），返回对应的 `Some(GameMode)`。
-    /// 任何其他输入（包括空串、字母别名如 `"osu"` / `"taiko"` / `"std"`、范围外数字等）均返回 `None`。
-    /// 调用方负责对 `None` 走 fallback（通常是 `Osu` 或提示用户）。
-    pub fn from_mode_str(s: &str) -> Option<GameMode> {
-        match s.trim() {
-            "0" => Some(GameMode::Osu),
-            "1" => Some(GameMode::Taiko),
-            "2" => Some(GameMode::Catch),
-            "3" => Some(GameMode::Mania),
-            _ => None,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            GameMode::Osu => "osu!",
-            GameMode::Taiko => "taiko",
-            GameMode::Catch => "catch",
-            GameMode::Mania => "mania",
-        }
-    }
-
-    /// 短名称，用于成绩响应中显示（兼容 yumubot 格式）
-    pub fn short_name(&self) -> &'static str {
-        self.api_value()
-    }
-
-    /// 面向用户的纯文本名称，用于 set/get 默认模式等用户消息。
-    /// 与 `name()` 的区别：Osu 模式不带 `!`，避免出现"你的默认模式是 osu!"这种突兀措辞。
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            GameMode::Osu => "osu",
-            GameMode::Taiko => "taiko",
-            GameMode::Catch => "catch",
-            GameMode::Mania => "mania",
-        }
-    }
-
-    pub fn api_value(&self) -> &'static str {
-        match self {
-            GameMode::Osu => "osu",
-            GameMode::Taiko => "taiko",
-            GameMode::Catch => "fruits",
-            GameMode::Mania => "mania",
-        }
-    }
-}
-
-impl std::fmt::Display for GameMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name())
-    }
-}
-
-impl std::fmt::Debug for GameMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name())
-    }
 }
 
 /// PP 分解结果，包含各分项 PP 和谱面星级。
@@ -290,7 +221,9 @@ pub fn format_play_datetime_with_offset(created_at: &str, offset_hours: i32) -> 
     created_at.to_string()
 }
 
-/// Convert osubot GameMode to rosu_mods GameMode
+/// Convert osubot GameMode to rosu_mods GameMode.
+///
+/// Prefer using `GameMode::into()` directly when possible.
 pub fn to_rosu_game_mode(mode: GameMode) -> rosu_mods::GameMode {
     match mode {
         GameMode::Osu => rosu_mods::GameMode::Osu,
