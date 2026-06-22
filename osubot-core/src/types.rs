@@ -1,6 +1,5 @@
-pub use osubot_types::{
-    format_length, format_play_datetime, GameMode, Score, ScoreStatistics, ScoreUser,
-};
+pub use osubot_game_mode::GameMode;
+pub use osubot_types::{format_length, format_play_datetime, Score, ScoreStatistics, ScoreUser};
 
 /// Snapshot of a user's osu! profile statistics.
 #[derive(Debug, Clone, serde::Serialize)]

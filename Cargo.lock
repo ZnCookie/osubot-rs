@@ -4506,6 +4506,7 @@ dependencies = [
  "dirs",
  "futures",
  "liblzma",
+ "osubot-game-mode",
  "osubot-types",
  "phf 0.13.1",
  "rand 0.10.1",
@@ -4592,6 +4593,7 @@ name = "osubot-types"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "osubot-game-mode",
  "rosu-mods",
  "serde",
 ]

@@ -393,14 +393,11 @@ impl Storage {
             )
             .await?;
         if let Some(row) = rows.next().await? {
-            let mode: i32 = row.get(0)?;
-            match mode {
-                0 => Ok(Some(GameMode::Osu)),
-                1 => Ok(Some(GameMode::Taiko)),
-                2 => Ok(Some(GameMode::Catch)),
-                3 => Ok(Some(GameMode::Mania)),
-                _ => {
-                    tracing::error!(mode, "invalid default_mode value in database");
+            let mode_int: i32 = row.get(0)?;
+            match GameMode::try_from(mode_int) {
+                Ok(mode) => Ok(Some(mode)),
+                Err(_) => {
+                    tracing::error!(mode = mode_int, "invalid default_mode value in database");
                     Err(turso::Error::Error(
                         "invalid default_mode value in database".to_string(),
                     ))
@@ -904,13 +901,7 @@ impl Storage {
         while let Some(row) = rows.next().await? {
             let user_id: i64 = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
-            let mode = match mode_int {
-                0 => GameMode::Osu,
-                1 => GameMode::Taiko,
-                2 => GameMode::Catch,
-                3 => GameMode::Mania,
-                _ => GameMode::Osu,
-            };
+            let mode = GameMode::try_from(mode_int).unwrap_or(GameMode::Osu);
             results.push((user_id, mode));
         }
         Ok(results)

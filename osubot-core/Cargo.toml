@@ -16,6 +16,7 @@ rand = "0.10"
 tracing = "0.1"
 futures = "0.3"
 osubot-types = { path = "../osubot-types" }
+osubot-game-mode = { path = "../osubot-game-mode", features = ["rosu-conversions"] }
 rosu-pp = "4"
 rosu-mods = { version = "0.4", features = ["serde"] }
 bytes = "1"

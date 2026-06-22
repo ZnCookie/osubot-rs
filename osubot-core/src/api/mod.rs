@@ -173,12 +173,7 @@ struct OsuApiScore {
 
 impl OsuApiScore {
     fn extra_mode(&self) -> GameMode {
-        match self.ruleset_id {
-            1 => GameMode::Taiko,
-            2 => GameMode::Catch,
-            3 => GameMode::Mania,
-            _ => GameMode::Osu,
-        }
+        GameMode::try_from(self.ruleset_id as i32).unwrap_or(GameMode::Osu)
     }
 }
 
