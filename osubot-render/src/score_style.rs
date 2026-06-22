@@ -40,7 +40,9 @@ fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
             "",
         ),
         (Some(e), b) if e > b => {
-            let overflow = eff_pct.unwrap() - base_pct;
+            let overflow = eff_pct
+                .expect("eff_pct is Some when eff is Some (arm guarded by Some(e))")
+                - base_pct;
             (
                 html! {
                     div.fill style=(format!("width:{base_pct:.0}%")) {}
@@ -50,8 +52,9 @@ fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
             )
         }
         (Some(_e), _b) => {
-            let under = base_pct - eff_pct.unwrap();
-            let ep = eff_pct.unwrap();
+            let under = base_pct
+                - eff_pct.expect("eff_pct is Some when eff is Some (arm guarded by Some(_e))");
+            let ep = eff_pct.expect("eff_pct is Some when eff is Some (arm guarded by Some(_e))");
             (
                 html! {
                     div.fill style=(format!("width:{ep:.0}%")) {}
