@@ -7,13 +7,25 @@ use tracing::{debug, error, info, trace, warn};
 
 const READ_TIMEOUT_SECS: u64 = 120; // 2 minutes
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct IrcConfig {
     pub enabled: bool,
     pub server: String,
     pub port: u16,
     pub nickname: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for IrcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrcConfig")
+            .field("enabled", &self.enabled)
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("nickname", &self.nickname)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 impl IrcConfig {
