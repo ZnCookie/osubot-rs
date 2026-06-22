@@ -212,6 +212,7 @@ fn format_relative_time(created_at: &str) -> String {
     format!("~{}y", years)
 }
 
+#[must_use]
 pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     let css = SCORE_LIST_CSS.to_string();
 

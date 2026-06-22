@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 impl PluginManager {
     /// Returns sorted indices of on_message plugins (priority descending, no instance taken).
     /// Brief `&self`, no `.await`.
+    #[must_use]
     pub fn sorted_message_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = self.on_message_indices.iter().copied().collect();
         indices.sort_by_key(|&i| {
@@ -16,6 +17,7 @@ impl PluginManager {
 
     /// Returns command-map indices for a command name (no instance taken).
     /// Brief `&self`, no `.await`.
+    #[must_use]
     pub fn command_indices(&self, cmd_name: &str) -> Vec<usize> {
         self.command_map.get(cmd_name).cloned().unwrap_or_default()
     }
@@ -34,6 +36,7 @@ impl PluginManager {
         self.instances.iter().filter(|i| i.is_some()).count()
     }
 
+    #[must_use]
     pub fn get_ticks(&self) -> Vec<(usize, u64, u32)> {
         let registry = self.tick_registry.lock().unwrap_or_else(|e| {
             tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));

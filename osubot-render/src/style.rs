@@ -14,6 +14,7 @@ pub(crate) fn escape_html(s: &str) -> String {
 /// stylesheets. This function injects the relevant CSS extracted from osu-web
 /// (<https://github.com/ppy/osu-web>, AGPLv3) so the fragment renders correctly
 /// standalone.
+#[must_use]
 pub fn wrap_osu_profile_html(
     html: &str,
     profile_hue: u16,
@@ -58,6 +59,7 @@ pub fn wrap_osu_profile_html(
 ///
 /// 这是 profile 卡片"输入渲染器之前"的中间表示。`render_profile_card` 内部也走这里，
 /// 集成测试 `osubot-render/tests/dump_profile_html.rs` 复用同一入口 dump 到磁盘。
+#[must_use]
 pub async fn build_profile_html(
     html: &str,
     profile_hue: u16,
@@ -79,6 +81,7 @@ fn format_pp_delta(delta: f64) -> String {
 
 /// 渲染 pp 变化 HTML(已带 `user-pp-change` 类和 up/down/zero 颜色)
 /// `None` → 空字符串
+#[must_use]
 pub fn format_pp_change_html(change: Option<f64>) -> String {
     match change {
         Some(delta) if delta > 0.0 => {
@@ -100,6 +103,7 @@ pub fn format_pp_change_html(change: Option<f64>) -> String {
 
 /// 渲染 rank 变化 HTML(已带 `rank-change` 类和 up/down/zero 颜色)
 /// `None` → 空字符串
+#[must_use]
 pub fn format_rank_change_html(change: Option<i64>) -> String {
     match change {
         Some(delta) if delta > 0 => format!(r#"<span class="rank-change up">+{}</span>"#, delta),

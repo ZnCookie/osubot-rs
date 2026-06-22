@@ -50,6 +50,7 @@ use std::collections::HashMap;
 ///
 /// resvg 0.45.1 通过 rasterize 路径接管 `<pattern>`/`<filter>`/mix-blend-mode，
 /// preprocessor 不需要再剥除这些。
+#[must_use]
 pub fn resolve_svg_css_vars(svg: &str) -> String {
     let collected = collect_css_vars(svg);
     let mut effective = effective_vars_for_root(&collected);

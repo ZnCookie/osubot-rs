@@ -223,13 +223,6 @@ pub(crate) fn score_by_id_dedup() -> &'static ScoreByIdDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
-pub(crate) type BeatmapScoreDedup = RequestDedup<(i64, i64, GameMode), Score, String>;
-
-pub(crate) fn beatmap_score_dedup() -> &'static BeatmapScoreDedup {
-    static DEDUP: OnceLock<BeatmapScoreDedup> = OnceLock::new();
-    DEDUP.get_or_init(RequestDedup::new)
-}
-
 pub(crate) type BeatmapScoresDedup =
     RequestDedup<(i64, i64, GameMode, Option<u32>), Vec<Score>, String>;
 

@@ -32,49 +32,54 @@ pub struct ScoreCardData {
 
 fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
     let base_pct = (base / 10.0 * 100.0).min(100.0);
-    let (track_html, val_str) = match eff {
-        Some(e) if (e - base).abs() < 0.01 => {
-            let track = format!(r#"<div class="fill" style="width:{base_pct:.0}%"></div>"#);
-            (track, format!("<span>{:.1}</span>", base))
-        }
-        Some(e) if e > base => {
-            let eff_pct = (e / 10.0 * 100.0).min(100.0);
-            let overflow_pct = eff_pct - base_pct;
-            let track = format!(
-                r#"<div class="fill" style="width:{base_pct:.0}%"></div><div class="fill-over" style="left:calc({base_pct:.0}% - 2px); width:calc({overflow_pct:.0}% + 2px)"></div>"#
-            );
+    let eff_pct = eff.map(|e| (e / 10.0 * 100.0).min(100.0));
+
+    let (track, val_class) = match (eff, base) {
+        (Some(e), b) if (e - b).abs() < 0.01 => (
+            html! { div.fill style=(format!("width:{base_pct:.0}%")) {} },
+            "",
+        ),
+        (Some(e), b) if e > b => {
+            let overflow = eff_pct.unwrap() - base_pct;
             (
-                track,
-                format!(
-                    r#"<span class="val-eff-up">{:.1}</span><span>[{:.1}]</span>"#,
-                    e, base
-                ),
+                html! {
+                    div.fill style=(format!("width:{base_pct:.0}%")) {}
+                    div.fill-over style=(format!("left:calc({base_pct:.0}% - 2px); width:calc({overflow:.0}% + 2px)")) {}
+                },
+                "val-eff-up",
             )
         }
-        Some(e) => {
-            let eff_pct = (e / 10.0 * 100.0).min(100.0);
-            let under_pct = base_pct - eff_pct;
-            let track = format!(
-                r#"<div class="fill" style="width:{eff_pct:.0}%"></div><div class="fill-under" style="left:calc({eff_pct:.0}% - 2px); width:calc({under_pct:.0}% + 2px)"></div>"#
-            );
+        (Some(_e), _b) => {
+            let under = base_pct - eff_pct.unwrap();
+            let ep = eff_pct.unwrap();
             (
-                track,
-                format!(
-                    r#"<span class="val-eff-down">{:.1}</span><span>[{:.1}]</span>"#,
-                    e, base
-                ),
+                html! {
+                    div.fill style=(format!("width:{ep:.0}%")) {}
+                    div.fill-under style=(format!("left:calc({ep:.0}% - 2px); width:calc({under:.0}% + 2px)")) {}
+                },
+                "val-eff-down",
             )
         }
-        None => {
-            let track = format!(r#"<div class="fill" style="width:{base_pct:.0}%"></div>"#);
-            (track, format!("<span>{:.1}</span>", base))
-        }
+        (None, _) => (
+            html! { div.fill style=(format!("width:{base_pct:.0}%")) {} },
+            "",
+        ),
     };
+
+    let val_span = match (eff, val_class) {
+        (Some(e), "") => html! { span { (format!("{:.1}", e)) } },
+        (Some(e), c) => html! {
+            span class=(c) { (format!("{:.1}", e)) }
+            span { (format!("[{:.1}]", base)) }
+        },
+        (None, _) => html! { span { (format!("{:.1}", base)) } },
+    };
+
     html! {
         div.stat-row {
             span.label { (label) }
-            div.track { (PreEscaped(track_html)) }
-            span.val { (PreEscaped(val_str)) }
+            div.track { (track) }
+            span.val { (val_span) }
         }
     }
 }
@@ -129,7 +134,7 @@ fn render_top_row(data: &ScoreCardData) -> Markup {
                     div.beatmap-title { (score.title) }
                     div.beatmap-artist { (score.artist) }
                     div.bottom-chips {
-                        span class=(format!("chip chip-status {}", status_class)) { (status_display) }
+                        span.chip.chip-status.{ (status_class) } { (status_display) }
                         span.chip.chip-diff {
                             span.star { "\u{2605} " (format!("{:.2}", score.star_rating)) }
                             span.diff-name { (score.version) }
@@ -367,7 +372,7 @@ fn render_score_row(data: &ScoreCardData) -> Markup {
                 }
             }
             div.score-acc-row {
-                div class=(format!("rank-badge {}", rank_class)) {
+                div.rank-badge.{ (rank_class) } {
                     (rank_display)
                 }
                 div.score-acc-stack {
@@ -522,16 +527,19 @@ fn render_detail_cards(data: &ScoreCardData) -> Markup {
     }
 }
 
+#[must_use]
 pub fn wrap_score_html(data: &ScoreCardData) -> String {
-    let css = SCORE_CSS
-        .replace("{{SCORE_HUE}}", &data.hue.to_string())
-        .replace("{{SCORE_SAT}}", &data.sat.to_string());
+    let runtime_css = format!(
+        ":root {{ --score-hue: {}; --score-sat: {}%; }}",
+        data.hue, data.sat
+    );
 
     html! {
         (PreEscaped("<!DOCTYPE html>"))
         html {
             head {
-                style { (PreEscaped(css)) }
+                style { (PreEscaped(SCORE_CSS)) }
+                style { (PreEscaped(runtime_css)) }
             }
             body {
                 div.score-card {
@@ -552,6 +560,7 @@ pub fn wrap_score_html(data: &ScoreCardData) -> String {
     .into_string()
 }
 
+#[must_use]
 fn format_plays(val: i64) -> String {
     if val >= 1_000_000 {
         let f = val as f64 / 1_000_000.0;
@@ -577,6 +586,35 @@ mod tests {
     use super::*;
     use osubot_types::{Score, ScoreStatistics, ScoreUser};
     use rosu_mods::GameMods;
+
+    fn make_test_score_data() -> ScoreCardData {
+        ScoreCardData {
+            score: make_test_score(),
+            username: "TestPlayer".to_string(),
+            mode: osubot_types::GameMode::Osu,
+            user_pp: 9876.5,
+            user_global_rank: Some(999999),
+            user_country_rank: Some(999999),
+            country_code: "CN".to_string(),
+            avatar_data_uri: "data:image/jpeg;base64,avatar".to_string(),
+            bg_data_uri: "data:image/jpeg;base64,bg".to_string(),
+            thumb_data_uri: "data:image/jpeg;base64,thumb".to_string(),
+            play_time: "2025/05/27 14:30:22".to_string(),
+            hue: 200,
+            sat: 60,
+            fav_count: Some(1234),
+            play_count: Some(56700),
+            pp_change: Some(12.0),
+            global_rank_change: Some(-99999),
+            country_rank_change: Some(-99999),
+            ranked_status: "Ranked".to_string(),
+            ur_value: None,
+            ar_eff: None,
+            od_eff: None,
+            cs_eff: None,
+            hp_eff: None,
+        }
+    }
 
     fn make_test_score() -> Score {
         let mut mods = GameMods::new();
@@ -738,6 +776,40 @@ mod tests {
     }
 
     #[test]
+    fn test_wrap_score_html_uses_css_variables() {
+        let data = make_test_score_data();
+        let html = wrap_score_html(&data);
+        assert!(html.contains("--score-hue: 200"), "missing hue CSS var");
+        assert!(html.contains("--score-sat: 60%"), "missing sat CSS var");
+        assert!(
+            !html.contains("{{SCORE_HUE}}"),
+            "should not have template placeholder"
+        );
+        assert!(
+            !html.contains("{{SCORE_SAT}}"),
+            "should not have template placeholder"
+        );
+        let style_count = html.matches("<style>").count();
+        assert!(
+            style_count >= 2,
+            "expected at least 2 <style> tags (SCORE_CSS + runtime vars), got {style_count}",
+        );
+    }
+
+    #[test]
+    fn test_score_css_has_no_template_placeholders() {
+        const SCORE_CSS_LOCAL: &str = include_str!("../styles/score.css");
+        assert!(
+            !SCORE_CSS_LOCAL.contains("{{SCORE_HUE}}"),
+            "score.css should not have {{SCORE_HUE}} placeholder"
+        );
+        assert!(
+            !SCORE_CSS_LOCAL.contains("{{SCORE_SAT}}"),
+            "score.css should not have {{SCORE_SAT}} placeholder"
+        );
+    }
+
+    #[test]
     fn test_format_length() {
         assert_eq!(format_length(222), "3:42");
         assert_eq!(format_length(60), "1:00");
@@ -761,6 +833,81 @@ mod tests {
         assert_eq!(format_plays(1000), "1K");
         assert_eq!(format_plays(1000000), "1M");
         assert_eq!(format_plays(1500), "1.5K");
+    }
+
+    #[test]
+    fn test_stat_bar_no_eff() {
+        let html = stat_bar("AR", 9.3, None).into_string();
+        assert!(
+            html.contains(r#"class="stat-row""#),
+            "missing stat-row class"
+        );
+        assert!(html.contains("AR"), "missing AR label");
+        assert!(html.contains(r#"width:93%"#), "missing fill width for 9.3");
+        assert!(html.contains(">9.3<"), "missing AR value");
+        assert!(
+            !html.contains("val-eff-up"),
+            "should not have up class without eff"
+        );
+        assert!(
+            !html.contains("val-eff-down"),
+            "should not have down class without eff"
+        );
+    }
+
+    #[test]
+    fn test_stat_bar_eff_equals_base() {
+        let html = stat_bar("OD", 8.5, Some(8.5)).into_string();
+        assert!(html.contains(r#"width:85%"#));
+        assert!(
+            !html.contains("fill-over"),
+            "should not have over fill when eff==base"
+        );
+        assert!(
+            !html.contains("fill-under"),
+            "should not have under fill when eff==base"
+        );
+    }
+
+    #[test]
+    fn test_stat_bar_eff_greater_than_base() {
+        let html = stat_bar("AR", 9.3, Some(11.5)).into_string();
+        assert!(
+            html.contains("fill-over"),
+            "should have over fill when eff>base"
+        );
+        assert!(
+            html.contains("val-eff-up"),
+            "should have up class when eff>base"
+        );
+        assert!(html.contains(">11.5<"), "missing eff value");
+        assert!(html.contains("[9.3]"), "missing base value in brackets");
+    }
+
+    #[test]
+    fn test_stat_bar_eff_less_than_base() {
+        let html = stat_bar("CS", 4.0, Some(3.2)).into_string();
+        assert!(
+            html.contains("fill-under"),
+            "should have under fill when eff<base"
+        );
+        assert!(
+            html.contains("val-eff-down"),
+            "should have down class when eff<base"
+        );
+    }
+
+    #[test]
+    fn test_stat_bar_clamps_at_max_still_renders_diff() {
+        let html = stat_bar("AR", 11.0, Some(11.5)).into_string();
+        assert!(
+            html.contains("fill-over"),
+            "AR=11.0 vs 11.5 should render fill-over, not be clamped to equal"
+        );
+        assert!(
+            html.contains("val-eff-up"),
+            "AR=11.0 vs 11.5 should have up class"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ fn default_true() -> bool {
 }
 
 /// Format an integer with comma separators (e.g., 1234567 -> "1,234,567")
+#[must_use]
 pub fn format_number(value: i64) -> String {
     let is_negative = value < 0;
     let abs_str = value.unsigned_abs().to_string();
@@ -199,6 +200,7 @@ pub struct Score {
 }
 
 /// Format beatmap length as M:SS
+#[must_use]
 pub fn format_length(seconds: i64) -> String {
     let minutes = seconds / 60;
     let secs = seconds % 60;
@@ -206,11 +208,13 @@ pub fn format_length(seconds: i64) -> String {
 }
 
 /// Format ISO 8601 timestamp as YYYY/MM/DD HH:MM:SS (default UTC+8)
+#[must_use]
 pub fn format_play_datetime(created_at: &str) -> String {
     format_play_datetime_with_offset(created_at, 8)
 }
 
 /// Format ISO 8601 timestamp with specified UTC offset (in hours)
+#[must_use]
 pub fn format_play_datetime_with_offset(created_at: &str, offset_hours: i32) -> String {
     if let Ok(dt) = created_at.parse::<DateTime<Utc>>() {
         let offset = FixedOffset::east_opt(offset_hours * 3600)
@@ -222,6 +226,7 @@ pub fn format_play_datetime_with_offset(created_at: &str, offset_hours: i32) -> 
 }
 
 /// Format GameMods as space-separated mod acronyms (e.g., "HD DT")
+#[must_use]
 pub fn format_mods(mods: &GameMods) -> String {
     if mods.is_empty() {
         return String::new();
@@ -233,6 +238,7 @@ pub fn format_mods(mods: &GameMods) -> String {
 }
 
 /// Remove trailing zeros from a formatted number string (e.g. "98.50" -> "98.5", "98.00" -> "98")
+#[must_use]
 pub fn trim_trailing_zeros(s: &str) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -244,6 +250,7 @@ pub fn trim_trailing_zeros(s: &str) -> String {
 /// The osu! API v2 returns score accuracy as 0-1 fraction, but user stats
 /// `hit_accuracy` as a percentage (e.g., 98.5). Divide by 100 before calling
 /// if the source is a percentage.
+#[must_use]
 pub fn format_accuracy(accuracy: f64) -> String {
     let accuracy = accuracy.clamp(0.0, 1.0);
     let pct = (accuracy * 10000.0).floor() / 100.0;

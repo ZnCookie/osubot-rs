@@ -26,10 +26,16 @@ use tracing::{info, warn};
 
 use crate::api_error_msg;
 use crate::onebot::{send_group_msg_with_image, QQMessage};
-use crate::{
-    beatmap_score_dedup, beatmap_scores_dedup, score_by_id_dedup, score_dedup,
-    SCORE_API_FETCH_LIMIT,
-};
+use crate::{beatmap_scores_dedup, score_by_id_dedup, score_dedup, SCORE_API_FETCH_LIMIT};
+
+/// 发送错误消息到响应通道。
+/// 用于消除 `let _ = resp_tx.send(...).await; return;` 样板。
+/// 若通道已关闭（接收端 drop），记 warn 便于排查，不影响主流程。
+async fn respond_err(resp_tx: &mpsc::Sender<String>, msg: impl Into<String>) {
+    if resp_tx.send(msg.into()).await.is_err() {
+        warn!("{}", log_fmt!("main.respond_err_send_failed"));
+    }
+}
 
 async fn resolve_score_user(
     ctx: &BotContext,
@@ -544,6 +550,117 @@ pub(crate) async fn handle_score_query(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_score_query(
+    plan: ScoreQueryPlan,
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    beatmap_id: i64,
+    user_id: i64,
+    user_stats: &UserStats,
+    username: &str,
+    filters: Option<&[String]>,
+    limit: u32,
+    limit_end: Option<u32>,
+    mode: GameMode,
+) {
+    let qq = msg.user_id;
+    let scores =
+        match fetch_scores_with_dedup(ctx, beatmap_id, user_id, mode, plan.api_limit, qq).await {
+            Ok(s) => s,
+            Err(err_msg) => return respond_err(resp_tx, err_msg).await,
+        };
+
+    if plan.bypass_filter {
+        let score = match scores.into_iter().next() {
+            Some(s) => s,
+            None => {
+                return respond_err(
+                    resp_tx,
+                    user_str("query.no_score_on_map").replace("{qq}", &qq.to_string()),
+                )
+                .await;
+            }
+        };
+        ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+        return render_and_send_single_score(SingleScoreRenderParams {
+            ctx,
+            msg,
+            resp_tx,
+            score: &score,
+            mode,
+            user_stats,
+            position: None,
+            is_pass: true,
+        })
+        .await;
+    }
+
+    let total_scores = scores.len();
+    if total_scores == 0 {
+        return respond_err(
+            resp_tx,
+            user_str("query.no_score_on_map").replace("{qq}", &qq.to_string()),
+        )
+        .await;
+    }
+    let scores = match process_scores(scores, filters, limit, limit_end) {
+        Ok(s) => s,
+        Err(key) => {
+            let msg_text = user_str(key)
+                .replace("{qq}", &qq.to_string())
+                .replace("{pos}", &limit.to_string())
+                .replace("{name}", user_str("query.noun_score"))
+                .replace("{total}", &total_scores.to_string());
+            return respond_err(resp_tx, msg_text).await;
+        }
+    };
+
+    if plan.single_score {
+        let score = match scores.into_iter().next() {
+            Some(s) => s,
+            None => {
+                return respond_err(
+                    resp_tx,
+                    user_str("query.no_score_on_map").replace("{qq}", &qq.to_string()),
+                )
+                .await;
+            }
+        };
+        return render_and_send_single_score(SingleScoreRenderParams {
+            ctx,
+            msg,
+            resp_tx,
+            score: &score,
+            mode,
+            user_stats,
+            position: None,
+            is_pass: true,
+        })
+        .await;
+    }
+
+    if plan.is_all || limit_end.is_some() {
+        render_scores(ctx, msg, resp_tx, &scores, user_stats, username, mode).await;
+    } else {
+        let n = limit as usize;
+        if scores.len() < n {
+            return respond_err(
+                resp_tx,
+                user_str("query.index_out_of_range")
+                    .replace("{qq}", &qq.to_string())
+                    .replace("{pos}", &n.to_string())
+                    .replace("{name}", user_str("query.noun_score"))
+                    .replace("{total}", &scores.len().to_string()),
+            )
+            .await;
+        }
+        let score = scores.into_iter().nth(n - 1).expect("len checked above");
+        render_single_score(ctx, msg, resp_tx, &score, user_stats, mode, n).await;
+    }
+}
+
 pub(crate) async fn handle_beatmap_score_query(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -551,10 +668,6 @@ pub(crate) async fn handle_beatmap_score_query(
     cmd: &Command,
     mode: GameMode,
 ) {
-    // L547-: handle_beatmap_score_query 主流程
-    //   L582-669: score_id 单独查分
-    //   L671-685: 解析 beatmap_id（cmd/缓存）
-    //   L715-887: 按 limit/limit_end/is_all/filters 分支处理
     let (username, qq, beatmap_id, score_id, filters, limit, limit_end, is_all) = match cmd {
         Command::ScoreOnBeatmap {
             username,
@@ -607,10 +720,7 @@ pub(crate) async fn handle_beatmap_score_query(
             .await;
         let score = match score_result {
             Ok(s) => s,
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
-                return;
-            }
+            Err(err_msg) => return respond_err(resp_tx, err_msg).await,
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
 
@@ -710,122 +820,19 @@ pub(crate) async fn handle_beatmap_score_query(
     };
 
     ctx.scheduler.trigger_update(_user_id, mode).await;
-    let qq = msg.user_id;
 
-    if is_all {
+    let plan = if is_all {
         let raw_api_limit = limit_end.or(if limit > 1 { Some(limit) } else { None });
         let api_limit = match (raw_api_limit, filters.is_some_and(|f| !f.is_empty())) {
             (Some(n), true) => Some(n.max(SCORE_API_FETCH_LIMIT)),
             (other, _) => other,
         };
-        let scores =
-            match fetch_scores_with_dedup(ctx, resolved_bid as i64, _user_id, mode, api_limit, qq)
-                .await
-            {
-                Ok(s) => s,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
-                    return;
-                }
-            };
-        if scores.is_empty() {
-            let _ = resp_tx
-                .send(user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()))
-                .await;
-            return;
-        }
-
-        let total_scores = scores.len();
-        let scores = match process_scores(scores, filters, limit, limit_end) {
-            Ok(s) => s,
-            Err(key) => {
-                let msg_text = user_str(key)
-                    .replace("{qq}", &msg.user_id.to_string())
-                    .replace("{pos}", &limit.to_string())
-                    .replace("{name}", user_str("query.noun_score"))
-                    .replace("{total}", &total_scores.to_string());
-                let _ = resp_tx.send(msg_text).await;
-                return;
-            }
-        };
-
-        render_scores(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode).await;
+        ScoreQueryPlan::list(api_limit)
     } else if limit == 1 && limit_end.is_none() {
-        let active_filters = filters.filter(|f| !f.is_empty());
-        if let Some(filters) = active_filters {
-            let api_limit = SCORE_API_FETCH_LIMIT;
-            let scores = match fetch_scores_with_dedup(
-                ctx,
-                resolved_bid as i64,
-                _user_id,
-                mode,
-                Some(api_limit),
-                qq,
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
-                    return;
-                }
-            };
-            handle_score_with_filters(ctx, msg, resp_tx, scores, filters, &user_stats, mode).await;
+        if filters.is_some_and(|f| !f.is_empty()) {
+            ScoreQueryPlan::single_with_filters(SCORE_API_FETCH_LIMIT)
         } else {
-            // L774-: 单谱面单分查询（无 limit_end 且 limit=1 且无 filters）
-            let key = (_user_id, resolved_bid as i64, mode);
-            let score_result = beatmap_score_dedup()
-                .run_or_wait(key, move || {
-                    let rate_limiter = ctx.rate_limiter.clone();
-                    let oauth = ctx.oauth.clone();
-
-                    async move {
-                        api::get_user_beatmap_score(
-                            &rate_limiter,
-                            &oauth,
-                            resolved_bid as i64,
-                            _user_id,
-                            mode,
-                            &None,
-                        )
-                        .await
-                        .map_err(|e| {
-                            if !matches!(e, api::ApiError::NotFound) {
-                                warn!(
-                                    error = ?e,
-                                    beatmap_id = resolved_bid,
-                                    "{}",
-                                    log_fmt!("main.get_user_beatmap_score_failed")
-                                );
-                            }
-                            match e {
-                                api::ApiError::NotFound => user_str("query.no_score_on_map")
-                                    .replace("{qq}", &qq.to_string()),
-                                other => api_error_msg(qq, &other),
-                            }
-                        })
-                    }
-                })
-                .await;
-            let score = match score_result {
-                Ok(s) => s,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
-                    return;
-                }
-            };
-            ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-            render_and_send_single_score(SingleScoreRenderParams {
-                ctx,
-                msg,
-                resp_tx,
-                score: &score,
-                mode,
-                user_stats: &user_stats,
-                position: None,
-                is_pass: true,
-            })
-            .await;
+            ScoreQueryPlan::single()
         }
     } else {
         let raw_limit = limit_end.unwrap_or(limit);
@@ -834,57 +841,24 @@ pub(crate) async fn handle_beatmap_score_query(
         } else {
             raw_limit
         };
-        let n = limit as usize;
-        let scores = match fetch_scores_with_dedup(
-            ctx,
-            resolved_bid as i64,
-            _user_id,
-            mode,
-            Some(api_limit),
-            qq,
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
-                return;
-            }
-        };
+        ScoreQueryPlan::range(api_limit)
+    };
 
-        let total_scores = scores.len();
-        let scores = match process_scores(scores, filters, limit, limit_end) {
-            Ok(s) => s,
-            Err(key) => {
-                let msg_text = user_str(key)
-                    .replace("{qq}", &msg.user_id.to_string())
-                    .replace("{pos}", &limit.to_string())
-                    .replace("{name}", user_str("query.noun_score"))
-                    .replace("{total}", &total_scores.to_string());
-                let _ = resp_tx.send(msg_text).await;
-                return;
-            }
-        };
-
-        if limit_end.is_some() {
-            render_scores(ctx, msg, resp_tx, &scores, &user_stats, &username_str, mode).await;
-        } else {
-            if scores.len() < n {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.index_out_of_range")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{pos}", &n.to_string())
-                            .replace("{name}", user_str("query.noun_score"))
-                            .replace("{total}", &scores.len().to_string()),
-                    )
-                    .await;
-                return;
-            }
-            let score = scores.into_iter().nth(n - 1).expect("len checked above");
-            render_single_score(ctx, msg, resp_tx, &score, &user_stats, mode, n).await;
-        }
-    }
+    run_score_query(
+        plan,
+        ctx,
+        msg,
+        resp_tx,
+        resolved_bid as i64,
+        _user_id,
+        &user_stats,
+        &username_str,
+        filters,
+        limit,
+        limit_end,
+        mode,
+    )
+    .await;
 }
 
 async fn render_single_score(
@@ -905,49 +879,6 @@ async fn render_single_score(
         mode,
         user_stats,
         position: Some(n - 1),
-        is_pass: true,
-    })
-    .await;
-}
-
-async fn handle_score_with_filters(
-    ctx: &BotContext,
-    msg: &QQMessage,
-    resp_tx: &mpsc::Sender<String>,
-    scores: Vec<Score>,
-    filters: &[String],
-    user_stats: &UserStats,
-    mode: GameMode,
-) {
-    if scores.is_empty() {
-        let _ = resp_tx
-            .send(user_str("query.no_score_on_map").replace("{qq}", &msg.user_id.to_string()))
-            .await;
-        return;
-    }
-    let total_scores = scores.len();
-    let scores = match process_scores(scores, Some(filters), 1, None) {
-        Ok(s) => s,
-        Err(key) => {
-            let msg_text = user_str(key)
-                .replace("{qq}", &msg.user_id.to_string())
-                .replace("{pos}", "1")
-                .replace("{name}", user_str("query.noun_score"))
-                .replace("{total}", &total_scores.to_string());
-            let _ = resp_tx.send(msg_text).await;
-            return;
-        }
-    };
-    let score = &scores[0];
-    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-    render_and_send_single_score(SingleScoreRenderParams {
-        ctx,
-        msg,
-        resp_tx,
-        score,
-        mode,
-        user_stats,
-        position: None,
         is_pass: true,
     })
     .await;
@@ -1003,6 +934,62 @@ fn filter_scores(scores: Vec<Score>, filters: Option<&[String]>) -> Vec<Score> {
             .collect()
     } else {
         scores
+    }
+}
+
+/// 描述单次谱面分数查询的 fetch 配置。
+/// 用于将 is_all / limit==1 / else 三分支的参数差异封装到一个类型。
+struct ScoreQueryPlan {
+    /// osu! API 单次请求的最大数量。`None` 表示使用 API 默认。
+    api_limit: Option<u32>,
+    /// 是否跳过过滤阶段（limit==1 + 无 filters 时为 true）
+    bypass_filter: bool,
+    /// 是否单分模式（limit==1 + limit_end 为 None）
+    single_score: bool,
+    /// 是否 `!sb *`（无 limit_end 时也按列表渲染）
+    is_all: bool,
+}
+
+impl ScoreQueryPlan {
+    /// `!sb` 不带 limit_end 的默认单分查询。
+    /// `api_limit: Some(1)` 让 `/all` 端点只返回首条成绩，避免无意义地传输最多 50 条。
+    fn single() -> Self {
+        Self {
+            api_limit: Some(1),
+            bypass_filter: true,
+            single_score: true,
+            is_all: false,
+        }
+    }
+
+    /// `!sb <n>` 单分查询，可能带 filters。
+    fn single_with_filters(api_limit: u32) -> Self {
+        Self {
+            api_limit: Some(api_limit),
+            bypass_filter: false,
+            single_score: true,
+            is_all: false,
+        }
+    }
+
+    /// `!sb *` 列出所有分（按 limit / limit_end 截取）。
+    fn list(api_limit: Option<u32>) -> Self {
+        Self {
+            api_limit,
+            bypass_filter: false,
+            single_score: false,
+            is_all: true,
+        }
+    }
+
+    /// `!sb [n, m]` 范围查询。
+    fn range(api_limit: u32) -> Self {
+        Self {
+            api_limit: Some(api_limit),
+            bypass_filter: false,
+            single_score: false,
+            is_all: false,
+        }
     }
 }
 
@@ -1067,6 +1054,8 @@ struct SingleScoreRenderParams<'a> {
     score: &'a Score,
     mode: GameMode,
     user_stats: &'a UserStats,
+    /// 在所属列表中的 0-索引位置。`Some(n)` 时渲染前缀 `"#(n+1) <label>"`；
+    /// `None` 时仅渲染 `<label>`，适用于"该玩家在此谱面上的最佳成绩"等无明确排名的场景。
     position: Option<usize>,
     is_pass: bool,
 }
@@ -1385,5 +1374,19 @@ async fn render_and_send_score_list(
             let text = format_scores(&scores_mut, username, mode, true);
             let _ = resp_tx.send(text).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_respond_err_sends_and_returns() {
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        respond_err(&tx, "error message").await;
+        let received = rx.recv().await;
+        assert_eq!(received.as_deref(), Some("error message"));
     }
 }

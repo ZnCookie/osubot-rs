@@ -225,3 +225,38 @@ async fn inline_svg_text_element_is_painted() {
          (this means usvg text feature is not active)",
     );
 }
+
+/// 验证 wrap_score_html 的新方案（两个 <style> 标签 + 运行时 CSS 变量）真的能渲。
+///
+/// 防回归：blitz 的 CSS 引擎对 `<style>` 标签里的 CSS 变量支持不全，
+/// 那 `var(--score-hue)` 会 fallback 成 initial，整个 score card 颜色错乱。
+/// 这个测试用最简 HTML 复刻 score card 的 CSS 变量模式：
+///   <style>/* SCORE_CSS 静态部分 */</style>
+///   <style>/* runtime CSS 变量 */</style>
+/// 如果渲染出来是红色（--my-color 的值），证明两 style + var() 路径在 blitz 里通。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn html_css_var_runtime_style_tag_is_resolved() {
+    const HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+<style>
+html,body { margin: 0; padding: 0; }
+.box { width: 50px; height: 50px; background: var(--my-color); }
+</style>
+<style>:root { --my-color: rgb(255, 0, 0); }</style>
+</head>
+<body>
+<div class="box"></div>
+</body>
+</html>"#;
+    let (pixels, _w, _h) = render(HTML, 50, 50);
+
+    // (0, 0) 应该是红色
+    let p = &pixels[0..4];
+    let (r, g, b, a) = (p[0], p[1], p[2], p[3]);
+    assert!(
+        r > 200 && g < 50 && b < 50 && a == 255,
+        "top-left pixel expected red (var(--my-color) resolved), got r={r} g={g} b={b} a={a} \
+         (this means blitz didn't resolve var() from the second <style> tag)",
+    );
+}
