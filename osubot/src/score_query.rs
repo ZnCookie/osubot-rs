@@ -631,7 +631,7 @@ async fn run_score_query(
         .await;
     }
 
-    if limit_end.is_some() {
+    if plan.is_all || limit_end.is_some() {
         render_scores(ctx, msg, resp_tx, &scores, user_stats, username, mode).await;
     } else {
         let n = limit as usize;
@@ -936,6 +936,8 @@ struct ScoreQueryPlan {
     bypass_filter: bool,
     /// 是否单分模式（limit==1 + limit_end 为 None）
     single_score: bool,
+    /// 是否 `!sb *`（无 limit_end 时也按列表渲染）
+    is_all: bool,
 }
 
 impl ScoreQueryPlan {
@@ -945,6 +947,7 @@ impl ScoreQueryPlan {
             api_limit: None,
             bypass_filter: true,
             single_score: true,
+            is_all: false,
         }
     }
 
@@ -954,6 +957,7 @@ impl ScoreQueryPlan {
             api_limit: Some(api_limit),
             bypass_filter: false,
             single_score: true,
+            is_all: false,
         }
     }
 
@@ -963,6 +967,7 @@ impl ScoreQueryPlan {
             api_limit,
             bypass_filter: false,
             single_score: false,
+            is_all: true,
         }
     }
 
@@ -972,6 +977,7 @@ impl ScoreQueryPlan {
             api_limit: Some(api_limit),
             bypass_filter: false,
             single_score: false,
+            is_all: false,
         }
     }
 }
