@@ -231,6 +231,12 @@ impl ReloadCoordinator {
         self.handle.plugin.drain.store(false, Ordering::SeqCst);
     }
 
+    /// 将新 TOML 解析为 `MutableConfig` 并与 `old_config` 合并出新 `Config`。
+    ///
+    /// 耦合不变式：下方 `Config { .. }` 的构造必须与 `config::MutableConfig`
+    /// 的字段保持一致——`Option` 字段（osu/irc/bot/scheduler）为 None 时继承旧值，
+    /// 其余字段直接采用新值，遗留不可变字段（database）始终沿用 old_config。
+    /// 每当 `MutableConfig` 新增/删除可重载字段时，必须同步更新此处。
     async fn reload_config(
         &self,
         watcher: &mut RecommendedWatcher,
@@ -474,13 +480,5 @@ mod tests {
     fn drain_flag_starts_false() {
         let drain = Arc::new(AtomicBool::new(false));
         assert!(!drain.load(Ordering::SeqCst));
-    }
-
-    /// 契约测试：drain 超时后应保持 true。
-    /// 实际验证需要 e2e（构造 ReloadCoordinator 太重），
-    /// 此测试作为"drain 超时应 store(true)"语义的可见标记。
-    #[test]
-    fn drain_timeout_keeps_drain_true_contract() {
-        // 见 osubot/src/reload.rs:185 的实现必须 store(true)
     }
 }

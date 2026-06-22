@@ -501,6 +501,17 @@ impl Config {
                 )));
             }
         }
+        // 上游 provider 类型校验：仅在 upstream 启用时检查，已知类型见 reload::build_upstream_chain
+        if self.upstream.enabled {
+            for p in &self.upstream.providers {
+                if !matches!(p.provider_type.as_str(), "xfs" | "yumu") {
+                    return Err(ConfigError::Validation(format!(
+                        "未知的 upstream provider 类型「{}」（已知：xfs、yumu）",
+                        p.provider_type
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -834,5 +845,74 @@ mod tests {
         let s = format!("{:?}", provider);
         assert!(!s.contains("secret-token"));
         assert!(s.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_upstream_provider() {
+        let mut cfg = Config::default();
+        cfg.bot.onebot_url = "ws://127.0.0.1:8080".into();
+        cfg.upstream = UpstreamConfig {
+            enabled: true,
+            providers: vec![ProviderConfig {
+                provider_type: "unknown".into(),
+                rate_per_minute: 10,
+                burst: 20,
+                url: None,
+                access_token: None,
+                self_id: None,
+                timeout_secs: 10,
+            }],
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("unknown")));
+    }
+
+    #[test]
+    fn test_validate_accepts_known_upstream_providers() {
+        let mut cfg = Config::default();
+        cfg.bot.onebot_url = "ws://127.0.0.1:8080".into();
+        cfg.upstream = UpstreamConfig {
+            enabled: true,
+            providers: vec![
+                ProviderConfig {
+                    provider_type: "xfs".into(),
+                    rate_per_minute: 10,
+                    burst: 20,
+                    url: None,
+                    access_token: None,
+                    self_id: None,
+                    timeout_secs: 10,
+                },
+                ProviderConfig {
+                    provider_type: "yumu".into(),
+                    rate_per_minute: 10,
+                    burst: 20,
+                    url: None,
+                    access_token: None,
+                    self_id: None,
+                    timeout_secs: 10,
+                },
+            ],
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_skips_provider_check_when_disabled() {
+        let mut cfg = Config::default();
+        cfg.bot.onebot_url = "ws://127.0.0.1:8080".into();
+        cfg.upstream = UpstreamConfig {
+            enabled: false,
+            providers: vec![ProviderConfig {
+                provider_type: "unknown".into(),
+                rate_per_minute: 10,
+                burst: 20,
+                url: None,
+                access_token: None,
+                self_id: None,
+                timeout_secs: 10,
+            }],
+        };
+        assert!(cfg.validate().is_ok());
     }
 }
