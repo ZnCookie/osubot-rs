@@ -223,7 +223,15 @@ fn cached_blob_sprite(
         let sprite = Rc::new(build(seed % SEED_VARIANTS));
         let mut cache_mut = cache.borrow_mut();
         if cache_mut.len() >= SPRITE_CACHE_MAX_ENTRIES {
-            cache_mut.clear();
+            // 缓存满时淘汰半数条目而非整体清空，避免冷缓存抖动。
+            // HashMap 无插入顺序，故为任意半数淘汰（非严格 LRU），
+            // 但仍显著优于 clear() 的全量失效。
+            let remove_count = cache_mut.len() / 2;
+            let keys_to_remove: Vec<SpriteKey> =
+                cache_mut.keys().take(remove_count).copied().collect();
+            for key in keys_to_remove {
+                cache_mut.remove(&key);
+            }
         }
         cache_mut.insert(key, Rc::clone(&sprite));
         sprite
