@@ -37,7 +37,7 @@ pub struct PluginHandle {
 
 #[derive(Clone)]
 pub struct IrcHandle {
-    pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub irc_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
 }
 
@@ -59,7 +59,7 @@ pub struct ReloadHandleParams {
     pub oauth: Arc<OauthTokenCache>,
     pub rate_limiter: Arc<RateLimiter>,
     pub scheduler: Scheduler,
-    pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub irc_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
 }
 
@@ -91,6 +91,8 @@ impl ReloadHandle {
 pub struct ReloadCoordinator {
     handle: ReloadHandle,
     config_path: PathBuf,
+    // INVARIANT: this lock is never held across .await points.
+    // Using std::sync::RwLock for performance in synchronous notify callbacks.
     plugin_dir: Arc<std::sync::RwLock<PathBuf>>,
 }
 
@@ -398,12 +400,7 @@ impl ReloadCoordinator {
     }
 
     async fn restart_irc(&self, irc_cfg: &crate::config::IrcConfig) {
-        let mut guard = self
-            .handle
-            .irc
-            .irc_handle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.handle.irc.irc_handle.lock().await;
         if let Some(old) = guard.take() {
             old.abort();
         }

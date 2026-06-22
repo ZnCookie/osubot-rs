@@ -102,7 +102,7 @@ pub(super) fn spawn_irc(handles: &RuntimeHandles) -> JoinHandle<()> {
             &cfg.irc.password,
         );
         let irc_client = IrcClient::new(irc_config, irc_tx);
-        *irc_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(tokio::spawn(async move {
+        *irc_handle.lock().await = Some(tokio::spawn(async move {
             if let Err(e) = irc_client.run().await {
                 error!(error = %e, "{}", log_fmt!("main.irc_client_error"));
             }
