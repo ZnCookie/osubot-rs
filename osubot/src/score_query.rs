@@ -744,8 +744,7 @@ pub(crate) async fn handle_beatmap_score_query(
                     .replace("{pos}", &limit.to_string())
                     .replace("{name}", user_str("query.noun_score"))
                     .replace("{total}", &total_scores.to_string());
-                let _ = resp_tx.send(msg_text).await;
-                return;
+                return respond_err(resp_tx, msg_text).await;
             }
         };
 
@@ -806,10 +805,7 @@ pub(crate) async fn handle_beatmap_score_query(
                 .await;
             let score = match score_result {
                 Ok(s) => s,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
-                    return;
-                }
+                Err(err_msg) => return respond_err(resp_tx, err_msg).await,
             };
             ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
             render_and_send_single_score(SingleScoreRenderParams {
