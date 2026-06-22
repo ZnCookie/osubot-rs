@@ -20,7 +20,7 @@ const MAX_HTTP_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 pub enum BridgeError {
     JsonParse(serde_json::Error),
     MissingField(String),
-    InvalidMode(u8),
+    InvalidMode(String),
     HttpRequest(String),
     Database(String),
     SendMsg(String),
@@ -407,13 +407,17 @@ fn dispatch_host_call(
         "osu_api_fetch_user" => {
             let v = parse_payload(payload)?;
             let username = get_field(&v, "username")?;
-            let mode_num = v["mode"].as_u64().unwrap_or(0) as u8;
-            let mode = match mode_num {
-                0 => osubot_types::GameMode::Osu,
-                1 => osubot_types::GameMode::Taiko,
-                2 => osubot_types::GameMode::Catch,
-                3 => osubot_types::GameMode::Mania,
-                _ => return Err(BridgeError::InvalidMode(mode_num)),
+            let mode = if let Some(s) = v["mode"].as_str() {
+                // 新 SDK: 字符串格式 ("osu", "taiko", "catch", "mania")
+                serde_json::from_value::<osubot_game_mode::GameMode>(serde_json::Value::String(
+                    s.to_string(),
+                ))
+                .map_err(|_| BridgeError::InvalidMode(s.to_string()))?
+            } else {
+                // 旧 SDK: 整数格式 (0, 1, 2, 3)
+                let mode_num = v["mode"].as_u64().unwrap_or(0) as u8;
+                osubot_game_mode::GameMode::try_from(mode_num)
+                    .map_err(|_| BridgeError::InvalidMode(mode_num.to_string()))?
             };
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(

@@ -155,12 +155,6 @@ pub(crate) fn build_cmd_payload(
     msg: &QQMessage,
     resolved_mode: Option<GameMode>,
 ) -> serde_json::Value {
-    let mode = resolved_mode.map(|m| match m {
-        GameMode::Osu => 0,
-        GameMode::Taiko => 1,
-        GameMode::Catch => 2,
-        GameMode::Mania => 3,
-    });
     let username = match cmd {
         Command::QueryUser { username, .. } => Some(username.as_str()),
         Command::Bind { username, .. } => Some(username.as_str()),
@@ -177,7 +171,7 @@ pub(crate) fn build_cmd_payload(
         "user_id": msg.user_id,
         "message": msg.message,
         "mentioned_user_id": msg.mentioned_user_id,
-        "mode": mode,
+        "mode": resolved_mode,
         "username": username,
         "qq": match cmd {
             Command::QueryMentionedUser { qq, .. } => Some(*qq),

@@ -4538,6 +4538,7 @@ name = "osubot-plugin"
 version = "0.1.0"
 dependencies = [
  "osubot-core",
+ "osubot-game-mode",
  "osubot-types",
  "reqwest",
  "serde",
@@ -4552,6 +4553,7 @@ dependencies = [
 name = "osubot-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "osubot-game-mode",
  "serde",
  "serde_json",
 ]
