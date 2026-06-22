@@ -31,6 +31,13 @@ use crate::{
     SCORE_API_FETCH_LIMIT,
 };
 
+/// 发送错误消息到响应通道。
+/// 用于消除 `let _ = resp_tx.send(...).await; return;` 样板。
+#[allow(dead_code)]
+async fn respond_err(resp_tx: &mpsc::Sender<String>, msg: impl Into<String>) {
+    let _ = resp_tx.send(msg.into()).await;
+}
+
 async fn resolve_score_user(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -1385,5 +1392,19 @@ async fn render_and_send_score_list(
             let text = format_scores(&scores_mut, username, mode, true);
             let _ = resp_tx.send(text).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_respond_err_sends_and_returns() {
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        respond_err(&tx, "error message").await;
+        let received = rx.recv().await;
+        assert_eq!(received.as_deref(), Some("error message"));
     }
 }
