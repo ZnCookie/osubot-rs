@@ -33,7 +33,6 @@ use crate::{
 
 /// 发送错误消息到响应通道。
 /// 用于消除 `let _ = resp_tx.send(...).await; return;` 样板。
-#[allow(dead_code)]
 async fn respond_err(resp_tx: &mpsc::Sender<String>, msg: impl Into<String>) {
     let _ = resp_tx.send(msg.into()).await;
 }
@@ -614,10 +613,7 @@ pub(crate) async fn handle_beatmap_score_query(
             .await;
         let score = match score_result {
             Ok(s) => s,
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
-                return;
-            }
+            Err(err_msg) => return respond_err(resp_tx, err_msg).await,
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
 
@@ -730,10 +726,7 @@ pub(crate) async fn handle_beatmap_score_query(
                 .await
             {
                 Ok(s) => s,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
-                    return;
-                }
+                Err(err_msg) => return respond_err(resp_tx, err_msg).await,
             };
         if scores.is_empty() {
             let _ = resp_tx
@@ -772,10 +765,7 @@ pub(crate) async fn handle_beatmap_score_query(
             .await
             {
                 Ok(s) => s,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
-                    return;
-                }
+                Err(err_msg) => return respond_err(resp_tx, err_msg).await,
             };
             handle_score_with_filters(ctx, msg, resp_tx, scores, filters, &user_stats, mode).await;
         } else {
@@ -853,10 +843,7 @@ pub(crate) async fn handle_beatmap_score_query(
         .await
         {
             Ok(s) => s,
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
-                return;
-            }
+            Err(err_msg) => return respond_err(resp_tx, err_msg).await,
         };
 
         let total_scores = scores.len();
@@ -868,8 +855,7 @@ pub(crate) async fn handle_beatmap_score_query(
                     .replace("{pos}", &limit.to_string())
                     .replace("{name}", user_str("query.noun_score"))
                     .replace("{total}", &total_scores.to_string());
-                let _ = resp_tx.send(msg_text).await;
-                return;
+                return respond_err(resp_tx, msg_text).await;
             }
         };
 
