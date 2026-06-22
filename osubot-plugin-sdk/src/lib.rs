@@ -26,11 +26,13 @@ fn host_call(name: &str, payload: &str) -> Result<String, String> {
     if result_ptr.is_null() {
         return Err("host call returned null".into());
     }
+    // SAFETY: wasmtime 线性内存模型保证 host_call_impl 返回的指针
+    // 指向至少 4 字节的已分配内存（长度前缀），且在当前调用期间有效。
     unsafe {
         let len = ptr::read_unaligned(result_ptr as *const u32) as usize;
         if len > MAX_HOST_CALL_RESPONSE {
             let total_size = 4u32.saturating_add(len as u32);
-            dealloc(result_ptr as *mut u8, total_size);
+            dealloc(result_ptr, total_size);
             return Err(format!(
                 "host call response exceeds {}MB limit (len: {})",
                 MAX_HOST_CALL_RESPONSE / (1024 * 1024),
@@ -44,11 +46,11 @@ fn host_call(name: &str, payload: &str) -> Result<String, String> {
         let s = match str::from_utf8(data) {
             Ok(s) => s.to_owned(),
             Err(_) => {
-                dealloc(result_ptr as *mut u8, total_size);
+                dealloc(result_ptr, total_size);
                 return Err("host call: invalid UTF-8".to_string());
             }
         };
-        dealloc(result_ptr as *mut u8, total_size);
+        dealloc(result_ptr, total_size);
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&s) {
             if let Some(ok_val) = val.get("ok") {
                 return Ok(match ok_val {
@@ -71,7 +73,7 @@ extern "C" {
         name_len: usize,
         payload_ptr: *const u8,
         payload_len: usize,
-    ) -> *const u8;
+    ) -> *mut u8;
 }
 
 impl PluginContext {
@@ -251,6 +253,9 @@ pub fn serialize_return<T: serde::Serialize>(val: &T) -> Option<PluginReturn> {
     if ptr.is_null() {
         return None;
     }
+    // SAFETY: layout 由 from_size_align(total, 4) 创建，ptr 由 alloc(layout) 返回。
+    // copy_nonoverlapping 写入 len_le (4 bytes) + bytes (len bytes) = total bytes，
+    // 不超出分配范围。bytes.as_ptr() 和 ptr.add(4) 不重叠。
     unsafe {
         let len_le = (len as u32).to_le_bytes();
         core::ptr::copy_nonoverlapping(len_le.as_ptr(), ptr, 4);
