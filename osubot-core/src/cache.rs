@@ -14,8 +14,8 @@ async fn cleanup_dir(dir: PathBuf, label: &str, retention_days: u64) {
         Ok(true) => {}
     }
 
-    let cutoff =
-        SystemTime::now().checked_sub(std::time::Duration::from_secs(retention_days * 86400));
+    let retention_secs = retention_days.saturating_mul(86400);
+    let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(retention_secs));
 
     let cutoff = match cutoff {
         Some(t) => t,
