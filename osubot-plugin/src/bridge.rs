@@ -145,6 +145,7 @@ impl Default for HostServices {
 #[cfg(test)]
 impl HostServices {
     /// 与 `Self::default()` 等价；保留该名称以明确测试意图。
+    #[must_use]
     pub fn default_for_test() -> Self {
         Self::default()
     }
