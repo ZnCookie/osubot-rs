@@ -522,6 +522,7 @@ fn render_detail_cards(data: &ScoreCardData) -> Markup {
     }
 }
 
+#[must_use]
 pub fn wrap_score_html(data: &ScoreCardData) -> String {
     let css = SCORE_CSS
         .replace("{{SCORE_HUE}}", &data.hue.to_string())
@@ -552,6 +553,7 @@ pub fn wrap_score_html(data: &ScoreCardData) -> String {
     .into_string()
 }
 
+#[must_use]
 fn format_plays(val: i64) -> String {
     if val >= 1_000_000 {
         let f = val as f64 / 1_000_000.0;

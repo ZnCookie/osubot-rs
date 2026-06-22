@@ -87,6 +87,7 @@ async fn run_render(
     }
 }
 
+#[must_use]
 pub fn crop_and_resize(
     img: &image::DynamicImage,
     target_w: u32,
@@ -109,6 +110,7 @@ pub fn crop_and_resize(
     cropped.resize_exact(target_w, target_h, imageops::FilterType::Lanczos3)
 }
 
+#[must_use]
 pub fn extract_dominant_hue(img: &image::DynamicImage) -> (u16, u16) {
     let small = img.resize_exact(32, 32, imageops::FilterType::Nearest);
     let rgb = small.to_rgb8();
