@@ -34,31 +34,36 @@ fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
     let base_pct = (base / 10.0 * 100.0).min(100.0);
     let eff_pct = eff.map(|e| (e / 10.0 * 100.0).min(100.0));
 
-    let (track, val_class) = match (eff_pct, base_pct) {
-        (Some(e), b) if (e - b).abs() < 1.0 => {
-            (html! { div.fill style=(format!("width:{b:.0}%")) {} }, "")
-        }
+    let (track, val_class) = match (eff, base) {
+        (Some(e), b) if (e - b).abs() < 0.01 => (
+            html! { div.fill style=(format!("width:{base_pct:.0}%")) {} },
+            "",
+        ),
         (Some(e), b) if e > b => {
-            let overflow = e - b;
+            let overflow = eff_pct.unwrap() - base_pct;
             (
                 html! {
-                    div.fill style=(format!("width:{b:.0}%")) {}
-                    div.fill-over style=(format!("left:calc({b:.0}% - 2px); width:calc({overflow:.0}% + 2px)")) {}
+                    div.fill style=(format!("width:{base_pct:.0}%")) {}
+                    div.fill-over style=(format!("left:calc({base_pct:.0}% - 2px); width:calc({overflow:.0}% + 2px)")) {}
                 },
                 "val-eff-up",
             )
         }
-        (Some(e), b) => {
-            let under = b - e;
+        (Some(_e), _b) => {
+            let under = base_pct - eff_pct.unwrap();
+            let ep = eff_pct.unwrap();
             (
                 html! {
-                    div.fill style=(format!("width:{e:.0}%")) {}
-                    div.fill-under style=(format!("left:calc({e:.0}% - 2px); width:calc({under:.0}% + 2px)")) {}
+                    div.fill style=(format!("width:{ep:.0}%")) {}
+                    div.fill-under style=(format!("left:calc({ep:.0}% - 2px); width:calc({under:.0}% + 2px)")) {}
                 },
                 "val-eff-down",
             )
         }
-        (None, b) => (html! { div.fill style=(format!("width:{b:.0}%")) {} }, ""),
+        (None, _) => (
+            html! { div.fill style=(format!("width:{base_pct:.0}%")) {} },
+            "",
+        ),
     };
 
     let val_span = match (eff, val_class) {
@@ -824,6 +829,19 @@ mod tests {
         assert!(
             html.contains("val-eff-down"),
             "should have down class when eff<base"
+        );
+    }
+
+    #[test]
+    fn test_stat_bar_clamps_at_max_still_renders_diff() {
+        let html = stat_bar("AR", 11.0, Some(11.5)).into_string();
+        assert!(
+            html.contains("fill-over"),
+            "AR=11.0 vs 11.5 should render fill-over, not be clamped to equal"
+        );
+        assert!(
+            html.contains("val-eff-up"),
+            "AR=11.0 vs 11.5 should have up class"
         );
     }
 
