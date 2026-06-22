@@ -4,8 +4,6 @@
 //! onebot_api_timeout + upstream_chain + ReloadHandle 构建)。
 //! 文件 watcher 启动已移至 `background::spawn_watcher`（Task 3）。
 
-#![allow(clippy::too_many_lines)]
-
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
