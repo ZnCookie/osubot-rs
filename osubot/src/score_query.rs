@@ -30,8 +30,11 @@ use crate::{beatmap_scores_dedup, score_by_id_dedup, score_dedup, SCORE_API_FETC
 
 /// 发送错误消息到响应通道。
 /// 用于消除 `let _ = resp_tx.send(...).await; return;` 样板。
+/// 若通道已关闭（接收端 drop），记 warn 便于排查，不影响主流程。
 async fn respond_err(resp_tx: &mpsc::Sender<String>, msg: impl Into<String>) {
-    let _ = resp_tx.send(msg.into()).await;
+    if resp_tx.send(msg.into()).await.is_err() {
+        warn!("{}", log_fmt!("main.respond_err_send_failed"));
+    }
 }
 
 async fn resolve_score_user(
@@ -595,6 +598,13 @@ async fn run_score_query(
     }
 
     let total_scores = scores.len();
+    if total_scores == 0 {
+        return respond_err(
+            resp_tx,
+            user_str("query.no_score_on_map").replace("{qq}", &qq.to_string()),
+        )
+        .await;
+    }
     let scores = match process_scores(scores, filters, limit, limit_end) {
         Ok(s) => s,
         Err(key) => {
@@ -942,9 +952,10 @@ struct ScoreQueryPlan {
 
 impl ScoreQueryPlan {
     /// `!sb` 不带 limit_end 的默认单分查询。
+    /// `api_limit: Some(1)` 让 `/all` 端点只返回首条成绩，避免无意义地传输最多 50 条。
     fn single() -> Self {
         Self {
-            api_limit: None,
+            api_limit: Some(1),
             bypass_filter: true,
             single_score: true,
             is_all: false,
@@ -1043,6 +1054,8 @@ struct SingleScoreRenderParams<'a> {
     score: &'a Score,
     mode: GameMode,
     user_stats: &'a UserStats,
+    /// 在所属列表中的 0-索引位置。`Some(n)` 时渲染前缀 `"#(n+1) <label>"`；
+    /// `None` 时仅渲染 `<label>`，适用于"该玩家在此谱面上的最佳成绩"等无明确排名的场景。
     position: Option<usize>,
     is_pass: bool,
 }

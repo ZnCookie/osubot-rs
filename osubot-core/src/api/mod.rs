@@ -13,8 +13,7 @@ pub(crate) use oauth::retry_on_401;
 pub use oauth::OauthTokenCache;
 pub use osu_api::{
     fetch_user_profile, fetch_user_stats_by_user_id, fetch_user_stats_by_username, get_score_by_id,
-    get_user_beatmap_score, get_user_beatmap_scores_all, get_user_info, get_user_recent,
-    OsuUserInfo,
+    get_user_beatmap_scores_all, get_user_info, get_user_recent, OsuUserInfo,
 };
 pub use pp::{calculate_pp_breakdown, calculate_pp_if_acc, enrich_score_with_pp, PpCalcParams};
 
@@ -98,11 +97,6 @@ struct OsuApiBeatmapset {
     favourite_count: i64,
     #[serde(default)]
     play_count: i64,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct BeatmapUserScore {
-    score: Option<OsuApiScore>,
 }
 
 #[derive(Debug, serde::Deserialize)]
