@@ -336,6 +336,20 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
+            let parsed_url = reqwest::Url::parse(&url)
+                .map_err(|e| BridgeError::HttpRequest(format!("invalid URL: {e}")))?;
+            if let Some(host) = parsed_url.host_str() {
+                if host == "localhost"
+                    || host == "127.0.0.1"
+                    || host == "::1"
+                    || host == "0.0.0.0"
+                    || host.starts_with("169.254.")
+                {
+                    return Err(BridgeError::HttpRequest(
+                        "requests to loopback/link-local addresses are not allowed".into(),
+                    ));
+                }
+            }
             let method_str = v["method"].as_str().unwrap_or("GET");
             let method = reqwest::Method::from_bytes(method_str.as_bytes())
                 .map_err(|e| BridgeError::HttpRequest(format!("invalid HTTP method: {e}")))?;
@@ -449,6 +463,7 @@ fn dispatch_host_call(
                 .as_u64()
                 .ok_or_else(|| BridgeError::MissingField("interval_secs".into()))?;
             const MIN_INTERVAL: u64 = 5;
+            const MAX_INTERVAL: u64 = 86400;
             const MAX_TICKS_PER_PLUGIN: usize = 8;
             if interval_secs < MIN_INTERVAL {
                 return Err(BridgeError::Validation(
@@ -456,6 +471,7 @@ fn dispatch_host_call(
                         .replace("{secs}", &MIN_INTERVAL.to_string()),
                 ));
             }
+            let interval_secs = interval_secs.min(MAX_INTERVAL);
             let mut registry = services
                 .tick_registry
                 .lock()
