@@ -74,7 +74,7 @@ pub enum PluginAction {
 | `http_request(url)` | `String` | HTTP GET 请求，返回响应体 |
 | `http_request_with_method(url, method, body)` | `String` | HTTP 自定义方法请求（`body` 为 `Option<&str>`） |
 | `db_get_binding(qq)` | `Option<(i64, String)>` | 查询 QQ 绑定的 osu! 用户（用户 ID, 用户名） |
-| `osu_api_fetch_user(username, mode)` | `String` | 查询 osu! 用户统计，返回 API JSON |
+| `osu_api_fetch_user(username, mode: GameMode)` | `String` | 查询 osu! 用户统计，返回 API JSON。`mode` 为 `GameMode` 枚举（序列化为 `"osu"` / `"taiko"` / `"catch"` / `"mania"`） |
 | `register_tick(name, interval_secs)` | `u32` | 注册定时任务（最小 5 秒，最多 8 个/插件），返回 tick_id |
 | `get_plugin_config()` | `serde_json::Value` | 获取插件自定义配置 |
 

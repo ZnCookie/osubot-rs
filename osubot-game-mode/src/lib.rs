@@ -53,6 +53,9 @@ impl From<GameMode> for i32 {
 }
 
 impl GameMode {
+    /// 从数字字符串解析 GameMode（`"0"` → `Osu`，`"1"` → `Taiko`，`"2"` → `Catch`，`"3"` → `Mania`）。
+    ///
+    /// 仅接受 `"0"` ~ `"3"`，不接受 `"osu"` / `"taiko"` 等名称。如需从名称解析，使用 `serde_json::from_str`。
     pub fn from_mode_str(s: &str) -> Option<GameMode> {
         match s.trim() {
             "0" => Some(GameMode::Osu),
