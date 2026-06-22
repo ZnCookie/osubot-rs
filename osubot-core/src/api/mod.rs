@@ -173,6 +173,10 @@ struct OsuApiScore {
 
 impl OsuApiScore {
     fn extra_mode(&self) -> GameMode {
+        // 与 storage.rs::get_default_mode 不同：此处对非法 ruleset_id 静默回退到 Osu。
+        // 理由：ruleset_id 来自 osu! API 反序列化（不可控的外部数据），静默 fallback
+        // 避免一个未知的 mode 字段让整条成绩解析失败。storage.rs 是用户写入的偏好，
+        // 非法值代表数据损坏，必须显式报错。
         GameMode::try_from(self.ruleset_id as i32).unwrap_or(GameMode::Osu)
     }
 }

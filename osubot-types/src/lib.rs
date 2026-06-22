@@ -335,15 +335,4 @@ mod tests {
         assert_eq!(format_accuracy(0.0), "0%");
         assert_eq!(format_accuracy(0.0001), "0.01%");
     }
-
-    #[test]
-    fn test_from_digit_str_invalid_returns_none() {
-        assert_eq!(GameMode::from_digit_str("99"), None);
-        assert_eq!(GameMode::from_digit_str("xyz"), None);
-        assert_eq!(GameMode::from_digit_str("osu!"), None);
-        assert_eq!(GameMode::from_digit_str("std"), None);
-        assert_eq!(GameMode::from_digit_str("taiko"), None);
-        assert_eq!(GameMode::from_digit_str("catch"), None);
-        assert_eq!(GameMode::from_digit_str("mania"), None);
-    }
 }

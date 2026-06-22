@@ -179,8 +179,22 @@ mod tests {
     #[test]
     fn test_from_digit_str() {
         assert_eq!(GameMode::from_digit_str("0"), Some(GameMode::Osu));
+        assert_eq!(GameMode::from_digit_str("1"), Some(GameMode::Taiko));
+        assert_eq!(GameMode::from_digit_str("2"), Some(GameMode::Catch));
+        assert_eq!(GameMode::from_digit_str("3"), Some(GameMode::Mania));
+    }
+
+    #[test]
+    fn test_from_digit_str_invalid_returns_none() {
         assert_eq!(GameMode::from_digit_str("99"), None);
-        assert_eq!(GameMode::from_digit_str("osu"), None);
+        assert_eq!(GameMode::from_digit_str("xyz"), None);
+        assert_eq!(GameMode::from_digit_str("osu!"), None);
+        assert_eq!(GameMode::from_digit_str("std"), None);
+        assert_eq!(GameMode::from_digit_str("taiko"), None);
+        assert_eq!(GameMode::from_digit_str("catch"), None);
+        assert_eq!(GameMode::from_digit_str("mania"), None);
+        assert_eq!(GameMode::from_digit_str(""), None);
+        assert_eq!(GameMode::from_digit_str(" 0 "), Some(GameMode::Osu));
     }
 
     #[test]
