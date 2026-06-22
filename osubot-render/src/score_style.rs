@@ -134,7 +134,7 @@ fn render_top_row(data: &ScoreCardData) -> Markup {
                     div.beatmap-title { (score.title) }
                     div.beatmap-artist { (score.artist) }
                     div.bottom-chips {
-                        span class=(format!("chip chip-status {}", status_class)) { (status_display) }
+                        span.chip.chip-status.{ (status_class) } { (status_display) }
                         span.chip.chip-diff {
                             span.star { "\u{2605} " (format!("{:.2}", score.star_rating)) }
                             span.diff-name { (score.version) }
@@ -372,7 +372,7 @@ fn render_score_row(data: &ScoreCardData) -> Markup {
                 }
             }
             div.score-acc-row {
-                div class=(format!("rank-badge {}", rank_class)) {
+                div.rank-badge.{ (rank_class) } {
                     (rank_display)
                 }
                 div.score-acc-stack {
