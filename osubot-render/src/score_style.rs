@@ -529,15 +529,17 @@ fn render_detail_cards(data: &ScoreCardData) -> Markup {
 
 #[must_use]
 pub fn wrap_score_html(data: &ScoreCardData) -> String {
-    let css = SCORE_CSS
-        .replace("{{SCORE_HUE}}", &data.hue.to_string())
-        .replace("{{SCORE_SAT}}", &data.sat.to_string());
+    let runtime_css = format!(
+        ":root {{ --score-hue: {}; --score-sat: {}%; }}",
+        data.hue, data.sat
+    );
 
     html! {
         (PreEscaped("<!DOCTYPE html>"))
         html {
             head {
-                style { (PreEscaped(css)) }
+                style { (PreEscaped(SCORE_CSS)) }
+                style { (PreEscaped(runtime_css)) }
             }
             body {
                 div.score-card {
@@ -584,6 +586,35 @@ mod tests {
     use super::*;
     use osubot_types::{Score, ScoreStatistics, ScoreUser};
     use rosu_mods::GameMods;
+
+    fn make_test_score_data() -> ScoreCardData {
+        ScoreCardData {
+            score: make_test_score(),
+            username: "TestPlayer".to_string(),
+            mode: osubot_types::GameMode::Osu,
+            user_pp: 9876.5,
+            user_global_rank: Some(999999),
+            user_country_rank: Some(999999),
+            country_code: "CN".to_string(),
+            avatar_data_uri: "data:image/jpeg;base64,avatar".to_string(),
+            bg_data_uri: "data:image/jpeg;base64,bg".to_string(),
+            thumb_data_uri: "data:image/jpeg;base64,thumb".to_string(),
+            play_time: "2025/05/27 14:30:22".to_string(),
+            hue: 200,
+            sat: 60,
+            fav_count: Some(1234),
+            play_count: Some(56700),
+            pp_change: Some(12.0),
+            global_rank_change: Some(-99999),
+            country_rank_change: Some(-99999),
+            ranked_status: "Ranked".to_string(),
+            ur_value: None,
+            ar_eff: None,
+            od_eff: None,
+            cs_eff: None,
+            hp_eff: None,
+        }
+    }
 
     fn make_test_score() -> Score {
         let mut mods = GameMods::new();
@@ -741,6 +772,40 @@ mod tests {
         assert!(
             html.contains("user-pp-change up"),
             "pp-change up class missing"
+        );
+    }
+
+    #[test]
+    fn test_wrap_score_html_uses_css_variables() {
+        let data = make_test_score_data();
+        let html = wrap_score_html(&data);
+        assert!(html.contains("--score-hue: 200"), "missing hue CSS var");
+        assert!(html.contains("--score-sat: 60%"), "missing sat CSS var");
+        assert!(
+            !html.contains("{{SCORE_HUE}}"),
+            "should not have template placeholder"
+        );
+        assert!(
+            !html.contains("{{SCORE_SAT}}"),
+            "should not have template placeholder"
+        );
+        let style_count = html.matches("<style>").count();
+        assert!(
+            style_count >= 2,
+            "expected at least 2 <style> tags (SCORE_CSS + runtime vars), got {style_count}",
+        );
+    }
+
+    #[test]
+    fn test_score_css_has_no_template_placeholders() {
+        const SCORE_CSS_LOCAL: &str = include_str!("../styles/score.css");
+        assert!(
+            !SCORE_CSS_LOCAL.contains("{{SCORE_HUE}}"),
+            "score.css should not have {{SCORE_HUE}} placeholder"
+        );
+        assert!(
+            !SCORE_CSS_LOCAL.contains("{{SCORE_SAT}}"),
+            "score.css should not have {{SCORE_SAT}} placeholder"
         );
     }
 

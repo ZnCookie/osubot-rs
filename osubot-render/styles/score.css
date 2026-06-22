@@ -1,6 +1,4 @@
 :root {
-  --score-hue: {{SCORE_HUE}};
-  --score-sat: {{SCORE_SAT}}%;
   --primary: hsl(var(--score-hue), var(--score-sat), 75%);
   --primary-strong: hsl(var(--score-hue), var(--score-sat), 60%);
   --primary-container: hsl(var(--score-hue), var(--score-sat), 30%);
