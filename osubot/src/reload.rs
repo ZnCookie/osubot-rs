@@ -262,7 +262,7 @@ impl ReloadCoordinator {
             plugin: mutable.plugin,
         };
 
-        new_config.validate()?;
+        new_config.validate().map_err(|e| e.to_string())?;
 
         let new_plugin_dir = std::path::PathBuf::from(&new_config.plugin.dir);
         let dir_changed = {

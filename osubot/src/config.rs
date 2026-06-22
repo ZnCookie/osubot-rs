@@ -5,6 +5,45 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+#[derive(Debug)]
+pub enum ConfigError {
+    Io(std::io::Error),
+    Parse(toml::de::Error),
+    Validation(String),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::Io(e) => write!(f, "config IO error: {e}"),
+            ConfigError::Parse(e) => write!(f, "config parse error: {e}"),
+            ConfigError::Validation(s) => write!(f, "config validation: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConfigError::Io(e) => Some(e),
+            ConfigError::Parse(e) => Some(e),
+            ConfigError::Validation(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for ConfigError {
+    fn from(e: std::io::Error) -> Self {
+        ConfigError::Io(e)
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(e: toml::de::Error) -> Self {
+        ConfigError::Parse(e)
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub osu: OsuConfig,
@@ -27,6 +66,9 @@ pub struct Config {
 #[derive(Deserialize, Clone)]
 pub struct OsuConfig {
     #[serde(alias = "api_key")]
+    // NOTE: stored as plain String. Debug is manually redacted (see Debug impl below).
+    // Not zeroized: the value also lives as plain String in OauthTokenCache and is
+    // cloned at startup, so zeroize::Zeroizing here would give incomplete coverage.
     pub client_secret: String,
     pub client_id: String,
 }
@@ -366,69 +408,69 @@ pub struct MutableConfig {
 }
 
 impl Config {
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         if self.bot.onebot_url.is_empty() {
-            return Err("onebot_url 为空".into());
+            return Err(ConfigError::Validation("onebot_url 为空".into()));
         }
         if self.bot.command_timeout_secs < 5 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "command_timeout_secs 过小（{} < 5 秒）",
                 self.bot.command_timeout_secs
-            ));
+            )));
         }
         if self.bot.render_timeout_secs < 5 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "render_timeout_secs 过小（{} < 5 秒）",
                 self.bot.render_timeout_secs
-            ));
+            )));
         }
         if self.bot.onebot_api_timeout_secs < 2 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "onebot_api_timeout_secs 过小（{} < 2 秒）",
                 self.bot.onebot_api_timeout_secs
-            ));
+            )));
         }
         if self.bot.ur_timeout_secs < 3 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "ur_timeout_secs 过小（{} < 3 秒）",
                 self.bot.ur_timeout_secs
-            ));
+            )));
         }
         if self.bot.command_timeout_secs > 3600 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "command_timeout_secs 过大（{} > 3600 秒）",
                 self.bot.command_timeout_secs
-            ));
+            )));
         }
         if self.bot.render_timeout_secs > 600 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "render_timeout_secs 过大（{} > 600 秒）",
                 self.bot.render_timeout_secs
-            ));
+            )));
         }
         if self.bot.onebot_api_timeout_secs > 120 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "onebot_api_timeout_secs 过大（{} > 120 秒）",
                 self.bot.onebot_api_timeout_secs
-            ));
+            )));
         }
         if self.bot.ur_timeout_secs > 300 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "ur_timeout_secs 过大（{} > 300 秒）",
                 self.bot.ur_timeout_secs
-            ));
+            )));
         }
         if self.scheduler.interval_minutes > 1440 {
-            return Err(format!(
+            return Err(ConfigError::Validation(format!(
                 "scheduler.interval_minutes 过大（{} > 1440 分钟 = 1 天）",
                 self.scheduler.interval_minutes
-            ));
+            )));
         }
         // 5 个 i64 间隔字段下界检查：负值会让 Duration::hours(负) 行为异常
         for (name, val) in [
@@ -454,7 +496,9 @@ impl Config {
             ),
         ] {
             if val < 0 {
-                return Err(format!("scheduler.{name} 不能为负（{val}）"));
+                return Err(ConfigError::Validation(format!(
+                    "scheduler.{name} 不能为负（{val}）"
+                )));
             }
         }
         Ok(())
