@@ -155,12 +155,6 @@ pub(crate) fn build_cmd_payload(
     msg: &QQMessage,
     resolved_mode: Option<GameMode>,
 ) -> serde_json::Value {
-    let mode = resolved_mode.map(|m| match m {
-        GameMode::Osu => 0,
-        GameMode::Taiko => 1,
-        GameMode::Catch => 2,
-        GameMode::Mania => 3,
-    });
     let username = match cmd {
         Command::QueryUser { username, .. } => Some(username.as_str()),
         Command::Bind { username, .. } => Some(username.as_str()),
@@ -177,7 +171,7 @@ pub(crate) fn build_cmd_payload(
         "user_id": msg.user_id,
         "message": msg.message,
         "mentioned_user_id": msg.mentioned_user_id,
-        "mode": mode,
+        "mode": resolved_mode,
         "username": username,
         "qq": match cmd {
             Command::QueryMentionedUser { qq, .. } => Some(*qq),
@@ -1263,7 +1257,7 @@ async fn handle_beatmap_preview(
         _ => None,
     };
 
-    let target_mode = mode.map(|m| m as i32).unwrap_or_else(|| beatmap.mode());
+    let target_mode = mode.map(i32::from).unwrap_or_else(|| beatmap.mode());
     if let Some(ref s) = mod_settings {
         let validation_errors = osubot_beatmap_preview::validate_mods(s, Some(target_mode));
         if let Some(first) = validation_errors.first() {

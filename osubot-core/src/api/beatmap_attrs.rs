@@ -87,12 +87,7 @@ pub fn apply_mod_adjustment_to_stats(
 
     use rosu_pp::model::beatmap::BeatmapAttributesBuilder;
     use rosu_pp::model::mode::GameMode as RosuMode;
-    let rosu_mode = match mode {
-        GameMode::Osu => RosuMode::Osu,
-        GameMode::Taiko => RosuMode::Taiko,
-        GameMode::Catch => RosuMode::Catch,
-        GameMode::Mania => RosuMode::Mania,
-    };
+    let rosu_mode: RosuMode = mode.into();
     let adjusted = BeatmapAttributesBuilder::new()
         .mode(rosu_mode, false)
         .ar(ar as f32, false)

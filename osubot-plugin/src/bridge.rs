@@ -20,7 +20,7 @@ const MAX_HTTP_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 pub enum BridgeError {
     JsonParse(serde_json::Error),
     MissingField(String),
-    InvalidMode(u8),
+    InvalidMode(String),
     HttpRequest(String),
     Database(String),
     SendMsg(String),
@@ -276,6 +276,16 @@ fn send_msg_sync(
     tokio::task::block_in_place(|| send_fn(group_id, message).map_err(BridgeError::SendMsg))
 }
 
+fn parse_fetch_user_mode(
+    payload: &str,
+) -> Result<(String, osubot_game_mode::GameMode), BridgeError> {
+    let v = parse_payload(payload)?;
+    let username = get_field(&v, "username")?;
+    let mode = serde_json::from_value(v["mode"].clone())
+        .map_err(|e| BridgeError::InvalidMode(e.to_string()))?;
+    Ok((username, mode))
+}
+
 fn dispatch_host_call(
     services: &HostServices,
     name: &str,
@@ -405,16 +415,7 @@ fn dispatch_host_call(
             Ok(result.to_string())
         }
         "osu_api_fetch_user" => {
-            let v = parse_payload(payload)?;
-            let username = get_field(&v, "username")?;
-            let mode_num = v["mode"].as_u64().unwrap_or(0) as u8;
-            let mode = match mode_num {
-                0 => osubot_types::GameMode::Osu,
-                1 => osubot_types::GameMode::Taiko,
-                2 => osubot_types::GameMode::Catch,
-                3 => osubot_types::GameMode::Mania,
-                _ => return Err(BridgeError::InvalidMode(mode_num)),
-            };
+            let (username, mode) = parse_fetch_user_mode(payload)?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
                     user_str("bridge.rate_limit_http").into(),
@@ -432,7 +433,7 @@ fn dispatch_host_call(
                     .map_err(|e| BridgeError::HttpRequest(e.to_string()))
                 })
             })?;
-            serde_json::to_string(&stats).map_err(|e| BridgeError::HttpRequest(e.to_string()))
+            serde_json::to_string(&stats).map_err(BridgeError::JsonParse)
         }
         "get_plugin_config" => {
             let config = services
@@ -495,5 +496,50 @@ fn dispatch_host_call(
             Ok(tick_id.to_string())
         }
         _ => Err(BridgeError::UnknownHostCall(name.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osubot_game_mode::GameMode;
+
+    fn call(payload: &str) -> Result<(String, GameMode), BridgeError> {
+        parse_fetch_user_mode(payload)
+    }
+
+    #[test]
+    fn fetch_user_mode_accepts_string_osu() {
+        let (u, m) = call(r#"{"username":"cookie","mode":"osu"}"#).unwrap();
+        assert_eq!(u, "cookie");
+        assert_eq!(m, GameMode::Osu);
+    }
+
+    #[test]
+    fn fetch_user_mode_accepts_taiko_catch_mania() {
+        let (_, m) = call(r#"{"username":"a","mode":"taiko"}"#).unwrap();
+        assert_eq!(m, GameMode::Taiko);
+        let (_, m) = call(r#"{"username":"a","mode":"catch"}"#).unwrap();
+        assert_eq!(m, GameMode::Catch);
+        let (_, m) = call(r#"{"username":"a","mode":"mania"}"#).unwrap();
+        assert_eq!(m, GameMode::Mania);
+    }
+
+    #[test]
+    fn fetch_user_mode_rejects_integer() {
+        let err = call(r#"{"username":"a","mode":0}"#).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidMode(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn fetch_user_mode_rejects_unknown_string() {
+        let err = call(r#"{"username":"a","mode":"OSU"}"#).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidMode(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn fetch_user_mode_rejects_missing() {
+        let err = call(r#"{"username":"a"}"#).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidMode(_)), "got {err:?}");
     }
 }

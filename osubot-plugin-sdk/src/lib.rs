@@ -1,6 +1,8 @@
 mod types;
 pub use types::*;
 
+use osubot_game_mode::GameMode;
+
 extern crate alloc;
 
 use core::ptr;
@@ -122,7 +124,7 @@ impl PluginContext {
         Ok(Some((user_id, username.to_string())))
     }
 
-    pub fn osu_api_fetch_user(&self, username: &str, mode: u8) -> Result<String, String> {
+    pub fn osu_api_fetch_user(&self, username: &str, mode: GameMode) -> Result<String, String> {
         let payload = serde_json::json!({"username": username, "mode": mode});
         host_call("osu_api_fetch_user", &payload.to_string())
     }

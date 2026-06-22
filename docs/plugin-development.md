@@ -53,9 +53,9 @@ pub enum PluginAction {
 
 #### `mode` 字段语义
 
-`mode` 是宿主为本次命令解析出的最终模式（0=osu, 1=taiko, 2=catch, 3=mania），取值 `Option<u8>`，但绝大多数情况下为 `Some(0..3)`：
+`mode` 是宿主为本次命令解析出的最终模式，取值 `Option<GameMode>`，其中 `GameMode` 序列化为字符串（`"osu"` / `"taiko"` / `"catch"` / `"mania"`），绝大多数情况下为 `Some(...)`：
 
-- **模式敏感命令**（`~` / `where` / `!p` / `!r` / `!s` / `!ps` / `!rs` / `!ss` / `今日高光`）：取用户在命令中显式指定的模式（`!p :1` → `Some(1)`）；若未指定，取该用户的默认模式（`!mode` 设置），未设置时回退到 `Osu`（0）。最终必为 `Some(0..3)`。
+- **模式敏感命令**（`~` / `where` / `!p` / `!r` / `!s` / `!ps` / `!rs` / `!ss` / `今日高光`）：取用户在命令中显式指定的模式（`!p :1` → `Some(Taiko)`）；若未指定，取该用户的默认模式（`!mode` 设置），未设置时回退到 `Osu`。最终必为 `Some(...)`。
 - **其他命令**（`绑定` / `解绑` / `!profile` / `!help` / `!mode` / `!rv`）：`null`，不代表任何用户输入。
 
 ### `QQMessage`
@@ -74,7 +74,7 @@ pub enum PluginAction {
 | `http_request(url)` | `String` | HTTP GET 请求，返回响应体 |
 | `http_request_with_method(url, method, body)` | `String` | HTTP 自定义方法请求（`body` 为 `Option<&str>`） |
 | `db_get_binding(qq)` | `Option<(i64, String)>` | 查询 QQ 绑定的 osu! 用户（用户 ID, 用户名） |
-| `osu_api_fetch_user(username, mode)` | `String` | 查询 osu! 用户统计，返回 API JSON |
+| `osu_api_fetch_user(username, mode: GameMode)` | `String` | 查询 osu! 用户统计，返回 API JSON。`mode` 为 `GameMode` 枚举（序列化为 `"osu"` / `"taiko"` / `"catch"` / `"mania"`） |
 | `register_tick(name, interval_secs)` | `u32` | 注册定时任务（最小 5 秒，最多 8 个/插件），返回 tick_id |
 | `get_plugin_config()` | `serde_json::Value` | 获取插件自定义配置 |
 

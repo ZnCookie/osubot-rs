@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 osubot-core = { path = "../osubot-core" }
+osubot-game-mode = { path = "../osubot-game-mode" }
 osubot-types = { path = "../osubot-types" }
 wasmtime = "45"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }

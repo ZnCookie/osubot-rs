@@ -21,7 +21,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         if rest.is_empty() {
             return Some(Command::QuerySelf { mode: None });
         }
-        let mode = GameMode::from_mode_str(rest)?;
+        let mode = GameMode::from_digit_str(rest)?;
         return Some(Command::QuerySelf { mode: Some(mode) });
     }
 
@@ -29,7 +29,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         let parts: Vec<&str> = rest.split(',').collect();
         let qq: i64 = parts[0].trim().parse().ok()?;
         let mode = if parts.len() > 1 {
-            Some(GameMode::from_mode_str(parts[1].trim())?)
+            Some(GameMode::from_digit_str(parts[1].trim())?)
         } else {
             None
         };
@@ -42,7 +42,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         if let Some(at) = first.strip_prefix('@') {
             if let Ok(qq) = at.parse::<i64>() {
                 let mode = if parts.len() > 1 {
-                    Some(GameMode::from_mode_str(parts[1].trim())?)
+                    Some(GameMode::from_digit_str(parts[1].trim())?)
                 } else {
                     None
                 };
@@ -52,7 +52,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         }
         let username = first.to_string();
         let mode = if parts.len() > 1 {
-            Some(GameMode::from_mode_str(parts[1].trim())?)
+            Some(GameMode::from_digit_str(parts[1].trim())?)
         } else {
             None
         };
@@ -66,7 +66,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             let mode = if rest.is_empty() {
                 None
             } else {
-                Some(GameMode::from_mode_str(rest)?)
+                Some(GameMode::from_digit_str(rest)?)
             };
             return Some(Command::QueryMentionedUser { qq, mode });
         }
@@ -94,10 +94,10 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             if mode_str.is_empty() {
                 None
             } else {
-                GameMode::from_mode_str(mode_str)
+                GameMode::from_digit_str(mode_str)
             }
         } else {
-            GameMode::from_mode_str(rest)
+            GameMode::from_digit_str(rest)
         };
         return Some(Command::Highlight { mode });
     }
@@ -112,7 +112,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             let mode = if rest.is_empty() {
                 None
             } else {
-                GameMode::from_mode_str(rest)
+                GameMode::from_digit_str(rest)
             };
             return Some(Command::SetDefaultMode { mode });
         }

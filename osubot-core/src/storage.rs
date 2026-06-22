@@ -393,14 +393,11 @@ impl Storage {
             )
             .await?;
         if let Some(row) = rows.next().await? {
-            let mode: i32 = row.get(0)?;
-            match mode {
-                0 => Ok(Some(GameMode::Osu)),
-                1 => Ok(Some(GameMode::Taiko)),
-                2 => Ok(Some(GameMode::Catch)),
-                3 => Ok(Some(GameMode::Mania)),
-                _ => {
-                    tracing::error!(mode, "invalid default_mode value in database");
+            let mode_int: i32 = row.get(0)?;
+            match GameMode::try_from(mode_int) {
+                Ok(mode) => Ok(Some(mode)),
+                Err(_) => {
+                    tracing::error!(mode = mode_int, "invalid default_mode value in database");
                     Err(turso::Error::Error(
                         "invalid default_mode value in database".to_string(),
                     ))
@@ -417,7 +414,7 @@ impl Storage {
             .await
             .execute(
                 "UPDATE user_bindings SET default_mode = ?1 WHERE qq = ?2",
-                params![mode as i32, qq],
+                params![i32::from(mode), qq],
             )
             .await?;
         Ok(rows > 0)
@@ -491,7 +488,7 @@ impl Storage {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     user_id,
-                    mode as i32,
+                    i32::from(mode),
                     Utc::now().to_rfc3339(),
                     stats.pp,
                     stats.rank,
@@ -520,7 +517,7 @@ impl Storage {
                  WHERE user_id = ?1 AND mode = ?2
                  ORDER BY recorded_at DESC
                  LIMIT 1",
-                params![user_id, mode as i32],
+                params![user_id, i32::from(mode)],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -546,7 +543,7 @@ impl Storage {
                  FROM user_stats_history
                  WHERE user_id = ?1 AND mode = ?2 AND recorded_at >= ?3
                  ORDER BY recorded_at ASC",
-                params![user_id, mode as i32, cutoff_str],
+                params![user_id, i32::from(mode), cutoff_str],
             )
             .await?;
 
@@ -592,7 +589,7 @@ impl Storage {
         );
 
         let mut args: Vec<turso::Value> = Vec::with_capacity(unique_user_ids.len() + 2);
-        args.push((mode as i32).into());
+        args.push(i32::from(mode).into());
         args.push(cutoff_str.into());
         for user_id in unique_user_ids {
             args.push(user_id.into());
@@ -687,7 +684,7 @@ impl Storage {
             let count = conn
                 .execute(
                     "INSERT OR IGNORE INTO user_play_records (user_id, mode, played_at) VALUES (?1, ?2, ?3)",
-                    params![user_id, mode as i32, timestamp],
+                    params![user_id, i32::from(mode), timestamp],
                 )
                 .await?;
             inserted += count as i64;
@@ -706,7 +703,7 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT 1 FROM user_play_records WHERE user_id = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
-                params![user_id, mode as i32, since_ts],
+                params![user_id, i32::from(mode), since_ts],
             )
             .await?;
         Ok(rows.next().await?.is_some())
@@ -777,7 +774,7 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT last_update FROM user_last_update WHERE user_id = ?1 AND mode = ?2",
-                params![user_id, mode as i32],
+                params![user_id, i32::from(mode)],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -798,7 +795,7 @@ impl Storage {
         self.conn().await
             .execute(
                 "INSERT OR REPLACE INTO user_last_update (user_id, mode, last_update) VALUES (?1, ?2, ?3)",
-                params![user_id, mode as i32, time.to_rfc3339()],
+                params![user_id, i32::from(mode), time.to_rfc3339()],
             )
             .await?;
         Ok(())
@@ -815,7 +812,7 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2",
-                params![user_id, mode as i32],
+                params![user_id, i32::from(mode)],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -839,7 +836,7 @@ impl Storage {
         self.conn().await
             .execute(
                 "INSERT OR REPLACE INTO user_next_update (user_id, mode, next_update) VALUES (?1, ?2, ?3)",
-                params![user_id, mode as i32, time.timestamp()],
+                params![user_id, i32::from(mode), time.timestamp()],
             )
             .await?;
         Ok(())
@@ -904,13 +901,7 @@ impl Storage {
         while let Some(row) = rows.next().await? {
             let user_id: i64 = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
-            let mode = match mode_int {
-                0 => GameMode::Osu,
-                1 => GameMode::Taiko,
-                2 => GameMode::Catch,
-                3 => GameMode::Mania,
-                _ => GameMode::Osu,
-            };
+            let mode = GameMode::try_from(mode_int).unwrap_or(GameMode::Osu);
             results.push((user_id, mode));
         }
         Ok(results)
@@ -1174,7 +1165,7 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     user_id,
-                    mode as i32,
+                    i32::from(mode),
                     recorded_at.to_rfc3339(),
                     stats.pp,
                     stats.rank,

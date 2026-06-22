@@ -5,15 +5,6 @@ use osubot_types::{PpBreakdown, PpIfAcc};
 
 use super::download_beatmap_osu;
 
-fn to_rosu_pp_game_mode(mode: GameMode) -> rosu_pp::model::mode::GameMode {
-    match mode {
-        GameMode::Osu => rosu_pp::model::mode::GameMode::Osu,
-        GameMode::Taiko => rosu_pp::model::mode::GameMode::Taiko,
-        GameMode::Catch => rosu_pp::model::mode::GameMode::Catch,
-        GameMode::Mania => rosu_pp::model::mode::GameMode::Mania,
-    }
-}
-
 pub struct PpCalcParams<'a> {
     pub osu_path: &'a std::path::Path,
     pub mode: GameMode,
@@ -114,7 +105,7 @@ pub fn calculate_pp_breakdown(params: PpCalcParams<'_>) -> Option<PpBreakdown> {
         }
     };
 
-    let map_mode = to_rosu_pp_game_mode(params.mode);
+    let map_mode: rosu_pp::model::mode::GameMode = params.mode.into();
     let needs_convert = map.mode != map_mode;
 
     let perf = build_pp_performance(&map, &params, needs_convert, map_mode).or_else(|| {
@@ -184,7 +175,7 @@ pub fn calculate_pp_if_acc(params: PpCalcParams<'_>, beatmap_max_combo: i64) -> 
         }
     };
 
-    let map_mode = to_rosu_pp_game_mode(params.mode);
+    let map_mode: rosu_pp::model::mode::GameMode = params.mode.into();
     let needs_convert = map.mode != map_mode;
 
     let combo = params.max_combo.max(0).try_into().unwrap_or(0);

@@ -236,7 +236,7 @@ mod tests {
         );
 
         // Test !ping command (returns Handled)
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         match action {
             PluginAction::Handled(ref msg) => {
@@ -313,7 +313,7 @@ mod tests {
 
         let (rt, pm) = setup_plugin_manager(wasm_path);
 
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         match action {
             PluginAction::Handled(ref msg) => {
@@ -512,7 +512,7 @@ mod tests {
         );
 
         // Verify the plugin still works after reload
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         match action {
             PluginAction::Handled(ref msg) => {
@@ -569,7 +569,7 @@ mod tests {
             "should have 2 instances after adding"
         );
 
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         assert!(
             matches!(action, PluginAction::Handled(_)),
@@ -642,7 +642,7 @@ mod tests {
             "should have 1 instance after removal"
         );
 
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         assert!(
             matches!(action, PluginAction::Handled(_)),
@@ -696,7 +696,7 @@ mod tests {
             0
         );
 
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         assert!(
             matches!(action, PluginAction::Next),
@@ -749,7 +749,7 @@ mod tests {
             "should still have 1 instance after priority change"
         );
 
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         assert!(
             matches!(action, PluginAction::Handled(_)),
@@ -781,7 +781,7 @@ mod tests {
             1
         );
 
-        let cmd_json = r#"{"command_type":"!ping","group_id":1,"user_id":1,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":1,"user_id":1,"mode":"osu"}"#;
 
         // Add b
         let config_add = PluginConfigInput {
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(ping_indices[0], 0, "!ping entry should point to index 0");
 
         // Verify the plugin still works
-        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":0}"#;
+        let cmd_json = r#"{"command_type":"!ping","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(&pm, "!ping", cmd_json));
         assert!(
             matches!(action, PluginAction::Handled(_)),
@@ -1055,7 +1055,7 @@ mod tests {
         let (rt, pm) = setup_plugin_manager(wasm_path);
 
         let cmd_json =
-            r#"{"command_type":"!nonexistent","group_id":12345,"user_id":67890,"mode":0}"#;
+            r#"{"command_type":"!nonexistent","group_id":12345,"user_id":67890,"mode":"osu"}"#;
         let action = rt.block_on(PluginManager::dispatch_command(
             &pm,
             "!nonexistent",

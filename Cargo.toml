@@ -1,4 +1,4 @@
 [workspace]
-members = ["osubot-types", "osubot-core", "osubot", "osubot-render", "osubot-plugin-sdk", "osubot-plugin", "osubot-beatmap-preview"]
+members = ["osubot-game-mode", "osubot-types", "osubot-core", "osubot", "osubot-render", "osubot-plugin-sdk", "osubot-plugin", "osubot-beatmap-preview"]
 exclude = ["examples/hello-plugin"]
 resolver = "2"
