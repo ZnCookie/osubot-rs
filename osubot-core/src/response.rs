@@ -108,6 +108,7 @@ fn compute_display_fields(score: &Score) -> ScoreDisplayFields {
 }
 
 /// 将单条成绩格式化为包含谱面信息、成绩详情和排名的中文文本。
+#[must_use]
 pub fn format_score(
     score: &Score,
     username: &str,
@@ -548,6 +549,7 @@ fn country_name(code: &str) -> &'static str {
 }
 
 /// 将用户统计数据与变化量格式化为带变化标注（↑↓/加减）的中文个人信息文本。
+#[must_use]
 pub fn format_stats_with_change(
     stats: &UserStats,
     change: &Option<UserChange>,
