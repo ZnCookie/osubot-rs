@@ -11,6 +11,7 @@ pub struct SendAction {
     pub params: serde_json::Value,
 }
 
+#[must_use]
 pub fn extract_text_from_message(msg: &serde_json::Value) -> String {
     match msg {
         serde_json::Value::String(s) => s.clone(),

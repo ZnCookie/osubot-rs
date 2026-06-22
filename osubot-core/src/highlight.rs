@@ -168,6 +168,7 @@ pub async fn get_highlight(
 }
 
 /// Format highlight result as response string
+#[must_use]
 pub fn format_highlight(result: &HighlightResult) -> String {
     let mut s = String::new();
 

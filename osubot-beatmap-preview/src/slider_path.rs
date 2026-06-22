@@ -95,6 +95,7 @@ pub fn path_position_at_distance(path: &SliderPath, target: f64) -> P {
     )
 }
 
+#[must_use]
 pub fn slice_path(path: &SliderPath, start_progress: f64, end_progress: f64) -> Vec<P> {
     if path.points.len() < 2 || path.total_length <= 0.0 {
         return path.points.clone();
@@ -159,6 +160,7 @@ pub fn build_catch_slider_path(
     build_path(&fit_path_lazer(&path, pixel_length))
 }
 
+#[must_use]
 pub fn simplify_path(points: &[P], tolerance: f64) -> Vec<P> {
     if points.len() < 3 {
         return points.to_vec();
@@ -585,6 +587,7 @@ fn fit_path_lazer(path: &[P], expected_length: f64) -> Vec<P> {
     fitted
 }
 
+#[must_use]
 pub fn dedupe_points(points: &[P]) -> Vec<P> {
     let mut deduped: Vec<P> = Vec::with_capacity(points.len());
     for &point in points {

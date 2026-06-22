@@ -269,6 +269,7 @@ fn fmt_float(v: f64) -> String {
 /// Returns a list of human-readable error messages (empty if valid).
 /// Does not validate per-format (GIF/PNG) mod support — that's left to the
 /// renderer to decide.
+#[must_use]
 pub fn validate_mods(settings: &ModSettings, mode: Option<i32>) -> Vec<String> {
     let mut errors = Vec::new();
 

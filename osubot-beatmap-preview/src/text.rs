@@ -89,6 +89,7 @@ pub fn draw_text(img: &mut Img, x: i64, y: i64, text: &str, size: u32, color: Rg
     }
 }
 
+#[must_use]
 pub fn format_mmssmmm(ms: i64) -> String {
     let ms = ms.max(0);
     let minutes = ms / 60000;

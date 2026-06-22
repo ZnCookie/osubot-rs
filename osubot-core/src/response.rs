@@ -7,6 +7,7 @@ use osubot_types::{
 use phf::phf_map;
 
 /// 将用户统计数据格式化为中文个人信息文本，包含 pp、排名、国家排名、准确率、游玩次数等。
+#[must_use]
 pub fn format_stats(stats: &UserStats, mode: GameMode) -> String {
     let c = collect_common(stats, mode);
     let rank = stats.rank.to_string();
@@ -194,6 +195,7 @@ pub fn format_score(
 }
 
 /// 将多条成绩格式化为带序号的并列中文成绩列表文本。
+#[must_use]
 pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, is_pass: bool) -> String {
     let label = if is_pass {
         user_str("fmt.recent_pass")
