@@ -410,7 +410,13 @@ pub async fn render_score_list_card(
                     RenderError::Render(log_fmt!("render.err_hero_decode").to_string())
                 })?;
                 let cropped = crop_and_resize(&img, 2560, 640);
-                Ok(image_to_data_uri(&cropped, 80).unwrap_or_default())
+                Ok(match image_to_data_uri(&cropped, 80) {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "JPEG encoding failed for hero image");
+                        String::new()
+                    }
+                })
             },
         );
         (avatar_result?, hero_result?)
@@ -422,7 +428,13 @@ pub async fn render_score_list_card(
         .map(|opt| match opt {
             Some(img) => {
                 let thumb = crop_and_resize(img, 620, 220);
-                image_to_data_uri(&thumb, 70).unwrap_or_default()
+                match image_to_data_uri(&thumb, 70) {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "JPEG encoding failed for cover image");
+                        String::new()
+                    }
+                }
             }
             None => String::new(),
         })
