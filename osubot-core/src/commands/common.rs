@@ -8,7 +8,7 @@ pub(crate) fn extract_mode(rest: &str) -> (String, Option<GameMode>) {
     if let Some(colon_pos) = rest.rfind(':') {
         let after_colon = &rest[colon_pos + 1..];
         let mode_token = after_colon.split_whitespace().next().unwrap_or("");
-        let mode = GameMode::from_mode_str(mode_token);
+        let mode = GameMode::from_digit_str(mode_token);
 
         let before_colon = &rest[..colon_pos];
         let after_mode_token = &rest[colon_pos + 1 + mode_token.len()..];
