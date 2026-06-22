@@ -196,7 +196,8 @@ impl ConversionState<'_> {
         }
 
         let mut col = start;
-        loop {
+        const MAX_ITERATIONS: usize = 10_000;
+        for _ in 0..MAX_ITERATIONS {
             col = if gathered {
                 let mut c = col + 1;
                 if c == self.total_columns {
@@ -210,6 +211,9 @@ impl ConversionState<'_> {
                 return Ok(col);
             }
         }
+        Err(PreviewError::new(
+            "find_available_column exceeded max iterations",
+        ))
     }
 
     // Inverse cumulative probability: val >= 1-pN → N (highest match wins).
