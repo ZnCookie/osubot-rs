@@ -1320,7 +1320,7 @@ async fn handle_beatmap_preview(
     };
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_nanos();
     let filename = if mod_suffix.is_empty() {
         format!("{}_{:x}.{}", resolved_bid, nanos, fmt)
