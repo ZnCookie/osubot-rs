@@ -1,15 +1,13 @@
 use crate::log_fmt;
 use crate::types::{GameMode, Score, ScoreStatistics, ScoreUser};
 
-use osubot_types::to_rosu_game_mode;
-
 use super::stable_grade;
 use super::{fullsize_cover_url, OsuApiMod, OsuApiScore};
 
 fn api_mods_to_game_mods(api_mods: &[OsuApiMod], mode: GameMode) -> rosu_mods::GameMods {
     use rosu_mods::serde::GameModSeed;
     use serde::de::DeserializeSeed;
-    let ros_mode = to_rosu_game_mode(mode);
+    let ros_mode: rosu_mods::GameMode = mode.into();
     let seed = GameModSeed::Mode {
         mode: ros_mode,
         deny_unknown_fields: false,
