@@ -221,18 +221,6 @@ pub fn format_play_datetime_with_offset(created_at: &str, offset_hours: i32) -> 
     created_at.to_string()
 }
 
-/// Convert osubot GameMode to rosu_mods GameMode.
-///
-/// Prefer using `GameMode::into()` directly when possible.
-pub fn to_rosu_game_mode(mode: GameMode) -> rosu_mods::GameMode {
-    match mode {
-        GameMode::Osu => rosu_mods::GameMode::Osu,
-        GameMode::Taiko => rosu_mods::GameMode::Taiko,
-        GameMode::Catch => rosu_mods::GameMode::Catch,
-        GameMode::Mania => rosu_mods::GameMode::Mania,
-    }
-}
-
 /// Format GameMods as space-separated mod acronyms (e.g., "HD DT")
 pub fn format_mods(mods: &GameMods) -> String {
     if mods.is_empty() {

@@ -407,18 +407,12 @@ fn dispatch_host_call(
         "osu_api_fetch_user" => {
             let v = parse_payload(payload)?;
             let username = get_field(&v, "username")?;
-            let mode = if let Some(s) = v["mode"].as_str() {
-                // 新 SDK: 字符串格式 ("osu", "taiko", "catch", "mania")
-                serde_json::from_value::<osubot_game_mode::GameMode>(serde_json::Value::String(
-                    s.to_string(),
-                ))
-                .map_err(|_| BridgeError::InvalidMode(s.to_string()))?
-            } else {
-                // 旧 SDK: 整数格式 (0, 1, 2, 3)
-                let mode_num = v["mode"].as_u64().unwrap_or(0) as u8;
-                osubot_game_mode::GameMode::try_from(mode_num)
-                    .map_err(|_| BridgeError::InvalidMode(mode_num.to_string()))?
-            };
+            let mode_str = v["mode"]
+                .as_str()
+                .ok_or_else(|| BridgeError::InvalidMode("missing or non-string".into()))?;
+            let mode: osubot_game_mode::GameMode =
+                serde_json::from_value(serde_json::Value::String(mode_str.to_string()))
+                    .map_err(|_| BridgeError::InvalidMode(mode_str.to_string()))?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::HttpRequest(
                     user_str("bridge.rate_limit_http").into(),
