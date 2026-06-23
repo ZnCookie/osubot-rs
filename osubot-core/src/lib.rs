@@ -6,6 +6,7 @@ pub mod highlight;
 pub mod irc;
 pub mod rate_limiter;
 pub mod response;
+pub mod ssrf;
 pub mod storage;
 pub mod strings;
 pub mod types;
