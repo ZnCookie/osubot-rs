@@ -272,7 +272,11 @@ async fn run_message_loop(
             info!("{}", log_fmt!("main.force_reconnect_url_changed"));
             break;
         }
-        match read.next().await {
+        let msg = tokio::select! {
+            _ = crate::shutdown::wait_for_shutdown(&state.shutdown) => break,
+            msg = read.next() => msg,
+        };
+        match msg {
             Some(Ok(Message::Text(text))) => {
                 if !limiter.try_acquire() {
                     warn!(

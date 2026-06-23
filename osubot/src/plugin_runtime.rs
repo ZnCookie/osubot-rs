@@ -22,6 +22,7 @@ pub(super) struct PluginRuntime {
     pm: Arc<Mutex<Option<PluginManager>>>,
     drain: Arc<std::sync::atomic::AtomicBool>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PluginRuntime {
@@ -125,6 +126,7 @@ impl PluginRuntime {
             pm: state.plugin_manager.clone(),
             drain,
             in_flight,
+            shutdown: state.shutdown.clone(),
         }
     }
 
@@ -134,14 +136,16 @@ impl PluginRuntime {
         let pm = self.pm.clone();
         let drain = self.drain.clone();
         let in_flight = self.in_flight.clone();
+        let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
             let mut last_fired: HashMap<(usize, u32), std::time::Instant> = HashMap::new();
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
-                interval.tick().await;
-                // 热重载 drain 期间暂停 tick 分派，避免 phase 1 收集的索引
-                // 在 phase 2 使用前被 reload_all()→compact() 重映射
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = crate::shutdown::wait_for_shutdown(&shutdown) => break,
+                }
                 if drain.load(Ordering::SeqCst) {
                     continue;
                 }

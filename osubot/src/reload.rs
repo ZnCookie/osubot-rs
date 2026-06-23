@@ -94,14 +94,21 @@ pub struct ReloadCoordinator {
     // INVARIANT: this lock is never held across .await points.
     // Using std::sync::RwLock for performance in synchronous notify callbacks.
     plugin_dir: Arc<std::sync::RwLock<PathBuf>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl ReloadCoordinator {
-    pub fn new(handle: ReloadHandle, config_path: PathBuf, plugin_dir: PathBuf) -> Self {
+    pub fn new(
+        handle: ReloadHandle,
+        config_path: PathBuf,
+        plugin_dir: PathBuf,
+        shutdown: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             handle,
             config_path,
             plugin_dir: Arc::new(std::sync::RwLock::new(plugin_dir)),
+            shutdown,
         }
     }
 
@@ -158,7 +165,13 @@ impl ReloadCoordinator {
             )
         );
 
-        while let Some(()) = rx.recv().await {
+        let shutdown = self.shutdown.clone();
+        loop {
+            let msg = tokio::select! {
+                _ = crate::shutdown::wait_for_shutdown(&shutdown) => break,
+                msg = rx.recv() => msg,
+            };
+            let Some(()) = msg else { break };
             let mut deadline = tokio::time::Instant::now() + Duration::from_millis(500);
             loop {
                 match tokio::time::timeout_at(deadline, rx.recv()).await {
