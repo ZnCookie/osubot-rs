@@ -14,6 +14,32 @@ const MAX_RETRY_AFTER_SECS: u64 = 300;
 const BODY_LOG_PREVIEW_BYTES: usize = 512;
 const BODY_LOG_PREVIEW_SUFFIX: &str = "...[truncated]";
 
+#[allow(dead_code)]
+pub(crate) struct RetryConfig {
+    pub max_retries: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl RetryConfig {
+    pub(crate) fn api_default() -> Self {
+        Self {
+            max_retries: 4,
+            initial_backoff: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(30),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn image_default() -> Self {
+        Self {
+            max_retries: 4,
+            initial_backoff: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(15),
+        }
+    }
+}
+
 fn truncate_for_log(body: &str, max: usize) -> String {
     if body.len() <= max {
         body.to_string()
@@ -130,20 +156,23 @@ pub(crate) fn classify_http_error(resp: &reqwest::Response) -> Result<(), ApiErr
     Ok(())
 }
 
-pub(crate) fn backoff_with_jitter(attempt: u32) -> Duration {
+pub(crate) fn compute_backoff(attempt: u32, config: &RetryConfig) -> Duration {
     use rand::RngExt;
-    let base_delay = Duration::from_secs(1);
-    let capped = attempt.min(5);
-    let exp = base_delay * 2u32.pow(capped);
-    let exp_ms = exp.as_millis() as u64;
-    let min_ms = exp_ms * 3 / 4;
-    let range_ms = exp_ms / 2;
+    let exp = config.initial_backoff * 2u32.pow(attempt.min(5));
+    let capped = exp.min(config.max_backoff);
+    let ms = capped.as_millis() as u64;
+    let min_ms = ms * 3 / 4;
+    let range_ms = ms / 2;
     let jitter_ms = if range_ms > 0 {
         rand::rng().random_range(0..=range_ms)
     } else {
         0
     };
     Duration::from_millis(min_ms + jitter_ms)
+}
+
+pub(crate) fn backoff_with_jitter(attempt: u32) -> Duration {
+    compute_backoff(attempt, &RetryConfig::api_default())
 }
 
 pub(crate) async fn retry_on_transient<F, Fut, T>(
@@ -221,8 +250,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_attempt_zero_within_first_window() {
-        let delay = backoff_with_jitter(0);
+    fn compute_backoff_attempt_zero_within_first_window() {
+        let config = RetryConfig::api_default();
+        let delay = compute_backoff(0, &config);
+        // initial_backoff=500ms, 2^0=1, exp=500ms, min=375ms, max=625ms
+        assert!(
+            delay >= Duration::from_millis(375) && delay <= Duration::from_millis(625),
+            "got {delay:?}"
+        );
+    }
+
+    #[test]
+    fn compute_backoff_attempt_one_doubles() {
+        let config = RetryConfig::api_default();
+        let delay = compute_backoff(1, &config);
+        // exp=1000ms, min=750ms, max=1250ms
         assert!(
             delay >= Duration::from_millis(750) && delay <= Duration::from_millis(1250),
             "got {delay:?}"
@@ -230,36 +272,30 @@ mod tests {
     }
 
     #[test]
-    fn backoff_attempt_one_doubles() {
-        let delay = backoff_with_jitter(1);
+    fn compute_backoff_attempt_five_saturates() {
+        let config = RetryConfig::api_default();
+        let delay = compute_backoff(5, &config);
+        // exp=500ms*2^5=16000ms, capped at max_backoff=30s → 16s
+        // min=12000ms, max=24000ms
         assert!(
-            delay >= Duration::from_millis(1500) && delay <= Duration::from_millis(2500),
+            delay >= Duration::from_secs(12) && delay <= Duration::from_secs(24),
             "got {delay:?}"
         );
     }
 
     #[test]
-    fn backoff_attempt_thirtyone_saturates() {
-        let delay = backoff_with_jitter(31);
-        // With cap at attempt=5 (2^5=32s), delay ranges from 24s to 40s
-        assert!(
-            delay >= Duration::from_secs(24) && delay <= Duration::from_secs(40),
-            "got {delay:?}, expected 24s..=40s"
-        );
-    }
-
-    #[test]
-    fn backoff_attempt_large_caps_at_thirtyone() {
-        let delay_31 = backoff_with_jitter(31);
-        let delay_100 = backoff_with_jitter(100);
-        let diff = if delay_31 > delay_100 {
-            delay_31 - delay_100
+    fn compute_backoff_attempt_large_saturates() {
+        let config = RetryConfig::api_default();
+        let delay_5 = compute_backoff(5, &config);
+        let delay_100 = compute_backoff(100, &config);
+        let diff = if delay_5 > delay_100 {
+            delay_5 - delay_100
         } else {
-            delay_100 - delay_31
+            delay_100 - delay_5
         };
         assert!(
-            diff < delay_31,
-            "attempt=31 and attempt=100 should share same magnitude, got {delay_31:?} vs {delay_100:?}"
+            diff < delay_5,
+            "attempt=5 and attempt=100 should share same magnitude, got {delay_5:?} vs {delay_100:?}"
         );
     }
 
