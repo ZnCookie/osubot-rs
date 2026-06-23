@@ -261,6 +261,10 @@ struct OsuStatistics {
 #[derive(Debug, serde::Deserialize)]
 struct OauthResponse {
     access_token: String,
+    /// osu! v2 OAuth token 约 1 小时过期。某些 osu! 端点可能不返回此字段，
+    /// 此时反序列化为 0 → OauthTokenCache 视为立即过期并刷新。
+    #[serde(default)]
+    expires_in: u64,
 }
 
 #[derive(Debug, serde::Deserialize)]
