@@ -1455,3 +1455,272 @@ fn test_p_with_hash_and_mode_order_independent() {
         panic!("expected Pass command");
     }
 }
+
+// === !b / !bs tests ===
+
+#[test]
+fn test_best_self() {
+    let cmd = parse_command("!b", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_self() {
+    let cmd = parse_command("!bs", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_mode() {
+    let cmd = parse_command("!b :1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: Some(GameMode::Taiko),
+            username: None,
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_username() {
+    let cmd = parse_command("!b ZnCookie", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_mention() {
+    let cmd = parse_command("!b", Some(123456)).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_qq_in_text() {
+    let cmd = parse_command("!b @123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_hash() {
+    let cmd = parse_command("!b #3", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 3,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_with_hash() {
+    let cmd = parse_command("!bs #5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 5,
+            is_summary: true,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_range() {
+    let cmd = parse_command("!bs #2-10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 2,
+            limit_end: Some(10),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_mods() {
+    let cmd = parse_command("!b +HDHR", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: Some(vec!["mod=HDHR".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_with_filters() {
+    let cmd = parse_command("!bs pp>=200,miss=0", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["pp>=200".to_string(), "miss=0".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_full_args() {
+    let cmd = parse_command("!bs :2 ZnCookie +DT #5-10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: Some(GameMode::Catch),
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            limit: 5,
+            limit_end: Some(10),
+            is_summary: true,
+            filters: Some(vec!["mod=DT".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_no_conflict_with_profile() {
+    let cmd = parse_command("!b", None).unwrap();
+    assert!(matches!(cmd, Command::Best { .. }));
+}
+
+#[test]
+fn test_best_list_not_matched_as_best() {
+    let cmd = parse_command("!bs", None).unwrap();
+    assert!(matches!(cmd, Command::Best { is_summary: true, .. }));
+}
+
+#[test]
+fn test_best_mode_no_space() {
+    let cmd = parse_command("!b:3", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: Some(GameMode::Mania),
+            username: None,
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_group_name() {
+    assert_eq!(
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+        .group_name(),
+        CommandGroup::Score
+    );
+}
+
+#[test]
+fn test_best_command_name() {
+    assert_eq!(
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+        .command_name(),
+        "!b"
+    );
+}
