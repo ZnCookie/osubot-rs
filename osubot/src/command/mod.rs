@@ -226,6 +226,48 @@ pub(crate) fn build_cmd_payload(
 }
 
 pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
+    // ==== 用户命令频率限制（滑动窗口：3秒内最多5次） ====
+    // 限流检查放在最前面，防止插件命令绕过限流
+    {
+        let rate_limited = {
+            let mut entry = ctx
+                .command_rate_limits
+                .entry(msg.user_id)
+                .or_insert(UserRateLimit {
+                    last_command: std::time::Instant::now(),
+                    command_timestamps: Vec::new(),
+                });
+
+            let now = std::time::Instant::now();
+            entry
+                .command_timestamps
+                .retain(|t| now.duration_since(*t) < Duration::from_secs(3));
+            entry.command_timestamps.push(now);
+            entry.last_command = now;
+
+            entry.command_timestamps.len() > 5
+        };
+        if rate_limited {
+            let _ = resp_tx
+                .send(
+                    user_str("error.rate_limit_generic").replace("{qq}", &msg.user_id.to_string()),
+                )
+                .await;
+            return;
+        }
+    }
+
+    // 定期清理不活跃的用户（每60秒清理30秒内无命令的用户）
+    static LAST_CLEANUP: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
+    let last = LAST_CLEANUP.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+    if let Ok(mut last_time) = last.try_lock() {
+        if last_time.elapsed() >= Duration::from_secs(60) {
+            ctx.command_rate_limits
+                .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(30));
+            *last_time = std::time::Instant::now();
+        }
+    }
+
     // ==== Plugin on_message dispatch ====
     {
         let msg_payload = serde_json::json!({
@@ -293,45 +335,6 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     if !group_cfg.is_enabled(cmd.group_name()) {
         debug!(group_id = msg.group_id, command = ?cmd.group_name(), "{}", log_fmt!("main.command_disabled"));
         return;
-    }
-
-    // 用户命令频率限制（滑动窗口：3秒内最多5次）
-    let rate_limited = {
-        let mut entry = ctx
-            .command_rate_limits
-            .entry(msg.user_id)
-            .or_insert(UserRateLimit {
-                last_command: std::time::Instant::now(),
-                command_timestamps: Vec::new(),
-            });
-
-        let now = std::time::Instant::now();
-        // 清理超过3秒的记录
-        entry
-            .command_timestamps
-            .retain(|t| now.duration_since(*t) < Duration::from_secs(3));
-        entry.command_timestamps.push(now);
-        entry.last_command = now;
-
-        // 检查是否超过限制
-        entry.command_timestamps.len() > 5
-    };
-    if rate_limited {
-        let _ = resp_tx
-            .send(user_str("error.rate_limit_generic").replace("{qq}", &msg.user_id.to_string()))
-            .await;
-        return;
-    }
-
-    // 定期清理不活跃的用户（每60秒清理30秒内无命令的用户）
-    static LAST_CLEANUP: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
-    let last = LAST_CLEANUP.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
-    if let Ok(mut last_time) = last.try_lock() {
-        if last_time.elapsed() >= Duration::from_secs(60) {
-            ctx.command_rate_limits
-                .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(30));
-            *last_time = std::time::Instant::now();
-        }
     }
 
     // Handle command and send response

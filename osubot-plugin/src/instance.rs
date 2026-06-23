@@ -256,7 +256,8 @@ impl PluginInstance {
             .is_ok()
         {
             let data_len = u32::from_le_bytes(len_buf);
-            self.dealloc(ptr, 4 + data_len);
+            let total = 4u32.saturating_add(data_len);
+            self.dealloc(ptr, total);
         } else {
             tracing::warn!(ptr, "{}", log_fmt!("instance.dealloc_length_prefix_failed"));
         }

@@ -214,17 +214,9 @@ impl ReloadCoordinator {
                 "{}",
                 log_fmt!("reload.plugin_reload_failed_rollback", error = &e)
             );
-            // 即使插件失败，也要应用 side effects（如 IRC 重连）
-            // apply_side_effects 比较 old_config 和 new_config，用 new_config 的值触发副作用
-            if let Err(e) = self.apply_side_effects(&old_config, &new_config).await {
-                error!(
-                    "{}",
-                    log_fmt!("reload.side_effects_failed", error = e.to_string())
-                );
-            }
+            // 插件重载失败，不应用 side effects，直接回滚配置。
+            // drain=true 已阻止新消息分发，副作用在下次成功重载时自然应用。
             *self.handle.config.write().await = old_config;
-            // 保持 drain=true 直到下次 reload 成功——与超时分支一致，
-            // 避免在 plugin 不可用时新消息继续派发到坏状态。
             self.handle.plugin.drain.store(true, Ordering::SeqCst);
             return;
         }
@@ -390,8 +382,14 @@ impl ReloadCoordinator {
 
         {
             let mut guard = self.handle.plugin.pm.lock().await;
-            if let Some(ref mut pm) = *guard {
-                pm.reload_all(&plugin_config).await?;
+            // Take PM out of lock to avoid holding the lock across await points
+            // in reload_all (which unloads/loads wasm modules). This allows
+            // in-flight messages to acquire the lock during reload.
+            if let Some(mut pm) = guard.take() {
+                drop(guard);
+                let result = pm.reload_all(&plugin_config).await;
+                self.handle.plugin.pm.lock().await.replace(pm);
+                result?;
             } else if plugin_config.instances.iter().any(|p| p.enabled) {
                 warn!("{}", log_fmt!("reload.plugin_manager_not_init"));
             }

@@ -184,8 +184,9 @@ pub unsafe fn alloc(size: u32) -> *mut u8 {
 /// `ptr` must have been returned by a previous call to [`alloc`] and `size`
 /// must match the size passed to that call.
 pub unsafe fn dealloc(ptr: *mut u8, size: u32) {
-    let layout = match alloc::alloc::Layout::from_size_align(size as usize, 4)
-        .or_else(|_| alloc::alloc::Layout::array::<u8>(size as usize))
+    let n = size.max(1) as usize;
+    let layout = match alloc::alloc::Layout::from_size_align(n, 4)
+        .or_else(|_| alloc::alloc::Layout::array::<u8>(n))
     {
         Ok(l) => l,
         Err(_) => return,

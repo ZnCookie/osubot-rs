@@ -393,19 +393,27 @@ fn rasterize_svg_to_png(svg_bytes: &[u8]) -> Result<Vec<u8>, CacheError> {
 /// `load_system_fonts()` + 探测 sans-serif 具体 family 名（fontdb 0.23
 /// 在 Linux 处理 fontconfig alias 结构有 bug，`sans-serif` 字面量 query
 /// 不到）。
+fn cached_fontdb() -> fontdb::Database {
+    use std::sync::OnceLock;
+
+    static FONTDB: OnceLock<fontdb::Database> = OnceLock::new();
+
+    FONTDB
+        .get_or_init(|| {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            if !detect_sans_serif_family(&mut db) {
+                tracing::warn!("{}", log_fmt!("render.svg_no_sans_serif_detected"));
+            }
+            db
+        })
+        .clone()
+}
+
 fn build_svg_options() -> resvg::usvg::Options<'static> {
     use resvg::usvg::Options;
     let mut opt = Options::default();
-    {
-        let fontdb = opt.fontdb_mut();
-        // fontdb 0.23 的 load_system_fonts() 返回 ()，无错误信号。失败时
-        // （容器无 fontconfig / no system fonts）只能靠下方 sans-serif 探测
-        // 全部 miss 来发现——所以该函数必须返回 bool 让调用方 logging。
-        fontdb.load_system_fonts();
-        if !detect_sans_serif_family(fontdb) {
-            tracing::warn!("{}", log_fmt!("render.svg_no_sans_serif_detected"));
-        }
-    }
+    *opt.fontdb_mut() = cached_fontdb();
     opt
 }
 
@@ -447,6 +455,12 @@ fn rasterize_svg_str(svg_bytes: &[u8], opt: &resvg::usvg::Options) -> Result<Vec
     let size = tree.size();
     let width = (size.width() as u32).max(1);
     let height = (size.height() as u32).max(1);
+
+    if width > 8192 || height > 8192 {
+        return Err(CacheError::SvgRasterize(format!(
+            "SVG dimensions {width}x{height} exceed 8192 limit"
+        )));
+    }
 
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
         .ok_or_else(|| CacheError::SvgRasterize(format!("pixmap alloc {width}x{height}")))?;
@@ -643,6 +657,94 @@ pub async fn cleanup_expired(retention_days: u64) {
             days = retention_days.to_string()
         )
     );
+}
+
+/// Default maximum cache size: 2 GB
+const DEFAULT_MAX_CACHE_SIZE: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Evict cache files by LRU (oldest mtime first) when total size exceeds `max_bytes`.
+/// Called after `cleanup_expired` to enforce a disk budget.
+pub async fn cleanup_by_size(max_bytes: Option<u64>) {
+    let max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_CACHE_SIZE);
+    if max_bytes == 0 {
+        return;
+    }
+
+    let dir = cache_dir();
+    match tokio::fs::try_exists(&dir).await {
+        Ok(false) | Err(_) => return,
+        Ok(true) => {}
+    }
+
+    // Collect all cache files with their metadata
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::error!("{}", log_fmt!("render.cleanup_read_dir_failed", error = &e));
+            return;
+        }
+    };
+
+    let mut files: Vec<(std::path::PathBuf, u64, SystemTime)> = Vec::new();
+    let mut total_size: u64 = 0;
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let metadata = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let size = metadata.len();
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        total_size += size;
+        files.push((path, size, modified));
+    }
+
+    if total_size <= max_bytes {
+        return;
+    }
+
+    // Sort by mtime ascending (oldest first = LRU eviction)
+    files.sort_by_key(|&(_, _, mtime)| mtime);
+
+    let mut deleted = 0u64;
+    let mut errors = 0u64;
+
+    for (path, size, _) in &files {
+        if total_size <= max_bytes {
+            break;
+        }
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {
+                total_size -= size;
+                deleted += 1;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "render.cleanup_delete_failed",
+                        path = format!("{}", path.display()),
+                        error = &e
+                    )
+                );
+                errors += 1;
+            }
+        }
+    }
+
+    if deleted > 0 {
+        tracing::info!(
+            "{}",
+            log_fmt!(
+                "render.cleanup_size_summary",
+                deleted = deleted.to_string(),
+                errors = errors.to_string(),
+                max_mb = (max_bytes / (1024 * 1024)).to_string()
+            )
+        );
+    }
 }
 
 #[cfg(test)]

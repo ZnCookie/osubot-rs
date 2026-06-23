@@ -114,7 +114,8 @@ pub(crate) fn classify_http_error(resp: &reqwest::Response) -> Result<(), ApiErr
 pub(crate) fn backoff_with_jitter(attempt: u32) -> Duration {
     use rand::RngExt;
     let base_delay = Duration::from_secs(1);
-    let exp = base_delay * 2u32.pow(attempt.min(31));
+    let capped = attempt.min(5);
+    let exp = base_delay * 2u32.pow(capped);
     let exp_ms = exp.as_millis() as u64;
     let min_ms = exp_ms * 3 / 4;
     let range_ms = exp_ms / 2;
@@ -221,9 +222,10 @@ mod tests {
     #[test]
     fn backoff_attempt_thirtyone_saturates() {
         let delay = backoff_with_jitter(31);
+        // With cap at attempt=5 (2^5=32s), delay ranges from 24s to 40s
         assert!(
-            delay >= Duration::from_secs(3600),
-            "got {delay:?}, expected >= 1 hour"
+            delay >= Duration::from_secs(24) && delay <= Duration::from_secs(40),
+            "got {delay:?}, expected 24s..=40s"
         );
     }
 
