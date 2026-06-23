@@ -23,6 +23,7 @@ use crate::models::Beatmap;
 use crate::mods::ModSettings;
 use crate::text::{draw_text, format_mmssmmm, text_size};
 use std::path::Path;
+use std::sync::Mutex;
 
 use super::constants::*;
 use super::context::*;
@@ -81,8 +82,9 @@ pub fn render_standard_gif(
         })
         .collect();
 
-    let mut cache = RenderCache::default();
+    let cache = Mutex::new(RenderCache::default());
     let render = move |frame_index: usize| -> Img {
+        let mut cache = cache.lock().unwrap();
         let mut canvas = Img::new(canvas_w as u32, canvas_h as u32, CANVAS_BACKGROUND_COLOR);
         for (segment_index, row_timing) in row_timings.iter().enumerate() {
             let (x, y) = gif_frame_origin(segment_index);

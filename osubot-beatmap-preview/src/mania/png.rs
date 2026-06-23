@@ -54,11 +54,12 @@ const MEASURE_LINE: Rgba = [83, 83, 83, 255];
 const BEAT_LINE: Rgba = [56, 56, 56, 255];
 const SUBDIVISION_LINE: Rgba = [34, 34, 34, 255];
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TimingLine {
     time: i64,
     color: Rgba,
     show_label: bool,
+    bpm_label: Option<String>,
 }
 
 struct RenderLayout {
@@ -93,14 +94,13 @@ pub fn render_mania_grid(
     let cs_mode = mods.is_some_and(|m| m.cs_override);
     let native_mania = is_native_mania(beatmap);
 
-    // Trim leading silence: if first note is >= 5s in, start 1s before it.
     let first_note_time = hit_objects
         .iter()
         .map(|ho| ho.start_time)
         .min()
         .unwrap_or(0);
     let chart_start_time = if first_note_time >= 5000 {
-        (first_note_time - 1000).max(0)
+        crate::time_selection::snap_to_beat_grid(first_note_time - 1000, &beatmap.timing_points)
     } else {
         0
     };
@@ -120,14 +120,18 @@ pub fn render_mania_grid(
             .iter()
             .map(|tp| {
                 let mut tp = *tp;
-                tp.time = (tp.time - chart_start_time as f64).max(0.0);
+                tp.time -= chart_start_time as f64;
                 tp
             })
             .collect()
     } else {
         beatmap.timing_points.clone()
     };
-    let timing_lines = build_timing_lines(&timing_points_for_render, chart_end_time);
+    let timing_lines = build_timing_lines(
+        &timing_points_for_render,
+        chart_end_time,
+        beatmap.beat_divisor,
+    );
     let sv_changes = if cs_mode || !native_mania {
         Vec::new()
     } else {
@@ -151,7 +155,7 @@ pub fn render_mania_grid(
     }
     let mut last_label_time: Option<i64> = None;
     for timing_line in &timing_lines {
-        let mut tl = *timing_line;
+        let mut tl = timing_line.clone();
         if tl.show_label {
             if let Some(prev) = last_label_time {
                 if (tl.time - prev).abs() < TIME_LABEL_MIN_INTERVAL_MS {
@@ -317,6 +321,28 @@ fn draw_timing_line(image: &mut Img, timing_line: &TimingLine, layout: &RenderLa
             TIME_LABEL_FONT_SIZE,
             RULER_TEXT,
         );
+
+        if let Some(ref bpm_label) = timing_line.bpm_label {
+            let (bpm_w, bpm_h) = text_size(bpm_label, TIME_LABEL_FONT_SIZE);
+            let bpm_w = bpm_w as i64;
+            let mut bpm_x = column_left + layout.column_width + 4;
+            if column_index < layout.column_count - 1 {
+                let next_column_left = column_left + layout.column_width + COLUMN_GAP;
+                bpm_x = bpm_x.min(next_column_left - bpm_w - 4);
+            } else {
+                bpm_x = bpm_x.min(layout.image_width - PAGE_MARGIN_X - bpm_w);
+            }
+            let bpm_y = (label_y + label_height as i64 + 3)
+                .min(chart_top + layout.total_column_height - bpm_h as i64);
+            draw_text(
+                image,
+                bpm_x,
+                bpm_y,
+                bpm_label,
+                TIME_LABEL_FONT_SIZE,
+                RULER_TEXT,
+            );
+        }
     }
 }
 
@@ -380,7 +406,11 @@ fn draw_png_hit_object(
     }
 }
 
-fn build_timing_lines(timing_points: &[TimingPoint], chart_end_time: i64) -> Vec<TimingLine> {
+fn build_timing_lines(
+    timing_points: &[TimingPoint],
+    chart_end_time: i64,
+    beat_divisor: i32,
+) -> Vec<TimingLine> {
     let base_points: Vec<&TimingPoint> = timing_points.iter().filter(|p| p.uninherited).collect();
     if base_points.is_empty() {
         return Vec::new();
@@ -395,7 +425,9 @@ fn build_timing_lines(timing_points: &[TimingPoint], chart_end_time: i64) -> Vec
         };
 
         let beat_pixels = point.beat_length * PIXELS_PER_MS;
-        let subdivision: i64 = if beat_pixels >= 72.0 {
+        let subdivision: i64 = if beat_divisor > 0 {
+            (beat_divisor as i64).max(1)
+        } else if beat_pixels >= 72.0 {
             4
         } else if beat_pixels >= 28.0 {
             2
@@ -429,6 +461,7 @@ fn build_timing_lines(timing_points: &[TimingPoint], chart_end_time: i64) -> Vec
                             SUBDIVISION_LINE
                         },
                         show_label: is_bar || is_beat,
+                        bpm_label: None,
                     },
                 );
             }
@@ -436,6 +469,28 @@ fn build_timing_lines(timing_points: &[TimingPoint], chart_end_time: i64) -> Vec
             current = point.time + step_index as f64 * step;
         }
     }
+
+    if !ordered_unique.is_empty() {
+        let mut last_bpm: Option<f64> = None;
+        for point in &base_points {
+            let bpm = 60_000.0 / point.beat_length;
+            let bpm_changed = last_bpm.is_none_or(|prev| (bpm - prev).abs() > 0.01);
+            last_bpm = Some(bpm);
+
+            if bpm_changed {
+                let rounded = round_half_even(point.time);
+                let key = ordered_unique
+                    .range(rounded..)
+                    .next()
+                    .map(|(&k, _)| k)
+                    .unwrap_or(rounded);
+                if let Some(line) = ordered_unique.get_mut(&key) {
+                    line.bpm_label = Some(format!("{:.0}BPM", bpm.round()));
+                }
+            }
+        }
+    }
+
     ordered_unique.into_values().collect()
 }
 
@@ -480,7 +535,7 @@ mod tests {
     fn build_timing_lines_clamps_tiny_beat_length() {
         let tps = vec![make_tp(0.0, 0.001)];
         let start = std::time::Instant::now();
-        let lines = build_timing_lines(&tps, 1000);
+        let lines = build_timing_lines(&tps, 1000, 0);
         assert!(
             start.elapsed() < std::time::Duration::from_millis(200),
             "build_timing_lines hung: {} lines in {:?}",

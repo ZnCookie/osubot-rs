@@ -4534,6 +4534,7 @@ dependencies = [
  "font8x8",
  "gif",
  "png",
+ "rayon",
 ]
 
 [[package]]

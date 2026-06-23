@@ -99,6 +99,9 @@ fn draw_hit_circle(
         snapshot_time,
         &context.settings,
     );
+    if context.settings.traceable {
+        return;
+    }
     let center = to_frame_point(
         hit_object.x as f64,
         hit_object.y as f64,
@@ -145,6 +148,7 @@ fn draw_slider(
             &slider_data,
             combo.color,
             alpha,
+            context.settings.traceable,
         );
     } else {
         let visible_path =
@@ -155,6 +159,7 @@ fn draw_slider(
             context.slider_body_width,
             combo.color,
             alpha,
+            context.settings.traceable,
         );
     }
 
@@ -187,7 +192,7 @@ fn draw_slider(
         snaked_start,
         snaked_end,
     );
-    if head_alpha > 0.0 {
+    if head_alpha > 0.0 && !context.settings.traceable {
         draw_circle_piece(
             frame,
             context,

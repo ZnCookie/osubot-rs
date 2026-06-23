@@ -289,7 +289,9 @@ fn render_beatmap_preview(
         1 if use_gif => {
             osubot_beatmap_preview::render_taiko_gif(beatmap, mods, times_ms.clone(), output_path)
         }
-        1 => osubot_beatmap_preview::render_taiko_grid(beatmap, output_path, mods).map(|_| ()),
+        1 => {
+            osubot_beatmap_preview::render_taiko_grid(beatmap, output_path, mods, None).map(|_| ())
+        }
         2 if use_gif => {
             osubot_beatmap_preview::render_catch_gif(beatmap, mods, times_ms.clone(), output_path)
         }

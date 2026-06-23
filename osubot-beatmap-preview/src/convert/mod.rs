@@ -37,6 +37,10 @@ pub fn convert_beatmap(
     target_mode: i32,
     mods: Option<&ModSettings>,
 ) -> Result<Beatmap> {
+    if target_mode == beatmap.mode() {
+        return Ok(beatmap.clone());
+    }
+
     if beatmap.mode() != 0 {
         return Err(PreviewError::new(
             "source beatmap must be osu!standard (mode=0)",

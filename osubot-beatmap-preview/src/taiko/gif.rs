@@ -25,6 +25,7 @@ use crate::parser::round_half_even;
 use crate::text::{draw_text, format_mmssmmm, text_size};
 use crate::time_selection::{PreviewSegmentTiming, PreviewTimeSelector};
 use std::path::Path;
+use std::sync::Mutex;
 
 use super::constants::*;
 use super::notes::{
@@ -138,9 +139,10 @@ pub fn render_taiko_gif(
         })
         .collect();
 
-    let mut cache = RenderCache::default();
+    let cache = Mutex::new(RenderCache::default());
 
     let render = move |frame_index: usize| -> Img {
+        let mut cache = cache.lock().unwrap();
         let mut canvas = Img::new(
             layout.image_width as u32,
             layout.image_height as u32,

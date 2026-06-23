@@ -17,9 +17,14 @@
 //! Minimal bitmap text rendering (8x8 base font, nearest-neighbour scaled).
 //! Glyphs are trimmed to their real width so digit spacing stays tight,
 //! mirroring the role of PIL's default proportional font.
+//!
+//! Uses a thread-local lazy cache keyed on (char, size, color) so repeated
+//! glyphs (digits, punctuation) are rendered once then alpha-composited.
 
 use crate::canvas::{Img, Rgba};
 use font8x8::legacy::BASIC_LEGACY;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 fn glyph(c: char) -> [u8; 8] {
     let idx = c as usize;
@@ -66,25 +71,55 @@ pub fn text_size(text: &str, size: u32) -> (u32, u32) {
     (w.saturating_sub(scale), 8 * scale)
 }
 
+// ─── lazy glyph cache ───
+
+type CacheKey = (char, u32, [u8; 4]);
+
+thread_local! {
+    static GLYPH_CACHE: RefCell<HashMap<CacheKey, Img>> = RefCell::new(HashMap::new());
+}
+
+fn build_glyph_sprite(ch: char, size: u32, color: Rgba) -> Img {
+    let g = glyph(ch);
+    let (min_col, gw) = glyph_extent(&g);
+    let scale = scale_for(size) as i64;
+    let sprite_w = (gw as i64 * scale).max(1) as u32;
+    let sprite_h = (8 * scale).max(1) as u32;
+    let mut sprite = Img::new(sprite_w, sprite_h, [0, 0, 0, 0]);
+    for (row, bits) in g.iter().enumerate() {
+        for col in 0..8u32 {
+            if bits >> col & 1 != 0 {
+                let px = (col - min_col) as i64 * scale;
+                let py = row as i64 * scale;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        sprite.blend_px(px + dx, py + dy, color);
+                    }
+                }
+            }
+        }
+    }
+    sprite
+}
+
 pub fn draw_text(img: &mut Img, x: i64, y: i64, text: &str, size: u32, color: Rgba) {
     let scale = scale_for(size) as i64;
     let mut cx = x;
     for ch in text.chars() {
         let g = glyph(ch);
         let (min_col, gw) = glyph_extent(&g);
-        for (row, bits) in g.iter().enumerate() {
-            for col in 0..8u32 {
-                if bits >> col & 1 != 0 {
-                    let px = cx + (col - min_col) as i64 * scale;
-                    let py = y + row as i64 * scale;
-                    for dy in 0..scale {
-                        for dx in 0..scale {
-                            img.blend_px(px + dx, py + dy, color);
-                        }
-                    }
-                }
+        let sprite = GLYPH_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let key = (ch, size, color);
+            if let Some(s) = cache.get(&key) {
+                return s.clone();
             }
-        }
+            let s = build_glyph_sprite(ch, size, color);
+            cache.insert(key, s.clone());
+            s
+        });
+        let offset_x = cx - (min_col as i64 * scale);
+        img.alpha_composite(&sprite, offset_x, y);
         cx += (gw as i64 + 1) * scale;
     }
 }
