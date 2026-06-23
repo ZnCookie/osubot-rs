@@ -4,8 +4,6 @@
 //! onebot_api_timeout + upstream_chain + ReloadHandle 构建)。
 //! 文件 watcher 启动已移至 `background::spawn_watcher`（Task 3）。
 
-#![allow(clippy::too_many_lines)]
-
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
@@ -29,7 +27,7 @@ use osubot_plugin::PluginManager;
 pub(super) struct RuntimeHandles {
     pub app_state: AppState,
     pub reload_handle: ReloadHandle,
-    pub irc_handle: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
+    pub irc_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
     pub irc_tx: Option<mpsc::Sender<IrcPrivateMessage>>,
     pub irc_rx: mpsc::Receiver<IrcPrivateMessage>,
 }
@@ -107,11 +105,10 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
 
     let upstream_chain = {
         let cfg = config.read().await;
-        Arc::new(RwLock::new(crate::reload::build_upstream_chain(
-            &cfg.upstream,
-            &oauth,
-            &rate_limiter,
-        )))
+        Arc::new(RwLock::new(
+            crate::reload::build_upstream_chain(&cfg.upstream, &oauth, &rate_limiter)
+                .expect("unknown upstream provider should have been rejected by Config::validate"),
+        ))
     };
 
     let onebot_api = Arc::new(crate::OneBotApi::new(onebot_api_timeout.clone()));
@@ -144,8 +141,8 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
 
     // IRC channel（提取自 main.rs:3872-3878）
     let (irc_tx, irc_rx) = mpsc::channel::<IrcPrivateMessage>(100);
-    let irc_handle: Arc<std::sync::Mutex<Option<JoinHandle<()>>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let irc_handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
 
     // ReloadHandle + pm slot（提取自 main.rs:3939-3952）
     let pm: Arc<tokio::sync::Mutex<Option<PluginManager>>> =

@@ -266,12 +266,7 @@ fn substitute_var_refs(s: &str, vars: &HashMap<String, String>) -> String {
 }
 
 fn next_char_boundary(s: &str, i: usize) -> usize {
-    let bytes = s.as_bytes();
-    let mut j = i + 1;
-    while j < bytes.len() && (bytes[j] & 0b1100_0000) == 0b1000_0000 {
-        j += 1;
-    }
-    j
+    s.ceil_char_boundary(i + 1)
 }
 
 #[cfg(test)]

@@ -586,11 +586,17 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
 };
 
 pub fn log_str(key: &str) -> &'static str {
-    LOG_STRINGS.get(key).unwrap_or(&"???")
+    LOG_STRINGS.get(key).copied().unwrap_or_else(|| {
+        tracing::warn!(key = key, "unknown log string key, returning placeholder");
+        "???"
+    })
 }
 
 pub fn user_str(key: &str) -> &'static str {
-    USER_STRINGS.get(key).unwrap_or(&"???")
+    USER_STRINGS.get(key).copied().unwrap_or_else(|| {
+        tracing::warn!(key = key, "unknown user string key, returning placeholder");
+        "???"
+    })
 }
 
 #[macro_export]

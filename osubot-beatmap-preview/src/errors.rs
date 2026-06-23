@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreviewError(String);
 
 impl PreviewError {

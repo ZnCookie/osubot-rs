@@ -71,7 +71,10 @@ where
         E: From<&'static str> + Send + 'static,
     {
         let entry = {
-            let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let mut map = self.entries.lock().unwrap_or_else(|e| {
+                tracing::warn!("dedup mutex was poisoned, recovering");
+                e.into_inner()
+            });
             map.entry(key.clone())
                 .or_insert_with(|| {
                     Arc::new(Entry {

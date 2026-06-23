@@ -482,6 +482,9 @@ impl Scheduler {
     }
 }
 
+// NOTE: polls the shutdown flag every 200ms rather than using tokio::sync::Notify.
+// The flag is an Arc<AtomicBool> shared with several subsystems; a 200ms shutdown
+// latency is acceptable and avoids threading a Notify through every caller.
 async fn wait_for_shutdown(flag: Arc<AtomicBool>) {
     loop {
         if flag.load(Ordering::Acquire) {

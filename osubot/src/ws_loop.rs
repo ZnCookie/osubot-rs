@@ -1,8 +1,6 @@
 //! WebSocket 重连循环：每次连接创建 plugin 运行时、ping、tick、消息循环。
 //! 提取自原 main.rs:4008-4440。
 
-#![allow(clippy::too_many_lines)]
-
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -260,6 +258,7 @@ fn spawn_ping_task(
 }
 
 /// 消息循环（提取自原 main.rs:4275-4408）。
+#[allow(clippy::too_many_lines)]
 async fn run_message_loop(
     state: &AppState,
     write: Arc<Mutex<WriteSink>>,

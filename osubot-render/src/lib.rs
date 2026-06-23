@@ -77,9 +77,13 @@ async fn run_render(
         }
     });
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), handle).await {
+        // 三层嵌套：timeout 成功 → JoinHandle 成功 → 渲染成功。
         Ok(Ok(Ok(r))) => Ok(r),
+        // timeout 成功、JoinHandle 成功，但渲染本身返回错误。
         Ok(Ok(Err(e))) => Err(e),
+        // timeout 成功，但 spawn_blocking 任务 panic。
         Ok(Err(e)) => Err(RenderError::Panicked(extract_panic_message(e))),
+        // 渲染超时：通知取消标志并返回 Timeout。
         Err(_) => {
             cancel.store(true, Ordering::SeqCst);
             Err(RenderError::Timeout)
@@ -169,6 +173,9 @@ pub fn image_to_data_uri(img: &image::DynamicImage, quality: u8) -> Result<Strin
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
+/// 用户基本信息上下文，供 profile / 成绩卡片渲染共用。
+///
+/// 包含用户名、模式、pp、各级排名及其变化量、头像 URL 等展示字段。
 pub struct UserContext<'a> {
     pub username: &'a str,
     pub mode: osubot_types::GameMode,
@@ -182,6 +189,10 @@ pub struct UserContext<'a> {
     pub country_rank_change: Option<i64>,
 }
 
+/// 单条成绩卡片渲染参数。
+///
+/// 聚合用户上下文、成绩数据、谱面状态及可选的有效难度属性（AR/OD/CS/HP）、
+/// 封面图与取消标志，传入 [`render_score_card`]。
 pub struct ScoreCardParams<'a> {
     pub user: UserContext<'a>,
     pub score: &'a osubot_types::Score,
@@ -340,6 +351,10 @@ pub async fn render_profile_card(
     Ok(jpeg)
 }
 
+/// 多条成绩列表卡片渲染参数。
+///
+/// 聚合用户上下文、成绩列表、标签/计数文本、每条成绩的封面图及头部大图 URL，
+/// 传入 [`render_score_list_card`]。
 pub struct ScoreListCardParams<'a> {
     pub user: UserContext<'a>,
     pub scores: &'a [osubot_types::Score],

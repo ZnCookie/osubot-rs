@@ -193,6 +193,8 @@ pub async fn get_user_recent(
         .into_iter()
         .map(|p| api_score_to_score(p, mode))
         .collect();
+    // NOTE: created_at is an ISO 8601 string (YYYY-MM-DDTHH:MM:SSZ). Lexicographic
+    // ordering equals chronological ordering only because the format is fixed-width.
     scores_raw.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     let mode_str = mode.api_value().to_string();
 

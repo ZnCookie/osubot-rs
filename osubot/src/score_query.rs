@@ -550,24 +550,32 @@ pub(crate) async fn handle_score_query(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_score_query(
-    plan: ScoreQueryPlan,
-    ctx: &BotContext,
-    msg: &QQMessage,
-    resp_tx: &mpsc::Sender<String>,
+struct ScoreQueryArgs {
     beatmap_id: i64,
     user_id: i64,
-    user_stats: &UserStats,
-    username: &str,
-    filters: Option<&[String]>,
+    username: String,
     limit: u32,
     limit_end: Option<u32>,
     mode: GameMode,
+}
+
+async fn run_score_query(
+    plan: ScoreQueryPlan,
+    args: ScoreQueryArgs,
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    user_stats: &UserStats,
+    filters: Option<&[String]>,
 ) {
     let qq = msg.user_id;
+    let mode = args.mode;
+    let limit = args.limit;
+    let limit_end = args.limit_end;
     let scores =
-        match fetch_scores_with_dedup(ctx, beatmap_id, user_id, mode, plan.api_limit, qq).await {
+        match fetch_scores_with_dedup(ctx, args.beatmap_id, args.user_id, mode, plan.api_limit, qq)
+            .await
+        {
             Ok(s) => s,
             Err(err_msg) => return respond_err(resp_tx, err_msg).await,
         };
@@ -642,7 +650,7 @@ async fn run_score_query(
     }
 
     if plan.is_all || limit_end.is_some() {
-        render_scores(ctx, msg, resp_tx, &scores, user_stats, username, mode).await;
+        render_scores(ctx, msg, resp_tx, &scores, user_stats, &args.username, mode).await;
     } else {
         let n = limit as usize;
         if scores.len() < n {
@@ -846,17 +854,19 @@ pub(crate) async fn handle_beatmap_score_query(
 
     run_score_query(
         plan,
+        ScoreQueryArgs {
+            beatmap_id: resolved_bid as i64,
+            user_id: _user_id,
+            username: username_str,
+            limit,
+            limit_end,
+            mode,
+        },
         ctx,
         msg,
         resp_tx,
-        resolved_bid as i64,
-        _user_id,
         &user_stats,
-        &username_str,
         filters,
-        limit,
-        limit_end,
-        mode,
     )
     .await;
 }

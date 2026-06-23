@@ -3,8 +3,6 @@
 //! 每个 WS 连接创建一次 `PluginRuntime`：初始化 PluginManager（如启用）+ 启动 tick loop。
 //! 断连时 `shutdown_for_reconnect` 关闭 plugin；SIGINT 时 `shutdown_all` 关闭。
 
-#![allow(clippy::too_many_lines)]
-
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

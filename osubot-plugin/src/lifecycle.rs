@@ -114,20 +114,14 @@ impl PluginManager {
             }
             Ok(Ok((Err(e), instance))) => {
                 self.put_instance(plugin_idx, instance);
-                self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
-                if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!(
-                            "plugin.on_tick_consecutive_error",
-                            kind = "on_tick",
-                            name = &name
-                        )
-                    );
-                    if let Err(re) = self.reload_instance(plugin_idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
-                    }
-                }
+                self.record_exec_error(
+                    plugin_idx,
+                    &name,
+                    "on_tick",
+                    true,
+                    "plugin.on_tick_consecutive_error",
+                    None,
+                );
                 tracing::warn!(
                     "{}",
                     log_fmt!(
@@ -148,20 +142,14 @@ impl PluginManager {
                         error = join_err
                     )
                 );
-                self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
-                if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!(
-                            "plugin.on_tick_consecutive_panic",
-                            kind = "on_tick",
-                            name = &name
-                        )
-                    );
-                    if let Err(e) = self.reload_instance(plugin_idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
-                    }
-                }
+                self.record_exec_error(
+                    plugin_idx,
+                    &name,
+                    "on_tick",
+                    true,
+                    "plugin.on_tick_consecutive_panic",
+                    None,
+                );
             }
             Err(_) => {
                 tracing::warn!(
@@ -169,25 +157,14 @@ impl PluginManager {
                     log_fmt!("plugin.on_tick_timeout", kind = "on_tick", name = &name)
                 );
                 self.engine.increment_epoch();
-                self.lost_instances[plugin_idx] = self.lost_instances[plugin_idx].saturating_add(1);
-                if self.lost_instances[plugin_idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!(
-                            "plugin.on_tick_consecutive_timeout",
-                            kind = "on_tick",
-                            name = &name
-                        )
-                    );
-                    if let Err(re) = self.reload_instance(plugin_idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
-                    }
-                } else {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!("plugin.timeout_skip_reload", kind = "on_tick", name = &name)
-                    );
-                }
+                self.record_exec_error(
+                    plugin_idx,
+                    &name,
+                    "on_tick",
+                    true,
+                    "plugin.on_tick_consecutive_timeout",
+                    Some("plugin.timeout_skip_reload"),
+                );
             }
         }
     }
@@ -233,20 +210,14 @@ impl PluginManager {
             }
             Ok(Ok((Err(e), instance))) => {
                 self.put_instance(idx, instance);
-                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if allow_reload && self.lost_instances[idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!(
-                            "plugin.on_unload_consecutive_error",
-                            kind = "on_unload",
-                            name = &name
-                        )
-                    );
-                    if let Err(re) = self.reload_instance(idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
-                    }
-                }
+                self.record_exec_error(
+                    idx,
+                    &name,
+                    "on_unload",
+                    allow_reload,
+                    "plugin.on_unload_consecutive_error",
+                    None,
+                );
                 tracing::warn!(
                     "{}",
                     log_fmt!(
@@ -267,20 +238,14 @@ impl PluginManager {
                         error = join_err
                     )
                 );
-                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if allow_reload && self.lost_instances[idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!(
-                            "plugin.on_unload_consecutive_panic",
-                            kind = "on_unload",
-                            name = &name
-                        )
-                    );
-                    if let Err(e) = self.reload_instance(idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
-                    }
-                }
+                self.record_exec_error(
+                    idx,
+                    &name,
+                    "on_unload",
+                    allow_reload,
+                    "plugin.on_unload_consecutive_panic",
+                    None,
+                );
             }
             Err(_) => {
                 tracing::warn!(
@@ -293,6 +258,14 @@ impl PluginManager {
                     )
                 );
                 self.engine.increment_epoch();
+                self.record_exec_error(
+                    idx,
+                    &name,
+                    "on_unload",
+                    allow_reload,
+                    "plugin.on_unload_consecutive_timeout",
+                    Some("plugin.timeout_skip_reload"),
+                );
             }
         }
     }

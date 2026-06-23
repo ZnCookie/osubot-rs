@@ -37,7 +37,7 @@ pub struct PluginHandle {
 
 #[derive(Clone)]
 pub struct IrcHandle {
-    pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub irc_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
 }
 
@@ -59,7 +59,7 @@ pub struct ReloadHandleParams {
     pub oauth: Arc<OauthTokenCache>,
     pub rate_limiter: Arc<RateLimiter>,
     pub scheduler: Scheduler,
-    pub irc_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub irc_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub irc_tx: Option<mpsc::Sender<osubot_core::irc::IrcPrivateMessage>>,
 }
 
@@ -91,6 +91,8 @@ impl ReloadHandle {
 pub struct ReloadCoordinator {
     handle: ReloadHandle,
     config_path: PathBuf,
+    // INVARIANT: this lock is never held across .await points.
+    // Using std::sync::RwLock for performance in synchronous notify callbacks.
     plugin_dir: Arc<std::sync::RwLock<PathBuf>>,
 }
 
@@ -214,7 +216,12 @@ impl ReloadCoordinator {
             );
             // 即使插件失败，也要应用 side effects（如 IRC 重连）
             // apply_side_effects 比较 old_config 和 new_config，用 new_config 的值触发副作用
-            self.apply_side_effects(&old_config, &new_config).await;
+            if let Err(e) = self.apply_side_effects(&old_config, &new_config).await {
+                error!(
+                    "{}",
+                    log_fmt!("reload.side_effects_failed", error = e.to_string())
+                );
+            }
             *self.handle.config.write().await = old_config;
             // 保持 drain=true 直到下次 reload 成功——与超时分支一致，
             // 避免在 plugin 不可用时新消息继续派发到坏状态。
@@ -224,25 +231,35 @@ impl ReloadCoordinator {
 
         // 插件重载成功，写入新配置
         *self.handle.config.write().await = new_config.clone();
-        self.apply_side_effects(&old_config, &new_config).await;
+        if let Err(e) = self.apply_side_effects(&old_config, &new_config).await {
+            error!(
+                "{}",
+                log_fmt!("reload.side_effects_failed", error = e.to_string())
+            );
+            self.handle.plugin.drain.store(true, Ordering::SeqCst);
+            return;
+        }
 
         self.handle.plugin.drain.store(false, Ordering::SeqCst);
     }
 
+    /// 将新 TOML 解析为 `MutableConfig` 并与 `old_config` 合并出新 `Config`。
+    ///
+    /// 耦合不变式：下方 `Config { .. }` 的构造必须与 `config::MutableConfig`
+    /// 的字段保持一致——`Option` 字段（osu/irc/bot/scheduler）为 None 时继承旧值，
+    /// 其余字段直接采用新值，遗留不可变字段（database）始终沿用 old_config。
+    /// 每当 `MutableConfig` 新增/删除可重载字段时，必须同步更新此处。
     async fn reload_config(
         &self,
         watcher: &mut RecommendedWatcher,
         plugin_dir: &Arc<std::sync::RwLock<PathBuf>>,
         old_config: &Config,
-    ) -> Result<Config, String> {
+    ) -> Result<Config, crate::config::ConfigError> {
         let (old_osu, old_irc) = (old_config.osu.clone(), old_config.irc.clone());
 
-        let content = tokio::fs::read_to_string(&self.config_path)
-            .await
-            .map_err(|e| log_fmt!("reload.err_read_failed", error = e.to_string()).to_string())?;
+        let content = tokio::fs::read_to_string(&self.config_path).await?;
 
-        let mutable: MutableConfig = toml::from_str(&content)
-            .map_err(|e| log_fmt!("reload.err_toml_parse", error = e.to_string()).to_string())?;
+        let mutable: MutableConfig = toml::from_str(&content)?;
 
         let new_osu = mutable.osu.unwrap_or(old_osu.clone());
         let new_irc = mutable.irc.unwrap_or(old_irc.clone());
@@ -268,7 +285,7 @@ impl ReloadCoordinator {
             let changed = *cur_dir != new_plugin_dir;
             if changed {
                 watcher.unwatch(cur_dir.as_path()).map_err(|e| {
-                    log_fmt!("reload.unwatch_old_dir_failed", error = &e).to_string()
+                    crate::config::ConfigError::Validation(format!("取消监视旧插件目录失败：{e}"))
                 })?;
             }
             changed
@@ -278,7 +295,9 @@ impl ReloadCoordinator {
             let mut cur_dir = plugin_dir.write().unwrap_or_else(|e| e.into_inner());
             watcher
                 .watch(&new_plugin_dir, RecursiveMode::NonRecursive)
-                .map_err(|e| log_fmt!("reload.watch_new_dir_failed", error = &e).to_string())?;
+                .map_err(|e| {
+                    crate::config::ConfigError::Validation(format!("监视新插件目录失败：{e}"))
+                })?;
             info!(
                 "{}",
                 log_fmt!(
@@ -294,7 +313,11 @@ impl ReloadCoordinator {
         Ok(new_config)
     }
 
-    async fn apply_side_effects(&self, old_config: &Config, new_config: &Config) {
+    async fn apply_side_effects(
+        &self,
+        old_config: &Config,
+        new_config: &Config,
+    ) -> Result<(), crate::config::ConfigError> {
         let old_osu = &old_config.osu;
         let old_irc = &old_config.irc;
         let old_onebot_url = &old_config.bot.onebot_url;
@@ -349,13 +372,14 @@ impl ReloadCoordinator {
             upstream_config,
             &self.handle.network.oauth,
             &self.handle.network.rate_limiter,
-        );
+        )?;
         {
             let mut chain = self.handle.network.upstream_chain.write().await;
             *chain = new_chain;
         }
 
         info!("{}", log_fmt!("reload.config_reload_success"));
+        Ok(())
     }
 
     async fn reload_plugins(&self) -> Result<(), String> {
@@ -398,12 +422,7 @@ impl ReloadCoordinator {
     }
 
     async fn restart_irc(&self, irc_cfg: &crate::config::IrcConfig) {
-        let mut guard = self
-            .handle
-            .irc
-            .irc_handle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.handle.irc.irc_handle.lock().await;
         if let Some(old) = guard.take() {
             old.abort();
         }
@@ -441,30 +460,31 @@ pub(crate) fn build_upstream_chain(
     upstream: &UpstreamConfig,
     oauth: &Arc<OauthTokenCache>,
     rate_limiter: &Arc<RateLimiter>,
-) -> UpstreamChain {
-    if upstream.enabled {
-        let mut providers: Vec<Box<dyn UpstreamBindingProvider>> = Vec::new();
-        for p_cfg in &upstream.providers {
-            match p_cfg.provider_type.as_str() {
-                "xfs" => {
-                    providers.push(Box::new(XfsUpstream::from_config(
-                        p_cfg,
-                        oauth.clone(),
-                        rate_limiter.clone(),
-                    )));
-                }
-                "yumu" => {
-                    providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
-                }
-                other => {
-                    warn!("{}", log_fmt!("reload.unknown_upstream", provider = other));
-                }
+) -> Result<UpstreamChain, crate::config::ConfigError> {
+    if !upstream.enabled {
+        return Ok(UpstreamChain::new(Vec::new()));
+    }
+    let mut providers: Vec<Box<dyn UpstreamBindingProvider>> = Vec::new();
+    for p_cfg in &upstream.providers {
+        match p_cfg.provider_type.as_str() {
+            "xfs" => {
+                providers.push(Box::new(XfsUpstream::from_config(
+                    p_cfg,
+                    oauth.clone(),
+                    rate_limiter.clone(),
+                )));
+            }
+            "yumu" => {
+                providers.push(Box::new(YumuUpstream::from_config(p_cfg)));
+            }
+            other => {
+                return Err(crate::config::ConfigError::Validation(format!(
+                    "未知的 upstream provider 类型「{other}」（已知：xfs、yumu）"
+                )));
             }
         }
-        UpstreamChain::new(providers)
-    } else {
-        UpstreamChain::new(Vec::new())
     }
+    Ok(UpstreamChain::new(providers))
 }
 
 #[cfg(test)]
@@ -477,13 +497,5 @@ mod tests {
     fn drain_flag_starts_false() {
         let drain = Arc::new(AtomicBool::new(false));
         assert!(!drain.load(Ordering::SeqCst));
-    }
-
-    /// 契约测试：drain 超时后应保持 true。
-    /// 实际验证需要 e2e（构造 ReloadCoordinator 太重），
-    /// 此测试作为"drain 超时应 store(true)"语义的可见标记。
-    #[test]
-    fn drain_timeout_keeps_drain_true_contract() {
-        // 见 osubot/src/reload.rs:185 的实现必须 store(true)
     }
 }
