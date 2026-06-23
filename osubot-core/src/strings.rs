@@ -486,6 +486,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "plugin.on_message_timeout" => "插件 {name} on_message 超时",
     "plugin.on_message_consecutive_timeout" => "插件 {name} on_message 连续超时，自动重载",
     "plugin.tick_registry_poisoned" => "tick_registry 互斥锁被污染，强制恢复（数据可能不一致）",
+    "plugin.drop_without_shutdown" => "PluginManager 未走 shutdown() 直接 drop，跳过 on_unload（slots={slots}）",
     "plugin.on_tick_consecutive_error" => "插件 {name} on_tick 连续错误，自动重载",
     "plugin.on_tick_error" => "插件 {name} on_tick 错误: {error}",
     "plugin.on_tick_panicked" => "插件 {name} on_tick panic: {error}",

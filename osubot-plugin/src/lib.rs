@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use wasmtime::{Engine, Linker, Module};
 
+use osubot_core::log_fmt;
+
 pub use bridge::HostServices;
 pub use config::{PluginConfig as PluginConfigInput, PluginInstanceConfig};
 pub use dispatch::{PluginDispatchPanic, PluginDispatchResult};
@@ -83,6 +85,15 @@ pub struct PluginManager {
 
 impl Drop for PluginManager {
     fn drop(&mut self) {
+        if !self.slots.is_empty() {
+            // 正常路径应通过 `shutdown().await` 走完 on_unload。
+            // 走到 Drop 意味着 panic 或忘记 shutdown——记 warn 提示。
+            tracing::warn!(
+                slots = self.slots.len(),
+                "{}",
+                log_fmt!("plugin.drop_without_shutdown")
+            );
+        }
         self.epoch_running.store(false, Ordering::SeqCst);
         self.epoch_handle.abort();
     }
