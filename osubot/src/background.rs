@@ -139,14 +139,19 @@ pub(super) fn spawn_onebot_cleanup(handles: &RuntimeHandles) -> JoinHandle<()> {
 pub(super) fn spawn_watcher(handles: &RuntimeHandles) -> JoinHandle<()> {
     let config = handles.app_state.config.clone();
     let reload_handle = handles.reload_handle.clone();
+    let shutdown = handles.app_state.shutdown.clone();
     tokio::spawn(async move {
         let cfg = config.read().await;
         let plugin_dir = PathBuf::from(&cfg.plugin.dir);
         drop(cfg);
         std::fs::create_dir_all(&plugin_dir).ok();
 
-        let coordinator =
-            ReloadCoordinator::new(reload_handle, PathBuf::from("osubot.toml"), plugin_dir);
+        let coordinator = ReloadCoordinator::new(
+            reload_handle,
+            PathBuf::from("osubot.toml"),
+            plugin_dir,
+            shutdown,
+        );
         let watcher_join = coordinator.start();
         if let Err(e) = watcher_join.await {
             warn!("{}", log_fmt!("main.file_watcher_join_error", error = &e));
