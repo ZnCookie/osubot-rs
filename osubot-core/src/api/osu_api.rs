@@ -215,6 +215,51 @@ pub async fn get_user_recent(
     Ok(scores)
 }
 
+pub async fn get_user_best(
+    rate_limiter: &Arc<RateLimiter>,
+    oauth: &Arc<super::oauth::OauthTokenCache>,
+    user_id: i64,
+    mode: GameMode,
+    limit: u32,
+) -> Result<Vec<Score>, ApiError> {
+    let url = format!(
+        "https://osu.ppy.sh/api/v2/users/{}/scores/best?mode={}&limit={}&legacy_only=0",
+        user_id,
+        mode.api_value(),
+        limit
+    );
+
+    let resp = http::authenticated_get(&url, rate_limiter, oauth).await?;
+
+    let raw_json: serde_json::Value = http::json_body(resp).await?;
+
+    let plays: Vec<OsuApiScore> = serde_json::from_value(raw_json).map_err(|e| {
+        tracing::error!(error = %e, "{}", log_fmt!("api.parse_score_json_failed"));
+        ApiError::InvalidResponse
+    })?;
+    let scores_raw: Vec<Score> = plays
+        .into_iter()
+        .map(|p| api_score_to_score(p, mode))
+        .collect();
+    let mode_str = mode.api_value().to_string();
+
+    let scores: Vec<Score> = stream::iter(scores_raw)
+        .map(|mut score| {
+            let rl = rate_limiter.clone();
+            let oa = oauth.clone();
+            let ruleset = mode_str.clone();
+            async move {
+                backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                score
+            }
+        })
+        .buffered(5)
+        .collect()
+        .await;
+
+    Ok(scores)
+}
+
 pub async fn get_user_beatmap_scores_all(
     rate_limiter: &Arc<RateLimiter>,
     oauth: &Arc<super::oauth::OauthTokenCache>,
