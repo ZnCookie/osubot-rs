@@ -241,7 +241,7 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
 
     tracing::debug!("{}", log_fmt!("render.download_avatar", url = avatar_url));
     let avatar_bytes = if !avatar_url.is_empty() {
-        match cache::fetch_and_cache(avatar_url, client).await {
+        match cache::fetch_and_cache(avatar_url, client, true).await {
             Ok((bytes, _, _)) => bytes,
             Err(e) => {
                 tracing::warn!("{}", log_fmt!("render.avatar_download_failed", error = &e));
@@ -410,14 +410,13 @@ pub async fn render_score_list_card(
                 if avatar_url.is_empty() {
                     return Ok(String::new());
                 }
-                let (bytes, _, _) =
-                    cache::fetch_and_cache(avatar_url, client)
-                        .await
-                        .map_err(|e| {
-                            RenderError::Render(
-                                log_fmt!("render.err_avatar_fetch", error = e).to_string(),
-                            )
-                        })?;
+                let (bytes, _, _) = cache::fetch_and_cache(avatar_url, client, true)
+                    .await
+                    .map_err(|e| {
+                        RenderError::Render(
+                            log_fmt!("render.err_avatar_fetch", error = e).to_string(),
+                        )
+                    })?;
                 let resized_uri =
                     tokio::task::spawn_blocking(move || -> Result<String, RenderError> {
                         let img = image::load_from_memory(&bytes).map_err(|e| {
@@ -436,7 +435,7 @@ pub async fn render_score_list_card(
                 if hero_cover_url.is_empty() {
                     return Ok(String::new());
                 }
-                let (bytes, _, _) = cache::fetch_and_cache(hero_cover_url, client)
+                let (bytes, _, _) = cache::fetch_and_cache(hero_cover_url, client, false)
                     .await
                     .map_err(|e| {
                         RenderError::Render(

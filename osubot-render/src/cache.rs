@@ -197,13 +197,16 @@ impl Drop for FetchLockGuard {
 pub async fn fetch_and_cache(
     url: &str,
     client: &reqwest::Client,
+    force_refresh: bool,
 ) -> Result<(Vec<u8>, String, String), CacheError> {
     let hash = sha256_hex(url);
     let cache_file = cache_dir().join(&hash);
 
-    if let Ok(cached) = tokio::fs::read(&cache_file).await {
-        let (mime, _) = detect_mime_and_ext(url, &cached);
-        return Ok((cached, mime.to_string(), hash));
+    if !force_refresh {
+        if let Ok(cached) = tokio::fs::read(&cache_file).await {
+            let (mime, _) = detect_mime_and_ext(url, &cached);
+            return Ok((cached, mime.to_string(), hash));
+        }
     }
 
     let url_lock = {
@@ -219,9 +222,11 @@ pub async fn fetch_and_cache(
     };
     let _guard = url_lock.lock().await;
 
-    if let Ok(cached) = tokio::fs::read(&cache_file).await {
-        let (mime, _) = detect_mime_and_ext(url, &cached);
-        return Ok((cached, mime.to_string(), hash));
+    if !force_refresh {
+        if let Ok(cached) = tokio::fs::read(&cache_file).await {
+            let (mime, _) = detect_mime_and_ext(url, &cached);
+            return Ok((cached, mime.to_string(), hash));
+        }
     }
 
     let _fetch_permit = match fetch_semaphore().acquire().await {
@@ -239,11 +244,13 @@ pub async fn fetch_and_cache(
 
     let (mime, _) = detect_mime_and_ext(url, &bytes);
 
-    if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
-        tracing::warn!(
-            "{}",
-            log_fmt!("render.cache_write_failed", url = url, error = &e)
-        );
+    if !force_refresh {
+        if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
+            tracing::warn!(
+                "{}",
+                log_fmt!("render.cache_write_failed", url = url, error = &e)
+            );
+        }
     }
 
     Ok((bytes, mime.to_string(), hash))
@@ -509,7 +516,7 @@ iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAA
         }
         let client = client.clone();
         set.spawn(async move {
-            let res = fetch_and_cache(&url, &client).await;
+            let res = fetch_and_cache(&url, &client, false).await;
             (url, res)
         });
     }
