@@ -41,9 +41,13 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
 
+    fn unique_tmp(suffix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("osubot_path_test_{suffix}_{}", std::process::id()))
+    }
+
     #[test]
     fn rejects_symlink_escaping_plugins_dir() {
-        let tmp = std::env::temp_dir().join("osubot_path_test");
+        let tmp = unique_tmp("symlink");
         let plugins_dir = tmp.join("plugins");
         let outside_dir = tmp.join("outside");
         let _ = fs::remove_dir_all(&tmp);
@@ -63,7 +67,7 @@ mod tests {
 
     #[test]
     fn accepts_normal_path_within_dir() {
-        let tmp = std::env::temp_dir().join("osubot_path_test_ok");
+        let tmp = unique_tmp("ok");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("good.wasm"), b"good").unwrap();
@@ -83,7 +87,7 @@ mod tests {
 
     #[test]
     fn accepts_absolute_path_outside_dir() {
-        let tmp = std::env::temp_dir().join("osubot_path_test_abs");
+        let tmp = unique_tmp("abs");
         let plugins_dir = tmp.join("plugins");
         let outside_dir = tmp.join("outside");
         let _ = fs::remove_dir_all(&tmp);

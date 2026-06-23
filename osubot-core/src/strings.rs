@@ -130,6 +130,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",
     "bridge.rate_limit_http" => "请求过于频繁，请稍后再试",
     "bridge.tick_interval_too_short" => "tick 间隔不能小于 {secs} 秒",
+    "bridge.tick_interval_too_long" => "tick 间隔不能大于 {secs} 秒",
     "bridge.tick_limit_exceeded" => "每个插件最多注册 {limit} 个 tick",
 };
 

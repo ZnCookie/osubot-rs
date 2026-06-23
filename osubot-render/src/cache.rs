@@ -460,67 +460,7 @@ fn rasterize_svg_str(svg_bytes: &[u8], opt: &resvg::usvg::Options) -> Result<Vec
         .map_err(|e| CacheError::SvgRasterize(format!("png encode: {e}")))
 }
 
-fn check_v4_private(v4: std::net::Ipv4Addr) -> bool {
-    v4.is_loopback()
-        || v4.is_private()
-        || v4.is_link_local()
-        || v4.is_unspecified()
-        || v4.is_multicast()
-        || v4.is_broadcast()
-}
-
-/// 拒绝私有/保留 IP 段和本地域名，防止 SSRF。
-#[doc(hidden)]
-pub fn is_blocked_url(url: &str) -> bool {
-    let parsed = match reqwest::Url::parse(url) {
-        Ok(u) => u,
-        Err(_) => return true,
-    };
-    let host_raw = match parsed.host_str() {
-        Some(h) => h,
-        None => return true,
-    };
-    let host_raw = host_raw.to_ascii_lowercase();
-    // reqwest 的 host_str() 对 IPv6 会保留方括号 "[::1]"，剥掉才能 parse
-    let host = host_raw
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(&host_raw);
-    // 拒绝字面量私有/保留 IP
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => check_v4_private(v4),
-            std::net::IpAddr::V6(v6) => {
-                // IPv4-mapped IPv6 (::ffff:0:0/96)：先提 V4 走 V4 规则
-                if let Some(v4) = v6.to_ipv4_mapped() {
-                    return check_v4_private(v4);
-                }
-                // NAT64 (RFC 6052): 64:ff9b::/96 — NAT64 网关可桥接到 IPv4 私网
-                if let Some(first) = v6.segments().first() {
-                    if *first == 0x0064 && v6.segments()[1] == 0xff9b {
-                        return true;
-                    }
-                }
-                // Teredo (RFC 4380): 2001::/32 — 经 UDP 隧道封装 IPv4
-                if v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0000 {
-                    return true;
-                }
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || v6.is_unicast_link_local()
-                    || v6.is_unique_local()
-                    // 6to4 (2002::/16)：承载 IPv4 私网
-                    || (v6.segments()[0] == 0x2002)
-            }
-        };
-    }
-    // 拒绝 localhost / .local（host 已小写化，匹配统一走小写）
-    matches!(
-        host,
-        "localhost" | "0.0.0.0" | "::1" | "ip6-localhost" | "ip6-loopback"
-    ) || host.ends_with(".local")
-}
+pub use osubot_core::ssrf::is_blocked_url;
 
 pub async fn inline_external_images(html: &str) -> String {
     let mut refs = extract_image_refs(html);

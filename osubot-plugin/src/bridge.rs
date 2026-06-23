@@ -336,19 +336,10 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
-            let parsed_url = reqwest::Url::parse(&url)
-                .map_err(|e| BridgeError::HttpRequest(format!("invalid URL: {e}")))?;
-            if let Some(host) = parsed_url.host_str() {
-                if host == "localhost"
-                    || host == "127.0.0.1"
-                    || host == "::1"
-                    || host == "0.0.0.0"
-                    || host.starts_with("169.254.")
-                {
-                    return Err(BridgeError::HttpRequest(
-                        "requests to loopback/link-local addresses are not allowed".into(),
-                    ));
-                }
+            if osubot_core::ssrf::is_blocked_url(&url) {
+                return Err(BridgeError::HttpRequest(
+                    "requests to private/loopback addresses are not allowed".into(),
+                ));
             }
             let method_str = v["method"].as_str().unwrap_or("GET");
             let method = reqwest::Method::from_bytes(method_str.as_bytes())
@@ -471,7 +462,12 @@ fn dispatch_host_call(
                         .replace("{secs}", &MIN_INTERVAL.to_string()),
                 ));
             }
-            let interval_secs = interval_secs.min(MAX_INTERVAL);
+            if interval_secs > MAX_INTERVAL {
+                return Err(BridgeError::Validation(
+                    user_str("bridge.tick_interval_too_long")
+                        .replace("{secs}", &MAX_INTERVAL.to_string()),
+                ));
+            }
             let mut registry = services
                 .tick_registry
                 .lock()

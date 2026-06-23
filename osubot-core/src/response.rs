@@ -86,7 +86,7 @@ fn format_star_rating(stars: f64) -> String {
     } else {
         filled
     };
-    format!("{} {:.2}*", stars_str, stars)
+    format!("{} {:.2}*", stars_str, clamped)
 }
 
 struct ScoreDisplayFields {
@@ -861,7 +861,11 @@ mod tests {
     #[test]
     fn format_star_rating_negative_stars() {
         let result = format_star_rating(-1.5);
-        assert!(result.contains("0.0") || result.contains("-1.5"));
+        assert!(
+            result.contains("0.00"),
+            "expected clamped display, got: {result}"
+        );
+        assert!(!result.contains("-"));
         assert!(!result.contains("\u{2605}"));
     }
 
