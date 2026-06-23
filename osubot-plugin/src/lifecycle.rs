@@ -10,7 +10,7 @@ impl PluginManager {
     pub fn sorted_message_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = self.on_message_indices.iter().copied().collect();
         indices.sort_by_key(|&i| {
-            std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+            std::cmp::Reverse(self.slots.get(i).map(|s| s.params.priority).unwrap_or(0))
         });
         indices
     }
@@ -25,15 +25,15 @@ impl PluginManager {
     /// Returns the instance params for a given index.
     /// Brief `&self`, no `.await`.
     pub fn instance_params(&self, idx: usize) -> Option<&crate::instance::PluginInstanceParams> {
-        self.instance_params.get(idx)
+        self.slots.get(idx).map(|s| &s.params)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.instances.iter().all(|i| i.is_none())
+        self.slots.iter().all(|s| s.instance.is_none())
     }
 
     pub fn len(&self) -> usize {
-        self.instances.iter().filter(|i| i.is_some()).count()
+        self.slots.iter().filter(|s| s.instance.is_some()).count()
     }
 
     #[must_use]
@@ -50,7 +50,7 @@ impl PluginManager {
 
     /// 检查指定索引处是否存在有效实例。
     pub fn has_instance(&self, idx: usize) -> bool {
-        self.instances.get(idx).is_some_and(|s| s.is_some())
+        self.slots.get(idx).is_some_and(|s| s.instance.is_some())
     }
 
     /// 检查指定 (plugin_idx, tick_id) 是否仍在 tick_registry 中注册。
@@ -65,32 +65,30 @@ impl PluginManager {
     /// 从指定槽位取出实例（不持锁时调用方负责同步）。
     /// 返回 None 表示槽位越界或为空。
     pub fn take_instance(&mut self, idx: usize) -> Option<PluginInstance> {
-        self.instances.get_mut(idx).and_then(|slot| slot.take())
+        self.slots.get_mut(idx).and_then(|s| s.instance.take())
     }
 
     /// 将实例放回指定槽位。如果槽位越界则静默丢弃。
     pub fn put_instance(&mut self, idx: usize, instance: PluginInstance) {
-        if idx < self.instances.len() {
-            self.instances[idx] = Some(instance);
+        if let Some(slot) = self.slots.get_mut(idx) {
+            slot.instance = Some(instance);
         }
     }
 
     pub async fn handle_tick(&mut self, plugin_idx: usize, tick_id: u32) {
-        if plugin_idx >= self.instances.len() {
-            return;
-        }
-        let has = self.instances[plugin_idx]
-            .as_mut()
-            .map(|i| i.has_export("on_tick"))
-            .unwrap_or(false);
+        let has = self
+            .slots
+            .get_mut(plugin_idx)
+            .and_then(|s| s.instance.as_mut())
+            .is_some_and(|i| i.has_export("on_tick"));
         if !has {
             return;
         }
 
         let name = self
-            .instance_params
+            .slots
             .get(plugin_idx)
-            .map_or("unknown", |p| p.name.as_str())
+            .map_or("unknown", |s| s.params.name.as_str())
             .to_owned();
 
         let mut instance = match self.take_instance(plugin_idx) {
@@ -175,18 +173,19 @@ impl PluginManager {
         context: &str,
         allow_reload: bool,
     ) {
-        let has = self.instances[idx]
-            .as_mut()
-            .map(|i| i.has_export("on_unload"))
-            .unwrap_or(false);
+        let has = self
+            .slots
+            .get_mut(idx)
+            .and_then(|s| s.instance.as_mut())
+            .is_some_and(|i| i.has_export("on_unload"));
         if !has {
             return;
         }
 
         let name = self
-            .instance_params
+            .slots
             .get(idx)
-            .map_or("unknown", |p| p.name.as_str())
+            .map_or("unknown", |s| s.params.name.as_str())
             .to_owned();
 
         let mut instance = match self.take_instance(idx) {
@@ -274,24 +273,16 @@ impl PluginManager {
         self.epoch_running.store(false, Ordering::Relaxed);
         self.epoch_handle.abort();
 
-        for idx in 0..self.instances.len() {
+        for idx in 0..self.slots.len() {
             // shutdown 路径：禁止触发 reload（即将被 clear 的 instance 不需要重新加载）
             self.unload_single_instance(idx, "unload", false).await;
-            if self.instances[idx].is_some() {
-                let name = self
-                    .instance_params
-                    .get(idx)
-                    .map_or("unknown", |p| p.name.as_str());
-                tracing::info!("{}", log_fmt!("plugin.unloaded", name = name));
+            if let Some(slot) = self.slots.get(idx) {
+                if slot.instance.is_some() {
+                    tracing::info!("{}", log_fmt!("plugin.unloaded", name = slot.params.name));
+                }
             }
         }
-        self.instances.clear();
-        self.modules.clear();
-        self.instance_params.clear();
-        self.wasm_paths.clear();
-        self.wasm_mtimes.clear();
-        self.lost_instances.clear();
-        self.reload_failures.clear();
+        self.slots.clear();
         self.on_message_indices.clear();
         self.command_map.clear();
         if let Ok(mut reg) = self.tick_registry.lock() {

@@ -3,6 +3,7 @@ use crate::types::{PluginAction, PluginError};
 use crate::PluginManager;
 use osubot_core::log_fmt;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Result of plugin execution (no timeout/panic wrapping).
 pub enum PluginDispatchResult<T> {
@@ -14,6 +15,95 @@ pub enum PluginDispatchResult<T> {
 pub enum PluginDispatchPanic {
     Panic(tokio::task::JoinError),
     Timeout,
+}
+
+impl PluginManager {}
+
+/// Generic dispatch loop shared by `dispatch_command` and `dispatch_message`.
+///
+/// Iterates over indices returned by `select_indices` (called with a brief read
+/// lock), takes the instance under a brief write lock, runs `exec_fn` inside
+/// `spawn_blocking` with a timeout, then completes the execution under another
+/// brief write lock. Returns the first non-`Next` action; falls through to
+/// `PluginAction::Next` if no plugin handles the event.
+///
+/// `select_indices` is called synchronously under a read lock, so it does not
+/// need to be `Send`. `exec_fn` runs on a blocking thread, so it must be
+/// `Send + Sync + 'static`. The `payload` is owned by the helper and moved
+/// into the blocking task.
+async fn dispatch_loop<S, E>(
+    pm: &Arc<Mutex<Option<PluginManager>>>,
+    kind: &'static str,
+    payload: String,
+    select_indices: S,
+    exec_fn: E,
+) -> PluginAction
+where
+    S: Fn(&PluginManager) -> Vec<usize>,
+    E: Fn(&mut PluginInstance, &str) -> Result<PluginAction, String>
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+{
+    let indices = {
+        let pm_guard = pm.lock().await;
+        match pm_guard.as_ref() {
+            Some(manager) => select_indices(manager),
+            None => return PluginAction::Next,
+        }
+    };
+
+    for idx in indices {
+        // Phase 1: brief lock to take instance
+        let (mut instance, name, timeout) = {
+            let mut pm_guard = pm.lock().await;
+            match pm_guard.as_mut().and_then(|manager| {
+                let inst = manager.take_instance(idx)?;
+                let params = manager.instance_params(idx)?;
+                Some((inst, params.name.clone(), params.timeout))
+            }) {
+                Some(v) => v,
+                None => continue,
+            }
+        }; // lock dropped
+
+        // Phase 2: no lock held during spawn_blocking + timeout
+        let payload_owned = payload.clone();
+        let exec_fn = exec_fn.clone();
+        let exec_result = tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || {
+                let r = exec_fn(&mut instance, &payload_owned);
+                (r, instance)
+            }),
+        )
+        .await;
+        let (wrapped, instance_opt) = match exec_result {
+            Ok(Ok((Ok(a), inst))) => (Ok(PluginDispatchResult::Ok(a)), Some(inst)),
+            Ok(Ok((Err(e), inst))) => (
+                Ok(PluginDispatchResult::PluginError(PluginError::Dispatch(e))),
+                Some(inst),
+            ),
+            Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
+            Err(_) => (Err(PluginDispatchPanic::Timeout), None),
+        };
+
+        // Phase 3: brief lock to complete
+        let action = {
+            let mut pm_guard = pm.lock().await;
+            match pm_guard.as_mut() {
+                Some(manager) => manager.complete_exec(idx, &name, instance_opt, kind, wrapped),
+                None => PluginAction::Next,
+            }
+        }; // lock dropped
+
+        match action {
+            PluginAction::Handled(_) | PluginAction::Intercepted => return action,
+            PluginAction::Next => continue,
+        }
+    }
+    PluginAction::Next
 }
 
 impl PluginManager {
@@ -30,8 +120,13 @@ impl PluginManager {
         consecutive_key: &'static str,
         skip_reload_key: Option<&'static str>,
     ) {
-        self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-        if self.lost_instances[idx] >= self.lost_instances_threshold {
+        let slot = match self.slots.get_mut(idx) {
+            Some(s) => s,
+            None => return,
+        };
+        slot.lost_instances = slot.lost_instances.saturating_add(1);
+        let lost = slot.lost_instances;
+        if lost >= self.lost_instances_threshold {
             tracing::warn!("{}", log_fmt!(consecutive_key, kind = kind, name = name));
             if allow_reload {
                 if let Err(re) = self.reload_instance(idx) {
@@ -128,65 +223,14 @@ impl PluginManager {
         cmd_name: &str,
         cmd_json: &str,
     ) -> PluginAction {
-        let indices = {
-            let pm_guard = pm.lock().await;
-            match pm_guard.as_ref() {
-                Some(manager) => manager.command_indices(cmd_name),
-                None => return PluginAction::Next,
-            }
-        };
-
-        for idx in indices {
-            // Phase 1: brief lock to take instance
-            let (mut instance, name, timeout) = {
-                let mut pm_guard = pm.lock().await;
-                match pm_guard.as_mut().and_then(|manager| {
-                    let inst = manager.take_instance(idx)?;
-                    let params = manager.instance_params(idx)?;
-                    Some((inst, params.name.clone(), params.timeout))
-                }) {
-                    Some(v) => v,
-                    None => continue,
-                }
-            }; // lock dropped
-
-            // Phase 2: no lock held during spawn_blocking + timeout
-            let payload = cmd_json.to_owned();
-            let exec_result = tokio::time::timeout(
-                timeout,
-                tokio::task::spawn_blocking(move || {
-                    let r = instance.on_command(&payload);
-                    (r, instance)
-                }),
-            )
-            .await;
-            let (wrapped, instance_opt) = match exec_result {
-                Ok(Ok((Ok(a), inst))) => (Ok(PluginDispatchResult::Ok(a)), Some(inst)),
-                Ok(Ok((Err(e), inst))) => (
-                    Ok(PluginDispatchResult::PluginError(PluginError::Dispatch(e))),
-                    Some(inst),
-                ),
-                Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
-                Err(_) => (Err(PluginDispatchPanic::Timeout), None),
-            };
-
-            // Phase 3: brief lock to complete
-            let action = {
-                let mut pm_guard = pm.lock().await;
-                match pm_guard.as_mut() {
-                    Some(manager) => {
-                        manager.complete_exec(idx, &name, instance_opt, "command", wrapped)
-                    }
-                    None => PluginAction::Next,
-                }
-            }; // lock dropped
-
-            match action {
-                PluginAction::Handled(_) | PluginAction::Intercepted => return action,
-                PluginAction::Next => continue,
-            }
-        }
-        PluginAction::Next
+        dispatch_loop(
+            pm,
+            "command",
+            cmd_json.to_owned(),
+            |manager| manager.command_indices(cmd_name),
+            |inst, payload| inst.on_command(payload),
+        )
+        .await
     }
 
     /// 调度消息到所有 on_message 插件，返回首个非 Next 动作。
@@ -197,61 +241,13 @@ impl PluginManager {
         pm: &Arc<tokio::sync::Mutex<Option<PluginManager>>>,
         msg_json: &str,
     ) -> PluginAction {
-        let indices = {
-            let pm_guard = pm.lock().await;
-            match pm_guard.as_ref() {
-                Some(manager) => manager.sorted_message_indices(),
-                None => return PluginAction::Next,
-            }
-        };
-
-        for idx in indices {
-            let (mut instance, name, timeout) = {
-                let mut pm_guard = pm.lock().await;
-                match pm_guard.as_mut().and_then(|manager| {
-                    let inst = manager.take_instance(idx)?;
-                    let params = manager.instance_params(idx)?;
-                    Some((inst, params.name.clone(), params.timeout))
-                }) {
-                    Some(v) => v,
-                    None => continue,
-                }
-            };
-
-            let payload = msg_json.to_owned();
-            let exec_result = tokio::time::timeout(
-                timeout,
-                tokio::task::spawn_blocking(move || {
-                    let r = instance.on_message(&payload);
-                    (r, instance)
-                }),
-            )
-            .await;
-            let (wrapped, instance_opt) = match exec_result {
-                Ok(Ok((Ok(a), inst))) => (Ok(PluginDispatchResult::Ok(a)), Some(inst)),
-                Ok(Ok((Err(e), inst))) => (
-                    Ok(PluginDispatchResult::PluginError(PluginError::Dispatch(e))),
-                    Some(inst),
-                ),
-                Ok(Err(join_err)) => (Err(PluginDispatchPanic::Panic(join_err)), None),
-                Err(_) => (Err(PluginDispatchPanic::Timeout), None),
-            };
-
-            let action = {
-                let mut pm_guard = pm.lock().await;
-                match pm_guard.as_mut() {
-                    Some(manager) => {
-                        manager.complete_exec(idx, &name, instance_opt, "on_message", wrapped)
-                    }
-                    None => PluginAction::Next,
-                }
-            };
-
-            match action {
-                PluginAction::Handled(_) | PluginAction::Intercepted => return action,
-                PluginAction::Next => continue,
-            }
-        }
-        PluginAction::Next
+        dispatch_loop(
+            pm,
+            "on_message",
+            msg_json.to_owned(),
+            |manager| manager.sorted_message_indices(),
+            |inst, payload| inst.on_message(payload),
+        )
+        .await
     }
 }

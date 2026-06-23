@@ -40,21 +40,42 @@ const WASM_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 ///
 /// 如果某个安全加固措施属于「限制插件能做什么」而非「保护宿主进程不崩溃」，
 /// 则它不应存在于此模块中。
+/// Single per-plugin state record, replacing the 7 parallel `Vec`s that
+/// previously had to be kept in sync by index across modules.
+pub struct PluginSlot {
+    /// Currently-loaded instance. `None` after `take_instance` until `put_instance`
+    /// is called. A persistent `None` (after a failed reload) marks a slot
+    /// as "lost"; the corresponding plugin is considered unavailable.
+    pub instance: Option<PluginInstance>,
+    /// Compiled WASM module — kept so we can rebuild a `Store` on reload.
+    pub module: Module,
+    /// Static per-instance parameters (name, priority, timeout, plugin config).
+    pub params: PluginInstanceParams,
+    /// Absolute path of the `.wasm` file on disk; used for hot-reload mtime
+    /// checking and re-loading after a rebuild.
+    pub wasm_path: String,
+    /// Last-observed mtime of `wasm_path` at the time the slot was loaded /
+    /// last reloaded.
+    pub wasm_mtime: Option<std::time::SystemTime>,
+    /// Consecutive error count (timeouts, panics, dispatch errors). Reset to 0
+    /// on a successful reload.
+    pub lost_instances: u32,
+    /// Consecutive reload-failure count. Reset to 0 on a successful reload.
+    pub reload_failures: u32,
+}
+
 pub struct PluginManager {
-    instances: Vec<Option<PluginInstance>>,
+    /// Per-plugin state, indexed by slot position. Length matches the number
+    /// of enabled plugin instances configured at startup (and stays
+    /// `compact`ed after hot-reload).
+    slots: Vec<PluginSlot>,
     command_map: HashMap<String, Vec<usize>>,
     tick_registry: Arc<Mutex<Vec<TickRegistration>>>,
     on_message_indices: HashSet<usize>,
-    lost_instances: Vec<u32>,
-    reload_failures: Vec<u32>,
     lost_instances_threshold: u32,
     reload_failures_threshold: u32,
     engine: Engine,
     linker: Linker<HostServices>,
-    modules: Vec<Module>,
-    instance_params: Vec<PluginInstanceParams>,
-    wasm_paths: Vec<String>,
-    wasm_mtimes: Vec<Option<std::time::SystemTime>>,
     reload_template: HostServices,
     epoch_running: Arc<AtomicBool>,
     epoch_handle: tokio::task::JoinHandle<()>,
@@ -377,8 +398,8 @@ mod tests {
         );
 
         // Set instance 0 to None (simulate a failed instance that was removed)
-        pm.instances[0] = None;
-        pm.lost_instances[0] = 5;
+        pm.slots[0].instance = None;
+        pm.slots[0].lost_instances = 5;
 
         pm.compact();
 
@@ -472,7 +493,8 @@ mod tests {
         let (rt, pm) = setup_plugin_manager(wasm_path.clone());
 
         // Record the stored mtime
-        let initial_mtime = rt.block_on(async { pm.lock().await.as_ref().unwrap().wasm_mtimes[0] });
+        let initial_mtime =
+            rt.block_on(async { pm.lock().await.as_ref().unwrap().slots[0].wasm_mtime });
 
         // Touch the wasm file to change its mtime (without changing config)
         let touch_status = std::process::Command::new("touch")
@@ -505,7 +527,8 @@ mod tests {
         .expect("reload_all should succeed");
 
         // Verify mtime was updated
-        let updated_mtime = rt.block_on(async { pm.lock().await.as_ref().unwrap().wasm_mtimes[0] });
+        let updated_mtime =
+            rt.block_on(async { pm.lock().await.as_ref().unwrap().slots[0].wasm_mtime });
         assert_ne!(
             initial_mtime, updated_mtime,
             "mtime should be updated after reload"
@@ -1018,7 +1041,7 @@ mod tests {
             .expect("PluginManager::new failed");
 
         // Set reload_failures to 3 (at cap)
-        pm.reload_failures[0] = 3;
+        pm.slots[0].reload_failures = 3;
 
         // reload_instance should return Err due to too many failures
         let result = pm.reload_instance(0);
@@ -1034,7 +1057,7 @@ mod tests {
 
         // Verify the instance is still present (not replaced)
         assert!(
-            pm.instances[0].is_some(),
+            pm.slots[0].instance.is_some(),
             "instance should still be present after capped reload attempt"
         );
 
@@ -1137,8 +1160,8 @@ mod tests {
             "complete_exec with Timeout should return Next, got {action:?}"
         );
         assert_eq!(
-            pm.lost_instances[0], 1,
-            "lost_instances[0] should be 1 after one timeout"
+            pm.slots[0].lost_instances, 1,
+            "slots[0].lost_instances should be 1 after one timeout"
         );
 
         rt.block_on(pm.shutdown());
@@ -1189,15 +1212,15 @@ mod tests {
             "complete_exec with Timeout should return Next, got {action:?}"
         );
         assert_eq!(
-            pm.lost_instances[0], 0,
-            "lost_instances[0] should be reset to 0 after successful reload"
+            pm.slots[0].lost_instances, 0,
+            "slots[0].lost_instances should be reset to 0 after successful reload"
         );
         assert_eq!(
-            pm.reload_failures[0], 0,
-            "reload_failures[0] should be 0 after successful reload"
+            pm.slots[0].reload_failures, 0,
+            "slots[0].reload_failures should be 0 after successful reload"
         );
         assert!(
-            pm.instances[0].is_some(),
+            pm.slots[0].instance.is_some(),
             "instance should be restored after successful reload"
         );
 
