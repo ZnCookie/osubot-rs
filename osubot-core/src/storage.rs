@@ -889,7 +889,7 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT user_id, mode FROM user_next_update WHERE next_update <= ?1
-                UNION
+                UNION ALL
                 SELECT b.user_id AS user_id, m.mode
                 FROM user_bindings b
                 CROSS JOIN (
