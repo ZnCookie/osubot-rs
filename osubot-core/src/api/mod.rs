@@ -27,6 +27,9 @@ pub fn http_client() -> &'static Client {
     CLIENT.get_or_init(|| {
         Client::builder()
             .timeout(Duration::from_secs(10))
+            .redirect(crate::ssrf::redirect_policy(
+                crate::ssrf::is_blocked_redirect_url,
+            ))
             .build()
             .expect("failed to build reqwest client")
     })
