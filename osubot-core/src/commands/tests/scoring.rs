@@ -272,8 +272,8 @@ fn test_pass_multiple_username_mode_hash() {
 }
 
 #[test]
-fn test_hash_clamp_100() {
-    let cmd = parse_command("!ps #200", None).unwrap();
+fn test_hash_clamp_max() {
+    let cmd = parse_command("!ps #2000", None).unwrap();
     assert_eq!(
         cmd,
         Command::Pass {
@@ -282,7 +282,7 @@ fn test_hash_clamp_100() {
             qq: None,
             beatmap_id: None,
             score_id: None,
-            limit: 100,
+            limit: 1000,
             is_summary: true,
             limit_end: None,
             filters: None,
@@ -1276,7 +1276,7 @@ fn test_s_implicit_limit_clamped() {
             beatmap_id: Some(123456),
             score_id: None,
             filters: None,
-            limit: 100,
+            limit: 1000,
             limit_end: None,
             is_all: false,
         }

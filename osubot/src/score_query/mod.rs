@@ -390,7 +390,11 @@ pub(crate) async fn handle_score_query(
                     mode,
                     user_stats: &user_stats,
                     position: Some(index),
-                    is_pass: params.is_pass,
+                    label: if params.is_pass {
+                        user_str("fmt.recent_pass")
+                    } else {
+                        user_str("fmt.recent_play")
+                    },
                 })
                 .await;
             } else {
@@ -542,14 +546,12 @@ pub(crate) async fn handle_score_query(
                     }
                     Ok(Err(e)) => {
                         warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-                        let response =
-                            format_scores(&scores, &dedup_username, mode, params.is_pass);
+                        let response = format_scores(&scores, &dedup_username, mode, score_label);
                         let _ = resp_tx.send(response).await;
                     }
                     Err(_) => {
                         warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-                        let response =
-                            format_scores(&scores, &dedup_username, mode, params.is_pass);
+                        let response = format_scores(&scores, &dedup_username, mode, score_label);
                         let _ = resp_tx.send(response).await;
                     }
                 }
@@ -706,7 +708,7 @@ pub(crate) async fn handle_best_score_query(
             if scores.is_empty() {
                 let _ = resp_tx
                     .send(
-                        user_str("query.no_records_pass").replace("{qq}", &msg.user_id.to_string()),
+                        user_str("query.no_records_best").replace("{qq}", &msg.user_id.to_string()),
                     )
                     .await;
                 return;
@@ -722,7 +724,7 @@ pub(crate) async fn handle_best_score_query(
                         .send(
                             user_str("query.no_match")
                                 .replace("{qq}", &msg.user_id.to_string())
-                                .replace("{name}", user_str("query.noun_replay")),
+                                .replace("{name}", user_str("query.noun_best")),
                         )
                         .await;
                     return;
@@ -740,7 +742,7 @@ pub(crate) async fn handle_best_score_query(
                                 user_str("query.index_out_of_range")
                                     .replace("{qq}", &msg.user_id.to_string())
                                     .replace("{pos}", &limit.to_string())
-                                    .replace("{name}", user_str("query.noun_replay"))
+                                    .replace("{name}", user_str("query.noun_best"))
                                     .replace("{total}", &scores.len().to_string()),
                             )
                             .await;
@@ -873,12 +875,12 @@ pub(crate) async fn handle_best_score_query(
                     }
                     Ok(Err(e)) => {
                         warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-                        let response = format_scores(&scores, &dedup_username, mode, true);
+                        let response = format_scores(&scores, &dedup_username, mode, score_label);
                         let _ = resp_tx.send(response).await;
                     }
                     Err(_) => {
                         warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-                        let response = format_scores(&scores, &dedup_username, mode, true);
+                        let response = format_scores(&scores, &dedup_username, mode, score_label);
                         let _ = resp_tx.send(response).await;
                     }
                 }
@@ -890,7 +892,7 @@ pub(crate) async fn handle_best_score_query(
                             user_str("query.index_out_of_range")
                                 .replace("{qq}", &msg.user_id.to_string())
                                 .replace("{pos}", &limit.to_string())
-                                .replace("{name}", user_str("query.noun_replay"))
+                                .replace("{name}", user_str("query.noun_best"))
                                 .replace("{total}", &scores.len().to_string()),
                         )
                         .await;
@@ -905,7 +907,7 @@ pub(crate) async fn handle_best_score_query(
                     mode,
                     user_stats: &user_stats,
                     position: Some(index),
-                    is_pass: true,
+                    label: user_str("fmt.best_score"),
                 })
                 .await;
             }
@@ -966,7 +968,7 @@ async fn run_score_query(
             mode,
             user_stats,
             position: None,
-            is_pass: true,
+            label: user_str("fmt.beatmap_score"),
         })
         .await;
     }
@@ -1010,7 +1012,7 @@ async fn run_score_query(
             mode,
             user_stats,
             position: None,
-            is_pass: true,
+            label: user_str("fmt.beatmap_score"),
         })
         .await;
     }
@@ -1149,7 +1151,7 @@ pub(crate) async fn handle_beatmap_score_query(
             mode,
             user_stats: &user_stats,
             position: None,
-            is_pass: true,
+            label: user_str("fmt.beatmap_score"),
         })
         .await;
         return;
