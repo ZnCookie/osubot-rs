@@ -555,6 +555,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "render.download_avatar" => "正在下载头像: {url}",
     "render.avatar_download_failed" => "头像下载失败: {error}",
     "render.avatar_downloaded" => "头像已下载: {bytes} 字节",
+    "render.profile_avatar_url_empty" => "profile 头像 URL 为空",
     "render.preprocess_cover" => "正在预处理封面图片...",
     "render.html_generated" => "HTML 已生成，开始渲染...",
     "render.score_card_timeout" => "成绩卡片渲染超时（60秒），阻塞任务已中止",
