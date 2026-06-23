@@ -678,18 +678,27 @@ impl Storage {
         mode: GameMode,
         timestamps: &[i64],
     ) -> DbResult<i64> {
-        let mut inserted: i64 = 0;
-        let conn = self.conn().await;
-        for &timestamp in timestamps {
-            let count = conn
-                .execute(
-                    "INSERT OR IGNORE INTO user_play_records (user_id, mode, played_at) VALUES (?1, ?2, ?3)",
-                    params![user_id, i32::from(mode), timestamp],
-                )
-                .await?;
-            inserted += count as i64;
+        if timestamps.is_empty() {
+            return Ok(0);
         }
-        Ok(inserted)
+
+        let placeholders = std::iter::repeat_n("(?, ?, ?)", timestamps.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "INSERT OR IGNORE INTO user_play_records (user_id, mode, played_at) VALUES {placeholders}"
+        );
+
+        let mut args: Vec<turso::Value> = Vec::with_capacity(timestamps.len() * 3);
+        for &timestamp in timestamps {
+            args.push(user_id.into());
+            args.push(i32::from(mode).into());
+            args.push(timestamp.into());
+        }
+
+        let conn = self.conn().await;
+        let count = conn.execute(&sql, args).await?;
+        Ok(count as i64)
     }
 
     /// Check if user has any play records since the given UTC timestamp
