@@ -112,15 +112,15 @@ pub async fn get_highlight(
             match result {
                 Ok(current) => Some(UserHighlight {
                     username,
-                    old_pp: baseline.pp,
+                    old_pp: baseline.pp.unwrap_or(0.0),
                     new_pp: current.pp,
-                    pp_increase: current.pp - baseline.pp,
-                    old_hits: baseline.hits,
+                    pp_increase: current.pp - baseline.pp.unwrap_or(0.0),
+                    old_hits: baseline.hits.unwrap_or(0),
                     new_hits: current.hits,
-                    hits_increase: current.hits - baseline.hits,
-                    old_playtime: baseline.playtime,
+                    hits_increase: current.hits - baseline.hits.unwrap_or(0),
+                    old_playtime: baseline.playtime.unwrap_or(0),
                     new_playtime: current.playtime,
-                    playtime_increase: current.playtime - baseline.playtime,
+                    playtime_increase: current.playtime - baseline.playtime.unwrap_or(0),
                 }),
                 Err(e) => {
                     tracing::warn!(?e, user_id, "{}", log_fmt!("highlight.fetch_failed"));
