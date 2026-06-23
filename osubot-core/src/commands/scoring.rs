@@ -11,6 +11,8 @@ pub(crate) enum ScoringCmd {
     RecentSingle,
     ScoreSingle,
     BeatmapPreview,
+    BestSingle,
+    BestList,
 }
 
 pub(crate) fn parse_scoring_command(
@@ -21,9 +23,11 @@ pub(crate) fn parse_scoring_command(
         ("!ps", ScoringCmd::PassSummary),
         ("!rs", ScoringCmd::RecentSummary),
         ("!ss", ScoringCmd::ScoreAll),
+        ("!bs", ScoringCmd::BestList),
         ("!p", ScoringCmd::PassSingle),
         ("!r", ScoringCmd::RecentSingle),
         ("!s", ScoringCmd::ScoreSingle),
+        ("!b", ScoringCmd::BestSingle),
         ("!rv", ScoringCmd::BeatmapPreview),
     ];
 
@@ -147,6 +151,8 @@ fn parse_standard_score(
     let default_limit = match cmd {
         ScoringCmd::PassSummary | ScoringCmd::RecentSummary | ScoringCmd::ScoreAll => 20u32,
         ScoringCmd::PassSingle | ScoringCmd::RecentSingle | ScoringCmd::ScoreSingle => 1u32,
+        ScoringCmd::BestSingle => 1u32,
+        ScoringCmd::BestList => 20u32,
         ScoringCmd::BeatmapPreview => unreachable!(),
     };
 
@@ -183,7 +189,10 @@ fn parse_standard_score(
 
     let final_limit_end = if matches!(
         cmd,
-        ScoringCmd::PassSingle | ScoringCmd::RecentSingle | ScoringCmd::ScoreSingle
+        ScoringCmd::PassSingle
+            | ScoringCmd::RecentSingle
+            | ScoringCmd::ScoreSingle
+            | ScoringCmd::BestSingle
     ) {
         None
     } else {
@@ -285,6 +294,24 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             limit_end: params.limit_end,
             is_all: false,
+        },
+        ScoringCmd::BestSingle => Command::Best {
+            mode: params.mode,
+            username: params.username,
+            qq,
+            limit: params.limit,
+            limit_end: params.limit_end,
+            is_summary: false,
+            filters: params.filters,
+        },
+        ScoringCmd::BestList => Command::Best {
+            mode: params.mode,
+            username: params.username,
+            qq,
+            limit: params.limit,
+            limit_end: params.limit_end,
+            is_summary: true,
+            filters: params.filters,
         },
         ScoringCmd::BeatmapPreview => unreachable!(),
     })

@@ -62,6 +62,7 @@ pub(crate) async fn resolve_cmd_target_qq(
         Command::QueryMentionedUser { qq, .. } => Some(*qq),
         Command::Pass { qq: Some(qq), .. }
         | Command::Recent { qq: Some(qq), .. }
+        | Command::Best { qq: Some(qq), .. }
         | Command::ScoreOnBeatmap { qq: Some(qq), .. } => Some(*qq),
         Command::Pass {
             qq: None,
@@ -74,6 +75,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             ..
         }
         | Command::ScoreOnBeatmap {
+            qq: None,
+            username: Some(username),
+            ..
+        }
+        | Command::Best {
             qq: None,
             username: Some(username),
             ..
@@ -91,6 +97,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             ..
         }
         | Command::Recent {
+            qq: None,
+            username: None,
+            ..
+        }
+        | Command::Best {
             qq: None,
             username: None,
             ..
@@ -113,6 +124,7 @@ pub(crate) fn mode_sensitive(cmd: &Command) -> bool {
             | Command::QueryMentionedUser { .. }
             | Command::Pass { .. }
             | Command::Recent { .. }
+            | Command::Best { .. }
             | Command::ScoreOnBeatmap { .. }
             | Command::Highlight { .. }
     )
@@ -126,6 +138,7 @@ pub(crate) fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
         | Command::QueryMentionedUser { mode, .. }
         | Command::Pass { mode, .. }
         | Command::Recent { mode, .. }
+        | Command::Best { mode, .. }
         | Command::Highlight { mode, .. }
         | Command::ScoreOnBeatmap { mode, .. } => *mode,
         _ => None,
@@ -171,6 +184,7 @@ pub(crate) fn build_cmd_payload(
         Command::ScoreOnBeatmap { username, .. }
         | Command::Pass { username, .. }
         | Command::Recent { username, .. }
+        | Command::Best { username, .. }
         | Command::ProfileCard { username, .. } => username.as_deref(),
         Command::BeatmapPreview { .. } => None,
         _ => None,
@@ -187,6 +201,7 @@ pub(crate) fn build_cmd_payload(
             Command::QueryMentionedUser { qq, .. } => Some(*qq),
             Command::Pass { qq, .. }
             | Command::Recent { qq, .. }
+            | Command::Best { qq, .. }
             | Command::ScoreOnBeatmap { qq, .. }
             | Command::ProfileCard { qq, .. } => *qq,
             Command::BeatmapPreview { .. } => None,
@@ -207,19 +222,24 @@ pub(crate) fn build_cmd_payload(
             _ => None,
         },
         "limit": match cmd {
-            Command::ScoreOnBeatmap { limit, .. } | Command::Pass { limit, .. } | Command::Recent { limit, .. } => Some(*limit),
+            Command::ScoreOnBeatmap { limit, .. }
+            | Command::Pass { limit, .. }
+            | Command::Recent { limit, .. }
+            | Command::Best { limit, .. } => Some(*limit),
             _ => None,
         },
         "filters": match cmd {
             Command::ScoreOnBeatmap { filters, .. }
             | Command::Pass { filters, .. }
-            | Command::Recent { filters, .. } => filters.clone(),
+            | Command::Recent { filters, .. }
+            | Command::Best { filters, .. } => filters.clone(),
             _ => None,
         },
         "limit_end": match cmd {
             Command::ScoreOnBeatmap { limit_end, .. }
             | Command::Pass { limit_end, .. }
-            | Command::Recent { limit_end, .. } => *limit_end,
+            | Command::Recent { limit_end, .. }
+            | Command::Best { limit_end, .. } => *limit_end,
             _ => None,
         },
     })
@@ -347,7 +367,8 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         | Command::QueryMentionedUser { .. }
         | Command::ScoreOnBeatmap { .. }
         | Command::Pass { .. }
-        | Command::Recent { .. } => {
+        | Command::Recent { .. }
+        | Command::Best { .. } => {
             handle_query_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
         Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind => {

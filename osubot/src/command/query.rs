@@ -236,6 +236,35 @@ pub(super) async fn handle_query_commands(
             )
             .await;
         }
+        Command::Best {
+            mode: _,
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+        } => {
+            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = *limit, "{}", log_fmt!("main.recent_command"));
+            handle_score_query(
+                ctx,
+                msg,
+                resp_tx,
+                ScoreQueryParams {
+                    username,
+                    qq,
+                    is_pass: false,
+                    beatmap_id: None,
+                    score_id: None,
+                    limit: *limit,
+                    is_single: !*is_summary,
+                    limit_end: *limit_end,
+                    filters: filters.as_deref(),
+                },
+                mode,
+            )
+            .await;
+        }
         _ => unreachable!("handle_query_commands called with non-query command"),
     }
 }
