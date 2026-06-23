@@ -137,6 +137,8 @@ pub struct SchedulerConfig {
     pub retention_days: u64,
     #[serde(default = "default_cache_retention_days")]
     pub cache_retention_days: u64,
+    #[serde(default)]
+    pub max_cache_size_bytes: Option<u64>,
 }
 
 fn default_interval_minutes() -> u64 {
@@ -179,6 +181,7 @@ impl Default for SchedulerConfig {
             group_trigger_cooldown_hours: 1,
             retention_days: 180,
             cache_retention_days: 7,
+            max_cache_size_bytes: None,
         }
     }
 }

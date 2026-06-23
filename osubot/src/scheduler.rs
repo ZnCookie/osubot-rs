@@ -98,6 +98,7 @@ impl Scheduler {
         }
 
         osubot_render::cleanup_expired(scheduler_cfg.cache_retention_days).await;
+        osubot_render::cleanup_by_size(scheduler_cfg.max_cache_size_bytes).await;
         osubot_core::cache::cleanup_replays(scheduler_cfg.cache_retention_days).await;
         osubot_core::cache::cleanup_beatmaps(scheduler_cfg.cache_retention_days).await;
         osubot_core::cache::cleanup_previews(scheduler_cfg.cache_retention_days).await;
@@ -148,12 +149,20 @@ impl Scheduler {
             log_fmt!("scheduler.due_users_count", count = due.len())
         );
 
-        for (user_id, mode) in due {
-            let result = self.eval_activity(user_id, mode).await;
+        use futures_util::StreamExt;
+        let results: Vec<_> = futures_util::stream::iter(due)
+            .map(|(user_id, mode)| async move {
+                let result = self.eval_activity(user_id, mode).await;
+                (user_id, mode, result)
+            })
+            .buffer_unordered(5)
+            .collect()
+            .await;
+
+        for (user_id, mode, result) in results {
             if result.success {
                 self.update_next_time(user_id, mode, result.activity).await;
             } else {
-                // Retry on next tick — rate limiter naturally throttles persistent failures
                 if let Err(e) = self
                     .storage
                     .set_next_update(user_id, mode, Utc::now())

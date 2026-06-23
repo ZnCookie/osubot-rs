@@ -16,7 +16,7 @@ use std::sync::{
     Arc, Mutex as StdMutex, OnceLock,
 };
 
-pub use cache::{cleanup_expired, ensure_cache_dir};
+pub use cache::{cleanup_by_size, cleanup_expired, ensure_cache_dir};
 pub use error::RenderError;
 pub use render::render_html_to_image;
 
@@ -258,25 +258,37 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
 
     tracing::debug!("{}", log_fmt!("render.preprocess_cover"));
     let (bg_uri, thumb_uri, hue, sat) = if let Some(ref img) = preloaded_cover_image {
-        let bg = crop_and_resize(img, 2560, 1440);
-        let bg_uri = image_to_data_uri(&bg, 85)?;
+        let img_clone = img.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<_, RenderError> {
+            let bg = crop_and_resize(&img_clone, 2560, 1440);
+            let bg_uri = image_to_data_uri(&bg, 85)?;
 
-        let thumb = crop_and_resize(img, 536, 300);
-        let thumb_uri = image_to_data_uri(&thumb, 90)?;
+            let thumb = crop_and_resize(&img_clone, 536, 300);
+            let thumb_uri = image_to_data_uri(&thumb, 90)?;
 
-        let (h, s) = extract_dominant_hue(img);
+            let (h, s) = extract_dominant_hue(&img_clone);
 
-        (bg_uri, thumb_uri, h, s)
+            Ok((bg_uri, thumb_uri, h, s))
+        })
+        .await
+        .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))?;
+        result?
     } else {
         (String::new(), String::new(), 255, 30)
     };
 
     let avatar_uri = if !avatar_bytes.is_empty() {
-        let img = image::load_from_memory(&avatar_bytes).map_err(|e| {
-            RenderError::Render(log_fmt!("render.err_avatar_decode", error = e).to_string())
-        })?;
-        let resized = img.resize_exact(116, 116, imageops::FilterType::Lanczos3);
-        image_to_data_uri(&resized, 85)?
+        let avatar_bytes = avatar_bytes.clone();
+        let resized_uri = tokio::task::spawn_blocking(move || -> Result<String, RenderError> {
+            let img = image::load_from_memory(&avatar_bytes).map_err(|e| {
+                RenderError::Render(log_fmt!("render.err_avatar_decode", error = e).to_string())
+            })?;
+            let resized = img.resize_exact(116, 116, imageops::FilterType::Lanczos3);
+            image_to_data_uri(&resized, 85)
+        })
+        .await
+        .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))?;
+        resized_uri?
     } else {
         String::new()
     };
@@ -404,11 +416,19 @@ pub async fn render_score_list_card(
                                 log_fmt!("render.err_avatar_fetch", error = e).to_string(),
                             )
                         })?;
-                let img = image::load_from_memory(&bytes).map_err(|e| {
-                    RenderError::Render(log_fmt!("render.err_avatar_decode", error = e).to_string())
-                })?;
-                let resized = img.resize_exact(120, 120, imageops::FilterType::Lanczos3);
-                image_to_data_uri(&resized, 85)
+                let resized_uri =
+                    tokio::task::spawn_blocking(move || -> Result<String, RenderError> {
+                        let img = image::load_from_memory(&bytes).map_err(|e| {
+                            RenderError::Render(
+                                log_fmt!("render.err_avatar_decode", error = e).to_string(),
+                            )
+                        })?;
+                        let resized = img.resize_exact(120, 120, imageops::FilterType::Lanczos3);
+                        image_to_data_uri(&resized, 85)
+                    })
+                    .await
+                    .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))?;
+                resized_uri
             },
             async {
                 if hero_cover_url.is_empty() {
@@ -421,28 +441,35 @@ pub async fn render_score_list_card(
                             log_fmt!("render.err_hero_fetch", error = e).to_string(),
                         )
                     })?;
-                let img = image::load_from_memory(&bytes).map_err(|_| {
-                    RenderError::Render(log_fmt!("render.err_hero_decode").to_string())
-                })?;
-                let cropped = crop_and_resize(&img, 2560, 640);
-                Ok(match image_to_data_uri(&cropped, 80) {
-                    Ok(uri) => uri,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "JPEG encoding failed for hero image");
-                        String::new()
-                    }
-                })
+                let cropped_uri =
+                    tokio::task::spawn_blocking(move || -> Result<String, RenderError> {
+                        let img = image::load_from_memory(&bytes).map_err(|_| {
+                            RenderError::Render(log_fmt!("render.err_hero_decode").to_string())
+                        })?;
+                        let cropped = crop_and_resize(&img, 2560, 640);
+                        Ok(match image_to_data_uri(&cropped, 80) {
+                            Ok(uri) => uri,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JPEG encoding failed for hero image");
+                                String::new()
+                            }
+                        })
+                    })
+                    .await
+                    .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))?;
+                cropped_uri
             },
         );
         (avatar_result?, hero_result?)
     };
 
-    // Process cover thumbnails
-    let cover_uris: Vec<String> = cover_images
+    // Process cover thumbnails in parallel
+    let cover_futures: Vec<_> = cover_images
         .iter()
-        .map(|opt| match opt {
-            Some(img) => {
-                let thumb = crop_and_resize(img, 620, 220);
+        .filter_map(|opt| {
+            let img = opt.as_ref()?.clone();
+            Some(tokio::task::spawn_blocking(move || -> String {
+                let thumb = crop_and_resize(&img, 620, 220);
                 match image_to_data_uri(&thumb, 70) {
                     Ok(uri) => uri,
                     Err(e) => {
@@ -450,10 +477,19 @@ pub async fn render_score_list_card(
                         String::new()
                     }
                 }
-            }
-            None => String::new(),
+            }))
         })
         .collect();
+    let mut cover_uris: Vec<String> = Vec::with_capacity(cover_images.len());
+    for future in cover_futures {
+        match future.await {
+            Ok(uri) => cover_uris.push(uri),
+            Err(e) => {
+                tracing::warn!(error = %e, "spawn_blocking failed for cover thumbnail");
+                cover_uris.push(String::new());
+            }
+        }
+    }
 
     // Build card data
     let cards: Vec<score_list_style::ScoreListCardData> = scores

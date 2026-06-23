@@ -54,8 +54,8 @@ impl RateLimiter {
     }
     pub(crate) fn try_acquire(&self) -> bool {
         let now = Instant::now();
-        let mut last = self.last_refill.lock().unwrap();
-        let mut tokens = self.tokens.lock().unwrap();
+        let mut last = self.last_refill.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
         let elapsed = now.duration_since(*last).as_secs_f64();
         let refill = (elapsed * MAX_MESSAGES_PER_SECOND as f64) as u32;
         if refill > 0 {

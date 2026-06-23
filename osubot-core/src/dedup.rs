@@ -32,6 +32,7 @@ where
     dedup: &'a RequestDedup<K, V, E>,
     key: K,
     entry: Arc<Entry<V, E>>,
+    handle: Option<tokio::task::JoinHandle<Result<V, E>>>,
 }
 
 impl<'a, K, V, E> Drop for CleanupGuard<'a, K, V, E>
@@ -39,6 +40,12 @@ where
     K: Eq + Hash + Clone,
 {
     fn drop(&mut self) {
+        // Abort the background task if it hasn't finished yet
+        if let Some(ref handle) = self.handle {
+            if !handle.is_finished() {
+                handle.abort();
+            }
+        }
         self.entry.done.close();
         let mut map = match self.dedup.entries.lock() {
             Ok(guard) => guard,
@@ -89,14 +96,15 @@ where
         let is_creator = !entry.claimed.swap(true, Ordering::AcqRel);
 
         if is_creator {
-            let _guard = CleanupGuard {
+            let join_handle = tokio::spawn(f());
+            let mut _guard = CleanupGuard {
                 dedup: self,
                 key: key.clone(),
                 entry: entry.clone(),
+                handle: Some(join_handle),
             };
 
-            let join_handle = tokio::spawn(f());
-            let work_result = match join_handle.await {
+            let work_result = match _guard.handle.take().unwrap().await {
                 Ok(result) => {
                     let stored = match &result {
                         Ok(v) => StoredResult::Ok(v.clone()),
