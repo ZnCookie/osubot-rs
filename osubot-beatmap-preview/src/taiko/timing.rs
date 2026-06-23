@@ -235,18 +235,22 @@ pub(crate) fn build_redline_sections(
     let mut beat_length = DEFAULT_BEAT_LENGTH;
     let mut meter = DEFAULT_METER;
     let mut section_start: i64 = 0;
+    let mut last_pre_zero_red: Option<f64> = None;
 
     for point in timing_points {
         if point.time > 0.0 {
             break;
         }
         if point.uninherited {
-            beat_length = if point.beat_length >= 60.0 {
-                point.beat_length
-            } else {
-                60_000.0 / 180.0
-            };
+            beat_length = point.beat_length;
             meter = point.meter;
+            last_pre_zero_red = Some(point.time);
+        }
+    }
+
+    if let Some(t) = last_pre_zero_red {
+        if t < 0.0 {
+            section_start = round_half_even(t);
         }
     }
 
@@ -264,11 +268,7 @@ pub(crate) fn build_redline_sections(
                 meter,
             });
         }
-        beat_length = if point.beat_length >= 60.0 {
-            point.beat_length
-        } else {
-            60_000.0 / 180.0
-        };
+        beat_length = point.beat_length;
         meter = point.meter;
         section_start = point_time;
     }
@@ -415,7 +415,11 @@ pub(crate) fn build_timing_lines(
             let is_measure = beat_index % (section.meter.max(1) as i64) == 0;
             let is_first_beat = beat_index == 0;
 
-            if is_measure || beat_spacing >= min_beat_line_spacing || (show_bpm && is_first_beat) {
+            if rounded_time >= 0
+                && (is_measure
+                    || beat_spacing >= min_beat_line_spacing
+                    || (show_bpm && is_first_beat))
+            {
                 merge_timing_line(
                     &mut line_by_time,
                     MergeTimingLineParams {

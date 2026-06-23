@@ -67,6 +67,7 @@ pub fn render_taiko_grid(
     beatmap: &Beatmap,
     output_path: &Path,
     mods: Option<&ModSettings>,
+    bpm: Option<f64>,
 ) -> Result<PathBuf> {
     let mut hit_objects = apply_taiko_object_mods(taiko_hit_objects(beatmap), mods);
     if hit_objects.is_empty() {
@@ -80,13 +81,9 @@ pub fn render_taiko_grid(
         ));
     }
 
-    // Trim leading silence: if first note is >= 5s in, start 1s before it.
     let first_note_time = hit_objects.iter().map(|h| h.start_time).min().unwrap_or(0);
-    let chart_start_time = if first_note_time >= 5000 {
-        (first_note_time - 1000).max(0)
-    } else {
-        0
-    };
+    let chart_start_time =
+        crate::time_selection::snap_to_beat_grid(first_note_time, &beatmap.timing_points);
 
     let effective_chart_end_time: i64;
     if chart_start_time > 0 {
@@ -104,7 +101,7 @@ pub fn render_taiko_grid(
     let mut timing_points = effective_timing_points(beatmap, mods);
     if chart_start_time > 0 {
         for tp in &mut timing_points {
-            tp.time = (tp.time - chart_start_time as f64).max(0.0);
+            tp.time -= chart_start_time as f64;
         }
     }
     // 静态图的 note 间距只跟随红线 BPM（绿线 SV 不影响排版）
@@ -113,7 +110,7 @@ pub fn render_taiko_grid(
         &spacing_timing_points,
         effective_chart_end_time,
         slider_multiplier,
-        SPACING_BPM,
+        bpm.unwrap_or(SPACING_BPM),
     );
     let redline_sections = build_redline_sections(&timing_points, effective_chart_end_time);
     let kiai_sections = build_kiai_sections(&timing_points, effective_chart_end_time);
@@ -131,6 +128,7 @@ pub fn render_taiko_grid(
         &redline_sections,
         &timing_lines,
         chart_start_time,
+        bpm,
     );
     let sv_changes = build_sv_changes(&timing_points, effective_chart_end_time, &mapper);
 
@@ -216,9 +214,11 @@ fn build_png_layout(
     redline_sections: &[RedlineSection],
     timing_lines: &[TimingLine],
     chart_start_time: i64,
+    bpm: Option<f64>,
 ) -> RenderLayout {
     let base_row_width = resolve_base_row_width(beatmap_duration);
-    let bpm_width_multiplier = if SPACING_BPM > 0.0 {
+    let spacing_bpm = bpm.unwrap_or(SPACING_BPM);
+    let bpm_width_multiplier = if spacing_bpm > 0.0 {
         1.0
     } else {
         resolve_row_width_bpm_multiplier(redline_sections)

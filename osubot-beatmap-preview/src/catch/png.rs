@@ -214,10 +214,9 @@ pub fn render_catch_grid(
     let mut render_objects = build_catch_render_objects(beatmap, hit_objects, mods, &difficulty)?;
     let chart_end_time = hit_objects.iter().map(|h| h.end_time).max().unwrap().max(1);
 
-    // Trim leading silence: if first note is >= 5s in, start 1s before it.
     let first_note_time = hit_objects.iter().map(|h| h.start_time).min().unwrap_or(0);
     let chart_start_time = if first_note_time >= 5000 {
-        (first_note_time - 1000).max(0)
+        crate::time_selection::snap_to_beat_grid(first_note_time - 1000, &beatmap.timing_points)
     } else {
         0
     };
@@ -235,7 +234,7 @@ pub fn render_catch_grid(
                 .iter()
                 .map(|tp| {
                     let mut tp = *tp;
-                    tp.time = (tp.time - chart_start_time as f64).max(0.0);
+                    tp.time -= chart_start_time as f64;
                     tp
                 })
                 .collect();

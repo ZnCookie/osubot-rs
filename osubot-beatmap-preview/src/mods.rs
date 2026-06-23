@@ -30,6 +30,7 @@ pub struct ModSettings {
     pub easy: bool,
     pub hard_rock: bool,
     pub hidden: bool,
+    pub traceable: bool,
 
     pub swap: bool,
     pub cs_override: bool,
@@ -61,6 +62,7 @@ impl ModSettings {
             || self.easy
             || self.hard_rock
             || self.hidden
+            || self.traceable
             || self.swap
             || self.cs_override
             || self.mania_keys.is_some()
@@ -151,6 +153,7 @@ fn parse_one_token(token: &str, s: &mut ModSettings) -> Result<()> {
         "EZ" => s.easy = true,
         "HR" => s.hard_rock = true,
         "HD" => s.hidden = true,
+        "TC" => s.traceable = true,
         "SW" => s.swap = true,
         "CS" => s.cs_override = true,
         "DS" => s.dual_stage = true,
@@ -278,6 +281,9 @@ pub fn validate_mods(settings: &ModSettings, mode: Option<i32>) -> Vec<String> {
     }
     if settings.easy && settings.hard_rock {
         errors.push("EZ and HR cannot be used together".to_string());
+    }
+    if settings.hidden && settings.traceable {
+        errors.push("HD and TC cannot be used together".to_string());
     }
     if settings.mania_key_mods.len() > 1 {
         let keys: Vec<String> = settings

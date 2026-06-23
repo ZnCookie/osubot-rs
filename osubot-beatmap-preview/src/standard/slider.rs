@@ -20,7 +20,7 @@ use crate::canvas::Img;
 use crate::models::StandardHitObject;
 use crate::slider_path::{build_path, build_standard_slider_path, path_position_at, SliderPath};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::constants::*;
 use super::context::{color_id, to_frame_point, CachedLayer, RenderCache, RenderContext};
@@ -43,14 +43,16 @@ pub(crate) fn draw_slider_body(
     width: i64,
     color: [u8; 3],
     alpha: f64,
+    traceable: bool,
 ) {
     if points.len() < 2 {
         return;
     }
-    let layer = render_slider_body_layer(points, width, color, alpha_to_byte(alpha));
+    let layer = render_slider_body_layer(points, width, color, alpha_to_byte(alpha), traceable);
     frame.alpha_composite(&layer.image, layer.offset.0, layer.offset.1);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_cached_slider_body(
     frame: &mut Img,
     context: &RenderContext,
@@ -59,30 +61,36 @@ pub(crate) fn draw_cached_slider_body(
     slider_data: &SliderRenderData,
     color: [u8; 3],
     alpha: f64,
+    traceable: bool,
 ) {
-    cache.slider_body_layers.entry(index).or_insert_with(|| {
-        render_slider_body_layer(
-            &slider_data.frame_path.points,
-            context.slider_body_width,
-            color,
-            255,
-        )
-    });
+    let cache_key = (index, traceable);
+    cache
+        .slider_body_layers
+        .entry(cache_key)
+        .or_insert_with(|| {
+            render_slider_body_layer(
+                &slider_data.frame_path.points,
+                context.slider_body_width,
+                color,
+                255,
+                traceable,
+            )
+        });
 
     let alpha_key = alpha_to_byte(alpha);
     let (offset_x, offset_y) = {
-        let layer = &cache.slider_body_layers[&index];
+        let layer = &cache.slider_body_layers[&cache_key];
         layer.offset
     };
     if alpha_key == 255 {
-        let layer = &cache.slider_body_layers[&index];
+        let layer = &cache.slider_body_layers[&cache_key];
         frame.alpha_composite(&layer.image, offset_x, offset_y);
         return;
     }
 
     let key = (index, alpha_key);
     if !cache.slider_body_alpha_layers.contains_key(&key) {
-        let scaled = cache.slider_body_layers[&index]
+        let scaled = cache.slider_body_layers[&cache_key]
             .image
             .scale_alpha(alpha_key as f64 / 255.0);
         cache.slider_body_alpha_layers.insert(key, scaled);
@@ -95,6 +103,7 @@ pub(crate) fn render_slider_body_layer(
     width: i64,
     color: [u8; 3],
     alpha_byte: u8,
+    traceable: bool,
 ) -> CachedLayer {
     let scale = SLIDER_BODY_SUPERSAMPLE;
     let pad = (width + 4) as f64;
@@ -129,23 +138,44 @@ pub(crate) fn render_slider_body_layer(
     let border_color = color;
     let inner_color = darken_sub(color, 4.0);
 
-    layer.stroke_polyline(
-        &scaled_points,
-        (width * scale) as f64,
-        [
-            border_color[0],
-            border_color[1],
-            border_color[2],
-            body_alpha,
-        ],
-        true,
-    );
-    layer.stroke_polyline(
-        &scaled_points,
-        (inner_width * scale) as f64,
-        [inner_color[0], inner_color[1], inner_color[2], body_alpha],
-        true,
-    );
+    if traceable {
+        layer.stroke_polyline(
+            &scaled_points,
+            (width * scale) as f64,
+            [
+                border_color[0],
+                border_color[1],
+                border_color[2],
+                body_alpha,
+            ],
+            true,
+        );
+        let bg = IMAGE_BACKGROUND_COLOR;
+        layer.stroke_polyline(
+            &scaled_points,
+            (inner_width * scale) as f64,
+            [bg[0], bg[1], bg[2], 255],
+            true,
+        );
+    } else {
+        layer.stroke_polyline(
+            &scaled_points,
+            (width * scale) as f64,
+            [
+                border_color[0],
+                border_color[1],
+                border_color[2],
+                body_alpha,
+            ],
+            true,
+        );
+        layer.stroke_polyline(
+            &scaled_points,
+            (inner_width * scale) as f64,
+            [inner_color[0], inner_color[1], inner_color[2], body_alpha],
+            true,
+        );
+    }
 
     let resized = layer.resize((right - left).max(1) as u32, (bottom - top).max(1) as u32);
     CachedLayer {
@@ -160,9 +190,9 @@ pub(crate) fn get_slider_render_data(
     cache: &mut RenderCache,
     context: &RenderContext,
     index: usize,
-) -> Rc<SliderRenderData> {
+) -> Arc<SliderRenderData> {
     if let Some(cached) = cache.slider_data.get(&index) {
-        return Rc::clone(cached);
+        return Arc::clone(cached);
     }
 
     let hit_object = &context.hit_objects[index];
@@ -207,13 +237,13 @@ pub(crate) fn get_slider_render_data(
     }
 
     let head_center = frame_path.points.first().copied().unwrap_or((0.0, 0.0));
-    let data = Rc::new(SliderRenderData {
+    let data = Arc::new(SliderRenderData {
         frame_path,
         head_center,
         reverse_centers,
         reverse_angles,
     });
-    cache.slider_data.insert(index, Rc::clone(&data));
+    cache.slider_data.insert(index, Arc::clone(&data));
     data
 }
 
