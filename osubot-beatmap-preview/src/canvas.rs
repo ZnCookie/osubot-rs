@@ -45,6 +45,8 @@ impl Img {
 
     #[inline]
     pub fn idx(&self, x: u32, y: u32) -> usize {
+        debug_assert!(x < self.w, "x={} out of bounds (w={})", x, self.w);
+        debug_assert!(y < self.h, "y={} out of bounds (h={})", y, self.h);
         let x = x as usize;
         let y = y as usize;
         (y * self.w as usize + x) * 4

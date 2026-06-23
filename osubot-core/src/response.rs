@@ -77,15 +77,16 @@ fn format_playtime(seconds: i64) -> String {
 }
 
 fn format_star_rating(stars: f64) -> String {
-    let full = stars.floor() as usize;
-    let half = stars % 1.0 >= 0.5;
+    let clamped = stars.max(0.0);
+    let full = (clamped.floor() as usize).min(30);
+    let half = clamped % 1.0 >= 0.5;
     let filled: String = "\u{2605}".repeat(full);
     let stars_str = if half {
         format!("{filled}\u{2606}")
     } else {
         filled
     };
-    format!("{} {:.2}*", stars_str, stars)
+    format!("{} {:.2}*", stars_str, clamped)
 }
 
 struct ScoreDisplayFields {
@@ -855,5 +856,23 @@ mod tests {
         };
         let output = format_score(&score, "TestUser", GameMode::Mania, None, true);
         assert!(output.contains("100/200/50/30/10/5"));
+    }
+
+    #[test]
+    fn format_star_rating_negative_stars() {
+        let result = format_star_rating(-1.5);
+        assert!(
+            result.contains("0.00"),
+            "expected clamped display, got: {result}"
+        );
+        assert!(!result.contains("-"));
+        assert!(!result.contains("\u{2605}"));
+    }
+
+    #[test]
+    fn format_star_rating_extreme_stars() {
+        let result = format_star_rating(999.9);
+        let star_count = result.matches('\u{2605}').count();
+        assert!(star_count <= 30);
     }
 }

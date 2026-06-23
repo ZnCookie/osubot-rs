@@ -134,10 +134,11 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    assert!(
+    debug_assert!(
         max_retries <= 30,
         "max_retries must be <= 30, got {max_retries}"
     );
+    let max_retries = max_retries.min(30);
     let mut attempt = 0u32;
     loop {
         match operation().await {

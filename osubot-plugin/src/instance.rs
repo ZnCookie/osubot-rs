@@ -20,7 +20,7 @@ fn read_json_from_memory(
         .map_err(|e| format!("memory read failed: {e}"))?;
     let len = u32::from_le_bytes(len_buf) as usize;
     let mem_size = (memory.size(store) * 65536) as usize;
-    if 4 + len > mem_size || len > 10 * 1024 * 1024 {
+    if len > 10 * 1024 * 1024 || 4usize.checked_add(len).is_none_or(|total| total > mem_size) {
         return Err(format!("invalid data length: {len} exceeds memory bounds"));
     }
     let mut data = vec![0u8; len];

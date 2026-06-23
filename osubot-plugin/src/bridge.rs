@@ -336,6 +336,11 @@ fn dispatch_host_call(
         "http_request" => {
             let v = parse_payload(payload)?;
             let url = get_field(&v, "url")?;
+            if osubot_core::ssrf::is_blocked_url(&url) {
+                return Err(BridgeError::HttpRequest(
+                    "requests to private/loopback addresses are not allowed".into(),
+                ));
+            }
             let method_str = v["method"].as_str().unwrap_or("GET");
             let method = reqwest::Method::from_bytes(method_str.as_bytes())
                 .map_err(|e| BridgeError::HttpRequest(format!("invalid HTTP method: {e}")))?;
@@ -449,11 +454,18 @@ fn dispatch_host_call(
                 .as_u64()
                 .ok_or_else(|| BridgeError::MissingField("interval_secs".into()))?;
             const MIN_INTERVAL: u64 = 5;
+            const MAX_INTERVAL: u64 = 86400;
             const MAX_TICKS_PER_PLUGIN: usize = 8;
             if interval_secs < MIN_INTERVAL {
                 return Err(BridgeError::Validation(
                     user_str("bridge.tick_interval_too_short")
                         .replace("{secs}", &MIN_INTERVAL.to_string()),
+                ));
+            }
+            if interval_secs > MAX_INTERVAL {
+                return Err(BridgeError::Validation(
+                    user_str("bridge.tick_interval_too_long")
+                        .replace("{secs}", &MAX_INTERVAL.to_string()),
                 ));
             }
             let mut registry = services

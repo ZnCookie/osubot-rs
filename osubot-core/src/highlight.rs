@@ -99,10 +99,13 @@ pub async fn get_highlight(
         let username = username.clone();
 
         join_set.spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .expect("highlight semaphore should never be closed");
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!(user_id, "highlight semaphore closed, skipping user");
+                    return None;
+                }
+            };
             let result =
                 api::fetch_user_stats_by_user_id(&rate_limiter, &oauth, user_id, mode).await;
 
