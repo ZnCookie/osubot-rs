@@ -117,9 +117,10 @@ pub(super) fn spawn_onebot_cleanup(handles: &RuntimeHandles) -> JoinHandle<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
+            let retention = Duration::from_secs(onebot_cleanup.cleanup_retention_secs());
             let mut pending = onebot_cleanup.pending.lock().await;
             let before = pending.len();
-            pending.retain(|_, entry| entry.created_at.elapsed() < Duration::from_secs(30));
+            pending.retain(|_, entry| entry.created_at.elapsed() < retention);
             let removed = before.saturating_sub(pending.len());
             if removed > 0 {
                 tracing::warn!(removed, "{}", log_fmt!("main.cleanup_stale_pending"));

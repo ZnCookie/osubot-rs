@@ -45,12 +45,51 @@ pub(crate) struct OneBotApi {
     pub(crate) timeout: Arc<AtomicU64>,
 }
 
+/// cleanup 任务保留 entry 的最小时长,避免在 `call_onebot_api` 还在等待响应时
+/// sender 被 drop 触发 `request_cancelled`。
+const MIN_CLEANUP_RETENTION_SECS: u64 = 30;
+/// 超时配置之上的安全余量。
+const CLEANUP_RETENTION_MARGIN_SECS: u64 = 5;
+
 impl OneBotApi {
     pub(crate) fn new(timeout_secs: Arc<AtomicU64>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
             timeout: timeout_secs,
         }
+    }
+
+    pub(crate) fn cleanup_retention_secs(&self) -> u64 {
+        let configured = self.timeout.load(Ordering::Relaxed);
+        (configured + CLEANUP_RETENTION_MARGIN_SECS).max(MIN_CLEANUP_RETENTION_SECS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    fn api_with_timeout(secs: u64) -> OneBotApi {
+        OneBotApi::new(Arc::new(AtomicU64::new(secs)))
+    }
+
+    #[test]
+    fn cleanup_retention_floors_at_thirty_seconds() {
+        let api = api_with_timeout(5);
+        assert_eq!(api.cleanup_retention_secs(), 30);
+    }
+
+    #[test]
+    fn cleanup_retention_exceeds_configured_timeout() {
+        let api = api_with_timeout(120);
+        assert_eq!(api.cleanup_retention_secs(), 125);
+    }
+
+    #[test]
+    fn cleanup_retention_handles_large_timeout() {
+        let api = api_with_timeout(300);
+        assert_eq!(api.cleanup_retention_secs(), 305);
     }
 }
 

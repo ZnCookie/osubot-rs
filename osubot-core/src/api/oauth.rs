@@ -5,12 +5,21 @@ use tokio::sync::Mutex;
 
 use super::{http_client, ApiError, OauthResponse};
 
+/// Token 实际过期前多少秒主动刷新，避免边界处 401。
+const REFRESH_SAFETY_MARGIN: Duration = Duration::from_secs(60);
+/// expires_in 缺失或为 0 时的兜底过期时间（保守：5 分钟）。
+const FALLBACK_EXPIRES_IN: Duration = Duration::from_secs(300);
+
 pub struct OauthTokenCache {
     client_id: RwLock<String>,
     client_secret: RwLock<String>,
-    cache: Mutex<Option<(String, Instant)>>,
+    cache: Mutex<Option<CachedToken>>,
     refresh_lock: Mutex<()>,
-    refresh_interval: Duration,
+}
+
+struct CachedToken {
+    access_token: String,
+    expires_at: Instant,
 }
 
 impl OauthTokenCache {
@@ -20,7 +29,6 @@ impl OauthTokenCache {
             client_secret: RwLock::new(client_secret),
             cache: Mutex::new(None),
             refresh_lock: Mutex::new(()),
-            refresh_interval: Duration::from_secs(20 * 3600),
         }
     }
 
@@ -59,9 +67,9 @@ impl OauthTokenCache {
     pub async fn get_token(&self) -> Result<String, ApiError> {
         {
             let guard = self.cache.lock().await;
-            if let Some((ref token, fetched_at)) = *guard {
-                if fetched_at.elapsed() < self.refresh_interval {
-                    return Ok(token.clone());
+            if let Some(ct) = guard.as_ref() {
+                if Instant::now() < ct.expires_at {
+                    return Ok(ct.access_token.clone());
                 }
             }
         }
@@ -70,9 +78,9 @@ impl OauthTokenCache {
 
         {
             let guard = self.cache.lock().await;
-            if let Some((ref token, fetched_at)) = *guard {
-                if fetched_at.elapsed() < self.refresh_interval {
-                    return Ok(token.clone());
+            if let Some(ct) = guard.as_ref() {
+                if Instant::now() < ct.expires_at {
+                    return Ok(ct.access_token.clone());
                 }
             }
         }
@@ -107,9 +115,25 @@ impl OauthTokenCache {
 
         let token_data: OauthResponse = super::http::json_body(resp).await?;
 
+        let raw_ttl = if token_data.expires_in == 0 {
+            FALLBACK_EXPIRES_IN
+        } else {
+            Duration::from_secs(token_data.expires_in)
+        };
+        let effective_ttl = raw_ttl.saturating_sub(REFRESH_SAFETY_MARGIN);
+        let ttl = if effective_ttl.is_zero() {
+            Duration::from_secs(1)
+        } else {
+            effective_ttl
+        };
+        let expires_at = Instant::now() + ttl;
+
         {
             let mut guard = self.cache.lock().await;
-            *guard = Some((token_data.access_token.clone(), Instant::now()));
+            *guard = Some(CachedToken {
+                access_token: token_data.access_token.clone(),
+                expires_at,
+            });
         }
 
         Ok(token_data.access_token)
@@ -142,5 +166,26 @@ where
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_response_parses_expires_in() {
+        let json = r#"{"access_token":"abc","expires_in":3600,"token_type":"Bearer"}"#;
+        let parsed: OauthResponse = serde_json::from_str(json).expect("parses");
+        assert_eq!(parsed.access_token, "abc");
+        assert_eq!(parsed.expires_in, 3600);
+    }
+
+    #[test]
+    fn oauth_response_missing_expires_in_defaults_to_zero() {
+        let json = r#"{"access_token":"abc"}"#;
+        let parsed: OauthResponse = serde_json::from_str(json).expect("parses");
+        assert_eq!(parsed.access_token, "abc");
+        assert_eq!(parsed.expires_in, 0);
     }
 }

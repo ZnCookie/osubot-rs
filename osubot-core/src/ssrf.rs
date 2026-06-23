@@ -12,6 +12,10 @@ pub fn is_blocked_url(url: &str) -> bool {
         Ok(u) => u,
         Err(_) => return true,
     };
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return true;
+    }
     let host_raw = match parsed.host_str() {
         Some(h) => h,
         None => return true,
@@ -49,6 +53,34 @@ pub fn is_blocked_url(url: &str) -> bool {
         host,
         "localhost" | "0.0.0.0" | "::1" | "ip6-localhost" | "ip6-loopback"
     ) || host.ends_with(".local")
+}
+
+/// `reqwest::redirect::Policy` 在每次 `Location` 跳转时调用 `check` 校验。
+/// 攻击者绕过 SSRF 的标准手法：302 → 内网。逐跳校验阻断此类旁路。
+pub fn redirect_policy<F>(check: F) -> reqwest::redirect::Policy
+where
+    F: Fn(&reqwest::Url) -> bool + Send + Sync + 'static,
+{
+    reqwest::redirect::Policy::custom(move |attempt| {
+        // 与 Policy::limited(5) 对齐：超过 5 次重定向后中断。
+        // 真实攻击者需要 ≤ 5 跳可达内网，5 跳足够；放行第 6 跳无收益。
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many redirects");
+        }
+        if check(attempt.url()) {
+            attempt.error("redirect to blocked url")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+/// Convenience wrapper for `redirect_policy` callbacks: takes a `&reqwest::Url`
+/// and returns whether the URL is blocked. Performs the same scheme + host
+/// checks as `is_blocked_url`. Use this from `http_client` constructors so
+/// the SSRF predicate is identical across `osubot-core` and `osubot-render`.
+pub fn is_blocked_redirect_url(url: &reqwest::Url) -> bool {
+    is_blocked_url(url.as_str())
 }
 
 #[cfg(test)]
@@ -97,5 +129,27 @@ mod tests {
     fn blocks_invalid_urls() {
         assert!(is_blocked_url("not-a-url"));
         assert!(is_blocked_url("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn blocks_non_http_schemes() {
+        assert!(is_blocked_url("file:///etc/passwd"));
+        assert!(is_blocked_url("ftp://example.com/"));
+        assert!(is_blocked_url("gopher://example.com/"));
+        assert!(is_blocked_url("data:text/html,<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn redirect_policy_constructs_without_panic() {
+        // reqwest 的 `Attempt` 类型所有字段都是私有的，单元测试无法直接
+        // 构造一个可调用的 `Attempt` 来断言 `redirect_policy` 在每跳上的行为
+        // （blocked URL、hop cap、内网目标）。redirect 跳转逻辑的端到端
+        // 覆盖交给集成测试（`osubot-core` 与 `osubot-render` 各自的
+        // `http_client` 在真实 HTTP 服务前的行为）。
+        // 这里只验证 `redirect_policy` 自身可以构造出来且闭包签名匹配。
+        let policy = redirect_policy(|u: &reqwest::Url| is_blocked_url(u.as_str()));
+        let public = reqwest::Url::parse("https://example.com/").unwrap();
+        let internal = reqwest::Url::parse("http://127.0.0.1/").unwrap();
+        let _ = (policy, public, internal);
     }
 }

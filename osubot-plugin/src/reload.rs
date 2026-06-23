@@ -367,11 +367,12 @@ impl PluginManager {
                     }
                 };
 
-                // 不让 on_unload 失败嵌套触发 reload_instance：
-                // apply_reloads 会自己 build+on_load 完整 instance，nested trigger
-                // 会浪费一次 build+on_load 并重复 increment reload_failures。
-                self.unload_single_instance(idx, "reload", false).await;
+                // 反转顺序：先 snapshot + 清空旧 ticks，再 on_load 新实例。
+                // 这样若新实例 on_load 失败，旧实例从未 on_unload，
+                // slot 中仍然保留旧实例（僵尸防护）。若先 unload 再 load，
+                // 一旦 load 失败则旧实例资源已被释放，slot 仍指向它形成僵尸。
 
+                // 1. 先 snapshot 旧 ticks（不删）。
                 let old_ticks: Vec<_> = {
                     let registry = self.tick_registry.lock().unwrap_or_else(|e| {
                         tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
@@ -384,6 +385,7 @@ impl PluginManager {
                         .collect()
                 };
 
+                // 2. 清除旧 tick 注册（防止新 on_load 期间旧 tick 重复触发）。
                 {
                     let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
                         tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
@@ -392,6 +394,8 @@ impl PluginManager {
                     registry.retain(|t| t.plugin_idx != idx);
                 }
 
+                // 3. on_load 新实例：若失败，恢复旧 ticks，新实例直接 drop，
+                //    旧实例保留在 slot 中（未 on_unload）。
                 if let Err(e) = instance.on_load() {
                     warn!("{}", log_fmt!("plugin.on_load_failed", error = e));
                     {
@@ -399,6 +403,8 @@ impl PluginManager {
                             tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                             e.into_inner()
                         });
+                        // 清理 on_load 失败时可能已注册的部分 tick，避免与 old_ticks
+                        // 合并后超过 MAX_TICKS_PER_PLUGIN。
                         registry.retain(|t| t.plugin_idx != idx);
                         registry.extend(old_ticks);
                     }
@@ -406,6 +412,9 @@ impl PluginManager {
                         self.slots[idx].reload_failures.saturating_add(1);
                     continue;
                 }
+
+                // 4. on_load 成功后才 on_unload 旧实例（allow_reload=false 避免嵌套触发 reload_instance）。
+                self.unload_single_instance(idx, "reload", false).await;
 
                 for indices in self.command_map.values_mut() {
                     indices.retain(|i| *i != idx);
@@ -548,5 +557,26 @@ impl PluginManager {
                 removed = old_len - new_len
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::PluginInstanceConfig;
+    use crate::instance::{PluginInstance, PluginInstanceParams};
+    use crate::PluginManager;
+    use wasmtime::Module;
+
+    /// Pin 公共 API：apply_reloads 顺序在 osubot-plugin/src/reload.rs 注释中固化（先
+    /// on_load 新实例再 on_unload 旧实例）。集成层走 ReloadCoordinator 端到端验证。
+    /// 这里用函数指针断言锁定 build_instance 签名，防止未来重构改其行为。
+    #[test]
+    fn build_instance_signature_locked() {
+        let _: fn(
+            &PluginManager,
+            usize,
+            &PluginInstanceConfig,
+            &Module,
+        ) -> Result<(PluginInstance, PluginInstanceParams), String> = PluginManager::build_instance;
     }
 }

@@ -27,6 +27,9 @@ pub fn http_client() -> &'static Client {
     CLIENT.get_or_init(|| {
         Client::builder()
             .timeout(Duration::from_secs(10))
+            .redirect(crate::ssrf::redirect_policy(
+                crate::ssrf::is_blocked_redirect_url,
+            ))
             .build()
             .expect("failed to build reqwest client")
     })
@@ -258,6 +261,10 @@ struct OsuStatistics {
 #[derive(Debug, serde::Deserialize)]
 struct OauthResponse {
     access_token: String,
+    /// osu! v2 OAuth token 约 1 小时过期。某些 osu! 端点可能不返回此字段，
+    /// 此时反序列化为 0 → OauthTokenCache 视为立即过期并刷新。
+    #[serde(default)]
+    expires_in: u64,
 }
 
 #[derive(Debug, serde::Deserialize)]

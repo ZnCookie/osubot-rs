@@ -30,7 +30,9 @@ pub fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(osubot_core::ssrf::redirect_policy(
+                osubot_core::ssrf::is_blocked_redirect_url,
+            ))
             .build()
             .expect("failed to build reqwest client")
     })

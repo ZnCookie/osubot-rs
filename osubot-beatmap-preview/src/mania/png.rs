@@ -402,9 +402,10 @@ fn build_timing_lines(timing_points: &[TimingPoint], chart_end_time: i64) -> Vec
         } else {
             1
         };
-        let step = point.beat_length / subdivision as f64;
-        // NaN steps fall through (single line emitted, like Python); zero/negative
-        // steps would loop forever, so skip them.
+        // 钳制 beat_length 下限：避免恶意 .osu 文件 0.001 / NaN 触发死循环。
+        // NaN 走 .max(1.0) 也会被钳到 1.0（任何数与 NaN 比较都为 false，max 返回另一边）。
+        let safe_beat_length = point.beat_length.max(1.0);
+        let step = safe_beat_length / subdivision as f64;
         if step <= 0.0 {
             continue;
         }
@@ -459,4 +460,32 @@ fn draw_sv_indicator(image: &mut Img, sv_change: (i64, f64), layout: &RenderLayo
         SV_TEXT_FONT_SIZE,
         SV_TEXT_COLOR,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tp(time: f64, beat_length: f64) -> TimingPoint {
+        TimingPoint {
+            time,
+            beat_length,
+            meter: 4,
+            uninherited: true,
+            kiai_mode: false,
+        }
+    }
+
+    #[test]
+    fn build_timing_lines_clamps_tiny_beat_length() {
+        let tps = vec![make_tp(0.0, 0.001)];
+        let start = std::time::Instant::now();
+        let lines = build_timing_lines(&tps, 1000);
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "build_timing_lines hung: {} lines in {:?}",
+            lines.len(),
+            start.elapsed()
+        );
+    }
 }

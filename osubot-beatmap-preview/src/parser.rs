@@ -18,7 +18,20 @@ use crate::errors::{PreviewError, Result};
 use crate::models::*;
 use std::collections::HashMap;
 
+/// 单文件最大 50 MB，防止恶意大文件触发 OOM。
+const MAX_BEATMAP_BYTES: usize = 50 * 1024 * 1024;
+/// 最多 100k hit object / timing point，覆盖真实谱面 5–10 倍。
+const MAX_HIT_OBJECTS: usize = 100_000;
+const MAX_TIMING_POINTS: usize = 100_000;
+
 pub fn parse_beatmap_from_bytes(bytes: &[u8]) -> Result<Beatmap> {
+    if bytes.len() > MAX_BEATMAP_BYTES {
+        return Err(PreviewError::new(format!(
+            "beatmap: input size {} exceeds maximum {} bytes",
+            bytes.len(),
+            MAX_BEATMAP_BYTES
+        )));
+    }
     let content = String::from_utf8_lossy(bytes);
     let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
     parse_beatmap_str(content)
@@ -26,6 +39,25 @@ pub fn parse_beatmap_from_bytes(bytes: &[u8]) -> Result<Beatmap> {
 
 fn parse_beatmap_str(content: &str) -> Result<Beatmap> {
     let sections = split_sections(content);
+
+    if let Some(tp_lines) = sections.get("TimingPoints") {
+        if tp_lines.len() > MAX_TIMING_POINTS {
+            return Err(PreviewError::new(format!(
+                "beatmap: too many timing points ({} > {})",
+                tp_lines.len(),
+                MAX_TIMING_POINTS
+            )));
+        }
+    }
+    if let Some(ho_lines) = sections.get("HitObjects") {
+        if ho_lines.len() > MAX_HIT_OBJECTS {
+            return Err(PreviewError::new(format!(
+                "beatmap: too many hit objects ({} > {})",
+                ho_lines.len(),
+                MAX_HIT_OBJECTS
+            )));
+        }
+    }
 
     let metadata = match sections.get("Metadata") {
         Some(lines) => parse_key_value(lines),
@@ -278,7 +310,8 @@ fn parse_slider_fields(parts: &[&str]) -> Option<SliderFields> {
         let (x, y) = p.split_once(':')?;
         points.push((x.parse().ok()?, y.parse().ok()?));
     }
-    let repeats: i32 = parts.get(6)?.parse().ok()?;
+    let raw_repeats: i32 = parts.get(6)?.parse().ok()?;
+    let repeats = raw_repeats.clamp(1, 9000);
     let pixel_length: f64 = parts.get(7)?.parse().ok()?;
     if !pixel_length.is_finite() || !(0.0..=1e6).contains(&pixel_length) {
         return None;
@@ -471,10 +504,13 @@ fn parse_catch(
 }
 
 fn parse_mania(lines: &[&str], difficulty: &KvSection) -> Option<Vec<ManiaHitObject>> {
-    let key_count = difficulty.get_f64("CircleSize")? as i64;
-    if key_count < 1 {
+    let raw_key_count = difficulty.get_f64("CircleSize")?;
+    // 显式拒绝 < 1.0 与 NaN：clamp(1.0, 18.0) 对 < 1.0 会静默修复为 1.0（错误地接受
+    // 无效谱面），对 NaN 透明返回 NaN。无效 CircleSize 必须报错而非自动修复。
+    if !raw_key_count.is_finite() || raw_key_count < 1.0 {
         return None;
     }
+    let key_count = raw_key_count.clamp(1.0, 18.0) as i64;
     let mut objects = Vec::with_capacity(lines.len());
     for line in lines {
         let parts: Vec<&str> = line.split(',').map(|p| p.trim()).collect();
@@ -757,6 +793,91 @@ mod tests {
             obj.end_time - obj.start_time > 0,
             "duration must be positive, got {}",
             obj.end_time - obj.start_time
+        );
+    }
+
+    #[test]
+    fn parse_slider_fields_clamps_huge_repeats() {
+        let line = "256,192,1000,2,0,B|0:0|0:1,2147483647,100,0:0:0:0:";
+        let parts: Vec<&str> = line.split(',').map(|p| p.trim()).collect();
+        let sf = parse_slider_fields(&parts).expect("valid parts");
+        assert!(sf.repeats >= 1 && sf.repeats <= 9000, "got {}", sf.repeats);
+    }
+
+    #[test]
+    fn parse_slider_fields_rejects_negative_repeats() {
+        let line = "256,192,1000,2,0,B|0:0|0:1,-5,100,0:0:0:0:";
+        let parts: Vec<&str> = line.split(',').map(|p| p.trim()).collect();
+        let sf = parse_slider_fields(&parts).expect("valid parts");
+        assert_eq!(sf.repeats, 1);
+    }
+
+    fn mania_lane_for(circle_size: &str, x: i64) -> Option<i32> {
+        let content = format!(
+            "osu file format v14\n\n[Metadata]\nTitle:t\n\n[General]\nMode:3\n\n\
+             [Difficulty]\nCircleSize:{circle_size}\n\n[TimingPoints]\n0,500,4,0,0,100,1,0\n\n\
+             [HitObjects]\n{x},192,1000,1,0"
+        );
+        let bm = parse_beatmap_str(&content).ok()?;
+        if let HitObjects::Mania(v) = &bm.hit_objects {
+            v.first().map(|o| o.lane)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn parse_mania_clamps_huge_circle_size() {
+        let lane = mania_lane_for("1000000000", 200).expect("parse ok");
+        assert!((0..=17).contains(&lane), "lane out of [0,17]: {lane}");
+    }
+
+    #[test]
+    fn parse_mania_rejects_zero_circle_size() {
+        assert!(mania_lane_for("0", 200).is_none());
+    }
+
+    #[test]
+    fn parse_mania_rejects_nan_circle_size() {
+        // NaN 必须被显式拒绝：clamp 对 NaN 透明，下游 as i64 = 0 会触发 OOB。
+        assert!(mania_lane_for("NaN", 200).is_none());
+    }
+
+    #[test]
+    fn parse_beatmap_rejects_oversize_input() {
+        let mut content = String::from(
+            "osu file format v14\n\n[Metadata]\nTitle:t\n\n[Difficulty]\n\n\
+             [TimingPoints]\n0,500,4,0,0,100,1,0\n\n[HitObjects]\n",
+        );
+        content.push_str(&"0,0,0,1,0\n".repeat(60 * 1024 * 1024 / 8));
+        let result = parse_beatmap_from_bytes(content.as_bytes());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.message();
+        assert!(
+            msg.contains("exceeds") || msg.contains("too large"),
+            "got: {msg}"
+        );
+    }
+
+    fn header() -> &'static str {
+        "osu file format v14\n\n[Metadata]\nTitle:t\n\n[Difficulty]\n\n[TimingPoints]\n"
+    }
+
+    #[test]
+    fn parse_beatmap_rejects_too_many_hit_objects() {
+        let mut content = String::from(header());
+        content.push_str("0,500,4,0,0,100,1,0\n\n[HitObjects]\n");
+        for i in 0..200_000 {
+            content.push_str(&format!("0,0,{i},1,0\n"));
+        }
+        let result = parse_beatmap_from_bytes(content.as_bytes());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.message();
+        assert!(
+            msg.contains("hit objects") || msg.contains("too many"),
+            "got: {msg}"
         );
     }
 }
