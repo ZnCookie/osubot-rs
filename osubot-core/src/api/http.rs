@@ -14,7 +14,7 @@ const MAX_RETRY_AFTER_SECS: u64 = 300;
 const BODY_LOG_PREVIEW_BYTES: usize = 512;
 const BODY_LOG_PREVIEW_SUFFIX: &str = "...[truncated]";
 
-pub(crate) struct RetryConfig {
+pub struct RetryConfig {
     pub max_retries: u32,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
@@ -29,8 +29,7 @@ impl RetryConfig {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn image_default() -> Self {
+    pub fn image_default() -> Self {
         Self {
             max_retries: 4,
             initial_backoff: Duration::from_millis(500),
@@ -39,7 +38,7 @@ impl RetryConfig {
     }
 }
 
-pub(crate) enum RetryAction {
+pub enum RetryAction {
     Backoff,
     Wait(u64),
     Abort,
@@ -93,7 +92,7 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     let client = http_client();
     let url = format!("https://osu.ppy.sh/osu/{}", beatmap_id);
 
-    let bytes = retry_on_transient(2, || async {
+    let bytes = retry_on_transient(4, || async {
         let resp = client.get(&url).send().await?;
 
         classify_http_error(&resp)?;
@@ -176,7 +175,7 @@ pub(crate) fn compute_backoff(attempt: u32, config: &RetryConfig) -> Duration {
     Duration::from_millis(min_ms + jitter_ms)
 }
 
-pub(crate) async fn retry_with_backoff<T, E, F, Fut>(
+pub async fn retry_with_backoff<T, E, F, Fut>(
     config: &RetryConfig,
     classify: impl Fn(&E) -> RetryAction,
     operation: F,
@@ -260,7 +259,7 @@ pub(crate) async fn authenticated_get(
         .acquire()
         .await
         .map_err(|_| ApiError::ClientRateLimited)?;
-    retry_on_transient(2, || {
+    retry_on_transient(4, || {
         super::oauth::retry_on_401(oauth, 5, || async {
             let token = oauth.get_token().await?;
             let resp = http_client()
@@ -433,11 +432,13 @@ mod tests {
         };
         let attempt = std::sync::atomic::AtomicU32::new(0);
         let start = std::time::Instant::now();
-        let result: Result<i32, &str> =
-            retry_with_backoff(&config, |e| match *e {
+        let result: Result<i32, &str> = retry_with_backoff(
+            &config,
+            |e| match *e {
                 "wait" => RetryAction::Wait(1),
                 _ => RetryAction::Abort,
-            }, || {
+            },
+            || {
                 let a = &attempt;
                 async move {
                     if a.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
@@ -446,11 +447,15 @@ mod tests {
                         Ok(77)
                     }
                 }
-            })
-            .await;
+            },
+        )
+        .await;
         assert_eq!(result.unwrap(), 77);
         // Wait(1) should have slept ~1 second
-        assert!(start.elapsed() >= Duration::from_millis(900), "Wait action should sleep ~1s");
+        assert!(
+            start.elapsed() >= Duration::from_millis(900),
+            "Wait action should sleep ~1s"
+        );
     }
 
     #[tokio::test]

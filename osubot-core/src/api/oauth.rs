@@ -160,7 +160,8 @@ where
             Ok(val) => return Ok(val),
             Err(ApiError::OAuthError) if attempt < max_retries => {
                 oauth.invalidate().await;
-                let delay = super::http::compute_backoff(attempt, &super::http::RetryConfig::api_default());
+                let delay =
+                    super::http::compute_backoff(attempt, &super::http::RetryConfig::api_default());
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }

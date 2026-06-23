@@ -137,59 +137,50 @@ fn detect_mime_and_ext_fallback(url: &str) -> (&'static str, &'static str) {
 }
 
 async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, CacheError> {
-    use tokio::time::Duration;
+    use osubot_core::api::{retry_with_backoff, RetryAction, RetryConfig};
 
-    for attempt in 0..3 {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
-        }
-        match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Some(len) = resp.content_length() {
-                    if len > MAX_IMAGE_BYTES {
-                        return Err(CacheError::TooLarge);
-                    }
+    let config = RetryConfig::image_default();
+    retry_with_backoff(
+        &config,
+        |e| match e {
+            CacheError::Network(_) | CacheError::ServerError(_) => RetryAction::Backoff,
+            _ => RetryAction::Abort,
+        },
+        || async {
+            let resp = client.get(url).send().await.map_err(CacheError::Network)?;
+
+            if resp.status().is_server_error() {
+                return Err(CacheError::ServerError(resp.status().as_u16()));
+            }
+            if !resp.status().is_success() {
+                return Err(CacheError::ClientError {
+                    status: resp.status().as_u16(),
+                });
+            }
+
+            if let Some(len) = resp.content_length() {
+                if len > MAX_IMAGE_BYTES {
+                    return Err(CacheError::TooLarge);
                 }
-                let mut bytes = Vec::new();
-                let mut stream = resp.bytes_stream();
-                use futures_util::StreamExt;
-                let mut body_failed = false;
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(chunk) => {
-                            if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
-                                return Err(CacheError::TooLarge);
-                            }
-                            bytes.extend_from_slice(&chunk);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, url = %url, attempt, "{}", log_fmt!("render.body_download_failed"));
-                            body_failed = true;
-                            break;
-                        }
-                    }
+            }
+
+            let mut bytes = Vec::new();
+            let mut stream = resp.bytes_stream();
+            use futures_util::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| {
+                    tracing::warn!(error = %e, url = %url, "{}", log_fmt!("render.body_download_failed"));
+                    CacheError::Network(e)
+                })?;
+                if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
+                    return Err(CacheError::TooLarge);
                 }
-                if body_failed {
-                    continue;
-                }
-                return Ok(bytes);
+                bytes.extend_from_slice(&chunk);
             }
-            Ok(resp) if resp.status().is_server_error() => {
-                tracing::warn!(status = %resp.status(), url = %url, "{}", log_fmt!("render.server_error_retry"));
-                continue;
-            }
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                tracing::warn!(status = %status, url = %url, "{}", log_fmt!("render.client_error_abort"));
-                return Err(CacheError::ClientError { status });
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, url = %url, "{}", log_fmt!("render.request_failed_retry"));
-                continue;
-            }
-        }
-    }
-    Err(CacheError::RetriesExhausted)
+            Ok(bytes)
+        },
+    )
+    .await
 }
 
 struct FetchLockGuard {
