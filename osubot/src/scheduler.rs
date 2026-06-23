@@ -15,6 +15,7 @@ use osubot_core::{
 };
 
 use crate::config::Config;
+use crate::ws_loop::SHUTDOWN_NOTIFY;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -125,7 +126,7 @@ impl Scheduler {
             };
             tokio::select! {
                 _ = time::sleep(time::Duration::from_secs(interval_secs)) => {}
-                _ = wait_for_shutdown(self.shutdown.clone()) => break,
+                _ = wait_for_shutdown() => break,
             }
             self.process_due_users().await;
             self.try_cleanup().await;
@@ -493,14 +494,7 @@ impl Scheduler {
     }
 }
 
-// NOTE: polls the shutdown flag every 200ms rather than using tokio::sync::Notify.
-// The flag is an Arc<AtomicBool> shared with several subsystems; a 200ms shutdown
-// latency is acceptable and avoids threading a Notify through every caller.
-async fn wait_for_shutdown(flag: Arc<AtomicBool>) {
-    loop {
-        if flag.load(Ordering::Acquire) {
-            return;
-        }
-        time::sleep(time::Duration::from_millis(200)).await;
-    }
+/// 等待 shutdown 信号（通过 Notify 立即响应）。
+async fn wait_for_shutdown() {
+    SHUTDOWN_NOTIFY.notified().await;
 }

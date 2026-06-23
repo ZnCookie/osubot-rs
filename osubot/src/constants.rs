@@ -3,5 +3,5 @@
 
 /// WebSocket 保活 ping 间隔（秒）
 pub const PING_INTERVAL_SECS: u64 = 30;
-/// 重连时等待 tick loop 完成的超时（秒），需大于插件 dispatch 超时（10s）
-pub const TICK_HANDLE_SHUTDOWN_SECS: u64 = 15;
+/// 重连时等待 tick loop 完成的超时（秒）
+pub const TICK_HANDLE_SHUTDOWN_SECS: u64 = 3;

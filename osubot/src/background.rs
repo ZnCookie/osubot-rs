@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 
 use crate::reload::ReloadCoordinator;
 use crate::runtime::RuntimeHandles;
+use crate::ws_loop::SHUTDOWN_NOTIFY;
 use osubot_core::api;
 use osubot_core::irc::{IrcClient, IrcConfig as CoreIrcConfig};
 use osubot_core::log_fmt;
@@ -189,6 +190,7 @@ pub(super) fn spawn_shutdown_signal(shutdown: Arc<AtomicBool>) {
         ctrl_c.await;
         info!("{}", log_fmt!("main.shutdown_signal"));
         shutdown_clone.store(true, Ordering::Release);
+        SHUTDOWN_NOTIFY.notify_waiters();
     });
 }
 
