@@ -11,6 +11,25 @@ pub(crate) const API_VERSION: &str = "20260408";
 
 const MAX_RETRY_AFTER_SECS: u64 = 300;
 
+const BODY_LOG_PREVIEW_BYTES: usize = 512;
+const BODY_LOG_PREVIEW_SUFFIX: &str = "...[truncated]";
+
+fn truncate_for_log(body: &str, max: usize) -> String {
+    if body.len() <= max {
+        body.to_string()
+    } else {
+        // 在 UTF-8 char 边界上截断，避免切坏 multi-byte 字符
+        let mut end = max;
+        while end > 0 && !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut s = String::with_capacity(end + BODY_LOG_PREVIEW_SUFFIX.len());
+        s.push_str(&body[..end]);
+        s.push_str(BODY_LOG_PREVIEW_SUFFIX);
+        s
+    }
+}
+
 pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> {
     let cache_path = beatmap_cache_dir().join(format!("{}.osu", beatmap_id));
 
@@ -85,7 +104,7 @@ pub(crate) async fn json_body<T: serde::de::DeserializeOwned>(
     let url = resp.url().to_string();
     let body = resp.text().await.map_err(ApiError::Http)?;
     serde_json::from_str::<T>(&body).map_err(|e| {
-        tracing::warn!(%status, %url, body = %body, error = %e, "{}", log_fmt!("api.deserialize_failed"));
+        tracing::warn!(%status, %url, body = %truncate_for_log(&body, BODY_LOG_PREVIEW_BYTES), error = %e, "{}", log_fmt!("api.deserialize_failed"));
         ApiError::Deserialization(e.to_string())
     })
 }
@@ -242,5 +261,29 @@ mod tests {
             diff < delay_31,
             "attempt=31 and attempt=100 should share same magnitude, got {delay_31:?} vs {delay_100:?}"
         );
+    }
+
+    #[test]
+    fn truncate_for_log_short_body_unchanged() {
+        assert_eq!(truncate_for_log("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_for_log_long_body_truncated() {
+        let s = "a".repeat(600) + "ß";
+        let out = truncate_for_log(&s, 10);
+        assert!(out.ends_with(BODY_LOG_PREVIEW_SUFFIX));
+        // 10 个 'a'（全 ASCII）+ 后缀
+        assert!(out.starts_with("aaaaaaaaaa"));
+    }
+
+    #[test]
+    fn truncate_for_log_respects_utf8_boundary() {
+        // "ß" 占 2 字节；若按字节硬切在 11，会切坏
+        let s = "aaaaaaaaaaß".to_string(); // 10 个 'a' (10B) + "ß" (2B) = 12B
+        let out = truncate_for_log(&s, 11);
+        // 应回退到 10 字节边界
+        assert!(out.starts_with("aaaaaaaaaa"));
+        assert!(out.ends_with(BODY_LOG_PREVIEW_SUFFIX));
     }
 }
