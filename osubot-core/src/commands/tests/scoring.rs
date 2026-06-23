@@ -282,7 +282,7 @@ fn test_hash_clamp_max() {
             qq: None,
             beatmap_id: None,
             score_id: None,
-            limit: 1000,
+            limit: 200,
             is_summary: true,
             limit_end: None,
             filters: None,
@@ -1276,7 +1276,7 @@ fn test_s_implicit_limit_clamped() {
             beatmap_id: Some(123456),
             score_id: None,
             filters: None,
-            limit: 1000,
+            limit: 200,
             limit_end: None,
             is_all: false,
         }

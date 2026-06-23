@@ -1,6 +1,6 @@
 use crate::types::GameMode;
 
-pub(crate) const MAX_LIMIT: u32 = 1000;
+pub(crate) const MAX_LIMIT: u32 = 200;
 pub(crate) const SCORE_ID_THRESHOLD: u64 = 10_000_000;
 
 /// Extract `:mode` suffix from rest. Returns (rest_without_mode, mode).

@@ -41,7 +41,7 @@ use tracing::{error, info, warn};
 use onebot::{parse_onebot_message, send_group_msg, OneBotApi, OneBotResponse, WriteSink};
 
 /// Maximum number of scores to fetch when filters are active.
-const SCORE_API_FETCH_LIMIT: u32 = 100;
+const SCORE_API_FETCH_LIMIT: u32 = 200;
 
 pub(crate) struct InFlightGuard(Arc<AtomicUsize>);
 
