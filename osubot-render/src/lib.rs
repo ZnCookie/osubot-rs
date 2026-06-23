@@ -374,6 +374,7 @@ pub struct ScoreListCardParams<'a> {
     pub count_text: &'a str,
     pub cover_images: Vec<Option<image::DynamicImage>>,
     pub hero_cover_url: &'a str,
+    pub index_offset: usize,
 }
 
 pub async fn render_score_list_card(
@@ -386,6 +387,7 @@ pub async fn render_score_list_card(
         count_text,
         cover_images,
         hero_cover_url,
+        index_offset,
     } = params;
     let UserContext {
         username,
@@ -516,6 +518,7 @@ pub async fn render_score_list_card(
         pp_change,
         global_rank_change,
         country_rank_change,
+        index_offset,
     };
     let html = score_list_style::wrap_score_list_html(&html_params);
 

@@ -343,6 +343,7 @@ pub(super) async fn render_and_send_score_list(
             count_text: score_count_text,
             cover_images,
             hero_cover_url: &hero_cover_url,
+            index_offset: 0,
         }),
     )
     .await;

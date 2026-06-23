@@ -511,6 +511,7 @@ pub(crate) async fn handle_score_query(
                         count_text: score_count_text,
                         cover_images,
                         hero_cover_url: &hero_cover_url,
+                        index_offset: 0,
                     }),
                 )
                 .await;
@@ -589,6 +590,12 @@ pub(crate) async fn handle_best_score_query(
 
     let is_self = username.is_none() && qq.is_none();
     let raw_limit = limit_end.unwrap_or(limit);
+    let has_client_filter = filters.is_some_and(|f| !f.is_empty());
+    let api_limit = if has_client_filter {
+        raw_limit.max(SCORE_API_FETCH_LIMIT)
+    } else {
+        raw_limit
+    };
 
     let (user_id, resolved_username, user_stats, score_result) = if is_self {
         let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
@@ -607,12 +614,12 @@ pub(crate) async fn handle_best_score_query(
 
         let (stats_result, scores) = tokio::join!(
             api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
-            best_scores_dedup().run_or_wait((uid, mode, raw_limit), move || {
+            best_scores_dedup().run_or_wait((uid, mode, api_limit), move || {
                 let rate_limiter = ctx.rate_limiter.clone();
                 let oauth = ctx.oauth.clone();
 
                 async move {
-                    api::get_user_best(&rate_limiter, &oauth, uid, mode, raw_limit)
+                    api::get_user_best(&rate_limiter, &oauth, uid, mode, api_limit)
                         .await
                         .map_err(|e| {
                             warn!(user_id = uid, mode = ?mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
@@ -651,12 +658,12 @@ pub(crate) async fn handle_best_score_query(
 
         (uid, name, user_stats, scores)
     } else {
-        let qq = msg.user_id;
+        let qq_for_error = msg.user_id;
         let (uid, name, user_stats) = match resolve_score_user(
             ctx,
             msg,
             &username.map(|s| s.to_string()),
-            &Some(qq),
+            &qq,
             mode,
             resp_tx,
         )
@@ -670,19 +677,19 @@ pub(crate) async fn handle_best_score_query(
         let dedup_mode = mode;
 
         let scores: Result<Vec<Score>, String> = best_scores_dedup()
-            .run_or_wait((uid, mode, raw_limit), move || {
+            .run_or_wait((uid, mode, api_limit), move || {
                 let dedup_rate_limiter = ctx.rate_limiter.clone();
                 let dedup_oauth = ctx.oauth.clone();
 
                 async move {
-                    api::get_user_best(&dedup_rate_limiter, &dedup_oauth, uid, dedup_mode, raw_limit)
+                    api::get_user_best(&dedup_rate_limiter, &dedup_oauth, uid, dedup_mode, api_limit)
                         .await
                         .map_err(|e| {
                             warn!(user_id = uid, mode = ?dedup_mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
                             if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
                                 tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
                             }
-                            api_error_msg(qq, &e)
+                            api_error_msg(qq_for_error, &e)
                         })
                 }
             })
@@ -705,6 +712,9 @@ pub(crate) async fn handle_best_score_query(
                 return;
             }
 
+            ctx.last_beatmap
+                .set(msg.group_id, scores[0].beatmap_id as u32);
+
             if let Some(filters) = filters {
                 scores.retain(|s| score_matches_filters(s, filters));
                 if scores.is_empty() {
@@ -719,6 +729,7 @@ pub(crate) async fn handle_best_score_query(
                 }
             }
 
+            let mut index_offset: usize = 0;
             if is_summary {
                 if let Some(end) = limit_end {
                     let start = (limit - 1) as usize;
@@ -736,6 +747,7 @@ pub(crate) async fn handle_best_score_query(
                         return;
                     }
                     let end = end.min(scores.len());
+                    index_offset = start;
                     let _ = scores.drain(..start);
                     scores.truncate(end - start);
                 }
@@ -830,6 +842,7 @@ pub(crate) async fn handle_best_score_query(
                         count_text: score_count_text,
                         cover_images,
                         hero_cover_url: &hero_cover_url,
+                        index_offset,
                     }),
                 )
                 .await;
