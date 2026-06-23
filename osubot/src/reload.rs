@@ -174,16 +174,19 @@ impl ReloadCoordinator {
             let Some(()) = msg else { break };
             let mut deadline = tokio::time::Instant::now() + Duration::from_millis(500);
             loop {
-                match tokio::time::timeout_at(deadline, rx.recv()).await {
-                    Ok(Some(())) => {
-                        deadline = tokio::time::Instant::now() + Duration::from_millis(500);
-                        continue;
-                    }
-                    Ok(None) => return Ok(()),
-                    Err(_) => {
-                        self.reload(&mut watcher, &self.plugin_dir).await;
-                        break;
-                    }
+                tokio::select! {
+                    _ = crate::shutdown::wait_for_shutdown(&shutdown) => break,
+                    result = tokio::time::timeout_at(deadline, rx.recv()) => match result {
+                        Ok(Some(())) => {
+                            deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+                            continue;
+                        }
+                        Ok(None) => return Ok(()),
+                        Err(_) => {
+                            self.reload(&mut watcher, &self.plugin_dir).await;
+                            break;
+                        }
+                    },
                 }
             }
         }
