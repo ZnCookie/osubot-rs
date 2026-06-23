@@ -49,8 +49,10 @@ impl XfsUpstream {
         oauth: Arc<OauthTokenCache>,
         api_rate_limiter: Arc<RateLimiter>,
     ) -> Self {
-        // Use random self_id when not explicitly configured, to avoid
-        // identity conflicts with other connected OneBot clients.
+        // Use a random self_id when not explicitly configured, to reduce identity
+        // conflicts with other connected OneBot clients. NOTE: random generation has
+        // a small but non-zero collision probability; prefer setting self_id explicitly
+        // in config for production deployments.
         let self_id = cfg.self_id.unwrap_or_else(|| {
             let mut rng = rand::rng();
             rng.random_range(100000000..999999999i64)

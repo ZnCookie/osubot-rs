@@ -12,8 +12,19 @@ pub enum GameMode {
     Mania = 3,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidGameMode(pub i64);
+
+impl fmt::Display for InvalidGameMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid game mode: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidGameMode {}
+
 impl TryFrom<u8> for GameMode {
-    type Error = ();
+    type Error = InvalidGameMode;
 
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
@@ -21,13 +32,13 @@ impl TryFrom<u8> for GameMode {
             1 => Ok(GameMode::Taiko),
             2 => Ok(GameMode::Catch),
             3 => Ok(GameMode::Mania),
-            _ => Err(()),
+            _ => Err(InvalidGameMode(v as i64)),
         }
     }
 }
 
 impl TryFrom<i32> for GameMode {
-    type Error = ();
+    type Error = InvalidGameMode;
 
     fn try_from(v: i32) -> Result<Self, Self::Error> {
         match v {
@@ -35,7 +46,7 @@ impl TryFrom<i32> for GameMode {
             1 => Ok(GameMode::Taiko),
             2 => Ok(GameMode::Catch),
             3 => Ok(GameMode::Mania),
-            _ => Err(()),
+            _ => Err(InvalidGameMode(v as i64)),
         }
     }
 }
@@ -145,15 +156,15 @@ mod tests {
         assert_eq!(GameMode::try_from(1u8), Ok(GameMode::Taiko));
         assert_eq!(GameMode::try_from(2u8), Ok(GameMode::Catch));
         assert_eq!(GameMode::try_from(3u8), Ok(GameMode::Mania));
-        assert_eq!(GameMode::try_from(4u8), Err(()));
-        assert_eq!(GameMode::try_from(255u8), Err(()));
+        assert_eq!(GameMode::try_from(4u8), Err(InvalidGameMode(4)));
+        assert_eq!(GameMode::try_from(255u8), Err(InvalidGameMode(255)));
     }
 
     #[test]
     fn test_try_from_i32() {
         assert_eq!(GameMode::try_from(0i32), Ok(GameMode::Osu));
-        assert_eq!(GameMode::try_from(-1i32), Err(()));
-        assert_eq!(GameMode::try_from(4i32), Err(()));
+        assert_eq!(GameMode::try_from(-1i32), Err(InvalidGameMode(-1)));
+        assert_eq!(GameMode::try_from(4i32), Err(InvalidGameMode(4)));
     }
 
     #[test]

@@ -14,6 +14,8 @@ pub struct RateLimiter {
     notify: Arc<Notify>,
     burst: u32,
     per_minute: u32,
+    // INVARIANT: this Mutex is never held across .await points; the guard is
+    // dropped synchronously within the same statement.
     refill_handle: StdMutex<tokio::task::JoinHandle<()>>,
     refill_respawning: Arc<AtomicBool>,
     dropped: AtomicBool,

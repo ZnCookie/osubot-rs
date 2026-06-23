@@ -78,7 +78,7 @@ pub async fn build_profile_html(
 
 /// 格式化 pp 变化量的小数位(整数去掉小数点,小数保留 2 位)
 fn format_pp_delta(delta: f64) -> String {
-    if delta.fract() == 0.0 {
+    if delta.fract().abs() < f64::EPSILON {
         format!("{}", delta as i64)
     } else {
         format!("{delta:.2}")

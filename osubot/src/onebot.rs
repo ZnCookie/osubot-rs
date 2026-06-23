@@ -231,8 +231,8 @@ pub(crate) async fn send_group_msg_with_image(
     group_id: i64,
     image_data: &[u8],
 ) -> Result<(), WsError> {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
+    use base64::prelude::*;
+    let b64 = BASE64_STANDARD.encode(image_data);
     let segments = serde_json::json!([
         {
             "type": "image",

@@ -492,14 +492,8 @@ impl PluginManager {
 
         // 按 old_to_new 掩码同步裁剪 7 个并行 Vec。
         fn filter_by_mask<T>(v: &mut Vec<T>, mask: &[Option<usize>]) {
-            let mut taken = std::mem::take(v);
-            let mut i = 0;
-            taken.retain(|_| {
-                let keep = mask[i].is_some();
-                i += 1;
-                keep
-            });
-            *v = taken;
+            let mut keep = mask.iter().map(Option::is_some);
+            v.retain(|_| keep.next().unwrap_or(false));
         }
         filter_by_mask(&mut self.instances, &old_to_new);
         filter_by_mask(&mut self.modules, &old_to_new);

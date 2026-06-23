@@ -17,6 +17,28 @@ pub enum PluginDispatchPanic {
 }
 
 impl PluginManager {
+    /// 累加插件实例的连续错误计数；达到阈值时重载该实例。
+    /// `consecutive_key` 为达到阈值（触发重载）时的日志 key；
+    /// `skip_reload_key` 若提供，则在未达到阈值时记录（用于超时场景）。
+    pub(crate) fn record_exec_error(
+        &mut self,
+        idx: usize,
+        name: &str,
+        kind: &'static str,
+        consecutive_key: &'static str,
+        skip_reload_key: Option<&'static str>,
+    ) {
+        self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
+        if self.lost_instances[idx] >= self.lost_instances_threshold {
+            tracing::warn!("{}", log_fmt!(consecutive_key, kind = kind, name = name));
+            if let Err(re) = self.reload_instance(idx) {
+                tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
+            }
+        } else if let Some(skip_key) = skip_reload_key {
+            tracing::warn!("{}", log_fmt!(skip_key, kind = kind, name = name));
+        }
+    }
+
     /// Process a completed plugin execution. Puts the instance back and handles error counting.
     /// Brief `&mut self`, no `.await`.
     /// Returns the plugin action for the caller to evaluate.
@@ -36,16 +58,7 @@ impl PluginManager {
             Ok(PluginDispatchResult::Ok(PluginAction::Intercepted)) => PluginAction::Intercepted,
             Ok(PluginDispatchResult::Ok(PluginAction::Next)) => PluginAction::Next,
             Ok(PluginDispatchResult::PluginError(e)) => {
-                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if self.lost_instances[idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!("plugin.consecutive_error_reload", kind = kind, name = name)
-                    );
-                    if let Err(re) = self.reload_instance(idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
-                    }
-                }
+                self.record_exec_error(idx, name, kind, "plugin.consecutive_error_reload", None);
                 tracing::warn!(
                     "{}",
                     log_fmt!("plugin.error", kind = kind, name = name, error = e)
@@ -62,16 +75,7 @@ impl PluginManager {
                         error = join_err
                     )
                 );
-                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if self.lost_instances[idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!("plugin.consecutive_panic_reload", kind = kind, name = name)
-                    );
-                    if let Err(e) = self.reload_instance(idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = e));
-                    }
-                }
+                self.record_exec_error(idx, name, kind, "plugin.consecutive_panic_reload", None);
                 PluginAction::Next
             }
             Err(PluginDispatchPanic::Timeout) => {
@@ -85,25 +89,13 @@ impl PluginManager {
                     )
                 );
                 self.engine.increment_epoch();
-                self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-                if self.lost_instances[idx] >= self.lost_instances_threshold {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!(
-                            "plugin.consecutive_timeout_reload",
-                            kind = kind,
-                            name = name
-                        )
-                    );
-                    if let Err(re) = self.reload_instance(idx) {
-                        tracing::error!("{}", log_fmt!("plugin.reload_failed", error = re));
-                    }
-                } else {
-                    tracing::warn!(
-                        "{}",
-                        log_fmt!("plugin.timeout_skip_reload", kind = kind, name = name)
-                    );
-                }
+                self.record_exec_error(
+                    idx,
+                    name,
+                    kind,
+                    "plugin.consecutive_timeout_reload",
+                    Some("plugin.timeout_skip_reload"),
+                );
                 PluginAction::Next
             }
         }

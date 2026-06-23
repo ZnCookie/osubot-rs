@@ -665,6 +665,8 @@ pub(crate) fn spacing_timing_points_for_png(timing_points: &[TimingPoint]) -> Ve
             } else {
                 TimingPoint {
                     time: point.time,
+                    // NAN is a sentinel for "no timing point yet"; always checked
+                    // before use and never propagated to output.
                     beat_length: f64::NAN,
                     meter: point.meter,
                     uninherited: false,
