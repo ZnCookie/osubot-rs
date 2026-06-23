@@ -231,6 +231,14 @@ pub(crate) fn beatmap_scores_dedup() -> &'static BeatmapScoresDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
+pub(crate) type BestScoresDedup =
+    RequestDedup<(i64, GameMode, u32), Vec<Score>, String>;
+
+pub(crate) fn best_scores_dedup() -> &'static BestScoresDedup {
+    static DEDUP: OnceLock<BestScoresDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
 pub(crate) async fn handle_irc_message(
     storage: Arc<Storage>,
     irc_msg: osubot_core::irc::IrcPrivateMessage,
