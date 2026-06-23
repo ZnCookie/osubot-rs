@@ -90,6 +90,8 @@ impl Drop for PluginManager {
 
 impl PluginManager {
     /// 暴露给 `osubot` crate 调用以在 tick 超时后提升 epoch deadline。
+    /// 注意：仅用于 `record_exec_error` 的 on_tick 超时分支。其它用途请通过更
+    /// 窄的封装方法暴露。
     pub fn engine_mut(&mut self) -> &mut wasmtime::Engine {
         &mut self.engine
     }
