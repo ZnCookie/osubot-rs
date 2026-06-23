@@ -14,7 +14,6 @@ const MAX_RETRY_AFTER_SECS: u64 = 300;
 const BODY_LOG_PREVIEW_BYTES: usize = 512;
 const BODY_LOG_PREVIEW_SUFFIX: &str = "...[truncated]";
 
-#[allow(dead_code)]
 pub(crate) struct RetryConfig {
     pub max_retries: u32,
     pub initial_backoff: Duration,
@@ -40,7 +39,6 @@ impl RetryConfig {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) enum RetryAction {
     Backoff,
     Wait(u64),
@@ -178,7 +176,6 @@ pub(crate) fn compute_backoff(attempt: u32, config: &RetryConfig) -> Duration {
     Duration::from_millis(min_ms + jitter_ms)
 }
 
-#[allow(dead_code)]
 pub(crate) async fn retry_with_backoff<T, E, F, Fut>(
     config: &RetryConfig,
     classify: impl Fn(&E) -> RetryAction,
@@ -228,10 +225,6 @@ where
     }
 }
 
-pub(crate) fn backoff_with_jitter(attempt: u32) -> Duration {
-    compute_backoff(attempt, &RetryConfig::api_default())
-}
-
 pub(crate) async fn retry_on_transient<F, Fut, T>(
     max_retries: u32,
     operation: F,
@@ -240,38 +233,22 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    debug_assert!(
-        max_retries <= 30,
-        "max_retries must be <= 30, got {max_retries}"
-    );
-    let max_retries = max_retries.min(30);
-    let mut attempt = 0u32;
-    loop {
-        match operation().await {
-            Ok(val) => return Ok(val),
-            Err(ApiError::RateLimitedWithRetryAfter(Some(retry_after)))
-                if attempt < max_retries =>
-            {
-                let delay = Duration::from_secs(retry_after);
-                tracing::warn!(
-                    attempt = attempt + 1,
-                    max_retries,
-                    delay_secs = retry_after,
-                    "{}",
-                    log_fmt!("api.retry_after")
-                );
-                tokio::time::sleep(delay).await;
-                attempt += 1;
-            }
-            Err(e) if e.is_transient() && attempt < max_retries => {
-                let delay = backoff_with_jitter(attempt);
-                tracing::warn!(error = %e, attempt = attempt + 1, max_retries, delay_ms = delay.as_millis(), "{}", log_fmt!("api.retry_transient"));
-                tokio::time::sleep(delay).await;
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let config = RetryConfig {
+        max_retries,
+        initial_backoff: Duration::from_millis(500),
+        max_backoff: Duration::from_secs(30),
+    };
+    retry_with_backoff(
+        &config,
+        |e| match e {
+            ApiError::RateLimitedWithRetryAfter(Some(secs)) => RetryAction::Wait(*secs),
+            ApiError::RateLimitedWithRetryAfter(None) => RetryAction::Wait(60),
+            e if e.is_transient() => RetryAction::Backoff,
+            _ => RetryAction::Abort,
+        },
+        operation,
+    )
+    .await
 }
 
 pub(crate) async fn authenticated_get(
