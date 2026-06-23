@@ -120,8 +120,13 @@ impl PluginManager {
         consecutive_key: &'static str,
         skip_reload_key: Option<&'static str>,
     ) {
-        self.lost_instances[idx] = self.lost_instances[idx].saturating_add(1);
-        if self.lost_instances[idx] >= self.lost_instances_threshold {
+        let slot = match self.slots.get_mut(idx) {
+            Some(s) => s,
+            None => return,
+        };
+        slot.lost_instances = slot.lost_instances.saturating_add(1);
+        let lost = slot.lost_instances;
+        if lost >= self.lost_instances_threshold {
             tracing::warn!("{}", log_fmt!(consecutive_key, kind = kind, name = name));
             if allow_reload {
                 if let Err(re) = self.reload_instance(idx) {

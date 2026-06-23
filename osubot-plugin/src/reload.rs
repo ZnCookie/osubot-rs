@@ -4,6 +4,7 @@ use crate::instance::{PluginInstance, PluginInstanceParams};
 use crate::path::resolve_wasm_path;
 use crate::types::OldPluginEntry;
 use crate::PluginManager;
+use crate::PluginSlot;
 use crate::{HostServices, DEFAULT_PLUGIN_TIMEOUT_SECS, WASM_MEMORY_LIMIT};
 use osubot_core::log_fmt;
 use std::collections::{HashMap, HashSet};
@@ -58,12 +59,13 @@ impl PluginManager {
 
     pub fn reload_instance(&mut self, idx: usize) -> Result<(), String> {
         // 连续重载失败保护：超过阈值则拒绝重载，需手动干预
-        let consecutive = self.reload_failures.get(idx).copied().unwrap_or(0);
+        let slot = self
+            .slots
+            .get(idx)
+            .ok_or_else(|| format!("slot not found for idx {idx}"))?;
+        let consecutive = slot.reload_failures;
         if consecutive >= self.reload_failures_threshold {
-            let name = self
-                .instance_params
-                .get(idx)
-                .map_or("unknown", |p| p.name.as_str());
+            let name = &slot.params.name;
             warn!(
                 "{}",
                 log_fmt!(
@@ -76,15 +78,8 @@ impl PluginManager {
                 "plugin reload failed too many times ({consecutive}), manual reload required"
             ));
         }
-
-        let module = self
-            .modules
-            .get(idx)
-            .ok_or_else(|| format!("module not found for idx {idx}"))?;
-        let params = self
-            .instance_params
-            .get(idx)
-            .ok_or_else(|| format!("params not found for idx {idx}"))?;
+        let module = &slot.module;
+        let params = &slot.params;
 
         // 原子操作：保存旧 tick 注册快照并清除旧注册（防止 TOCTOU 竞争）
         let old_ticks: Vec<_> = {
@@ -106,14 +101,14 @@ impl PluginManager {
             Ok(inst) => inst,
             Err(e) => {
                 // new() 失败：仅在旧实例仍存在时恢复旧 tick 注册
-                if self.instances[idx].is_some() {
+                if self.slots[idx].instance.is_some() {
                     let mut registry = self.tick_registry.lock().unwrap_or_else(|e| {
                         tracing::warn!("{}", log_fmt!("plugin.tick_registry_poisoned"));
                         e.into_inner()
                     });
                     registry.extend(old_ticks);
                 }
-                self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
+                self.slots[idx].reload_failures = self.slots[idx].reload_failures.saturating_add(1);
                 return Err(e);
             }
         };
@@ -130,7 +125,7 @@ impl PluginManager {
                 registry.extend(old_ticks);
             }
             // 旧实例仍然有效，不清理 command_map / on_message_indices
-            self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
+            self.slots[idx].reload_failures = self.slots[idx].reload_failures.saturating_add(1);
             return Err(e);
         }
 
@@ -150,28 +145,28 @@ impl PluginManager {
         }
         for indices in self.command_map.values_mut() {
             indices.sort_by_key(|&i| {
-                std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+                std::cmp::Reverse(self.slots.get(i).map(|s| s.params.priority).unwrap_or(0))
             });
         }
 
-        self.instances[idx] = Some(instance);
-        self.lost_instances[idx] = 0;
-        self.reload_failures[idx] = 0;
+        self.slots[idx].instance = Some(instance);
+        self.slots[idx].lost_instances = 0;
+        self.slots[idx].reload_failures = 0;
         Ok(())
     }
 
     fn diff_plugins<'a>(&self, new_config: &'a PluginConfigInput) -> PluginDiff<'a> {
         let mut old_map: HashMap<String, OldPluginEntry> = HashMap::new();
-        for (idx, params) in self.instance_params.iter().enumerate() {
-            if self.instances[idx].is_some() {
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if slot.instance.is_some() {
                 old_map.insert(
-                    params.name.clone(),
+                    slot.params.name.clone(),
                     OldPluginEntry {
                         idx,
-                        wasm_path: self.wasm_paths.get(idx).cloned().unwrap_or_default(),
-                        priority: params.priority,
-                        plugin_config: params.plugin_config.clone(),
-                        wasm_mtime: self.wasm_mtimes.get(idx).copied().flatten(),
+                        wasm_path: slot.wasm_path.clone(),
+                        priority: slot.params.priority,
+                        plugin_config: slot.params.plugin_config.clone(),
+                        wasm_mtime: slot.wasm_mtime,
                     },
                 );
             }
@@ -251,7 +246,9 @@ impl PluginManager {
                 registry.retain(|t| t.plugin_idx != *idx);
             }
 
-            self.instances[*idx] = None;
+            if let Some(slot) = self.slots.get_mut(*idx) {
+                slot.instance = None;
+            }
             let removed_name = old_map
                 .iter()
                 .find(|(_, entry)| entry.idx == *idx)
@@ -279,7 +276,7 @@ impl PluginManager {
                 }
             };
 
-            let sorted_idx = self.instances.len();
+            let sorted_idx = self.slots.len();
             let (mut instance, params) = match self.build_instance(sorted_idx, pcfg, &module) {
                 Ok(v) => v,
                 Err(e) => {
@@ -311,16 +308,18 @@ impl PluginManager {
                 self.on_message_indices.insert(sorted_idx);
             }
 
-            self.instances.push(Some(instance));
-            self.modules.push(module);
-            self.instance_params.push(params);
-            self.lost_instances.push(0);
-            self.reload_failures.push(0);
             let wasm_mtime = std::fs::metadata(&wasm_path)
                 .ok()
                 .and_then(|m| m.modified().ok());
-            self.wasm_mtimes.push(wasm_mtime);
-            self.wasm_paths.push(wasm_path);
+            self.slots.push(PluginSlot {
+                instance: Some(instance),
+                module,
+                params,
+                wasm_path,
+                wasm_mtime,
+                lost_instances: 0,
+                reload_failures: 0,
+            });
 
             info!("{}", log_fmt!("plugin.added", name = &pcfg.name));
         }
@@ -337,7 +336,7 @@ impl PluginManager {
                 let idx = entry.idx;
                 // 阈值检查前移：超限直接跳过整个 reload 流程，避免新 instance
                 // 被 build 又被 drop、ticks 被清空但 command_map 残留的死锁状态。
-                if self.reload_failures[idx] >= self.reload_failures_threshold {
+                if self.slots[idx].reload_failures >= self.reload_failures_threshold {
                     warn!("{}", log_fmt!("plugin.reload_too_many_times_all"));
                     continue;
                 }
@@ -362,7 +361,8 @@ impl PluginManager {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("{}", log_fmt!("plugin.reload_instance_failed", error = e));
-                        self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
+                        self.slots[idx].reload_failures =
+                            self.slots[idx].reload_failures.saturating_add(1);
                         continue;
                     }
                 };
@@ -402,7 +402,8 @@ impl PluginManager {
                         registry.retain(|t| t.plugin_idx != idx);
                         registry.extend(old_ticks);
                     }
-                    self.reload_failures[idx] = self.reload_failures[idx].saturating_add(1);
+                    self.slots[idx].reload_failures =
+                        self.slots[idx].reload_failures.saturating_add(1);
                     continue;
                 }
 
@@ -419,16 +420,17 @@ impl PluginManager {
                     self.on_message_indices.insert(idx);
                 }
 
-                self.instances[idx] = Some(instance);
-                self.modules[idx] = module;
-                self.instance_params[idx] = params;
-                self.lost_instances[idx] = 0;
-                self.reload_failures[idx] = 0;
                 let wasm_mtime = std::fs::metadata(&wasm_path)
                     .ok()
                     .and_then(|m| m.modified().ok());
-                self.wasm_mtimes[idx] = wasm_mtime;
-                self.wasm_paths[idx] = wasm_path;
+                let slot = &mut self.slots[idx];
+                slot.instance = Some(instance);
+                slot.module = module;
+                slot.params = params;
+                slot.lost_instances = 0;
+                slot.reload_failures = 0;
+                slot.wasm_mtime = wasm_mtime;
+                slot.wasm_path = wasm_path;
 
                 info!("{}", log_fmt!("plugin.reloaded", name = &pcfg.name));
             }
@@ -438,7 +440,7 @@ impl PluginManager {
     fn reserialize_command_map(&mut self) {
         for indices in self.command_map.values_mut() {
             indices.sort_by_key(|&i| {
-                std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+                std::cmp::Reverse(self.slots.get(i).map(|s| s.params.priority).unwrap_or(0))
             });
         }
     }
@@ -472,15 +474,15 @@ impl PluginManager {
     }
 
     pub(crate) fn compact(&mut self) {
-        let old_len = self.instances.len();
+        let old_len = self.slots.len();
         if old_len == 0 {
             return;
         }
 
         let mut old_to_new: Vec<Option<usize>> = vec![None; old_len];
         let mut new_len = 0usize;
-        for (old, inst) in self.instances.iter().enumerate() {
-            if inst.is_some() {
+        for (old, slot) in self.slots.iter().enumerate() {
+            if slot.instance.is_some() {
                 old_to_new[old] = Some(new_len);
                 new_len += 1;
             }
@@ -490,18 +492,9 @@ impl PluginManager {
             return;
         }
 
-        // 按 old_to_new 掩码同步裁剪 7 个并行 Vec。
-        fn filter_by_mask<T>(v: &mut Vec<T>, mask: &[Option<usize>]) {
-            let mut keep = mask.iter().map(Option::is_some);
-            v.retain(|_| keep.next().unwrap_or(false));
-        }
-        filter_by_mask(&mut self.instances, &old_to_new);
-        filter_by_mask(&mut self.modules, &old_to_new);
-        filter_by_mask(&mut self.instance_params, &old_to_new);
-        filter_by_mask(&mut self.wasm_paths, &old_to_new);
-        filter_by_mask(&mut self.wasm_mtimes, &old_to_new);
-        filter_by_mask(&mut self.lost_instances, &old_to_new);
-        filter_by_mask(&mut self.reload_failures, &old_to_new);
+        // 单次 retain 即可：slot 自带全部 7 个并行字段，无需跨 Vec 同步。
+        let mut keep = old_to_new.iter().map(Option::is_some);
+        self.slots.retain(|_| keep.next().unwrap_or(false));
 
         for indices in self.command_map.values_mut() {
             let mut retained = Vec::with_capacity(indices.len());
@@ -515,7 +508,7 @@ impl PluginManager {
 
         for indices in self.command_map.values_mut() {
             indices.sort_by_key(|&i| {
-                std::cmp::Reverse(self.instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+                std::cmp::Reverse(self.slots.get(i).map(|s| s.params.priority).unwrap_or(0))
             });
         }
 
@@ -540,8 +533,8 @@ impl PluginManager {
             }
         }
 
-        for (new_idx, inst_opt) in self.instances.iter_mut().enumerate() {
-            if let Some(inst) = inst_opt {
+        for (new_idx, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(inst) = slot.instance.as_mut() {
                 inst.set_instance_idx(new_idx);
             }
         }

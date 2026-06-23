@@ -3,8 +3,9 @@ use crate::config::{PluginConfig as PluginConfigInput, PluginInstanceConfig};
 use crate::instance::{PluginInstance, PluginInstanceParams};
 use crate::path::resolve_wasm_path;
 use crate::types::PluginError;
-use crate::PluginManager;
-use crate::{HostServices, DEFAULT_PLUGIN_TIMEOUT_SECS, WASM_MEMORY_LIMIT};
+use crate::{
+    HostServices, PluginManager, PluginSlot, DEFAULT_PLUGIN_TIMEOUT_SECS, WASM_MEMORY_LIMIT,
+};
 use osubot_core::log_fmt;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -81,11 +82,7 @@ impl PluginManager {
 
         blueprints.sort_by_key(|b| std::cmp::Reverse(b.params.priority));
 
-        let mut instances: Vec<Option<PluginInstance>> = Vec::new();
-        let mut modules: Vec<Module> = Vec::new();
-        let mut instance_params: Vec<PluginInstanceParams> = Vec::new();
-        let mut wasm_paths_vec: Vec<String> = Vec::new();
-        let mut wasm_mtimes: Vec<Option<std::time::SystemTime>> = Vec::new();
+        let mut slots: Vec<PluginSlot> = Vec::new();
         let mut command_map: HashMap<String, Vec<usize>> = HashMap::new();
         let mut on_message_indices: HashSet<usize> = HashSet::new();
         let tick_registry: Arc<Mutex<Vec<crate::types::TickRegistration>>> =
@@ -129,24 +126,25 @@ impl PluginManager {
                 on_message_indices.insert(sorted_idx);
             }
 
-            instances.push(Some(instance));
-            modules.push(blueprint.module);
-            instance_params.push(blueprint.params);
             let wasm_mtime = std::fs::metadata(&blueprint.wasm_path)
                 .ok()
                 .and_then(|m| m.modified().ok());
-            wasm_mtimes.push(wasm_mtime);
-            let wasm_path = blueprint.wasm_path;
-            wasm_paths_vec.push(wasm_path);
+            let name = blueprint.params.name.clone();
+            slots.push(PluginSlot {
+                instance: Some(instance),
+                module: blueprint.module,
+                params: blueprint.params,
+                wasm_path: blueprint.wasm_path,
+                wasm_mtime,
+                lost_instances: 0,
+                reload_failures: 0,
+            });
 
-            let name = instance_params
-                .last()
-                .map_or("unknown", |p| p.name.as_str());
             tracing::info!("{}", log_fmt!("plugin.instantiated", name = name));
         }
 
-        for (sorted_idx, instance) in instances.iter_mut().enumerate() {
-            if let Some(inst) = instance {
+        for (sorted_idx, slot) in slots.iter_mut().enumerate() {
+            if let Some(inst) = slot.instance.as_mut() {
                 inst.set_instance_idx(sorted_idx);
                 inst.on_load().map_err(PluginError::Dispatch)?;
                 tracing::info!(
@@ -173,30 +171,21 @@ impl PluginManager {
                 .build(),
         };
 
-        let lost_instances = vec![0u32; instances.len()];
-        let reload_failures = vec![0u32; instances.len()];
-
         for indices in command_map.values_mut() {
             indices.sort_by_key(|&i| {
-                std::cmp::Reverse(instance_params.get(i).map(|p| p.priority).unwrap_or(0))
+                std::cmp::Reverse(slots.get(i).map(|s| s.params.priority).unwrap_or(0))
             });
         }
 
         Ok(Self {
-            instances,
+            slots,
             command_map,
             tick_registry,
             on_message_indices,
-            lost_instances,
-            reload_failures,
             lost_instances_threshold: config.lost_instances_threshold,
             reload_failures_threshold: config.reload_failures_threshold,
             engine,
             linker,
-            modules,
-            instance_params,
-            wasm_paths: wasm_paths_vec,
-            wasm_mtimes,
             reload_template,
             epoch_running,
             epoch_handle,
