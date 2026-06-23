@@ -11,6 +11,7 @@ mod runtime;
 mod scheduler;
 mod score_filter;
 mod score_query;
+mod shutdown;
 mod ws_loop;
 mod xfs_upstream;
 mod yumu_upstream;
@@ -368,9 +369,8 @@ async fn main() {
     state.scheduler.shutdown();
 
     let drain_timeout = std::time::Duration::from_secs(10);
-    let _ = tokio::time::timeout(drain_timeout, scheduler_h).await;
-    let _ = tokio::time::timeout(drain_timeout, irc_h).await;
-    let _ = tokio::time::timeout(drain_timeout, cleanup_h).await;
-    let _ = tokio::time::timeout(drain_timeout, watcher_h).await;
-    let _ = tokio::time::timeout(drain_timeout, irc_bridge_h).await;
+    let _ = tokio::time::timeout(drain_timeout, async {
+        let _ = tokio::join!(scheduler_h, irc_h, cleanup_h, watcher_h, irc_bridge_h);
+    })
+    .await;
 }

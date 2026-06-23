@@ -351,6 +351,7 @@ impl PluginManager {
                                     context = "shutdown"
                                 )
                             );
+                            self.engine.increment_epoch();
                         }
                     },
                     Err(join_err) => {

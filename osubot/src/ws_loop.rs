@@ -2,12 +2,12 @@
 //! 提取自原 main.rs:4008-4440。
 
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
@@ -22,9 +22,6 @@ use crate::InFlightGuard;
 use crate::{parse_onebot_message, send_group_msg, OneBotResponse, WriteSink};
 use osubot_core::log_fmt;
 use osubot_core::strings::user_str;
-
-/// 全局 shutdown 通知，用于替代 wait_shutdown 的 200ms 轮询。
-pub static SHUTDOWN_NOTIFY: LazyLock<Notify> = LazyLock::new(Notify::const_new);
 
 /// WS read half type alias（与 main.rs 一致）。
 type ReadHalf = futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
@@ -94,16 +91,17 @@ pub(super) async fn run_ws_reconnect_loop(
         let onebot_url = state.config.read().await.bot.onebot_url.clone();
         info!(url = %onebot_url, "{}", log_fmt!("main.connecting_ws"));
 
-        let (write, mut read) = match connect_ws(&onebot_url, &mut reconnect_delay).await {
-            Ok(ws) => ws,
-            Err(()) => {
-                // connect_ws 内部 sleep 已被 shutdown 打断，退出整个循环
-                if state.shutdown.load(Ordering::Acquire) {
-                    break;
+        let (write, mut read) =
+            match connect_ws(&onebot_url, &mut reconnect_delay, &state.shutdown).await {
+                Ok(ws) => ws,
+                Err(()) => {
+                    // connect_ws 内部 sleep 已被 shutdown 打断，退出整个循环
+                    if state.shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         let write = Arc::new(Mutex::new(write));
 
         // 更新 current_write（提取自 main.rs:4037-4047）
@@ -180,7 +178,7 @@ pub(super) async fn run_ws_reconnect_loop(
         // 用 select 同时等 sleep 和 shutdown 信号。
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(reconnect_delay)) => {}
-            _ = wait_shutdown() => {
+            _ = crate::shutdown::wait_for_shutdown(&state.shutdown) => {
                 tracing::info!("{}", log_fmt!("main.shutdown_during_reconnect_sleep"));
                 break;
             }
@@ -189,16 +187,12 @@ pub(super) async fn run_ws_reconnect_loop(
     }
 }
 
-/// 等待 shutdown 信号（通过 Notify 立即响应，无轮询延迟）。
-async fn wait_shutdown() {
-    SHUTDOWN_NOTIFY.notified().await;
-}
-
 /// 连接 WebSocket。失败时 backoff 并返回 Err(())。
 /// 提取自原 main.rs:4017-4030。
 async fn connect_ws(
     onebot_url: &str,
     reconnect_delay: &mut u64,
+    shutdown: &std::sync::atomic::AtomicBool,
 ) -> Result<(WsSplitSink, ReadHalf), ()> {
     match connect_async(onebot_url).await {
         Ok((stream, _)) => {
@@ -217,7 +211,7 @@ async fn connect_ws(
             // sleep 期间允许 shutdown 打断，避免 SIGINT 后阻塞 60s
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(*reconnect_delay)) => {}
-                _ = wait_shutdown() => {
+                _ = crate::shutdown::wait_for_shutdown(shutdown) => {
                     tracing::info!("{}", log_fmt!("main.shutdown_during_connect_sleep"));
                     return Err(());
                 }

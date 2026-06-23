@@ -15,7 +15,7 @@ use osubot_core::{
 };
 
 use crate::config::Config;
-use crate::ws_loop::SHUTDOWN_NOTIFY;
+use crate::shutdown::SHUTDOWN_NOTIFY;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -109,6 +109,7 @@ impl Scheduler {
 
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        SHUTDOWN_NOTIFY.notify_waiters();
     }
 
     /// Background task entry point - only processes due users/modes
@@ -126,7 +127,7 @@ impl Scheduler {
             };
             tokio::select! {
                 _ = time::sleep(time::Duration::from_secs(interval_secs)) => {}
-                _ = wait_for_shutdown() => break,
+                _ = crate::shutdown::wait_for_shutdown(&self.shutdown) => break,
             }
             self.process_due_users().await;
             self.try_cleanup().await;
@@ -492,9 +493,4 @@ impl Scheduler {
         }
         false
     }
-}
-
-/// 等待 shutdown 信号（通过 Notify 立即响应）。
-async fn wait_for_shutdown() {
-    SHUTDOWN_NOTIFY.notified().await;
 }
