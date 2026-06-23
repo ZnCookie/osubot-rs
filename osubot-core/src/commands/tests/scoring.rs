@@ -1671,7 +1671,13 @@ fn test_best_no_conflict_with_profile() {
 #[test]
 fn test_best_list_not_matched_as_best() {
     let cmd = parse_command("!bs", None).unwrap();
-    assert!(matches!(cmd, Command::Best { is_summary: true, .. }));
+    assert!(matches!(
+        cmd,
+        Command::Best {
+            is_summary: true,
+            ..
+        }
+    ));
 }
 
 #[test]

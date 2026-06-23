@@ -104,6 +104,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "fmt.profile_hits" => " 总命中次数",
     "fmt.profile_playtime" => "游玩时间",
     "fmt.beatmap_score" => "谱面成绩",
+    "fmt.best_score" => "最高成绩",
     "fmt.score_count" => "{} 条记录",
 
     // ── 高光 ──
@@ -229,6 +230,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.score_on_beatmap_cmd" => "ScoreOnBeatmap 命令",
     "main.pass_command" => "Pass 命令",
     "main.recent_command" => "Recent 命令",
+    "main.best_score_command" => "Best 命令",
     "main.help_command" => "Help 命令",
     "main.send_group_msg_failed" => "发送群消息失败: {error}",
     "main.send_image_failed" => "无法发送群图片消息",

@@ -231,8 +231,7 @@ pub(crate) fn beatmap_scores_dedup() -> &'static BeatmapScoresDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
-pub(crate) type BestScoresDedup =
-    RequestDedup<(i64, GameMode, u32), Vec<Score>, String>;
+pub(crate) type BestScoresDedup = RequestDedup<(i64, GameMode, u32), Vec<Score>, String>;
 
 pub(crate) fn best_scores_dedup() -> &'static BestScoresDedup {
     static DEDUP: OnceLock<BestScoresDedup> = OnceLock::new();
