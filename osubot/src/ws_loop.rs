@@ -178,7 +178,7 @@ pub(super) async fn run_ws_reconnect_loop(
         // 用 select 同时等 sleep 和 shutdown 信号。
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(reconnect_delay)) => {}
-            _ = wait_shutdown(&state.shutdown) => {
+            _ = crate::shutdown::wait_for_shutdown(&state.shutdown) => {
                 tracing::info!("{}", log_fmt!("main.shutdown_during_reconnect_sleep"));
                 break;
             }
@@ -187,22 +187,12 @@ pub(super) async fn run_ws_reconnect_loop(
     }
 }
 
-/// 等待 shutdown 信号置位。
-async fn wait_shutdown(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    loop {
-        if flag.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
 /// 连接 WebSocket。失败时 backoff 并返回 Err(())。
 /// 提取自原 main.rs:4017-4030。
 async fn connect_ws(
     onebot_url: &str,
     reconnect_delay: &mut u64,
-    shutdown: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shutdown: &std::sync::atomic::AtomicBool,
 ) -> Result<(WsSplitSink, ReadHalf), ()> {
     match connect_async(onebot_url).await {
         Ok((stream, _)) => {
@@ -221,7 +211,7 @@ async fn connect_ws(
             // sleep 期间允许 shutdown 打断，避免 SIGINT 后阻塞 60s
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(*reconnect_delay)) => {}
-                _ = wait_shutdown(shutdown) => {
+                _ = crate::shutdown::wait_for_shutdown(shutdown) => {
                     tracing::info!("{}", log_fmt!("main.shutdown_during_connect_sleep"));
                     return Err(());
                 }

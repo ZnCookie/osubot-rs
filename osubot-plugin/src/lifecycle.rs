@@ -273,15 +273,102 @@ impl PluginManager {
         self.epoch_running.store(false, Ordering::Relaxed);
         self.epoch_handle.abort();
 
+        // 收集所有需要 unload 的实例及其元数据
+        let mut tasks: Vec<(String, Option<PluginInstance>)> = Vec::with_capacity(self.slots.len());
         for idx in 0..self.slots.len() {
-            // shutdown 路径：禁止触发 reload（即将被 clear 的 instance 不需要重新加载）
-            self.unload_single_instance(idx, "unload", false).await;
-            if let Some(slot) = self.slots.get(idx) {
-                if slot.instance.is_some() {
-                    tracing::info!("{}", log_fmt!("plugin.unloaded", name = slot.params.name));
+            let name = self
+                .slots
+                .get(idx)
+                .map_or("unknown".to_string(), |s| s.params.name.clone());
+            let has_unload = self
+                .slots
+                .get_mut(idx)
+                .and_then(|s| s.instance.as_mut())
+                .is_some_and(|i| i.has_export("on_unload"));
+            let instance = if has_unload {
+                self.slots.get_mut(idx).and_then(|s| s.instance.take())
+            } else {
+                None
+            };
+            tasks.push((name, instance));
+        }
+
+        // 并行执行所有 on_unload
+        let unload_futures: Vec<_> = tasks
+            .into_iter()
+            .filter_map(|(name, instance)| {
+                instance.map(|mut inst| {
+                    let timeout_dur = inst.timeout;
+                    tokio::spawn(async move {
+                        let result = tokio::time::timeout(
+                            timeout_dur,
+                            tokio::task::spawn_blocking(move || inst.on_unload()),
+                        )
+                        .await;
+                        (name, result)
+                    })
+                })
+            })
+            .collect();
+
+        if !unload_futures.is_empty() {
+            let results = futures_util::future::join_all(unload_futures).await;
+            for task_result in results {
+                match task_result {
+                    Ok((name, result)) => match result {
+                        Ok(Ok(Ok(()))) => {
+                            tracing::info!("{}", log_fmt!("plugin.unloaded", name = name));
+                        }
+                        Ok(Ok(Err(e))) => {
+                            tracing::warn!(
+                                "{}",
+                                log_fmt!(
+                                    "plugin.on_unload_error",
+                                    kind = "on_unload",
+                                    name = name,
+                                    error = e
+                                )
+                            );
+                        }
+                        Ok(Err(join_err)) => {
+                            tracing::error!(
+                                "{}",
+                                log_fmt!(
+                                    "plugin.on_unload_panicked",
+                                    kind = "on_unload",
+                                    name = name,
+                                    error = join_err
+                                )
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "{}",
+                                log_fmt!(
+                                    "plugin.on_unload_timeout",
+                                    kind = "on_unload",
+                                    name = name,
+                                    context = "shutdown"
+                                )
+                            );
+                            self.engine.increment_epoch();
+                        }
+                    },
+                    Err(join_err) => {
+                        tracing::error!(
+                            "{}",
+                            log_fmt!(
+                                "plugin.on_unload_panicked",
+                                kind = "on_unload",
+                                name = "unknown",
+                                error = join_err
+                            )
+                        );
+                    }
                 }
             }
         }
+
         self.slots.clear();
         self.on_message_indices.clear();
         self.command_map.clear();

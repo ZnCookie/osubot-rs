@@ -4578,6 +4578,7 @@ dependencies = [
 name = "osubot-plugin"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "osubot-core",
  "osubot-game-mode",
  "osubot-plugin-sdk",

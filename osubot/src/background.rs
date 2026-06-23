@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 
 use crate::reload::ReloadCoordinator;
 use crate::runtime::RuntimeHandles;
+use crate::shutdown::SHUTDOWN_NOTIFY;
 use osubot_core::api;
 use osubot_core::irc::{IrcClient, IrcConfig as CoreIrcConfig};
 use osubot_core::log_fmt;
@@ -113,10 +114,14 @@ pub(super) fn spawn_irc(handles: &RuntimeHandles) -> JoinHandle<()> {
 /// 启动 OneBot API pending 清理任务（提取自 main.rs:3920-3935）。
 pub(super) fn spawn_onebot_cleanup(handles: &RuntimeHandles) -> JoinHandle<()> {
     let onebot_cleanup = handles.app_state.onebot_api.clone();
+    let shutdown = handles.app_state.shutdown.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = crate::shutdown::wait_for_shutdown(&shutdown) => break,
+            }
             let retention = Duration::from_secs(onebot_cleanup.cleanup_retention_secs());
             let mut pending = onebot_cleanup.pending.lock().await;
             let before = pending.len();
@@ -189,6 +194,7 @@ pub(super) fn spawn_shutdown_signal(shutdown: Arc<AtomicBool>) {
         ctrl_c.await;
         info!("{}", log_fmt!("main.shutdown_signal"));
         shutdown_clone.store(true, Ordering::Release);
+        SHUTDOWN_NOTIFY.notify_waiters();
     });
 }
 
@@ -200,9 +206,17 @@ pub(super) fn spawn_irc_bridge(handles: RuntimeHandles) -> JoinHandle<()> {
     let storage = handles.app_state.storage.clone();
     let rate_limiter = handles.app_state.rate_limiter.clone();
     let oauth = handles.app_state.oauth.clone();
+    let shutdown = handles.app_state.shutdown.clone();
 
     tokio::spawn(async move {
-        while let Some(irc_msg) = irc_rx.recv().await {
+        loop {
+            let irc_msg = tokio::select! {
+                msg = irc_rx.recv() => match msg {
+                    Some(msg) => msg,
+                    None => break,
+                },
+                _ = crate::shutdown::wait_for_shutdown(&shutdown) => break,
+            };
             let write_opt = { cw_for_irc.lock().await.clone() };
             if let Some(write) = write_opt {
                 let storage = storage.clone();
