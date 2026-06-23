@@ -19,7 +19,7 @@
 //! RNG call order and float32 round-trip points must match Python exactly.
 
 mod catch_conv;
-mod mania_conv;
+mod mania;
 mod taiko_conv;
 
 use crate::errors::{PreviewError, Result};
@@ -27,7 +27,7 @@ use crate::models::{Beatmap, HitObjects, StandardHitObject, TimingPoint};
 use crate::mods::ModSettings;
 
 pub(crate) use catch_conv::catch_convert;
-pub(crate) use mania_conv::mania_convert;
+pub(crate) use mania::mania_convert;
 pub(crate) use taiko_conv::taiko_convert;
 
 // ── dispatch ─────────────────────────────────────────────────────────────────
