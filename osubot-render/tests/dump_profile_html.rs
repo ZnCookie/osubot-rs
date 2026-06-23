@@ -38,11 +38,39 @@ async fn dump_profile_html_for_username() {
     let profile = fetch_user_profile(&rate_limiter, &oauth, user_id, GameMode::Osu)
         .await
         .expect("failed to fetch user profile");
+    // 预取头像并转 data URI（与 render_profile_card 同款逻辑）
+    let avatar_data_uri = if !profile.avatar_url.is_empty() {
+        match osubot_render::cache::fetch_and_cache(
+            &profile.avatar_url,
+            osubot_render::cache::http_client(),
+            true,
+        )
+        .await
+        {
+            Ok((bytes, _, _)) => {
+                let uri = tokio::task::spawn_blocking(move || {
+                    let img = image::load_from_memory(&bytes)
+                        .map_err(|e| format!("avatar decode: {e}"))?;
+                    let resized = img.resize_exact(200, 200, image::imageops::FilterType::Lanczos3);
+                    osubot_render::image_to_data_uri(&resized, 85)
+                        .map_err(|e| format!("data uri: {e}"))
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking: {e}"))
+                .and_then(|r| r)
+                .unwrap_or_default();
+                uri
+            }
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
 
     let html = build_profile_html(
         &profile.html,
         profile.profile_hue,
-        &profile.avatar_url,
+        &avatar_data_uri,
         &profile.username,
     )
     .await;

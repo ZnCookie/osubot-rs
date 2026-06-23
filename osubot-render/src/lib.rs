@@ -336,7 +336,45 @@ pub async fn render_profile_card(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, RenderError> {
-    let wrapped_html = style::build_profile_html(html, profile_hue, avatar_url, username).await;
+    let client = cache::http_client();
+
+    tracing::debug!("{}", log_fmt!("render.download_avatar", url = avatar_url));
+    let avatar_data_uri = if !avatar_url.is_empty() {
+        match cache::fetch_and_cache(avatar_url, client, true).await {
+            Ok((bytes, _, _)) => {
+                let resized_uri =
+                    tokio::task::spawn_blocking(move || -> Result<String, RenderError> {
+                        let img = image::load_from_memory(&bytes).map_err(|e| {
+                            RenderError::Render(
+                                log_fmt!("render.err_avatar_decode", error = e).to_string(),
+                            )
+                        })?;
+                        let resized = img.resize_exact(200, 200, imageops::FilterType::Lanczos3);
+                        image_to_data_uri(&resized, 85)
+                    })
+                    .await
+                    .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))?;
+                resized_uri?
+            }
+            Err(e) => {
+                tracing::warn!("{}", log_fmt!("render.avatar_download_failed", error = &e));
+                String::new()
+            }
+        }
+    } else {
+        tracing::debug!(
+            "{}",
+            log_fmt!("render.profile_avatar_url_empty", user = username)
+        );
+        String::new()
+    };
+    tracing::debug!(
+        "{}",
+        log_fmt!("render.avatar_downloaded", bytes = avatar_data_uri.len())
+    );
+
+    let wrapped_html =
+        style::build_profile_html(html, profile_hue, &avatar_data_uri, username).await;
     let (mut pixels, mut w, mut h) = run_render(wrapped_html, width, height, 60, None).await?;
 
     const MAX_PHYSICAL_HEIGHT: u32 = 24000;
