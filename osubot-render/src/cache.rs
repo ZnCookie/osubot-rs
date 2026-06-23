@@ -15,6 +15,8 @@ pub enum CacheError {
     Network(#[from] reqwest::Error),
     #[error("HTTP client error: status {status}")]
     ClientError { status: u16 },
+    #[error("server error: status {0}")]
+    ServerError(u16),
     #[error("image exceeds maximum size")]
     TooLarge,
     #[error("retries exhausted")]
