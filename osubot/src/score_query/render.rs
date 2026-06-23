@@ -151,7 +151,9 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
     };
 
     let cover_image: Option<image::DynamicImage> = if !score.cover_url.is_empty() {
-        match render_cache::fetch_and_cache(&score.cover_url, render_cache::http_client()).await {
+        match render_cache::fetch_and_cache(&score.cover_url, render_cache::http_client(), false)
+            .await
+        {
             Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
             Err(_) => None,
         }
@@ -267,7 +269,9 @@ pub(super) async fn render_and_send_score_list(
                 None
             };
             let cover = if !cover_url.is_empty() {
-                match render_cache::fetch_and_cache(&cover_url, render_cache::http_client()).await {
+                match render_cache::fetch_and_cache(&cover_url, render_cache::http_client(), false)
+                    .await
+                {
                     Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
                     Err(_) => None,
                 }

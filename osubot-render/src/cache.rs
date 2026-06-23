@@ -15,10 +15,12 @@ pub enum CacheError {
     Network(#[from] reqwest::Error),
     #[error("HTTP client error: status {status}")]
     ClientError { status: u16 },
+    #[error("server error: status {0}")]
+    ServerError(u16),
     #[error("image exceeds maximum size")]
     TooLarge,
-    #[error("retries exhausted")]
-    RetriesExhausted,
+    #[error("fetch semaphore closed")]
+    SemaphoreClosed,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("SVG rasterize failed: {0}")]
@@ -135,59 +137,50 @@ fn detect_mime_and_ext_fallback(url: &str) -> (&'static str, &'static str) {
 }
 
 async fn try_fetch_image(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, CacheError> {
-    use tokio::time::Duration;
+    use osubot_core::api::{retry_with_backoff, RetryAction, RetryConfig};
 
-    for attempt in 0..3 {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
-        }
-        match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                if let Some(len) = resp.content_length() {
-                    if len > MAX_IMAGE_BYTES {
-                        return Err(CacheError::TooLarge);
-                    }
+    let config = RetryConfig::image_default();
+    retry_with_backoff(
+        &config,
+        |e| match e {
+            CacheError::Network(_) | CacheError::ServerError(_) => RetryAction::Backoff,
+            _ => RetryAction::Abort,
+        },
+        || async {
+            let resp = client.get(url).send().await.map_err(CacheError::Network)?;
+
+            if resp.status().is_server_error() {
+                return Err(CacheError::ServerError(resp.status().as_u16()));
+            }
+            if !resp.status().is_success() {
+                return Err(CacheError::ClientError {
+                    status: resp.status().as_u16(),
+                });
+            }
+
+            if let Some(len) = resp.content_length() {
+                if len > MAX_IMAGE_BYTES {
+                    return Err(CacheError::TooLarge);
                 }
-                let mut bytes = Vec::new();
-                let mut stream = resp.bytes_stream();
-                use futures_util::StreamExt;
-                let mut body_failed = false;
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(chunk) => {
-                            if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
-                                return Err(CacheError::TooLarge);
-                            }
-                            bytes.extend_from_slice(&chunk);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, url = %url, attempt, "{}", log_fmt!("render.body_download_failed"));
-                            body_failed = true;
-                            break;
-                        }
-                    }
+            }
+
+            let mut bytes = Vec::new();
+            let mut stream = resp.bytes_stream();
+            use futures_util::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| {
+                    tracing::warn!(error = %e, url = %url, "{}", log_fmt!("render.body_download_failed"));
+                    CacheError::Network(e)
+                })?;
+                if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES as usize {
+                    return Err(CacheError::TooLarge);
                 }
-                if body_failed {
-                    continue;
-                }
-                return Ok(bytes);
+                bytes.extend_from_slice(&chunk);
             }
-            Ok(resp) if resp.status().is_server_error() => {
-                tracing::warn!(status = %resp.status(), url = %url, "{}", log_fmt!("render.server_error_retry"));
-                continue;
-            }
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                tracing::warn!(status = %status, url = %url, "{}", log_fmt!("render.client_error_abort"));
-                return Err(CacheError::ClientError { status });
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, url = %url, "{}", log_fmt!("render.request_failed_retry"));
-                continue;
-            }
-        }
-    }
-    Err(CacheError::RetriesExhausted)
+            Ok(bytes)
+        },
+    )
+    .await
 }
 
 struct FetchLockGuard {
@@ -201,16 +194,25 @@ impl Drop for FetchLockGuard {
     }
 }
 
+/// Fetch an image URL, returning `(bytes, mime, sha256_hex)`.
+///
+/// If `force_refresh` is `true`, the on-disk cache is bypassed entirely (no
+/// read, no write) so the network is always hit. Use this for resources whose
+/// URL is stable but whose content changes over time (e.g. osu! avatars keyed
+/// only by `user_id`).
 pub async fn fetch_and_cache(
     url: &str,
     client: &reqwest::Client,
+    force_refresh: bool,
 ) -> Result<(Vec<u8>, String, String), CacheError> {
     let hash = sha256_hex(url);
     let cache_file = cache_dir().join(&hash);
 
-    if let Ok(cached) = tokio::fs::read(&cache_file).await {
-        let (mime, _) = detect_mime_and_ext(url, &cached);
-        return Ok((cached, mime.to_string(), hash));
+    if !force_refresh {
+        if let Ok(cached) = tokio::fs::read(&cache_file).await {
+            let (mime, _) = detect_mime_and_ext(url, &cached);
+            return Ok((cached, mime.to_string(), hash));
+        }
     }
 
     let url_lock = {
@@ -226,16 +228,18 @@ pub async fn fetch_and_cache(
     };
     let _guard = url_lock.lock().await;
 
-    if let Ok(cached) = tokio::fs::read(&cache_file).await {
-        let (mime, _) = detect_mime_and_ext(url, &cached);
-        return Ok((cached, mime.to_string(), hash));
+    if !force_refresh {
+        if let Ok(cached) = tokio::fs::read(&cache_file).await {
+            let (mime, _) = detect_mime_and_ext(url, &cached);
+            return Ok((cached, mime.to_string(), hash));
+        }
     }
 
     let _fetch_permit = match fetch_semaphore().acquire().await {
         Ok(permit) => permit,
         Err(e) => {
             tracing::warn!(error = %e, url = url, "fetch semaphore closed during image fetch");
-            return Err(CacheError::RetriesExhausted);
+            return Err(CacheError::SemaphoreClosed);
         }
     };
 
@@ -246,11 +250,13 @@ pub async fn fetch_and_cache(
 
     let (mime, _) = detect_mime_and_ext(url, &bytes);
 
-    if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
-        tracing::warn!(
-            "{}",
-            log_fmt!("render.cache_write_failed", url = url, error = &e)
-        );
+    if !force_refresh {
+        if let Err(e) = tokio::fs::write(&cache_file, &bytes).await {
+            tracing::warn!(
+                "{}",
+                log_fmt!("render.cache_write_failed", url = url, error = &e)
+            );
+        }
     }
 
     Ok((bytes, mime.to_string(), hash))
@@ -516,7 +522,7 @@ iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAA
         }
         let client = client.clone();
         set.spawn(async move {
-            let res = fetch_and_cache(&url, &client).await;
+            let res = fetch_and_cache(&url, &client, false).await;
             (url, res)
         });
     }

@@ -14,6 +14,46 @@ const MAX_RETRY_AFTER_SECS: u64 = 300;
 const BODY_LOG_PREVIEW_BYTES: usize = 512;
 const BODY_LOG_PREVIEW_SUFFIX: &str = "...[truncated]";
 
+/// Knobs for [`retry_with_backoff`]: max attempts, and the backoff schedule.
+///
+/// Backoff uses exponential growth capped at `max_backoff`, with a 25% jitter
+/// window (75%..=125% of the computed delay) to avoid thundering herds.
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl RetryConfig {
+    /// Default for osu! API calls: 4 retries, 0.5s..=30s backoff.
+    pub(crate) fn api_default() -> Self {
+        Self {
+            max_retries: 4,
+            initial_backoff: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(30),
+        }
+    }
+
+    /// Default for image fetches: 4 retries, 0.5s..=15s backoff.
+    pub fn image_default() -> Self {
+        Self {
+            max_retries: 4,
+            initial_backoff: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(15),
+        }
+    }
+}
+
+/// What to do after a retryable error from the operation.
+pub enum RetryAction {
+    /// Retry after a backoff delay computed from [`RetryConfig`].
+    Backoff,
+    /// Retry after waiting the given number of seconds (e.g. server `Retry-After`).
+    Wait(u64),
+    /// Stop retrying and return the error to the caller.
+    Abort,
+}
+
 fn truncate_for_log(body: &str, max: usize) -> String {
     if body.len() <= max {
         body.to_string()
@@ -62,7 +102,7 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     let client = http_client();
     let url = format!("https://osu.ppy.sh/osu/{}", beatmap_id);
 
-    let bytes = retry_on_transient(2, || async {
+    let bytes = retry_on_transient(4, || async {
         let resp = client.get(&url).send().await?;
 
         classify_http_error(&resp)?;
@@ -130,20 +170,68 @@ pub(crate) fn classify_http_error(resp: &reqwest::Response) -> Result<(), ApiErr
     Ok(())
 }
 
-pub(crate) fn backoff_with_jitter(attempt: u32) -> Duration {
+pub(crate) fn compute_backoff(attempt: u32, config: &RetryConfig) -> Duration {
     use rand::RngExt;
-    let base_delay = Duration::from_secs(1);
-    let capped = attempt.min(5);
-    let exp = base_delay * 2u32.pow(capped);
-    let exp_ms = exp.as_millis() as u64;
-    let min_ms = exp_ms * 3 / 4;
-    let range_ms = exp_ms / 2;
+    let exp = config.initial_backoff * 2u32.pow(attempt.min(5));
+    let capped = exp.min(config.max_backoff);
+    let ms = capped.as_millis() as u64;
+    let min_ms = ms * 3 / 4;
+    let range_ms = ms / 2;
     let jitter_ms = if range_ms > 0 {
         rand::rng().random_range(0..=range_ms)
     } else {
         0
     };
     Duration::from_millis(min_ms + jitter_ms)
+}
+
+pub async fn retry_with_backoff<T, E, F, Fut>(
+    config: &RetryConfig,
+    classify: impl Fn(&E) -> RetryAction,
+    operation: F,
+) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    debug_assert!(
+        config.max_retries <= 30,
+        "max_retries must be <= 30, got {}",
+        config.max_retries
+    );
+    let max_retries = config.max_retries.min(30);
+    let mut attempt = 0u32;
+    loop {
+        match operation().await {
+            Ok(val) => return Ok(val),
+            Err(e) => match classify(&e) {
+                RetryAction::Wait(secs) if attempt < max_retries => {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_retries,
+                        delay_secs = secs,
+                        "{}",
+                        log_fmt!("api.retry_after")
+                    );
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
+                    attempt += 1;
+                }
+                RetryAction::Backoff if attempt < max_retries => {
+                    let delay = compute_backoff(attempt, config);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_retries,
+                        delay_ms = delay.as_millis(),
+                        "{}",
+                        log_fmt!("api.retry_transient")
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+                _ => return Err(e),
+            },
+        }
+    }
 }
 
 pub(crate) async fn retry_on_transient<F, Fut, T>(
@@ -154,38 +242,22 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
 {
-    debug_assert!(
-        max_retries <= 30,
-        "max_retries must be <= 30, got {max_retries}"
-    );
-    let max_retries = max_retries.min(30);
-    let mut attempt = 0u32;
-    loop {
-        match operation().await {
-            Ok(val) => return Ok(val),
-            Err(ApiError::RateLimitedWithRetryAfter(Some(retry_after)))
-                if attempt < max_retries =>
-            {
-                let delay = Duration::from_secs(retry_after);
-                tracing::warn!(
-                    attempt = attempt + 1,
-                    max_retries,
-                    delay_secs = retry_after,
-                    "{}",
-                    log_fmt!("api.retry_after")
-                );
-                tokio::time::sleep(delay).await;
-                attempt += 1;
-            }
-            Err(e) if e.is_transient() && attempt < max_retries => {
-                let delay = backoff_with_jitter(attempt);
-                tracing::warn!(error = %e, attempt = attempt + 1, max_retries, delay_ms = delay.as_millis(), "{}", log_fmt!("api.retry_transient"));
-                tokio::time::sleep(delay).await;
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let config = RetryConfig {
+        max_retries,
+        initial_backoff: Duration::from_millis(500),
+        max_backoff: Duration::from_secs(30),
+    };
+    retry_with_backoff(
+        &config,
+        |e| match e {
+            ApiError::RateLimitedWithRetryAfter(Some(secs)) => RetryAction::Wait(*secs),
+            ApiError::RateLimitedWithRetryAfter(None) => RetryAction::Wait(60),
+            e if e.is_transient() => RetryAction::Backoff,
+            _ => RetryAction::Abort,
+        },
+        operation,
+    )
+    .await
 }
 
 pub(crate) async fn authenticated_get(
@@ -197,7 +269,7 @@ pub(crate) async fn authenticated_get(
         .acquire()
         .await
         .map_err(|_| ApiError::ClientRateLimited)?;
-    retry_on_transient(2, || {
+    retry_on_transient(4, || {
         super::oauth::retry_on_401(oauth, 5, || async {
             let token = oauth.get_token().await?;
             let resp = http_client()
@@ -221,8 +293,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_attempt_zero_within_first_window() {
-        let delay = backoff_with_jitter(0);
+    fn compute_backoff_attempt_zero_within_first_window() {
+        let config = RetryConfig::api_default();
+        let delay = compute_backoff(0, &config);
+        // initial_backoff=500ms, 2^0=1, exp=500ms, min=375ms, max=625ms
+        assert!(
+            delay >= Duration::from_millis(375) && delay <= Duration::from_millis(625),
+            "got {delay:?}"
+        );
+    }
+
+    #[test]
+    fn compute_backoff_attempt_one_doubles() {
+        let config = RetryConfig::api_default();
+        let delay = compute_backoff(1, &config);
+        // exp=1000ms, min=750ms, max=1250ms
         assert!(
             delay >= Duration::from_millis(750) && delay <= Duration::from_millis(1250),
             "got {delay:?}"
@@ -230,36 +315,30 @@ mod tests {
     }
 
     #[test]
-    fn backoff_attempt_one_doubles() {
-        let delay = backoff_with_jitter(1);
+    fn compute_backoff_attempt_five_saturates() {
+        let config = RetryConfig::api_default();
+        let delay = compute_backoff(5, &config);
+        // exp=500ms*2^5=16000ms, capped at max_backoff=30s → 16s
+        // min=12000ms, range=8000ms, total=12000..=20000ms (12..=20s)
         assert!(
-            delay >= Duration::from_millis(1500) && delay <= Duration::from_millis(2500),
+            delay >= Duration::from_secs(12) && delay <= Duration::from_secs(20),
             "got {delay:?}"
         );
     }
 
     #[test]
-    fn backoff_attempt_thirtyone_saturates() {
-        let delay = backoff_with_jitter(31);
-        // With cap at attempt=5 (2^5=32s), delay ranges from 24s to 40s
-        assert!(
-            delay >= Duration::from_secs(24) && delay <= Duration::from_secs(40),
-            "got {delay:?}, expected 24s..=40s"
-        );
-    }
-
-    #[test]
-    fn backoff_attempt_large_caps_at_thirtyone() {
-        let delay_31 = backoff_with_jitter(31);
-        let delay_100 = backoff_with_jitter(100);
-        let diff = if delay_31 > delay_100 {
-            delay_31 - delay_100
+    fn compute_backoff_attempt_large_saturates() {
+        let config = RetryConfig::api_default();
+        let delay_5 = compute_backoff(5, &config);
+        let delay_100 = compute_backoff(100, &config);
+        let diff = if delay_5 > delay_100 {
+            delay_5 - delay_100
         } else {
-            delay_100 - delay_31
+            delay_100 - delay_5
         };
         assert!(
-            diff < delay_31,
-            "attempt=31 and attempt=100 should share same magnitude, got {delay_31:?} vs {delay_100:?}"
+            diff < delay_5,
+            "attempt=5 and attempt=100 should share same magnitude, got {delay_5:?} vs {delay_100:?}"
         );
     }
 
@@ -285,5 +364,126 @@ mod tests {
         // 应回退到 10 字节边界
         assert!(out.starts_with("aaaaaaaaaa"));
         assert!(out.ends_with(BODY_LOG_PREVIEW_SUFFIX));
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_succeeds_on_first_try() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(100),
+        };
+        let result: Result<i32, &str> = retry_with_backoff(
+            &config,
+            |e| match *e {
+                "transient" => RetryAction::Backoff,
+                _ => RetryAction::Abort,
+            },
+            || async { Ok(42) },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_retries_then_succeeds() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(100),
+        };
+        let attempt = std::sync::atomic::AtomicU32::new(0);
+        let result: Result<i32, &str> = retry_with_backoff(
+            &config,
+            |e| match *e {
+                "transient" => RetryAction::Backoff,
+                _ => RetryAction::Abort,
+            },
+            || {
+                let a = &attempt;
+                async move {
+                    if a.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                        Err("transient")
+                    } else {
+                        Ok(99)
+                    }
+                }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 99);
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_exhausts_retries() {
+        let config = RetryConfig {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(100),
+        };
+        let result: Result<i32, &str> = retry_with_backoff(
+            &config,
+            |e| match *e {
+                "transient" => RetryAction::Backoff,
+                _ => RetryAction::Abort,
+            },
+            || async { Err("transient") },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "transient");
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_wait_action_sleeps_then_retries() {
+        let config = RetryConfig {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(100),
+        };
+        let attempt = std::sync::atomic::AtomicU32::new(0);
+        let start = std::time::Instant::now();
+        let result: Result<i32, &str> = retry_with_backoff(
+            &config,
+            |e| match *e {
+                "wait" => RetryAction::Wait(1),
+                _ => RetryAction::Abort,
+            },
+            || {
+                let a = &attempt;
+                async move {
+                    if a.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        Err("wait")
+                    } else {
+                        Ok(77)
+                    }
+                }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 77);
+        // Wait(1) should have slept ~1 second
+        assert!(
+            start.elapsed() >= Duration::from_millis(900),
+            "Wait action should sleep ~1s"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_aborts_on_non_transient() {
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(100),
+        };
+        let result: Result<i32, &str> = retry_with_backoff(
+            &config,
+            |e| match *e {
+                "transient" => RetryAction::Backoff,
+                _ => RetryAction::Abort,
+            },
+            || async { Err("fatal") },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "fatal");
     }
 }

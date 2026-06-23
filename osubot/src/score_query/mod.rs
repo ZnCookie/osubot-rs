@@ -435,6 +435,7 @@ pub(crate) async fn handle_score_query(
                                 match osubot_render::cache::fetch_and_cache(
                                     &cover_url,
                                     osubot_render::cache::http_client(),
+                                    false,
                                 )
                                 .await
                                 {
@@ -770,6 +771,7 @@ pub(crate) async fn handle_best_score_query(
                                 match osubot_render::cache::fetch_and_cache(
                                     &cover_url,
                                     osubot_render::cache::http_client(),
+                                    false,
                                 )
                                 .await
                                 {
