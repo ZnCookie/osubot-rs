@@ -19,8 +19,8 @@ pub enum CacheError {
     ServerError(u16),
     #[error("image exceeds maximum size")]
     TooLarge,
-    #[error("retries exhausted")]
-    RetriesExhausted,
+    #[error("fetch semaphore closed")]
+    SemaphoreClosed,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("SVG rasterize failed: {0}")]
@@ -194,6 +194,12 @@ impl Drop for FetchLockGuard {
     }
 }
 
+/// Fetch an image URL, returning `(bytes, mime, sha256_hex)`.
+///
+/// If `force_refresh` is `true`, the on-disk cache is bypassed entirely (no
+/// read, no write) so the network is always hit. Use this for resources whose
+/// URL is stable but whose content changes over time (e.g. osu! avatars keyed
+/// only by `user_id`).
 pub async fn fetch_and_cache(
     url: &str,
     client: &reqwest::Client,
@@ -233,7 +239,7 @@ pub async fn fetch_and_cache(
         Ok(permit) => permit,
         Err(e) => {
             tracing::warn!(error = %e, url = url, "fetch semaphore closed during image fetch");
-            return Err(CacheError::RetriesExhausted);
+            return Err(CacheError::SemaphoreClosed);
         }
     };
 

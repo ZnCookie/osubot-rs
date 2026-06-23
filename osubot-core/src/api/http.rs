@@ -14,6 +14,10 @@ const MAX_RETRY_AFTER_SECS: u64 = 300;
 const BODY_LOG_PREVIEW_BYTES: usize = 512;
 const BODY_LOG_PREVIEW_SUFFIX: &str = "...[truncated]";
 
+/// Knobs for [`retry_with_backoff`]: max attempts, and the backoff schedule.
+///
+/// Backoff uses exponential growth capped at `max_backoff`, with a 25% jitter
+/// window (75%..=125% of the computed delay) to avoid thundering herds.
 pub struct RetryConfig {
     pub max_retries: u32,
     pub initial_backoff: Duration,
@@ -21,6 +25,7 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
+    /// Default for osu! API calls: 4 retries, 0.5s..=30s backoff.
     pub(crate) fn api_default() -> Self {
         Self {
             max_retries: 4,
@@ -29,6 +34,7 @@ impl RetryConfig {
         }
     }
 
+    /// Default for image fetches: 4 retries, 0.5s..=15s backoff.
     pub fn image_default() -> Self {
         Self {
             max_retries: 4,
@@ -38,9 +44,13 @@ impl RetryConfig {
     }
 }
 
+/// What to do after a retryable error from the operation.
 pub enum RetryAction {
+    /// Retry after a backoff delay computed from [`RetryConfig`].
     Backoff,
+    /// Retry after waiting the given number of seconds (e.g. server `Retry-After`).
     Wait(u64),
+    /// Stop retrying and return the error to the caller.
     Abort,
 }
 
@@ -309,9 +319,9 @@ mod tests {
         let config = RetryConfig::api_default();
         let delay = compute_backoff(5, &config);
         // exp=500ms*2^5=16000ms, capped at max_backoff=30s → 16s
-        // min=12000ms, max=24000ms
+        // min=12000ms, range=8000ms, total=12000..=20000ms (12..=20s)
         assert!(
-            delay >= Duration::from_secs(12) && delay <= Duration::from_secs(24),
+            delay >= Duration::from_secs(12) && delay <= Duration::from_secs(20),
             "got {delay:?}"
         );
     }
