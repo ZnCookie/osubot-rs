@@ -188,6 +188,11 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
+    debug_assert!(
+        config.max_retries <= 30,
+        "max_retries must be <= 30, got {}",
+        config.max_retries
+    );
     let max_retries = config.max_retries.min(30);
     let mut attempt = 0u32;
     loop {
@@ -440,6 +445,35 @@ mod tests {
         )
         .await;
         assert_eq!(result.unwrap_err(), "transient");
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_wait_action_sleeps_then_retries() {
+        let config = RetryConfig {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(100),
+        };
+        let attempt = std::sync::atomic::AtomicU32::new(0);
+        let start = std::time::Instant::now();
+        let result: Result<i32, &str> =
+            retry_with_backoff(&config, |e| match *e {
+                "wait" => RetryAction::Wait(1),
+                _ => RetryAction::Abort,
+            }, || {
+                let a = &attempt;
+                async move {
+                    if a.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        Err("wait")
+                    } else {
+                        Ok(77)
+                    }
+                }
+            })
+            .await;
+        assert_eq!(result.unwrap(), 77);
+        // Wait(1) should have slept ~1 second
+        assert!(start.elapsed() >= Duration::from_millis(900), "Wait action should sleep ~1s");
     }
 
     #[tokio::test]
