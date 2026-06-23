@@ -107,9 +107,16 @@ impl Img {
     }
 
     pub fn crop(&self, x0: u32, y0: u32, x1: u32, y1: u32) -> Img {
+        let x0 = x0.min(self.w);
+        let y0 = y0.min(self.h);
+        let x1 = x1.min(self.w);
+        let y1 = y1.min(self.h);
         let w = x1.saturating_sub(x0);
         let h = y1.saturating_sub(y0);
         let mut out = Img::new(w, h, [0, 0, 0, 0]);
+        if w == 0 || h == 0 {
+            return out;
+        }
         for y in 0..h {
             let si = (((y0 + y) * self.w + x0) * 4) as usize;
             let di = ((y * w) * 4) as usize;
@@ -623,4 +630,35 @@ fn resample_axis(src: &Img, new_size: u32, horizontal: bool) -> Img {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn img_2x2() -> Img {
+        // 2x2 RGBA, 4 bytes per pixel = 16 bytes total
+        let mut img = Img::new(2, 2, [0, 0, 0, 0]);
+        img.data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        img
+    }
+
+    #[test]
+    fn crop_within_bounds_works() {
+        let img = img_2x2();
+        let cropped = img.crop(0, 0, 1, 1);
+        assert_eq!(cropped.w, 1);
+        assert_eq!(cropped.h, 1);
+        assert_eq!(cropped.data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn crop_clamps_out_of_bounds_coords() {
+        let img = img_2x2();
+        // x1=100, y1=100 远超 2x2；不应 panic
+        let cropped = img.crop(0, 0, 100, 100);
+        assert_eq!(cropped.w, 2);
+        assert_eq!(cropped.h, 2);
+        assert_eq!(cropped.data, img.data);
+    }
 }
