@@ -68,14 +68,14 @@ pub fn path_position_at(path: &SliderPath, progress: f64) -> P {
 }
 
 pub fn path_position_at_distance(path: &SliderPath, target: f64) -> P {
+    if path.points.is_empty() {
+        return (0.0, 0.0);
+    }
     if target <= 0.0 {
         return path.points[0];
     }
     if target >= path.total_length {
-        return *path
-            .points
-            .last()
-            .expect("SliderPath must have at least 1 point");
+        return path.points[path.points.len() - 1];
     }
     // bisect_right equivalent
     let index = path.cumulative_lengths.partition_point(|&v| v <= target);
@@ -663,5 +663,16 @@ mod tests {
         for &p in &result {
             assert!(p.0.is_finite() && p.1.is_finite(), "no NaN should appear");
         }
+    }
+
+    #[test]
+    fn path_position_at_empty_returns_origin() {
+        let path = SliderPath {
+            points: vec![],
+            cumulative_lengths: vec![],
+            total_length: 0.0,
+        };
+        let (x, y) = path_position_at_distance(&path, 5.0);
+        assert_eq!((x, y), (0.0, 0.0));
     }
 }

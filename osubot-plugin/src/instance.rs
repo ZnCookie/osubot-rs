@@ -1,4 +1,5 @@
 use osubot_core::log_fmt;
+use osubot_plugin_sdk::PROTOCOL_VERSION;
 
 use crate::bridge::HostServices;
 use crate::types::{PluginAction, PluginMetadata};
@@ -83,6 +84,17 @@ impl PluginInstance {
         let metadata_json = read_json_from_memory(&memory, &store, metadata_ptr)?;
         let metadata: PluginMetadata =
             serde_json::from_str(&metadata_json).map_err(|e| format!("invalid metadata: {e}"))?;
+
+        if metadata.protocol_version > PROTOCOL_VERSION {
+            return Err(format!(
+                "{}",
+                log_fmt!(
+                    "instance.plugin_protocol_too_new",
+                    plugin_version = metadata.protocol_version,
+                    host_version = PROTOCOL_VERSION
+                )
+            ));
+        }
 
         // Dealloc metadata result
         if let Some(dealloc_func) = instance

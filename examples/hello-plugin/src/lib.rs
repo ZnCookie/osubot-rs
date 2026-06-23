@@ -38,6 +38,7 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, size: u32) {
 #[no_mangle]
 pub extern "C" fn plugin_metadata() -> *const u8 {
     let meta = PluginMetadata {
+        protocol_version: osubot_plugin_sdk::PROTOCOL_VERSION,
         name: "hello".to_string(),
         version: "0.1.0".to_string(),
         author: "osubot".to_string(),

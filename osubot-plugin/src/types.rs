@@ -25,10 +25,10 @@ pub enum PluginAction {
 }
 
 #[derive(Debug, Deserialize)]
-/// 注意：此结构体与 osubot-plugin-sdk/src/types.rs 中的 PluginMetadata 独立定义。
-/// SDK 端使用 `&'static str`，本端使用 `String`（序列化后通过 JSON 传递）。
-/// 修改字段时需要两边同步更新。
+/// 字段集必须与 `osubot-plugin-sdk/src/types.rs::PluginMetadata` 保持一致。
+/// `protocol_version` 在加载时与 `PROTOCOL_VERSION` 对比校验。
 pub struct PluginMetadata {
+    pub protocol_version: u32,
     pub name: String,
     pub version: String,
     pub author: String,

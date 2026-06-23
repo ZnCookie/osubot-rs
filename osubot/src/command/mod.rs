@@ -258,9 +258,12 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     }
 
     // 定期清理不活跃的用户（每60秒清理30秒内无命令的用户）
+    // 用 unwrap_or_else 容忍锁中毒（panic 后 Mutex 进入 poisoned 状态，
+    // 但本临界区仅做 elapsed 检查 + retain 调用，不跨 await，安全）。
     static LAST_CLEANUP: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
     let last = LAST_CLEANUP.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
-    if let Ok(mut last_time) = last.try_lock() {
+    {
+        let mut last_time = last.lock().unwrap_or_else(|e| e.into_inner());
         if last_time.elapsed() >= Duration::from_secs(60) {
             ctx.command_rate_limits
                 .retain(|_, v| v.last_command.elapsed() < Duration::from_secs(30));
@@ -322,10 +325,9 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     // ==== Fallback: old text dispatch (native commands) ====
 
     // 未识别命令 — 插件已拒绝，直接结束
-    if cmd_opt.is_none() {
+    let Some(cmd) = cmd_opt else {
         return;
-    }
-    let cmd = cmd_opt.expect("guarded by cmd_opt.is_none() early-return");
+    };
 
     // 命令开关检查
     let group_cfg = {

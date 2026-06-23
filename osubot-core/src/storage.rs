@@ -86,22 +86,54 @@ async fn has_column(
     Ok(false)
 }
 
-fn row_to_user_stats(row: &Row, col_offset: usize) -> DbResult<UserStats> {
-    Ok(UserStats {
-        user_id: 0,
-        username: String::new(),
+/// 快照查询返回的 stats 子集（无 identity 列）。`UserStats` 的 identity 字段
+/// 在快照场景下无意义，由调用方从查询上下文（user_id 形参）补齐。
+#[derive(Debug, Clone)]
+pub struct UserStatsSnapshot {
+    pub pp: Option<f64>,
+    pub rank: Option<i64>,
+    pub country_rank: Option<i64>,
+    pub ranked_score: Option<i64>,
+    pub accuracy: Option<f64>,
+    pub playcount: Option<i64>,
+    pub hits: Option<i64>,
+    pub playtime: Option<i64>,
+}
+
+impl UserStatsSnapshot {
+    /// 把快照补成完整 `UserStats`（identity 字段由调用方提供）。
+    /// 适用于：调用方已从查询上下文拿到 user_id / username / country_code，
+    /// 想要构造一个完整 stats 传递到下游 API。
+    pub fn into_user_stats(self, user_id: i64, username: &str, country_code: &str) -> UserStats {
+        UserStats {
+            user_id,
+            username: username.to_string(),
+            country_code: country_code.to_string(),
+            pp: self.pp.unwrap_or(0.0),
+            rank: self.rank.unwrap_or(0),
+            country_rank: self.country_rank.unwrap_or(0),
+            ranked_score: self.ranked_score.unwrap_or(0),
+            accuracy: self.accuracy.unwrap_or(0.0),
+            playcount: self.playcount.unwrap_or(0),
+            hits: self.hits.unwrap_or(0),
+            playtime: self.playtime.unwrap_or(0),
+            rank_change: None,
+            country_rank_change: None,
+            cover_url: None,
+        }
+    }
+}
+
+fn row_to_snapshot(row: &Row, col_offset: usize) -> DbResult<UserStatsSnapshot> {
+    Ok(UserStatsSnapshot {
         pp: row.get(col_offset)?,
         rank: row.get(col_offset + 1)?,
         country_rank: row.get(col_offset + 2)?,
-        country_code: "XX".to_string(),
         ranked_score: row.get(col_offset + 3)?,
         accuracy: row.get(col_offset + 4)?,
         playcount: row.get(col_offset + 5)?,
         hits: row.get(col_offset + 6)?,
         playtime: row.get(col_offset + 7)?,
-        rank_change: None,
-        country_rank_change: None,
-        cover_url: None,
     })
 }
 
@@ -508,7 +540,7 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
-    ) -> DbResult<Option<UserStats>> {
+    ) -> DbResult<Option<UserStatsSnapshot>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
@@ -521,7 +553,7 @@ impl Storage {
             )
             .await?;
         if let Some(row) = rows.next().await? {
-            Ok(Some(row_to_user_stats(&row, 0)?))
+            Ok(Some(row_to_snapshot(&row, 0)?))
         } else {
             Ok(None)
         }
@@ -532,7 +564,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         hours: i64,
-    ) -> DbResult<Vec<(DateTime<Utc>, UserStats)>> {
+    ) -> DbResult<Vec<(DateTime<Utc>, UserStatsSnapshot)>> {
         let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
         let cutoff_str = cutoff.to_rfc3339();
 
@@ -551,7 +583,7 @@ impl Storage {
         while let Some(row) = rows.next().await? {
             let recorded_str: String = row.get(0)?;
             if let Ok(dt) = DateTime::parse_from_rfc3339(&recorded_str) {
-                results.push((dt.with_timezone(&Utc), row_to_user_stats(&row, 1)?));
+                results.push((dt.with_timezone(&Utc), row_to_snapshot(&row, 1)?));
             }
         }
         Ok(results)
@@ -563,7 +595,7 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
-    ) -> DbResult<HashMap<i64, UserStats>> {
+    ) -> DbResult<HashMap<i64, UserStatsSnapshot>> {
         let unique_user_ids: Vec<i64> = user_ids
             .iter()
             .copied()
@@ -597,7 +629,7 @@ impl Storage {
 
         let conn = self.conn().await;
         let mut rows = conn.query(&sql, args).await?;
-        let mut closest: HashMap<i64, (u64, UserStats)> = HashMap::new();
+        let mut closest: HashMap<i64, (u64, UserStatsSnapshot)> = HashMap::new();
         while let Some(row) = rows.next().await? {
             let user_id: i64 = row.get(0)?;
             let recorded_str: String = row.get(1)?;
@@ -607,7 +639,7 @@ impl Storage {
             let distance = (recorded_at.with_timezone(&Utc) - target)
                 .num_seconds()
                 .unsigned_abs();
-            let stats = row_to_user_stats(&row, 2)?;
+            let stats = row_to_snapshot(&row, 2)?;
 
             match closest.get(&user_id) {
                 Some((best_distance, _)) if *best_distance <= distance => {}
@@ -627,7 +659,7 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
-    ) -> DbResult<Option<UserStats>> {
+    ) -> DbResult<Option<UserStatsSnapshot>> {
         let all = self.get_snapshots_within_hours(user_id, mode, 36).await?;
         if all.is_empty() {
             return Ok(None);
@@ -646,7 +678,7 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
-    ) -> DbResult<Option<(DateTime<Utc>, UserStats)>> {
+    ) -> DbResult<Option<(DateTime<Utc>, UserStatsSnapshot)>> {
         let now = Utc::now();
         let target_time = now - chrono::TimeDelta::hours(target_hours_ago);
         let earliest = now - chrono::TimeDelta::hours(max_lookback);
@@ -733,37 +765,40 @@ impl Storage {
         match snapshot {
             None => Ok(None),
             Some((_, past)) => {
-                let rank_change = if current.rank != 0 && past.rank != 0 {
-                    Some(past.rank - current.rank)
+                let rank_change = if current.rank != 0 && past.rank.is_some_and(|r| r != 0) {
+                    Some(past.rank.unwrap() - current.rank)
                 } else {
                     None
                 };
-                let country_rank_change = if current.country_rank != 0 && past.country_rank != 0 {
-                    Some(past.country_rank - current.country_rank)
+                let country_rank_change =
+                    if current.country_rank != 0 && past.country_rank.is_some_and(|r| r != 0) {
+                        Some(past.country_rank.unwrap() - current.country_rank)
+                    } else {
+                        None
+                    };
+                let playcount_change =
+                    if current.playcount != 0 && past.playcount.is_some_and(|r| r != 0) {
+                        Some(current.playcount - past.playcount.unwrap())
+                    } else {
+                        None
+                    };
+                let hits_change = if current.hits != 0 && past.hits.is_some_and(|r| r != 0) {
+                    Some(current.hits - past.hits.unwrap())
                 } else {
                     None
                 };
-                let playcount_change = if current.playcount != 0 && past.playcount != 0 {
-                    Some(current.playcount - past.playcount)
-                } else {
-                    None
-                };
-                let hits_change = if current.hits != 0 && past.hits != 0 {
-                    Some(current.hits - past.hits)
-                } else {
-                    None
-                };
-                let playtime_change = if current.playtime != 0 && past.playtime != 0 {
-                    Some(current.playtime - past.playtime)
-                } else {
-                    None
-                };
+                let playtime_change =
+                    if current.playtime != 0 && past.playtime.is_some_and(|r| r != 0) {
+                        Some(current.playtime - past.playtime.unwrap())
+                    } else {
+                        None
+                    };
 
                 Ok(Some(UserChange {
                     rank_change,
                     country_rank_change,
-                    pp_change: Some(current.pp - past.pp),
-                    accuracy_change: Some(current.accuracy - past.accuracy),
+                    pp_change: past.pp.map(|p| current.pp - p),
+                    accuracy_change: past.accuracy.map(|a| current.accuracy - a),
                     playcount_change,
                     hits_change,
                     playtime_change,
@@ -889,7 +924,7 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT user_id, mode FROM user_next_update WHERE next_update <= ?1
-                UNION
+                UNION ALL
                 SELECT b.user_id AS user_id, m.mode
                 FROM user_bindings b
                 CROSS JOIN (
@@ -1243,8 +1278,14 @@ mod tests {
             .expect("batch baseline query succeeds");
 
         assert_eq!(baselines.len(), 2);
-        assert_eq!(baselines.get(&101).expect("user 101 baseline").pp, 101.23);
-        assert_eq!(baselines.get(&202).expect("user 202 baseline").pp, 202.25);
+        assert_eq!(
+            baselines.get(&101).expect("user 101 baseline").pp,
+            Some(101.23)
+        );
+        assert_eq!(
+            baselines.get(&202).expect("user 202 baseline").pp,
+            Some(202.25)
+        );
         assert!(!baselines.contains_key(&303));
     }
 
@@ -1275,7 +1316,10 @@ mod tests {
             .expect("duplicate user IDs batch query succeeds");
 
         assert_eq!(baselines.len(), 1);
-        assert_eq!(baselines.get(&404).expect("user 404 baseline").hits, 4_040);
+        assert_eq!(
+            baselines.get(&404).expect("user 404 baseline").hits,
+            Some(4_040)
+        );
     }
 
     #[tokio::test]

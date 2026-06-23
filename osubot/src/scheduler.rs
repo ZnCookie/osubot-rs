@@ -257,7 +257,9 @@ impl Scheduler {
         // Save snapshot only when stats changed (rank or playcount differ)
         match self.storage.get_latest_snapshot(user_id, mode).await {
             Ok(Some(prev)) => {
-                if prev.rank != current.rank || prev.playcount != current.playcount {
+                if prev.rank.unwrap_or(0) != current.rank
+                    || prev.playcount.unwrap_or(0) != current.playcount
+                {
                     if let Err(e) = self.storage.save_stats(user_id, mode, &current).await {
                         warn!(
                             "{}",

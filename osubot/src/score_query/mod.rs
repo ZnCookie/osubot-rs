@@ -672,7 +672,10 @@ async fn run_score_query(
             )
             .await;
         }
-        let score = scores.into_iter().nth(n - 1).expect("len checked above");
+        let Some(score) = scores.into_iter().nth(n - 1) else {
+            // scores.len() < n 时已 early-return，但改为模式匹配消除 expect 依赖注释
+            return;
+        };
         render_single_score(ctx, msg, resp_tx, &score, user_stats, mode, n).await;
     }
 }
