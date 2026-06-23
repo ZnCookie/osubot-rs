@@ -41,7 +41,7 @@ use tracing::{error, info, warn};
 use onebot::{parse_onebot_message, send_group_msg, OneBotApi, OneBotResponse, WriteSink};
 
 /// Maximum number of scores to fetch when filters are active.
-const SCORE_API_FETCH_LIMIT: u32 = 100;
+const SCORE_API_FETCH_LIMIT: u32 = 200;
 
 pub(crate) struct InFlightGuard(Arc<AtomicUsize>);
 
@@ -228,6 +228,13 @@ pub(crate) type BeatmapScoresDedup =
 
 pub(crate) fn beatmap_scores_dedup() -> &'static BeatmapScoresDedup {
     static DEDUP: OnceLock<BeatmapScoresDedup> = OnceLock::new();
+    DEDUP.get_or_init(RequestDedup::new)
+}
+
+pub(crate) type BestScoresDedup = RequestDedup<(i64, GameMode, u32), Vec<Score>, String>;
+
+pub(crate) fn best_scores_dedup() -> &'static BestScoresDedup {
+    static DEDUP: OnceLock<BestScoresDedup> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 

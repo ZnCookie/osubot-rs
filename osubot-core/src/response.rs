@@ -115,7 +115,7 @@ pub fn format_score(
     username: &str,
     mode: GameMode,
     position: Option<usize>,
-    is_pass: bool,
+    label: &str,
 ) -> String {
     let fields = compute_display_fields(score);
 
@@ -125,11 +125,6 @@ pub fn format_score(
         format!(" | {}", format_mods(&score.mods))
     };
 
-    let label = if is_pass {
-        user_str("fmt.recent_pass")
-    } else {
-        user_str("fmt.recent_play")
-    };
     let position_str = match position {
         Some(pos) => format!("#{} {}", pos + 1, label),
         None => label.to_string(),
@@ -198,12 +193,7 @@ pub fn format_score(
 
 /// 将多条成绩格式化为带序号的并列中文成绩列表文本。
 #[must_use]
-pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, is_pass: bool) -> String {
-    let label = if is_pass {
-        user_str("fmt.recent_pass")
-    } else {
-        user_str("fmt.recent_play")
-    };
+pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, label: &str) -> String {
     let mode_name = mode.name();
 
     let mut lines = {
@@ -744,7 +734,13 @@ mod tests {
     #[test]
     fn test_format_score_single_pass() {
         let score = make_score(false);
-        let output = format_score(&score, "TestUser", GameMode::Osu, Some(0), true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            Some(0),
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("Artist - Song [Expert]"));
         assert!(output.contains("★★★★★★☆ 6.50* [3:00]"));
         assert!(output.contains("TestUser (osu): 250.00pp"));
@@ -758,7 +754,13 @@ mod tests {
     #[test]
     fn test_format_score_single_recent() {
         let score = make_score(false);
-        let output = format_score(&score, "TestUser", GameMode::Osu, Some(2), false);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            Some(2),
+            user_str("fmt.recent_play"),
+        );
         assert!(output.contains("#3 最近游玩"));
         assert!(output.contains("ID: 100"));
     }
@@ -767,7 +769,13 @@ mod tests {
     fn test_format_score_pp_null() {
         let mut score = make_score(false);
         score.pp = None;
-        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            None,
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("TestUser (osu): --pp"));
     }
 
@@ -775,14 +783,26 @@ mod tests {
     fn test_format_score_no_mods() {
         let mut score = make_score(false);
         score.mods = GameMods::new();
-        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            None,
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("300/5/0/0\n"));
     }
 
     #[test]
     fn test_format_score_is_perfect() {
         let score = make_score(true);
-        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            None,
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("400x/500x"));
     }
 
@@ -790,21 +810,38 @@ mod tests {
     fn test_format_score_lazer_tag_omitted() {
         let mut score = make_score(false);
         score.is_lazer = true;
-        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            None,
+            user_str("fmt.recent_pass"),
+        );
         assert!(!output.contains("(lazer)"));
     }
 
     #[test]
     fn test_format_score_play_time() {
         let score = make_score(false);
-        let output = format_score(&score, "TestUser", GameMode::Osu, None, true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Osu,
+            None,
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("2024/01/01 08:00:00"));
     }
 
     #[test]
     fn test_format_scores_mods_and_time() {
         let scores = vec![make_score(false), make_score(true)];
-        let output = format_scores(&scores, "TestUser", GameMode::Osu, true);
+        let output = format_scores(
+            &scores,
+            "TestUser",
+            GameMode::Osu,
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("HD HR"));
         assert!(output.contains("2024/01/01 08:00:00"));
         assert!(output.contains("#1 Artist - Song [Expert]"));
@@ -854,7 +891,13 @@ mod tests {
             osu_large_tick_misses: 0,
             osu_small_tick_misses: 0,
         };
-        let output = format_score(&score, "TestUser", GameMode::Mania, None, true);
+        let output = format_score(
+            &score,
+            "TestUser",
+            GameMode::Mania,
+            None,
+            user_str("fmt.recent_pass"),
+        );
         assert!(output.contains("100/200/50/30/10/5"));
     }
 

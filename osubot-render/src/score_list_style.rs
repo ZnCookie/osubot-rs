@@ -173,6 +173,7 @@ pub struct ScoreListHtmlParams<'a> {
     pub pp_change: Option<f64>,
     pub global_rank_change: Option<i64>,
     pub country_rank_change: Option<i64>,
+    pub index_offset: usize,
 }
 
 fn format_relative_time(created_at: &str) -> String {
@@ -281,7 +282,7 @@ pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     // Score list
     html.push_str(r#"<div class="score-list">"#);
     for (i, card) in params.cards.iter().enumerate() {
-        html.push_str(&render_mini_card(i, card));
+        html.push_str(&render_mini_card(params.index_offset + i, card));
     }
     html.push_str(r#"</div></div></body></html>"#);
 
@@ -377,6 +378,7 @@ mod tests {
             pp_change: Some(12.0),
             global_rank_change: Some(-99),
             country_rank_change: Some(50),
+            index_offset: 0,
         };
         let html = wrap_score_list_html(&params);
 
@@ -415,6 +417,7 @@ mod tests {
             pp_change: None,
             global_rank_change: None,
             country_rank_change: None,
+            index_offset: 0,
         };
         let html = wrap_score_list_html(&params);
 
@@ -474,6 +477,7 @@ mod tests {
             pp_change: None,
             global_rank_change: None,
             country_rank_change: None,
+            index_offset: 0,
         };
         let html = wrap_score_list_html(&params);
         assert!(html.contains("最近游玩"));
@@ -598,6 +602,7 @@ mod tests {
             pp_change: None,
             global_rank_change: None,
             country_rank_change: None,
+            index_offset: 0,
         };
         let html = wrap_score_list_html(&params);
         assert!(
@@ -647,6 +652,7 @@ mod tests {
             pp_change: None,
             global_rank_change: None,
             country_rank_change: None,
+            index_offset: 0,
         };
         let html = wrap_score_list_html(&params);
         assert!(
@@ -684,6 +690,7 @@ mod tests {
             pp_change: None,
             global_rank_change: None,
             country_rank_change: None,
+            index_offset: 0,
         };
         let html = wrap_score_list_html(&params);
         assert!(

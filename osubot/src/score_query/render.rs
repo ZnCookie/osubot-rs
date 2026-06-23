@@ -18,7 +18,7 @@ pub(super) async fn render_single_score(
         mode,
         user_stats,
         position: Some(n - 1),
-        is_pass: true,
+        label: user_str("fmt.recent_pass"),
     })
     .await;
 }
@@ -41,7 +41,7 @@ pub(super) async fn render_scores(
             mode,
             user_stats,
             position: None,
-            is_pass: true,
+            label: user_str("fmt.recent_pass"),
         })
         .await;
     } else {
@@ -59,7 +59,7 @@ pub(super) struct SingleScoreRenderParams<'a> {
     /// 在所属列表中的 0-索引位置。`Some(n)` 时渲染前缀 `"#(n+1) <label>"`；
     /// `None` 时仅渲染 `<label>`，适用于"该玩家在此谱面上的最佳成绩"等无明确排名的场景。
     pub(super) position: Option<usize>,
-    pub(super) is_pass: bool,
+    pub(super) label: &'static str,
 }
 
 pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams<'_>) {
@@ -71,7 +71,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
         mode,
         user_stats,
         position,
-        is_pass,
+        label,
     } = params;
     let mut score = score.clone();
     enrich_score_with_pp(&mut score, mode, true).await;
@@ -234,13 +234,13 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
         }
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_card_failed_text"));
-            let text = format_score(&score, &user_stats.username, mode, position, is_pass);
+            let text = format_score(&score, &user_stats.username, mode, position, label);
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             cancel_flag.store(true, Ordering::Relaxed);
             warn!("{}", log_fmt!("main.render_score_card_timeout_text"));
-            let text = format_score(&score, &user_stats.username, mode, position, is_pass);
+            let text = format_score(&score, &user_stats.username, mode, position, label);
             let _ = resp_tx.send(text).await;
         }
     }
@@ -343,6 +343,7 @@ pub(super) async fn render_and_send_score_list(
             count_text: score_count_text,
             cover_images,
             hero_cover_url: &hero_cover_url,
+            index_offset: 0,
         }),
     )
     .await;
@@ -368,12 +369,12 @@ pub(super) async fn render_and_send_score_list(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-            let text = format_scores(&scores_mut, username, mode, true);
+            let text = format_scores(&scores_mut, username, mode, user_str("fmt.beatmap_score"));
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-            let text = format_scores(&scores_mut, username, mode, true);
+            let text = format_scores(&scores_mut, username, mode, user_str("fmt.beatmap_score"));
             let _ = resp_tx.send(text).await;
         }
     }

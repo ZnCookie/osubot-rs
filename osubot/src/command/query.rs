@@ -236,6 +236,16 @@ pub(super) async fn handle_query_commands(
             )
             .await;
         }
+        Command::Best { .. } => {
+            info!(
+                user_id = msg.user_id,
+                group_id = msg.group_id,
+                mode = ?mode,
+                "{}",
+                log_fmt!("main.best_score_command")
+            );
+            handle_best_score_query(ctx, msg, resp_tx, cmd, mode).await;
+        }
         _ => unreachable!("handle_query_commands called with non-query command"),
     }
 }
