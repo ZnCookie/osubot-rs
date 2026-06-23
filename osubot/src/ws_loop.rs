@@ -183,7 +183,7 @@ pub(super) async fn run_ws_reconnect_loop(
                 break;
             }
         }
-        reconnect_delay = (reconnect_delay * 2).min(60);
+        reconnect_delay = next_reconnect_delay(reconnect_delay);
     }
 }
 
@@ -427,6 +427,16 @@ async fn clear_current_write(state: &AppState) {
     *cw = None;
 }
 
+/// 计算下一轮重连延迟。Close 帧复位后保持 1s；
+/// 错误/断开导致 reconnect_delay 已被 connect_ws 翻倍时继续翻倍。
+fn next_reconnect_delay(current: u64) -> u64 {
+    if current <= 1 {
+        1
+    } else {
+        (current * 2).min(60)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +458,24 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
         assert!(l.try_acquire(), "should refill after sleep");
+    }
+
+    #[test]
+    fn next_reconnect_delay_keeps_one_after_close() {
+        // Close 帧已把 delay 复位到 1
+        assert_eq!(next_reconnect_delay(1), 1);
+    }
+
+    #[test]
+    fn next_reconnect_delay_doubles_after_error() {
+        // connect_ws 在错误路径已翻倍到 2
+        assert_eq!(next_reconnect_delay(2), 4);
+        assert_eq!(next_reconnect_delay(4), 8);
+    }
+
+    #[test]
+    fn next_reconnect_delay_caps_at_60() {
+        assert_eq!(next_reconnect_delay(60), 60);
+        assert_eq!(next_reconnect_delay(32), 60);
     }
 }
