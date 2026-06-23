@@ -111,7 +111,7 @@ impl PluginManager {
     /// `allow_reload` 为 true 时，达到阈值会尝试重载实例；为 false 时仅记录日志。
     /// `consecutive_key` 为达到阈值（触发重载）时的日志 key；
     /// `skip_reload_key` 若提供，则在未达到阈值时记录（用于超时场景）。
-    pub(crate) fn record_exec_error(
+    pub fn record_exec_error(
         &mut self,
         idx: usize,
         name: &str,
@@ -249,5 +249,25 @@ impl PluginManager {
             |inst, payload| inst.on_message(payload),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 编译期签名锁定：`record_exec_error` 的公开签名与本测试里的 `fn` 指针类型
+    /// 必须完全一致。`osubot` crate 内的 tick 循环依赖此签名去累加错误计数。
+    #[test]
+    fn record_exec_error_signature_exists() {
+        let _: fn(
+            &mut PluginManager,
+            usize,
+            &str,
+            &'static str,
+            bool,
+            &'static str,
+            Option<&'static str>,
+        ) = PluginManager::record_exec_error;
     }
 }

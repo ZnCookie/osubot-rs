@@ -233,12 +233,71 @@ impl PluginRuntime {
                     {
                         let mut guard = pm.lock().await;
                         if let Some(ref mut pm) = *guard {
+                            // 先取 slot 名称用于 record_exec_error 日志（短暂克隆）。
+                            let name = pm
+                                .instance_params(plugin_idx)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| "unknown".to_string());
                             match result {
-                                Ok(Ok((Ok(()), inst))) | Ok(Ok((Err(_), inst))) => {
+                                Ok(Ok((Ok(()), inst))) => {
                                     pm.put_instance(plugin_idx, inst);
                                 }
-                                Ok(Err(_)) | Err(_) => {
-                                    let _ = pm.reload_instance(plugin_idx);
+                                Ok(Ok((Err(_), inst))) => {
+                                    pm.put_instance(plugin_idx, inst);
+                                    pm.record_exec_error(
+                                        plugin_idx,
+                                        &name,
+                                        "on_tick",
+                                        true,
+                                        "plugin.on_tick_consecutive_error",
+                                        None,
+                                    );
+                                    tracing::warn!(
+                                        "{}",
+                                        osubot_core::log_fmt!(
+                                            "plugin.on_tick_error",
+                                            kind = "on_tick",
+                                            name = &name
+                                        )
+                                    );
+                                }
+                                Ok(Err(join_err)) => {
+                                    tracing::error!(
+                                        "{}",
+                                        osubot_core::log_fmt!(
+                                            "plugin.on_tick_panicked",
+                                            kind = "on_tick",
+                                            name = name,
+                                            error = join_err
+                                        )
+                                    );
+                                    pm.record_exec_error(
+                                        plugin_idx,
+                                        &name,
+                                        "on_tick",
+                                        true,
+                                        "plugin.on_tick_consecutive_panic",
+                                        None,
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::warn!(
+                                        "{}",
+                                        osubot_core::log_fmt!(
+                                            "plugin.on_tick_timeout",
+                                            kind = "on_tick",
+                                            name = &name
+                                        )
+                                    );
+                                    pm.engine_mut().increment_epoch();
+                                    pm.record_exec_error(
+                                        plugin_idx,
+                                        &name,
+                                        "on_tick",
+                                        true,
+                                        "plugin.on_tick_consecutive_timeout",
+                                        Some("plugin.timeout_skip_reload"),
+                                    );
                                 }
                             }
                         }

@@ -88,6 +88,13 @@ impl Drop for PluginManager {
     }
 }
 
+impl PluginManager {
+    /// 暴露给 `osubot` crate 调用以在 tick 超时后提升 epoch deadline。
+    pub fn engine_mut(&mut self) -> &mut wasmtime::Engine {
+        &mut self.engine
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
