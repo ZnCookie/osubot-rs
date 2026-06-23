@@ -325,10 +325,9 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     // ==== Fallback: old text dispatch (native commands) ====
 
     // 未识别命令 — 插件已拒绝，直接结束
-    if cmd_opt.is_none() {
+    let Some(cmd) = cmd_opt else {
         return;
-    }
-    let cmd = cmd_opt.expect("guarded by cmd_opt.is_none() early-return");
+    };
 
     // 命令开关检查
     let group_cfg = {
