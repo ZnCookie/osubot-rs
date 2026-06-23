@@ -105,11 +105,10 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
 
     let upstream_chain = {
         let cfg = config.read().await;
-        Arc::new(RwLock::new(crate::reload::build_upstream_chain(
-            &cfg.upstream,
-            &oauth,
-            &rate_limiter,
-        )))
+        Arc::new(RwLock::new(
+            crate::reload::build_upstream_chain(&cfg.upstream, &oauth, &rate_limiter)
+                .expect("unknown upstream provider should have been rejected by Config::validate"),
+        ))
     };
 
     let onebot_api = Arc::new(crate::OneBotApi::new(onebot_api_timeout.clone()));
