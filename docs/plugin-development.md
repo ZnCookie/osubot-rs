@@ -29,6 +29,7 @@
 
 ```rust
 pub struct PluginMetadata {
+    pub protocol_version: u32,  // 协议版本号，宿主会与 PROTOCOL_VERSION 对比校验
     pub name: String,
     pub version: String,
     pub author: String,

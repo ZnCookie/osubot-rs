@@ -4580,6 +4580,7 @@ version = "0.1.0"
 dependencies = [
  "osubot-core",
  "osubot-game-mode",
+ "osubot-plugin-sdk",
  "osubot-types",
  "reqwest",
  "serde",

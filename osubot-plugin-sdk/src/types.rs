@@ -2,12 +2,19 @@ use serde::{Deserialize, Serialize};
 
 use osubot_game_mode::GameMode;
 
+/// Current protocol version. Bump when making breaking changes to
+/// `PluginMetadata` or `PluginAction`.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// Metadata exported by every plugin via `PLUGIN_METADATA` static.
 ///
 /// The host reads this struct before loading the plugin to determine
 /// which commands the plugin handles and to display plugin info.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PluginMetadata {
+    /// Protocol version this plugin was compiled against.
+    /// Host rejects plugins with `protocol_version` > `PROTOCOL_VERSION`.
+    pub protocol_version: u32,
     /// Human-readable plugin name.
     pub name: String,
     /// Plugin version string (e.g. "1.0.0").

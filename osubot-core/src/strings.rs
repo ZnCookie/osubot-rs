@@ -516,6 +516,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
 
     // ===== osubot-plugin/src/instance.rs =====
     "instance.plugin_loaded" => "插件已加载",
+    "instance.plugin_protocol_too_new" => "插件协议版本 {plugin_version} 高于宿主支持的 {host_version}",
     "instance.dealloc_length_prefix_failed" => "dealloc_result: 无法读取长度前缀，跳过释放（WASM 线性内存泄漏）",
 
     // ===== BridgeError Display（开发者可见） =====

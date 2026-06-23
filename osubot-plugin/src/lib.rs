@@ -172,8 +172,9 @@ mod tests {
     #[test]
     fn test_metadata_deserialize() {
         // 注意：priority 字段在 TOML config 中设置，PluginMetadata 宿主端没有此字段
-        let json = r#"{"name":"test","version":"1.0","author":"me","description":"desc","commands":["!ping"]}"#;
+        let json = r#"{"protocol_version":1,"name":"test","version":"1.0","author":"me","description":"desc","commands":["!ping"]}"#;
         let meta: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.protocol_version, 1);
         assert_eq!(meta.name, "test");
         assert_eq!(meta.commands, vec!["!ping"]);
     }
