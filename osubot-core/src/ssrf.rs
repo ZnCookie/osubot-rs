@@ -29,8 +29,10 @@ pub fn is_blocked_url(url: &str) -> bool {
         return match ip {
             std::net::IpAddr::V4(v4) => check_v4_private(v4),
             std::net::IpAddr::V6(v6) => {
-                if let Some(v4) = v6.to_ipv4_mapped() {
-                    return check_v4_private(v4);
+                if let Some(v4) = v6.to_ipv4() {
+                    if check_v4_private(v4) {
+                        return true;
+                    }
                 }
                 if let Some(first) = v6.segments().first() {
                     if *first == 0x0064 && v6.segments()[1] == 0xff9b {
@@ -110,6 +112,14 @@ mod tests {
     fn blocks_ipv4_mapped_ipv6() {
         assert!(is_blocked_url("http://[::ffff:127.0.0.1]/"));
         assert!(is_blocked_url("http://[::ffff:192.168.1.1]/"));
+    }
+
+    #[test]
+    fn blocks_ipv4_compatible_ipv6() {
+        // ::127.0.0.1 是 IPv4-compatible（::/96），应被阻断
+        assert!(is_blocked_url("http://[::127.0.0.1]/"));
+        // ::192.168.1.1 同理
+        assert!(is_blocked_url("http://[::192.168.1.1]/"));
     }
 
     #[test]
