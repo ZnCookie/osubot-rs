@@ -51,10 +51,8 @@ pub fn is_blocked_url(url: &str) -> bool {
             }
         };
     }
-    matches!(
-        host,
-        "localhost" | "0.0.0.0" | "::1" | "ip6-localhost" | "ip6-loopback"
-    ) || host.ends_with(".local")
+    matches!(host, "localhost" | "::1" | "ip6-localhost" | "ip6-loopback")
+        || host.ends_with(".local")
 }
 
 /// `reqwest::redirect::Policy` 在每次 `Location` 跳转时调用 `check` 校验。
