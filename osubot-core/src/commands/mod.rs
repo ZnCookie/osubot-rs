@@ -141,6 +141,15 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             }
             return None;
         }
+        if let Some(qq_str) = rest.strip_prefix("qq=") {
+            if let Ok(parsed) = qq_str.parse::<i64>() {
+                return Some(Command::ProfileCard {
+                    username: None,
+                    qq: Some(parsed),
+                });
+            }
+            return None;
+        }
         return Some(Command::ProfileCard {
             username: Some(rest.to_string()),
             qq: None,
