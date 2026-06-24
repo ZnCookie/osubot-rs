@@ -1,6 +1,6 @@
 use crate::types::{Command, GameMode};
 
-use super::common::{extract_common_args, parse_time_token, try_parse_range, SCORE_ID_THRESHOLD};
+use super::common::{extract_common_args, parse_time_token, try_parse_range};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScoringCmd {
@@ -53,116 +53,7 @@ fn parse_one_scoring_cmd(
     cmd: ScoringCmd,
     mentioned_user_id: Option<i64>,
 ) -> Option<Command> {
-    match cmd {
-        ScoringCmd::BeatmapPreview => parse_rv(rest),
-        _ => parse_standard_score(rest, cmd, mentioned_user_id),
-    }
-}
-
-fn parse_rv(rest: &str) -> Option<Command> {
-    let mut gif = false;
-    let mut times: Vec<i64> = Vec::new();
-    let mut pass1_tokens: Vec<&str> = Vec::new();
-
-    for token in rest.split_whitespace() {
-        if token == "--gif" || token == "-g" {
-            gif = true;
-        } else if let Some(ms) = parse_time_token(token) {
-            times.push(ms);
-            if times.len() > 2 {
-                return None;
-            }
-        } else {
-            pass1_tokens.push(token);
-        }
-    }
-
-    let remaining = pass1_tokens.join(" ");
-
-    if remaining.is_empty() && times.is_empty() {
-        return Some(Command::BeatmapPreview {
-            score_id: None,
-            beatmap_id: None,
-            mode: None,
-            username: None,
-            qq: None,
-            mods: None,
-            gif,
-            times: None,
-            limit: 1,
-            filters: None,
-            explicit_position: false,
-        });
-    }
-
-    let args = extract_common_args(&remaining, 1);
-
-    if args.rest.is_empty() && !times.is_empty() {
-        return Some(Command::BeatmapPreview {
-            score_id: None,
-            beatmap_id: None,
-            mode: args.mode,
-            username: None,
-            qq: None,
-            mods: args.raw_mods,
-            gif,
-            times: Some(times),
-            limit: 1,
-            filters: None,
-            explicit_position: false,
-        });
-    }
-
-    if args.rest.is_empty() {
-        return Some(Command::BeatmapPreview {
-            score_id: None,
-            beatmap_id: None,
-            mode: args.mode,
-            username: None,
-            qq: None,
-            mods: args.raw_mods,
-            gif,
-            times: None,
-            limit: 1,
-            filters: None,
-            explicit_position: false,
-        });
-    }
-
-    let mut score_id: Option<u64> = None;
-    let mut beatmap_id: Option<u32> = None;
-
-    for token in args.rest.split_whitespace() {
-        if let Ok(num) = token.parse::<u64>() {
-            if num >= SCORE_ID_THRESHOLD {
-                if score_id.is_some() || beatmap_id.is_some() {
-                    return None;
-                }
-                score_id = Some(num);
-            } else {
-                if score_id.is_some() || beatmap_id.is_some() {
-                    return None;
-                }
-                beatmap_id = Some(num as u32);
-            }
-        } else {
-            return None;
-        }
-    }
-
-    Some(Command::BeatmapPreview {
-        score_id,
-        beatmap_id,
-        mode: args.mode,
-        username: None,
-        qq: None,
-        mods: args.raw_mods,
-        gif,
-        times: if times.is_empty() { None } else { Some(times) },
-        limit: 1,
-        filters: None,
-        explicit_position: false,
-    })
+    parse_standard_score(rest, cmd, mentioned_user_id)
 }
 
 fn parse_standard_score(
@@ -178,26 +69,67 @@ fn parse_standard_score(
         | ScoringCmd::BeatmapAudio => 1u32,
         ScoringCmd::BestSingle => 1u32,
         ScoringCmd::BestList => 20u32,
-        ScoringCmd::BeatmapPreview => unreachable!(),
+        ScoringCmd::BeatmapPreview => 1u32,
     };
 
     if rest.is_empty() {
-        return make_score_cmd(ScoreCmdParams {
-            cmd,
-            mentioned_user_id,
-            mode: None,
-            beatmap_id: None,
-            score_id: None,
-            username: None,
-            qq: None,
-            limit: default_limit,
-            limit_end: None,
-            filters: None,
-            explicit_position: false,
-        });
+        return if matches!(cmd, ScoringCmd::BeatmapPreview) {
+            Some(Command::BeatmapPreview {
+                score_id: None,
+                beatmap_id: None,
+                mode: None,
+                username: None,
+                qq: mentioned_user_id,
+                mods: None,
+                gif: false,
+                times: None,
+                limit: default_limit,
+                filters: None,
+                explicit_position: false,
+            })
+        } else {
+            make_score_cmd(ScoreCmdParams {
+                cmd,
+                mentioned_user_id,
+                mode: None,
+                beatmap_id: None,
+                score_id: None,
+                username: None,
+                qq: None,
+                limit: default_limit,
+                limit_end: None,
+                filters: None,
+                explicit_position: false,
+            })
+        };
     }
 
-    let args = extract_common_args(rest, default_limit);
+    // BeatmapPreview 需要预处理 --gif/-g flag 和 mm:ss:mmm 时间 token
+    let (rest, rv_gif, rv_times) = if matches!(cmd, ScoringCmd::BeatmapPreview) {
+        let mut gif = false;
+        let mut times: Vec<i64> = Vec::new();
+        let mut filtered: Vec<&str> = Vec::new();
+        for token in rest.split_whitespace() {
+            if token == "--gif" || token == "-g" {
+                gif = true;
+            } else if let Some(ms) = parse_time_token(token) {
+                if times.len() >= 2 {
+                    return None;
+                }
+                times.push(ms);
+            } else {
+                filtered.push(token);
+            }
+        }
+        (
+            filtered.join(" "),
+            gif,
+            if times.is_empty() { None } else { Some(times) },
+        )
+    } else {
+        (rest.to_string(), false, None)
+    };
+    let args = extract_common_args(&rest, default_limit);
 
     let rt = parse_remaining_tokens(&args.rest, mentioned_user_id)?;
 
@@ -210,6 +142,23 @@ fn parse_standard_score(
         (None, Some(f)) => Some(f),
         (None, None) => None,
     };
+
+    if matches!(cmd, ScoringCmd::BeatmapPreview) {
+        let explicit_position = rt.implicit_limit.is_some() || args.explicit_position;
+        return Some(Command::BeatmapPreview {
+            score_id: rt.score_id,
+            beatmap_id: rt.beatmap_id,
+            mode: args.mode,
+            username: rt.username,
+            qq: rt.qq,
+            mods: args.raw_mods,
+            gif: rv_gif,
+            times: rv_times,
+            limit: rt.implicit_limit.unwrap_or(args.limit),
+            filters,
+            explicit_position,
+        });
+    }
 
     let final_limit = rt.implicit_limit.unwrap_or(args.limit);
 
