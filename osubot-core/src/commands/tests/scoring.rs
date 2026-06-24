@@ -1859,7 +1859,7 @@ fn test_pass_bare_range() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: Some(100),
+            limit_end: None,
             is_summary: false,
             filters: None,
         }
@@ -1878,7 +1878,7 @@ fn test_pass_bare_range_with_space() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: Some(100),
+            limit_end: None,
             is_summary: false,
             filters: None,
         }
@@ -2032,8 +2032,8 @@ fn test_pass_bare_number_clamp_max() {
 }
 
 #[test]
-fn test_pass_bare_range_clamp() {
-    let cmd = parse_command("!p1-300", None).unwrap();
+fn test_pass_summary_bare_range_clamp() {
+    let cmd = parse_command("!ps1-300", None).unwrap();
     assert_eq!(
         cmd,
         Command::Pass {
@@ -2044,7 +2044,7 @@ fn test_pass_bare_range_clamp() {
             score_id: None,
             limit: 1,
             limit_end: Some(200),
-            is_summary: false,
+            is_summary: true,
             filters: None,
         }
     );
@@ -2081,7 +2081,7 @@ fn test_pass_bare_range_zero_start_clamps() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: Some(10),
+            limit_end: None,
             is_summary: false,
             filters: None,
         }

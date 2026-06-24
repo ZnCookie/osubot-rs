@@ -4,6 +4,7 @@ pub(super) struct BeatmapPreviewParams {
     pub(super) score_id: Option<u64>,
     pub(super) beatmap_id: Option<u32>,
     pub(super) mode: Option<GameMode>,
+    pub(super) resolved_mode: GameMode,
     pub(super) mods: Option<Vec<String>>,
     pub(super) gif: bool,
     pub(super) times: Option<Vec<i64>>,
@@ -25,8 +26,9 @@ pub(super) async fn handle_beatmap_preview(
             let dedup_oauth = ctx.oauth.clone();
             let qq_for_dedup = qq;
             let sid_owned = *sid;
+            let mode_for_dedup = params.resolved_mode;
             let result = score_by_id_dedup()
-                .run_or_wait((sid_owned as i64, GameMode::Osu), move || {
+                .run_or_wait((sid_owned as i64, mode_for_dedup), move || {
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
                     let qq_inner = qq_for_dedup;

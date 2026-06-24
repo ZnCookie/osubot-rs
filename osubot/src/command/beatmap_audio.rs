@@ -9,6 +9,7 @@ pub(super) struct BeatmapAudioParams {
     pub(super) username: Option<String>,
     pub(super) qq: Option<i64>,
     pub(super) mode: GameMode,
+    pub(super) mode_specified: bool,
     pub(super) filters: Option<Vec<String>>,
     pub(super) limit: u32,
     pub(super) explicit_position: bool,
@@ -107,7 +108,8 @@ async fn resolve_beatmapset_id_fallback(
     let has_target = params.username.is_some()
         || params.qq.is_some()
         || params.filters.as_ref().is_some_and(|f| !f.is_empty())
-        || params.explicit_position;
+        || params.explicit_position
+        || params.mode_specified;
     if !has_target {
         if let Some(bid) = ctx.last_beatmap.get(group_id) {
             ctx.last_beatmap.set(group_id, bid);

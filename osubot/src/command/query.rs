@@ -254,6 +254,7 @@ pub(super) async fn handle_query_commands(
             filters,
             limit,
             explicit_position,
+            mode: cmd_mode,
             ..
         } => {
             handle_beatmap_audio(
@@ -266,6 +267,7 @@ pub(super) async fn handle_query_commands(
                     username: username.clone(),
                     qq: *qq,
                     mode,
+                    mode_specified: cmd_mode.is_some(),
                     filters: filters.clone(),
                     limit: *limit,
                     explicit_position: *explicit_position,

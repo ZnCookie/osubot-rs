@@ -193,14 +193,13 @@ fn parse_standard_score(
 
     let final_limit = rt.implicit_limit.unwrap_or(args.limit);
 
-    let final_limit_end = if rt.limit_end.is_none()
-        && matches!(
-            cmd,
-            ScoringCmd::PassSingle
-                | ScoringCmd::RecentSingle
-                | ScoringCmd::ScoreSingle
-                | ScoringCmd::BestSingle
-        ) {
+    let final_limit_end = if matches!(
+        cmd,
+        ScoringCmd::PassSingle
+            | ScoringCmd::RecentSingle
+            | ScoringCmd::ScoreSingle
+            | ScoringCmd::BestSingle
+    ) {
         None
     } else {
         rt.limit_end.or(args.limit_end)
@@ -210,7 +209,8 @@ fn parse_standard_score(
         return None;
     }
 
-    let explicit_position = rt.implicit_limit.is_some() || args.explicit_position;
+    let explicit_position = matches!(cmd, ScoringCmd::BeatmapAudio)
+        && (rt.implicit_limit.is_some() || args.explicit_position);
 
     make_score_cmd(ScoreCmdParams {
         cmd,
