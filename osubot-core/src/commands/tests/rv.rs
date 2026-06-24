@@ -13,6 +13,11 @@ fn test_rv_bare() {
             mods: None,
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -29,6 +34,11 @@ fn test_rv_with_beatmap_id() {
             mods: None,
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -45,6 +55,11 @@ fn test_rv_with_score_id() {
             mods: None,
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -61,6 +76,11 @@ fn test_rv_with_mods() {
             mods: Some(vec!["HD".to_string()]),
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -77,6 +97,11 @@ fn test_rv_with_mods_and_beatmap() {
             mods: Some(vec!["HD".to_string(), "DT".to_string()]),
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -93,6 +118,11 @@ fn test_rv_with_mode() {
             mods: None,
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -109,6 +139,11 @@ fn test_rv_with_mods_and_mode() {
             mods: Some(vec!["HD".to_string()]),
             gif: false,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -145,6 +180,11 @@ fn test_rv_with_gif() {
             mods: None,
             gif: true,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -161,6 +201,11 @@ fn test_rv_with_gif_short() {
             mods: None,
             gif: true,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -177,6 +222,11 @@ fn test_rv_with_beatmap_id_and_gif() {
             mods: None,
             gif: true,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -193,6 +243,11 @@ fn test_rv_with_mods_and_gif() {
             mods: Some(vec!["HD".to_string()]),
             gif: true,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -209,6 +264,11 @@ fn test_rv_with_mode_and_gif() {
             mods: None,
             gif: true,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -225,6 +285,11 @@ fn test_rv_with_all_args_and_gif() {
             mods: Some(vec!["DT".to_string()]),
             gif: true,
             times: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -252,6 +317,11 @@ fn test_rv_single_time() {
             mods: None,
             gif: false,
             times: Some(vec![90_000]),
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -268,6 +338,11 @@ fn test_rv_two_times() {
             mods: None,
             gif: false,
             times: Some(vec![60_000, 120_000]),
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -284,6 +359,11 @@ fn test_rv_beatmap_id_with_time() {
             mods: None,
             gif: false,
             times: Some(vec![90_000]),
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -300,6 +380,11 @@ fn test_rv_time_with_mods_and_mode() {
             mods: Some(vec!["HD".to_string()]),
             gif: false,
             times: Some(vec![90_000]),
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -316,6 +401,11 @@ fn test_rv_two_times_invalid_order() {
             mods: None,
             gif: false,
             times: Some(vec![120_000, 60_000]),
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -342,6 +432,11 @@ fn test_rv_time_with_gif() {
             mods: None,
             gif: true,
             times: Some(vec![90_000]),
+            username: None,
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }

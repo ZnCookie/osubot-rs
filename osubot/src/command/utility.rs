@@ -25,6 +25,7 @@ pub(super) async fn handle_utility_commands(
             mods,
             gif,
             times,
+            ..
         } => {
             handle_beatmap_preview(
                 ctx,

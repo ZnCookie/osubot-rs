@@ -84,9 +84,14 @@ fn parse_rv(rest: &str) -> Option<Command> {
             score_id: None,
             beatmap_id: None,
             mode: None,
+            username: None,
+            qq: None,
             mods: None,
             gif,
             times: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         });
     }
 
@@ -97,9 +102,14 @@ fn parse_rv(rest: &str) -> Option<Command> {
             score_id: None,
             beatmap_id: None,
             mode: args.mode,
+            username: None,
+            qq: None,
             mods: args.raw_mods,
             gif,
             times: Some(times),
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         });
     }
 
@@ -108,9 +118,14 @@ fn parse_rv(rest: &str) -> Option<Command> {
             score_id: None,
             beatmap_id: None,
             mode: args.mode,
+            username: None,
+            qq: None,
             mods: args.raw_mods,
             gif,
             times: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         });
     }
 
@@ -139,9 +154,14 @@ fn parse_rv(rest: &str) -> Option<Command> {
         score_id,
         beatmap_id,
         mode: args.mode,
+        username: None,
+        qq: None,
         mods: args.raw_mods,
         gif,
         times: if times.is_empty() { None } else { Some(times) },
+        limit: 1,
+        filters: None,
+        explicit_position: false,
     })
 }
 
@@ -342,7 +362,19 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             filters: params.filters,
             explicit_position: params.explicit_position,
         },
-        ScoringCmd::BeatmapPreview => unreachable!(),
+        ScoringCmd::BeatmapPreview => Command::BeatmapPreview {
+            mode: params.mode,
+            username: params.username,
+            qq,
+            beatmap_id: params.beatmap_id,
+            score_id: params.score_id,
+            mods: None,
+            gif: false,
+            times: None,
+            limit: params.limit,
+            filters: params.filters,
+            explicit_position: params.explicit_position,
+        },
     })
 }
 
