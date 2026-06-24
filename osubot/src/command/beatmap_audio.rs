@@ -1,5 +1,7 @@
 use super::*;
 use crate::onebot::send_group_msg_with_record;
+use crate::score_filter::score_matches_filters;
+use crate::SCORE_API_FETCH_LIMIT;
 
 pub(super) struct BeatmapAudioParams {
     pub(super) score_id: Option<u64>,
@@ -7,6 +9,7 @@ pub(super) struct BeatmapAudioParams {
     pub(super) username: Option<String>,
     pub(super) qq: Option<i64>,
     pub(super) mode: GameMode,
+    pub(super) filters: Option<Vec<String>>,
 }
 
 pub(super) async fn handle_beatmap_audio(
@@ -101,16 +104,46 @@ pub(super) async fn handle_beatmap_audio(
                 }
             };
 
-            match api::get_user_recent(&ctx.rate_limiter, &ctx.oauth, user_id, params.mode, true, 1)
-                .await
+            let has_filters = params.filters.as_ref().is_some_and(|f| !f.is_empty());
+            let api_limit = if has_filters {
+                SCORE_API_FETCH_LIMIT
+            } else {
+                1
+            };
+
+            match api::get_user_recent(
+                &ctx.rate_limiter,
+                &ctx.oauth,
+                user_id,
+                params.mode,
+                true,
+                api_limit,
+            )
+            .await
             {
-                Ok(scores) => match scores.into_iter().next() {
-                    Some(score) => score.beatmapset_id,
-                    None => {
-                        send_error(resp_tx, qq, "query.no_records").await;
-                        return;
+                Ok(scores) => {
+                    let matching = if let Some(ref filters) = params.filters {
+                        scores
+                            .into_iter()
+                            .filter(|s| score_matches_filters(s, filters))
+                            .collect::<Vec<_>>()
+                    } else {
+                        scores
+                    };
+                    match matching.into_iter().next() {
+                        Some(score) => score.beatmapset_id,
+                        None => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("query.no_match")
+                                        .replace("{qq}", &qq.to_string())
+                                        .replace("{name}", user_str("query.noun_replay")),
+                                )
+                                .await;
+                            return;
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     let _ = resp_tx.send(api_error_msg(qq, &e)).await;
                     return;
