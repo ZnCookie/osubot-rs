@@ -1730,3 +1730,63 @@ fn test_best_command_name() {
         "!b"
     );
 }
+
+#[test]
+fn test_beatmap_audio_self() {
+    let cmd = parse_command("!a", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_username_mode() {
+    let cmd = parse_command("!a ZnCookie :1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: Some(GameMode::Taiko),
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_beatmap_id() {
+    let cmd = parse_command("!a 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_group_is_beatmap_preview() {
+    let cmd = parse_command("!a", None).unwrap();
+    assert_eq!(cmd.group_name(), CommandGroup::BeatmapPreview);
+}
