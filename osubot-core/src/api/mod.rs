@@ -8,6 +8,7 @@ mod stable_grade;
 
 pub use beatmap_attrs::apply_mod_adjustment_to_stats;
 pub use http::download_beatmap_osu;
+pub use http::download_beatmap_preview_mp3;
 pub(crate) use http::{classify_http_error, retry_on_transient, API_VERSION};
 pub use http::{retry_with_backoff, RetryAction, RetryConfig};
 pub(crate) use oauth::retry_on_401;

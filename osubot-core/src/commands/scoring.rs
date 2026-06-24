@@ -193,21 +193,25 @@ fn parse_standard_score(
 
     let final_limit = rt.implicit_limit.unwrap_or(args.limit);
 
-    let final_limit_end = if matches!(
+    let single_cmd = matches!(
         cmd,
         ScoringCmd::PassSingle
             | ScoringCmd::RecentSingle
             | ScoringCmd::ScoreSingle
             | ScoringCmd::BestSingle
-    ) {
+    );
+    let range_given = rt.limit_end.is_some() || args.limit_end.is_some();
+
+    // single 命令与 !a 不接受区间语法（区间请用对应 summary 命令）。
+    if (single_cmd || matches!(cmd, ScoringCmd::BeatmapAudio)) && range_given {
+        return None;
+    }
+
+    let final_limit_end = if single_cmd {
         None
     } else {
         rt.limit_end.or(args.limit_end)
     };
-
-    if matches!(cmd, ScoringCmd::BeatmapAudio) && final_limit_end.is_some() {
-        return None;
-    }
 
     let explicit_position = matches!(cmd, ScoringCmd::BeatmapAudio)
         && (rt.implicit_limit.is_some() || args.explicit_position);
@@ -440,6 +444,11 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
     let qq = qq_id.or(mentioned_user_id);
 
     if qq_id.is_some() && username.is_some() {
+        return None;
+    }
+
+    // score_id 与 beatmap_id 不可共存：语义冲突，交由调用方拒绝。
+    if score_id.is_some() && beatmap_id.is_some() {
         return None;
     }
 

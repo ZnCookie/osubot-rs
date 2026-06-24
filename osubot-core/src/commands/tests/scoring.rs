@@ -893,25 +893,6 @@ fn test_pass_new_format_range_ps() {
 }
 
 #[test]
-fn test_pass_new_format_range_pr_ignored() {
-    let cmd = parse_command("!p #2-10", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 2,
-            limit_end: None,
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
 fn test_pass_new_format_multi_word_username() {
     let cmd = parse_command("!ps Zhang San miss=1", None).unwrap();
     assert_eq!(
@@ -1835,44 +1816,6 @@ fn test_pass_bare_number_with_space() {
 }
 
 #[test]
-fn test_pass_bare_range() {
-    let cmd = parse_command("!p1-100", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 1,
-            limit_end: None,
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
-fn test_pass_bare_range_with_space() {
-    let cmd = parse_command("!p 1-100", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 1,
-            limit_end: None,
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
 fn test_best_bare_number_limit() {
     let cmd = parse_command("!b5", None).unwrap();
     assert_eq!(
@@ -1969,6 +1912,24 @@ fn test_two_beatmap_level_numbers_rejected() {
 }
 
 #[test]
+fn test_single_command_range_rejected() {
+    // single 命令不接受区间（区间请用 summary），不再静默吞尾取第 1 条。
+    assert!(parse_command("!p1-100", None).is_none());
+    assert!(parse_command("!p 1-100", None).is_none());
+    assert!(parse_command("!b1-5", None).is_none());
+    assert!(parse_command("!p #2-10", None).is_none());
+    // summary 命令的区间仍正常。
+    assert!(parse_command("!ps1-100", None).is_some());
+}
+
+#[test]
+fn test_score_id_and_beatmap_id_coexist_rejected() {
+    // score_id 与 beatmap_id 不可共存，解析期即拒绝。
+    assert!(parse_command("!a 12345678 456", None).is_none());
+    assert!(parse_command("!s 12345678 456", None).is_none());
+}
+
+#[test]
 fn test_recent_bare_number_limit() {
     let cmd = parse_command("!r5", None).unwrap();
     assert_eq!(
@@ -2047,25 +2008,6 @@ fn test_pass_summary_bare_range_clamp() {
 #[test]
 fn test_pass_bare_zero_clamps_to_one() {
     let cmd = parse_command("!p0", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 1,
-            limit_end: None,
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
-fn test_pass_bare_range_zero_start_clamps() {
-    let cmd = parse_command("!p0-10", None).unwrap();
     assert_eq!(
         cmd,
         Command::Pass {

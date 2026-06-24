@@ -295,17 +295,20 @@ pub(crate) async fn send_group_msg_with_image(
         })
 }
 
-/// Send a message with a voice record (network URL) to a QQ group via the OneBot WebSocket connection.
+/// Send a message with a voice record (base64-encoded MP3 bytes) to a QQ group
+/// via the OneBot WebSocket connection. Mirrors `send_group_msg_with_image`.
 pub(crate) async fn send_group_msg_with_record(
     write: &Arc<Mutex<WriteSink>>,
     group_id: i64,
-    url: &str,
+    mp3: &[u8],
 ) -> Result<(), WsError> {
+    use base64::prelude::*;
+    let b64 = BASE64_STANDARD.encode(mp3);
     let segments = serde_json::json!([
         {
             "type": "record",
             "data": {
-                "file": url
+                "file": format!("base64://{}", b64)
             }
         }
     ]);

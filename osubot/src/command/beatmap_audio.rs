@@ -78,10 +78,16 @@ pub(super) async fn handle_beatmap_audio(
         return;
     }
 
-    let url = format!("https://b.ppy.sh/preview/{}.mp3", beatmapset_id);
+    let mp3 = match api::download_beatmap_preview_mp3(beatmapset_id).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+            return;
+        }
+    };
 
     let write = ctx.write.clone();
-    if send_group_msg_with_record(&write, group_id, &url)
+    if send_group_msg_with_record(&write, group_id, &mp3)
         .await
         .is_err()
     {

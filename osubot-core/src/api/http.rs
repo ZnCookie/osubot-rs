@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::cache::beatmap_cache_dir;
+use crate::cache::{beatmap_audio_cache_dir, beatmap_cache_dir};
 use crate::log_fmt;
 use crate::rate_limiter::RateLimiter;
 
@@ -135,6 +135,84 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     .ok();
 
     Ok(cache_path)
+}
+
+/// Download the 30s preview MP3 for a beatmapset, with on-disk caching (~7 day TTL,
+/// mirroring `download_beatmap_osu`). Returns bytes for base64 record sending.
+/// Preview audio content is stable per beatmapset, so reads hit the cache directly.
+pub async fn download_beatmap_preview_mp3(beatmapset_id: i64) -> Result<Vec<u8>, ApiError> {
+    let cache_path = beatmap_audio_cache_dir().join(format!("{}.mp3", beatmapset_id));
+
+    let cache_valid = tokio::task::spawn_blocking({
+        let cache_path = cache_path.clone();
+        move || -> bool {
+            if !cache_path.exists() {
+                return false;
+            }
+            match std::fs::metadata(&cache_path) {
+                Ok(meta) if meta.len() > 0 => {
+                    if let Ok(modified) = meta.modified() {
+                        modified.elapsed().unwrap_or(std::time::Duration::MAX)
+                            < std::time::Duration::from_secs(7 * 86400)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    if cache_valid {
+        if let Ok(bytes) = tokio::fs::read(&cache_path).await {
+            return Ok(bytes);
+        }
+    }
+
+    let client = http_client();
+    let url = format!("https://b.ppy.sh/preview/{}.mp3", beatmapset_id);
+
+    let bytes = retry_on_transient(4, || async {
+        let resp = client.get(&url).send().await?;
+
+        classify_http_error(&resp)?;
+
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(ApiError::Http)
+    })
+    .await?;
+
+    tokio::task::spawn_blocking({
+        let write_path = cache_path.clone();
+        let bytes = bytes.clone();
+        move || {
+            if let Err(e) = std::fs::create_dir_all(
+                write_path
+                    .parent()
+                    .expect("cache path always has parent dirs (beatmap_audio_cache_dir()/id.mp3)"),
+            ) {
+                tracing::warn!("{}", log_fmt!("api.cache_dir_failed", error = &e));
+            }
+            if let Err(e) = std::fs::write(&write_path, &bytes) {
+                tracing::warn!(
+                    "{}",
+                    log_fmt!(
+                        "api.write_beatmap_cache_failed",
+                        path = format!("{}", write_path.display()),
+                        error = &e
+                    )
+                );
+            }
+        }
+    })
+    .await
+    .ok();
+
+    Ok(bytes)
 }
 
 pub(crate) async fn json_body<T: serde::de::DeserializeOwned>(
