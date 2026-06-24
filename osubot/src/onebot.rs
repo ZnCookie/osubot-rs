@@ -10,7 +10,6 @@ use futures_util::SinkExt;
 use serde::Deserialize;
 use tokio::sync::{oneshot, Mutex};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMsg};
-use tracing::warn;
 
 use osubot_core::{log_fmt, strings::user_str};
 
@@ -288,11 +287,7 @@ pub(crate) async fn send_group_msg_with_image(
         }
     });
     let mut sink = write.lock().await;
-    sink.send(WsMsg::Text(json.to_string().into()))
-        .await
-        .inspect_err(|e| {
-            warn!(error = %e, group_id = group_id, "{}", log_fmt!("main.send_image_failed"));
-        })
+    sink.send(WsMsg::Text(json.to_string().into())).await
 }
 
 /// Send a message with a voice record (base64-encoded MP3 bytes) to a QQ group
@@ -320,9 +315,5 @@ pub(crate) async fn send_group_msg_with_record(
         }
     });
     let mut sink = write.lock().await;
-    sink.send(WsMsg::Text(json.to_string().into()))
-        .await
-        .inspect_err(|e| {
-            warn!(error = %e, group_id = group_id, "{}", log_fmt!("main.send_record_failed"));
-        })
+    sink.send(WsMsg::Text(json.to_string().into())).await
 }

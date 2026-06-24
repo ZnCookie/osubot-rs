@@ -123,20 +123,22 @@ impl DedupApiError {
 
     /// 格式化通用用户错误消息（语义同 `api_error_msg`）。
     pub(crate) fn to_user_msg(&self, qq: i64) -> String {
-        match self {
-            Self::NotFound => user_str("error.not_found"),
-            Self::MissingApiKey => user_str("error.api_key"),
-            Self::OAuthError => user_str("error.oauth"),
-            Self::RateLimitedWithRetryAfter(None) => user_str("error.rate_limit_generic"),
+        let (template, secs) = match self {
+            Self::NotFound => (user_str("error.not_found"), None),
+            Self::MissingApiKey => (user_str("error.api_key"), None),
+            Self::OAuthError => (user_str("error.oauth"), None),
+            Self::RateLimitedWithRetryAfter(None) => (user_str("error.rate_limit_generic"), None),
             Self::RateLimitedWithRetryAfter(Some(secs)) => {
-                return user_str("error.rate_limit")
-                    .replace("{qq}", &qq.to_string())
-                    .replace("{secs}", &secs.to_string());
+                (user_str("error.rate_limit"), Some(*secs))
             }
-            Self::ClientRateLimited => user_str("error.client_rate_limit"),
-            Self::Other => user_str("error.query_failed"),
+            Self::ClientRateLimited => (user_str("error.client_rate_limit"), None),
+            Self::Other => (user_str("error.query_failed"), None),
+        };
+        let mut msg = template.replace("{qq}", &qq.to_string());
+        if let Some(secs) = secs {
+            msg = msg.replace("{secs}", &secs.to_string());
         }
-        .replace("{qq}", &qq.to_string())
+        msg
     }
 }
 

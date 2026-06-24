@@ -92,7 +92,7 @@ pub(super) async fn handle_beatmap_audio(
 
     let write = ctx.write.clone();
     if let Err(e) = send_group_msg_with_record(&write, group_id, &mp3).await {
-        warn!(error = %e, "发送预览音频失败");
+        warn!(error = %e, "{}", log_fmt!("main.beatmap_audio_send_failed", error = &e.to_string()));
         let _ = resp_tx
             .send(user_str("error.audio_send_failed").replace("{qq}", &qq.to_string()))
             .await;
