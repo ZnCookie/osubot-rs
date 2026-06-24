@@ -111,6 +111,16 @@ pub enum Command {
         gif: bool,
         times: Option<Vec<i64>>,
     },
+    BeatmapAudio {
+        mode: Option<GameMode>,
+        username: Option<String>,
+        qq: Option<i64>,
+        beatmap_id: Option<u32>,
+        score_id: Option<u64>,
+        limit: u32,
+        limit_end: Option<u32>,
+        filters: Option<Vec<String>>,
+    },
     Help,
 }
 
@@ -124,7 +134,9 @@ impl Command {
             Command::Pass { .. } | Command::Recent { .. } | Command::Best { .. } => {
                 CommandGroup::Score
             }
-            Command::BeatmapPreview { .. } => CommandGroup::BeatmapPreview,
+            Command::BeatmapPreview { .. } | Command::BeatmapAudio { .. } => {
+                CommandGroup::BeatmapPreview
+            }
             Command::ProfileCard { .. } => CommandGroup::Profile,
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
@@ -150,6 +162,7 @@ impl Command {
             Command::ScoreOnBeatmap { .. } => "!s",
             Command::SetDefaultMode { .. } => "!mode",
             Command::BeatmapPreview { .. } => "!rv",
+            Command::BeatmapAudio { .. } => "!a",
             Command::Help => "!help",
         }
     }
