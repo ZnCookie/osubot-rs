@@ -79,7 +79,7 @@ fn test_rv_with_mods() {
             username: None,
             qq: None,
             limit: 1,
-            filters: None,
+            filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
         }
     );
@@ -100,7 +100,7 @@ fn test_rv_with_mods_and_beatmap() {
             username: None,
             qq: None,
             limit: 1,
-            filters: None,
+            filters: Some(vec!["mod=HDDT".to_string()]),
             explicit_position: false,
         }
     );
@@ -142,7 +142,7 @@ fn test_rv_with_mods_and_mode() {
             username: None,
             qq: None,
             limit: 1,
-            filters: None,
+            filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
         }
     );
@@ -164,8 +164,24 @@ fn test_rv_rejected_suffix_underscore() {
 }
 
 #[test]
-fn test_rv_non_numeric_arg() {
-    assert!(parse_command("!rv abc", None).is_none());
+fn test_rv_with_username() {
+    let cmd = parse_command("!rv abc", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapPreview {
+            score_id: None,
+            beatmap_id: None,
+            mode: None,
+            mods: None,
+            gif: false,
+            times: None,
+            username: Some("abc".to_string()),
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
 }
 
 #[test]
@@ -246,7 +262,7 @@ fn test_rv_with_mods_and_gif() {
             username: None,
             qq: None,
             limit: 1,
-            filters: None,
+            filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
         }
     );
@@ -288,15 +304,31 @@ fn test_rv_with_all_args_and_gif() {
             username: None,
             qq: None,
             limit: 1,
-            filters: None,
+            filters: Some(vec!["mod=DT".to_string()]),
             explicit_position: false,
         }
     );
 }
 
 #[test]
-fn test_rv_negative_arg() {
-    assert!(parse_command("!rv -1", None).is_none());
+fn test_rv_username_dash_prefix() {
+    let cmd = parse_command("!rv -1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapPreview {
+            score_id: None,
+            beatmap_id: None,
+            mode: None,
+            mods: None,
+            gif: false,
+            times: None,
+            username: Some("-1".to_string()),
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
 }
 
 #[test]
@@ -383,7 +415,7 @@ fn test_rv_time_with_mods_and_mode() {
             username: None,
             qq: None,
             limit: 1,
-            filters: None,
+            filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
         }
     );
@@ -416,8 +448,24 @@ fn test_rv_three_times_rejected() {
 }
 
 #[test]
-fn test_rv_time_with_non_numeric() {
-    assert!(parse_command("!rv 01:30:000 abc", None).is_none());
+fn test_rv_username_with_time() {
+    let cmd = parse_command("!rv abc 01:30:000", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapPreview {
+            score_id: None,
+            beatmap_id: None,
+            mode: None,
+            mods: None,
+            gif: false,
+            times: Some(vec![90_000]),
+            username: Some("abc".to_string()),
+            qq: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
 }
 
 #[test]
@@ -437,6 +485,69 @@ fn test_rv_time_with_gif() {
             limit: 1,
             filters: None,
             explicit_position: false,
+        }
+    );
+}
+
+#[test]
+fn test_rv_with_qq_equals() {
+    let cmd = parse_command("!rv qq=123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapPreview {
+            score_id: None,
+            beatmap_id: None,
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            mods: None,
+            gif: false,
+            times: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
+}
+
+#[test]
+fn test_rv_with_mention() {
+    let cmd = parse_command("!rv @123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapPreview {
+            score_id: None,
+            beatmap_id: None,
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            mods: None,
+            gif: false,
+            times: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
+}
+
+#[test]
+fn test_rv_with_explicit_position() {
+    let cmd = parse_command("!rv 5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapPreview {
+            score_id: None,
+            beatmap_id: None,
+            mode: None,
+            username: None,
+            qq: None,
+            mods: None,
+            gif: false,
+            times: None,
+            limit: 5,
+            filters: None,
+            explicit_position: true,
         }
     );
 }
