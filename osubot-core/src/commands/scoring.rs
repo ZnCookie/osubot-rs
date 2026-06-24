@@ -400,13 +400,12 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
         }
         if !found_eq {
             if let Some((start, end)) = try_parse_range(token) {
-                if start <= MAX_LIMIT {
-                    let clamped_start = start.clamp(1, MAX_LIMIT);
-                    implicit_limit = Some(clamped_start);
-                    limit_end = Some(end.clamp(clamped_start, MAX_LIMIT));
-                    continue;
+                if start > MAX_LIMIT {
+                    return None;
                 }
-                name_parts.push(token);
+                let clamped_start = start.clamp(1, MAX_LIMIT);
+                implicit_limit = Some(clamped_start);
+                limit_end = Some(end.clamp(clamped_start, MAX_LIMIT));
                 continue;
             }
             if let Ok(num) = token.parse::<u64>() {

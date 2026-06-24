@@ -1923,6 +1923,31 @@ fn test_single_command_range_rejected() {
 }
 
 #[test]
+fn test_summary_range_start_exceeds_max_rejected() {
+    // 区间起点超出 MAX_LIMIT 直接拒绝，不静默当成用户名。
+    assert!(parse_command("!ps300-400", None).is_none());
+    assert!(parse_command("!ps 300-400", None).is_none());
+    assert!(parse_command("!rs300-400", None).is_none());
+    assert!(parse_command("!bs300-400", None).is_none());
+    // 起点在范围内、终点超出的区间仍正常 clamp。
+    let cmd = parse_command("!ps1-300", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: Some(200),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
 fn test_score_id_and_beatmap_id_coexist_rejected() {
     // score_id 与 beatmap_id 不可共存，解析期即拒绝。
     assert!(parse_command("!a 12345678 456", None).is_none());

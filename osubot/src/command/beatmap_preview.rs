@@ -29,9 +29,13 @@ pub(super) async fn handle_beatmap_preview(
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
                     async move {
-                        api::get_score_by_id(&rl, &oauth, sid_owned)
-                            .await
-                            .map_err(|e| DedupApiError::from_api_error(&e))
+                        let result = api::get_score_by_id(&rl, &oauth, sid_owned).await;
+                        if let Err(ref e) = result {
+                            if !matches!(e, ApiError::NotFound) {
+                                warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                            }
+                        }
+                        result.map_err(|e| DedupApiError::from_api_error(&e))
                     }
                 })
                 .await;
@@ -253,10 +257,8 @@ pub(super) async fn handle_beatmap_preview(
     };
 
     let write = ctx.write.clone();
-    if send_group_msg_with_image(&write, group_id, &image_data)
-        .await
-        .is_err()
-    {
+    if let Err(e) = send_group_msg_with_image(&write, group_id, &image_data).await {
+        warn!(error = %e, "发送预览图片失败");
         let _ = resp_tx
             .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
             .await;

@@ -34,9 +34,13 @@ pub(super) async fn handle_beatmap_audio(
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
                     async move {
-                        api::get_score_by_id(&rl, &oauth, sid_owned)
-                            .await
-                            .map_err(|e| DedupApiError::from_api_error(&e))
+                        let result = api::get_score_by_id(&rl, &oauth, sid_owned).await;
+                        if let Err(ref e) = result {
+                            if !matches!(e, ApiError::NotFound) {
+                                warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                            }
+                        }
+                        result.map_err(|e| DedupApiError::from_api_error(&e))
                     }
                 })
                 .await;
@@ -87,10 +91,8 @@ pub(super) async fn handle_beatmap_audio(
     };
 
     let write = ctx.write.clone();
-    if send_group_msg_with_record(&write, group_id, &mp3)
-        .await
-        .is_err()
-    {
+    if let Err(e) = send_group_msg_with_record(&write, group_id, &mp3).await {
+        warn!(error = %e, "发送预览音频失败");
         let _ = resp_tx
             .send(user_str("error.audio_send_failed").replace("{qq}", &qq.to_string()))
             .await;
@@ -177,7 +179,7 @@ async fn resolve_beatmapset_id_fallback(
     .await
     {
         Ok(scores) => {
-            let matching: Vec<_> = if let Some(ref filters) = params.filters {
+            let mut matching: Vec<_> = if let Some(ref filters) = params.filters {
                 scores
                     .into_iter()
                     .filter(|s| score_matches_filters(s, filters))
@@ -208,7 +210,7 @@ async fn resolve_beatmapset_id_fallback(
                     .await;
                 return None;
             }
-            let score = matching.into_iter().nth(index).expect("bounds checked");
+            let score = matching.swap_remove(index);
             ctx.last_beatmap.set(group_id, score.beatmap_id as u32);
             Some(score.beatmapset_id)
         }
