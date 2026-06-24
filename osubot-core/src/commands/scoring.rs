@@ -205,6 +205,10 @@ fn parse_standard_score(
         rt.limit_end.or(args.limit_end)
     };
 
+    if matches!(cmd, ScoringCmd::BeatmapAudio) && final_limit_end.is_some() {
+        return None;
+    }
+
     make_score_cmd(ScoreCmdParams {
         cmd,
         mentioned_user_id,

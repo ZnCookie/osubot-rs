@@ -57,9 +57,11 @@ pub(super) async fn handle_beatmap_audio(
             }
         }
         (None, Some(bid)) => {
-            ctx.last_beatmap.set(group_id, *bid);
             match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, *bid as i64).await {
-                Ok(set_id) => set_id,
+                Ok(set_id) => {
+                    ctx.last_beatmap.set(group_id, *bid);
+                    set_id
+                }
                 Err(e) => {
                     let _ = resp_tx.send(api_error_msg(qq, &e)).await;
                     return;
@@ -156,11 +158,10 @@ async fn resolve_beatmapset_id_fallback(
     };
 
     let has_filters = params.filters.as_ref().is_some_and(|f| !f.is_empty());
-    // 与 handle_score_query 对齐：有 filter 时多取以便筛选后仍能命中第 N 条。
     let api_limit = if has_filters {
-        params.limit.max(SCORE_API_FETCH_LIMIT)
+        SCORE_API_FETCH_LIMIT
     } else {
-        params.limit.max(1)
+        params.limit
     };
 
     match api::get_user_recent(

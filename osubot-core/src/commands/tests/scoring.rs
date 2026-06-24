@@ -2087,3 +2087,67 @@ fn test_pass_bare_range_zero_start_clamps() {
         }
     );
 }
+
+#[test]
+fn test_beatmap_audio_bare_number_position() {
+    let cmd = parse_command("!a 5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_hash_index() {
+    let cmd = parse_command("!a #5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_bare_range_rejected() {
+    assert!(parse_command("!a 5-10", None).is_none());
+}
+
+#[test]
+fn test_beatmap_audio_hash_range_rejected() {
+    assert!(parse_command("!a #5-10", None).is_none());
+}
+
+#[test]
+fn test_beatmap_audio_score_id() {
+    let cmd = parse_command("!a 12345678", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: Some(12345678),
+            limit: 1,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
