@@ -22,8 +22,8 @@ use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage}
 use crate::score_filter::ScoreQueryParams;
 use crate::score_query::{handle_beatmap_score_query, handle_best_score_query, handle_score_query};
 use crate::{
-    api_error_msg, beatmapset_dedup, profile_dedup, score_by_id_dedup, send_error, BotContext,
-    UserRateLimit,
+    api_error_msg, beatmapset_dedup, profile_dedup, score_by_id_dedup, score_by_id_err_msg,
+    send_error, BotContext, DedupApiError, UserRateLimit,
 };
 
 mod beatmap_audio;

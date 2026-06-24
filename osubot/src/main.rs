@@ -96,21 +96,68 @@ impl BotContext {
     }
 }
 
+/// Clone-able、不含 qq 的 `ApiError` 投影，用作 dedup 的错误类型。
+/// （`reqwest::Error` 未实现 `Clone`，故 `ApiError` 本身无法 Clone。）
+/// creator 转换一次；每个 waiter 用自己的 `qq` 格式化消息，避免 @ 错人。
+#[derive(Clone, Debug)]
+pub(crate) enum DedupApiError {
+    NotFound,
+    MissingApiKey,
+    OAuthError,
+    RateLimitedWithRetryAfter(Option<u64>),
+    ClientRateLimited,
+    Other,
+}
+
+impl DedupApiError {
+    pub(crate) fn from_api_error(e: &ApiError) -> Self {
+        match e {
+            ApiError::NotFound => Self::NotFound,
+            ApiError::MissingApiKey => Self::MissingApiKey,
+            ApiError::OAuthError => Self::OAuthError,
+            ApiError::RateLimitedWithRetryAfter(r) => Self::RateLimitedWithRetryAfter(*r),
+            ApiError::ClientRateLimited => Self::ClientRateLimited,
+            _ => Self::Other,
+        }
+    }
+
+    /// 格式化通用用户错误消息（语义同 `api_error_msg`）。
+    pub(crate) fn to_user_msg(&self, qq: i64) -> String {
+        match self {
+            Self::NotFound => user_str("error.not_found"),
+            Self::MissingApiKey => user_str("error.api_key"),
+            Self::OAuthError => user_str("error.oauth"),
+            Self::RateLimitedWithRetryAfter(None) => user_str("error.rate_limit_generic"),
+            Self::RateLimitedWithRetryAfter(Some(secs)) => {
+                return user_str("error.rate_limit")
+                    .replace("{qq}", &qq.to_string())
+                    .replace("{secs}", &secs.to_string());
+            }
+            Self::ClientRateLimited => user_str("error.client_rate_limit"),
+            Self::Other => user_str("error.query_failed"),
+        }
+        .replace("{qq}", &qq.to_string())
+    }
+}
+
+impl From<&'static str> for DedupApiError {
+    fn from(_: &str) -> Self {
+        Self::Other
+    }
+}
+
 pub(crate) fn api_error_msg(qq: i64, e: &ApiError) -> String {
+    DedupApiError::from_api_error(e).to_user_msg(qq)
+}
+
+/// 同 `DedupApiError::to_user_msg`，但 `NotFound` 映射为按 score_id 取谱面专用的
+/// `query.score_not_found`，而非通用 not-found 文案。
+pub(crate) fn score_by_id_err_msg(qq: i64, e: &DedupApiError) -> String {
     match e {
-        ApiError::NotFound => user_str("error.not_found").replace("{qq}", &qq.to_string()),
-        ApiError::MissingApiKey => user_str("error.api_key").replace("{qq}", &qq.to_string()),
-        ApiError::OAuthError => user_str("error.oauth").replace("{qq}", &qq.to_string()),
-        ApiError::RateLimitedWithRetryAfter(Some(secs)) => user_str("error.rate_limit")
-            .replace("{qq}", &qq.to_string())
-            .replace("{secs}", &secs.to_string()),
-        ApiError::RateLimitedWithRetryAfter(None) => {
-            user_str("error.rate_limit_generic").replace("{qq}", &qq.to_string())
+        DedupApiError::NotFound => {
+            user_str("query.score_not_found").replace("{qq}", &qq.to_string())
         }
-        ApiError::ClientRateLimited => {
-            user_str("error.client_rate_limit").replace("{qq}", &qq.to_string())
-        }
-        _ => user_str("error.query_failed").replace("{qq}", &qq.to_string()),
+        other => other.to_user_msg(qq),
     }
 }
 
@@ -217,14 +264,14 @@ pub(crate) fn score_dedup() -> &'static ScoreDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
-pub(crate) type ScoreByIdDedup = RequestDedup<i64, Score, String>;
+pub(crate) type ScoreByIdDedup = RequestDedup<i64, Score, DedupApiError>;
 
 pub(crate) fn score_by_id_dedup() -> &'static ScoreByIdDedup {
     static DEDUP: OnceLock<ScoreByIdDedup> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 
-pub(crate) type BeatmapsetDedup = RequestDedup<i64, i64, String>;
+pub(crate) type BeatmapsetDedup = RequestDedup<i64, i64, DedupApiError>;
 
 pub(crate) fn beatmapset_dedup() -> &'static BeatmapsetDedup {
     static DEDUP: OnceLock<BeatmapsetDedup> = OnceLock::new();

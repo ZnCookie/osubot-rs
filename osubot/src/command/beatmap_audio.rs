@@ -28,21 +28,15 @@ pub(super) async fn handle_beatmap_audio(
         (Some(sid), None) => {
             let dedup_rate_limiter = ctx.rate_limiter.clone();
             let dedup_oauth = ctx.oauth.clone();
-            let qq_for_dedup = qq;
             let sid_owned = *sid;
             let result = score_by_id_dedup()
                 .run_or_wait(sid_owned as i64, move || {
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
-                    let qq_inner = qq_for_dedup;
                     async move {
                         api::get_score_by_id(&rl, &oauth, sid_owned)
                             .await
-                            .map_err(|e| match e {
-                                ApiError::NotFound => user_str("query.score_not_found")
-                                    .replace("{qq}", &qq_inner.to_string()),
-                                other => api_error_msg(qq_inner, &other),
-                            })
+                            .map_err(|e| DedupApiError::from_api_error(&e))
                     }
                 })
                 .await;
@@ -51,19 +45,19 @@ pub(super) async fn handle_beatmap_audio(
                     ctx.last_beatmap.set(group_id, score.beatmap_id as u32);
                     score.beatmapset_id
                 }
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
+                Err(e) => {
+                    let _ = resp_tx.send(score_by_id_err_msg(qq, &e)).await;
                     return;
                 }
             }
         }
-        (None, Some(bid)) => match fetch_beatmapset_id_dedup(ctx, qq, *bid as i64).await {
+        (None, Some(bid)) => match fetch_beatmapset_id_dedup(ctx, *bid as i64).await {
             Ok(set_id) => {
                 ctx.last_beatmap.set(group_id, *bid);
                 set_id
             }
-            Err(err_msg) => {
-                let _ = resp_tx.send(err_msg).await;
+            Err(e) => {
+                let _ = resp_tx.send(e.to_user_msg(qq)).await;
                 return;
             }
         },
@@ -111,11 +105,10 @@ async fn resolve_beatmapset_id_fallback(
         || params.mode_specified;
     if !has_target {
         if let Some(bid) = ctx.last_beatmap.get(group_id) {
-            ctx.last_beatmap.set(group_id, bid);
-            return match fetch_beatmapset_id_dedup(ctx, qq, bid as i64).await {
+            return match fetch_beatmapset_id_dedup(ctx, bid as i64).await {
                 Ok(set_id) => Some(set_id),
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
+                Err(e) => {
+                    let _ = resp_tx.send(e.to_user_msg(qq)).await;
                     None
                 }
             };
@@ -221,11 +214,11 @@ async fn resolve_beatmapset_id_fallback(
 }
 
 /// 通过 beatmap_id 解析 beatmapset_id，按 beatmap_id 去重并发请求。
+/// 返回结构化错误（不含 qq），由调用方各自格式化。
 async fn fetch_beatmapset_id_dedup(
     ctx: &BotContext,
-    qq: i64,
     beatmap_id: i64,
-) -> Result<i64, String> {
+) -> Result<i64, DedupApiError> {
     let rl = ctx.rate_limiter.clone();
     let oauth = ctx.oauth.clone();
     beatmapset_dedup()
@@ -235,7 +228,7 @@ async fn fetch_beatmapset_id_dedup(
             async move {
                 api::get_beatmapset_id(&rl, &oauth, beatmap_id)
                     .await
-                    .map_err(|e| api_error_msg(qq, &e))
+                    .map_err(|e| DedupApiError::from_api_error(&e))
             }
         })
         .await

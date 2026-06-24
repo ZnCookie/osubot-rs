@@ -23,28 +23,22 @@ pub(super) async fn handle_beatmap_preview(
         (Some(sid), None) => {
             let dedup_rate_limiter = ctx.rate_limiter.clone();
             let dedup_oauth = ctx.oauth.clone();
-            let qq_for_dedup = qq;
             let sid_owned = *sid;
             let result = score_by_id_dedup()
                 .run_or_wait(sid_owned as i64, move || {
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
-                    let qq_inner = qq_for_dedup;
                     async move {
                         api::get_score_by_id(&rl, &oauth, sid_owned)
                             .await
-                            .map_err(|e| match e {
-                                ApiError::NotFound => user_str("query.score_not_found")
-                                    .replace("{qq}", &qq_inner.to_string()),
-                                other => api_error_msg(qq_inner, &other),
-                            })
+                            .map_err(|e| DedupApiError::from_api_error(&e))
                     }
                 })
                 .await;
             match result {
                 Ok(score) => score.beatmap_id,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
+                Err(e) => {
+                    let _ = resp_tx.send(score_by_id_err_msg(qq, &e)).await;
                     return;
                 }
             }

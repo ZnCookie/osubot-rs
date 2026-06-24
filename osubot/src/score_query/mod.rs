@@ -27,7 +27,8 @@ use tracing::{info, warn};
 use crate::api_error_msg;
 use crate::onebot::{send_group_msg_with_image, QQMessage};
 use crate::{
-    beatmap_scores_dedup, best_scores_dedup, score_by_id_dedup, score_dedup, SCORE_API_FETCH_LIMIT,
+    beatmap_scores_dedup, best_scores_dedup, score_by_id_dedup, score_by_id_err_msg, score_dedup,
+    DedupApiError, SCORE_API_FETCH_LIMIT,
 };
 
 mod plan;
@@ -1078,30 +1079,25 @@ pub(crate) async fn handle_beatmap_score_query(
         info!(score_id = sid, "{}", log_fmt!("main.score_by_id"));
         let qq = msg.user_id;
         let sid_key = sid as i64;
-        let score_result = score_by_id_dedup()
-            .run_or_wait(sid_key, move || {
-                let rate_limiter = ctx.rate_limiter.clone();
-                let oauth = ctx.oauth.clone();
+        let score_result =
+            score_by_id_dedup()
+                .run_or_wait(sid_key, move || {
+                    let rate_limiter = ctx.rate_limiter.clone();
+                    let oauth = ctx.oauth.clone();
 
-                async move {
-                    api::get_score_by_id(&rate_limiter, &oauth, sid)
-                        .await
-                        .map_err(|e| {
-                            if !matches!(e, api::ApiError::NotFound) {
-                                warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
-                            }
-                            match e {
-                                api::ApiError::NotFound => user_str("query.score_not_found")
-                                    .replace("{qq}", &qq.to_string()),
-                                other => api_error_msg(qq, &other),
-                            }
-                        })
-                }
-            })
-            .await;
+                    async move {
+                        api::get_score_by_id(&rate_limiter, &oauth, sid).await.map_err(|e| {
+                        if !matches!(e, api::ApiError::NotFound) {
+                            warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                        }
+                        DedupApiError::from_api_error(&e)
+                    })
+                    }
+                })
+                .await;
         let score = match score_result {
             Ok(s) => s,
-            Err(err_msg) => return respond_err(resp_tx, err_msg).await,
+            Err(e) => return respond_err(resp_tx, score_by_id_err_msg(qq, &e)).await,
         };
         ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
 

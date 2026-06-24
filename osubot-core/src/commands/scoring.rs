@@ -413,8 +413,9 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
                 } else if beatmap_id.is_none() {
                     beatmap_id = Some(num as u32);
                 } else {
-                    let clamped = num.clamp(1, MAX_LIMIT as u64) as u32;
-                    implicit_limit = Some(clamped);
+                    // 第二个谱面级数字（201..SCORE_ID_THRESHOLD）与既有 beatmap_id 冲突，
+                    // 语义无法确定，直接拒绝。
+                    return None;
                 }
             } else {
                 name_parts.push(token);

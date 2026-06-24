@@ -1265,22 +1265,9 @@ fn test_s_new_format_implicit_hash() {
 }
 
 #[test]
-fn test_s_implicit_limit_clamped() {
-    let cmd = parse_command("!s 123456 999999", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::ScoreOnBeatmap {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: Some(123456),
-            score_id: None,
-            filters: None,
-            limit: 200,
-            limit_end: None,
-            is_all: false,
-        }
-    );
+fn test_s_two_beatmap_level_numbers_rejected() {
+    // 第二个 >200 的纯数字与既有 beatmap_id 冲突，应被拒绝（不再静默 clamp 成位置）。
+    assert!(parse_command("!s 123456 999999", None).is_none());
 }
 
 #[test]
@@ -1972,6 +1959,13 @@ fn test_score_large_number_still_beatmap_id() {
             filters: None,
         }
     );
+}
+
+#[test]
+fn test_two_beatmap_level_numbers_rejected() {
+    // 两个 >200 的纯数字同时出现：beatmap_id 语义冲突，应被拒绝而非静默当成位置。
+    assert!(parse_command("!p 123456 789", None).is_none());
+    assert!(parse_command("!p 123456 12345", None).is_none());
 }
 
 #[test]
