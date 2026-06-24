@@ -110,4 +110,8 @@ pub struct Command {
     pub limit_end: Option<u32>,
     /// Mentioned user ID from `@` mentions in the command.
     pub mentioned_user_id: Option<i64>,
+    /// Whether the position (`#N` or bare number) was explicitly provided by the user.
+    /// When true, the command skips beatmap cache and resolves from the user's recent plays.
+    #[serde(default)]
+    pub explicit_position: bool,
 }
