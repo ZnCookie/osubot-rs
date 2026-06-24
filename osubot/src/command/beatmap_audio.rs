@@ -20,16 +20,30 @@ pub(super) async fn handle_beatmap_audio(
 
     let beatmapset_id: i64 = match (&params.score_id, &params.beatmap_id) {
         (Some(sid), None) => {
-            match api::get_score_by_id(&ctx.rate_limiter, &ctx.oauth, *sid).await {
+            let dedup_rate_limiter = ctx.rate_limiter.clone();
+            let dedup_oauth = ctx.oauth.clone();
+            let qq_for_dedup = qq;
+            let sid_owned = *sid;
+            let result = score_by_id_dedup()
+                .run_or_wait((sid_owned as i64, GameMode::Osu), move || {
+                    let rl = dedup_rate_limiter.clone();
+                    let oauth = dedup_oauth.clone();
+                    let qq_inner = qq_for_dedup;
+                    async move {
+                        api::get_score_by_id(&rl, &oauth, sid_owned)
+                            .await
+                            .map_err(|e| match e {
+                                ApiError::NotFound => user_str("query.score_not_found")
+                                    .replace("{qq}", &qq_inner.to_string()),
+                                other => api_error_msg(qq_inner, &other),
+                            })
+                    }
+                })
+                .await;
+            match result {
                 Ok(score) => score.beatmapset_id,
-                Err(ApiError::NotFound) => {
-                    let _ = resp_tx
-                        .send(user_str("query.score_not_found").replace("{qq}", &qq.to_string()))
-                        .await;
-                    return;
-                }
-                Err(e) => {
-                    let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                Err(err_msg) => {
+                    let _ = resp_tx.send(err_msg).await;
                     return;
                 }
             }
