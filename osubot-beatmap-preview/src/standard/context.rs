@@ -404,7 +404,7 @@ pub(crate) fn build_visible_indexes_by_snapshot(
         while end_pointer < visible_ends.len() && visible_ends[end_pointer].0 < snapshot_time {
             let ended_index = visible_ends[end_pointer].1;
             if let Some(pos) = active_indexes.iter().position(|&v| v == ended_index) {
-                active_indexes.swap_remove(pos);
+                active_indexes.remove(pos);
             }
             end_pointer += 1;
         }
