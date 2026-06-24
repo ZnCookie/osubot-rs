@@ -13,6 +13,7 @@ pub(crate) enum ScoringCmd {
     BeatmapPreview,
     BestSingle,
     BestList,
+    BeatmapAudio,
 }
 
 pub(crate) fn parse_scoring_command(
@@ -28,6 +29,7 @@ pub(crate) fn parse_scoring_command(
         ("!r", ScoringCmd::RecentSingle),
         ("!s", ScoringCmd::ScoreSingle),
         ("!b", ScoringCmd::BestSingle),
+        ("!a", ScoringCmd::BeatmapAudio),
         ("!rv", ScoringCmd::BeatmapPreview),
     ];
 
@@ -150,7 +152,10 @@ fn parse_standard_score(
 ) -> Option<Command> {
     let default_limit = match cmd {
         ScoringCmd::PassSummary | ScoringCmd::RecentSummary | ScoringCmd::ScoreAll => 20u32,
-        ScoringCmd::PassSingle | ScoringCmd::RecentSingle | ScoringCmd::ScoreSingle => 1u32,
+        ScoringCmd::PassSingle
+        | ScoringCmd::RecentSingle
+        | ScoringCmd::ScoreSingle
+        | ScoringCmd::BeatmapAudio => 1u32,
         ScoringCmd::BestSingle => 1u32,
         ScoringCmd::BestList => 20u32,
         ScoringCmd::BeatmapPreview => unreachable!(),
@@ -311,6 +316,16 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             limit_end: params.limit_end,
             is_summary: true,
+            filters: params.filters,
+        },
+        ScoringCmd::BeatmapAudio => Command::BeatmapAudio {
+            mode: params.mode,
+            username: params.username,
+            qq,
+            beatmap_id: params.beatmap_id,
+            score_id: params.score_id,
+            limit: params.limit,
+            limit_end: params.limit_end,
             filters: params.filters,
         },
         ScoringCmd::BeatmapPreview => unreachable!(),

@@ -294,3 +294,32 @@ pub(crate) async fn send_group_msg_with_image(
             warn!(error = %e, group_id = group_id, "{}", log_fmt!("main.send_image_failed"));
         })
 }
+
+/// Send a message with a voice record (network URL) to a QQ group via the OneBot WebSocket connection.
+pub(crate) async fn send_group_msg_with_record(
+    write: &Arc<Mutex<WriteSink>>,
+    group_id: i64,
+    url: &str,
+) -> Result<(), WsError> {
+    let segments = serde_json::json!([
+        {
+            "type": "record",
+            "data": {
+                "file": url
+            }
+        }
+    ]);
+    let json = serde_json::json!({
+        "action": "send_group_msg",
+        "params": {
+            "group_id": group_id,
+            "message": segments
+        }
+    });
+    let mut sink = write.lock().await;
+    sink.send(WsMsg::Text(json.to_string().into()))
+        .await
+        .inspect_err(|e| {
+            warn!(error = %e, group_id = group_id, "{}", log_fmt!("main.send_record_failed"));
+        })
+}
