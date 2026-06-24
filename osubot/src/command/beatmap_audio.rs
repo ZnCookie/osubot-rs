@@ -44,7 +44,10 @@ pub(super) async fn handle_beatmap_audio(
                 })
                 .await;
             match result {
-                Ok(score) => score.beatmapset_id,
+                Ok(score) => {
+                    ctx.last_beatmap.set(group_id, score.beatmap_id as u32);
+                    score.beatmapset_id
+                }
                 Err(err_msg) => {
                     let _ = resp_tx.send(err_msg).await;
                     return;
@@ -52,6 +55,7 @@ pub(super) async fn handle_beatmap_audio(
             }
         }
         (None, Some(bid)) => {
+            ctx.last_beatmap.set(group_id, *bid);
             match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, *bid as i64).await {
                 Ok(set_id) => set_id,
                 Err(e) => {
@@ -61,103 +65,9 @@ pub(super) async fn handle_beatmap_audio(
             }
         }
         (None, None) => {
-            if let Some(bid) = ctx.last_beatmap.get(group_id) {
-                match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, bid as i64).await {
-                    Ok(set_id) => set_id,
-                    Err(e) => {
-                        let _ = resp_tx.send(api_error_msg(qq, &e)).await;
-                        return;
-                    }
-                }
-            } else {
-                let user_id = if let Some(ref name) = params.username {
-                    match api::fetch_user_stats_by_username(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
-                        name,
-                        params.mode,
-                    )
-                    .await
-                    {
-                        Ok(stats) => stats.user_id,
-                        Err(ApiError::NotFound) => {
-                            let _ = resp_tx
-                                .send(
-                                    user_str("error.not_found_named")
-                                        .replace("{qq}", &qq.to_string())
-                                        .replace("{name}", name),
-                                )
-                                .await;
-                            return;
-                        }
-                        Err(e) => {
-                            let _ = resp_tx.send(api_error_msg(qq, &e)).await;
-                            return;
-                        }
-                    }
-                } else {
-                    let target_qq = params.qq.unwrap_or(qq);
-                    match ctx.resolve_binding(target_qq).await {
-                        Some((uid, _name)) => uid,
-                        None => {
-                            let key = if params.qq.is_some() {
-                                "bind.user_not_bound"
-                            } else {
-                                "bind.not_bound"
-                            };
-                            let _ = resp_tx
-                                .send(user_str(key).replace("{qq}", &qq.to_string()))
-                                .await;
-                            return;
-                        }
-                    }
-                };
-
-                let has_filters = params.filters.as_ref().is_some_and(|f| !f.is_empty());
-                let api_limit = if has_filters {
-                    SCORE_API_FETCH_LIMIT
-                } else {
-                    1
-                };
-
-                match api::get_user_recent(
-                    &ctx.rate_limiter,
-                    &ctx.oauth,
-                    user_id,
-                    params.mode,
-                    true,
-                    api_limit,
-                )
-                .await
-                {
-                    Ok(scores) => {
-                        let matching = if let Some(ref filters) = params.filters {
-                            scores
-                                .into_iter()
-                                .filter(|s| score_matches_filters(s, filters))
-                                .collect::<Vec<_>>()
-                        } else {
-                            scores
-                        };
-                        match matching.into_iter().next() {
-                            Some(score) => score.beatmapset_id,
-                            None => {
-                                let _ = resp_tx
-                                    .send(
-                                        user_str("query.no_match")
-                                            .replace("{qq}", &qq.to_string())
-                                            .replace("{name}", user_str("query.noun_replay")),
-                                    )
-                                    .await;
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = resp_tx.send(api_error_msg(qq, &e)).await;
-                        return;
-                    }
-                }
+            match resolve_beatmapset_id_fallback(ctx, &params, qq, group_id, resp_tx).await {
+                Some(id) => id,
+                None => return,
             }
         }
         (Some(_), Some(_)) => {
@@ -176,5 +86,110 @@ pub(super) async fn handle_beatmap_audio(
     let write = ctx.write.clone();
     if let Err(e) = send_group_msg_with_record(&write, group_id, &url).await {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_audio_send_failed", error = &e.to_string()));
+    }
+}
+
+async fn resolve_beatmapset_id_fallback(
+    ctx: &BotContext,
+    params: &BeatmapAudioParams,
+    qq: i64,
+    group_id: i64,
+    resp_tx: &mpsc::Sender<String>,
+) -> Option<i64> {
+    if let Some(bid) = ctx.last_beatmap.get(group_id) {
+        return match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, bid as i64).await {
+            Ok(set_id) => Some(set_id),
+            Err(e) => {
+                let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                None
+            }
+        };
+    }
+
+    let user_id = if let Some(ref name) = params.username {
+        match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, params.mode)
+            .await
+        {
+            Ok(stats) => stats.user_id,
+            Err(ApiError::NotFound) => {
+                let _ = resp_tx
+                    .send(
+                        user_str("error.not_found_named")
+                            .replace("{qq}", &qq.to_string())
+                            .replace("{name}", name),
+                    )
+                    .await;
+                return None;
+            }
+            Err(e) => {
+                let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                return None;
+            }
+        }
+    } else {
+        let target_qq = params.qq.unwrap_or(qq);
+        match ctx.resolve_binding(target_qq).await {
+            Some((uid, _name)) => uid,
+            None => {
+                let key = if params.qq.is_some() {
+                    "bind.user_not_bound"
+                } else {
+                    "bind.not_bound"
+                };
+                let _ = resp_tx
+                    .send(user_str(key).replace("{qq}", &qq.to_string()))
+                    .await;
+                return None;
+            }
+        }
+    };
+
+    let has_filters = params.filters.as_ref().is_some_and(|f| !f.is_empty());
+    let api_limit = if has_filters {
+        SCORE_API_FETCH_LIMIT
+    } else {
+        1
+    };
+
+    match api::get_user_recent(
+        &ctx.rate_limiter,
+        &ctx.oauth,
+        user_id,
+        params.mode,
+        true,
+        api_limit,
+    )
+    .await
+    {
+        Ok(scores) => {
+            let matching = if let Some(ref filters) = params.filters {
+                scores
+                    .into_iter()
+                    .filter(|s| score_matches_filters(s, filters))
+                    .collect::<Vec<_>>()
+            } else {
+                scores
+            };
+            match matching.into_iter().next() {
+                Some(score) => {
+                    ctx.last_beatmap.set(group_id, score.beatmap_id as u32);
+                    Some(score.beatmapset_id)
+                }
+                None => {
+                    let _ = resp_tx
+                        .send(
+                            user_str("query.no_match")
+                                .replace("{qq}", &qq.to_string())
+                                .replace("{name}", user_str("query.noun_replay")),
+                        )
+                        .await;
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+            None
+        }
     }
 }

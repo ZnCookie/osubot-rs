@@ -2049,3 +2049,41 @@ fn test_pass_bare_range_clamp() {
         }
     );
 }
+
+#[test]
+fn test_pass_bare_zero_clamps_to_one() {
+    let cmd = parse_command("!p0", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_range_zero_start_clamps() {
+    let cmd = parse_command("!p0-10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: Some(10),
+            is_summary: false,
+            filters: None,
+        }
+    );
+}

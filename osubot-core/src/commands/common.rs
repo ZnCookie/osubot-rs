@@ -22,6 +22,18 @@ pub(crate) fn extract_mode(rest: &str) -> (String, Option<GameMode>) {
     }
 }
 
+/// Strict range parse: returns `Some((start, end))` only if both sides are valid `u32`.
+/// Returns `None` for non-range tokens or tokens with unparseable parts.
+pub(crate) fn try_parse_range(s: &str) -> Option<(u32, u32)> {
+    let dash_pos = s.find('-')?;
+    if dash_pos == 0 || dash_pos == s.len() - 1 {
+        return None;
+    }
+    let start = s[..dash_pos].parse::<u32>().ok()?;
+    let end = s[dash_pos + 1..].parse::<u32>().ok()?;
+    Some((start, end))
+}
+
 /// Parse a limit string like "5" or "2-10" into (limit, limit_end).
 pub(crate) fn parse_limit(num_str: &str) -> (u32, Option<u32>) {
     if let Some(dash_pos) = num_str.find('-') {
