@@ -1079,7 +1079,7 @@ pub(crate) async fn handle_beatmap_score_query(
         let qq = msg.user_id;
         let sid_key = sid as i64;
         let score_result = score_by_id_dedup()
-            .run_or_wait((sid_key, mode), move || {
+            .run_or_wait(sid_key, move || {
                 let rate_limiter = ctx.rate_limiter.clone();
                 let oauth = ctx.oauth.clone();
 

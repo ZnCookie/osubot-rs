@@ -30,9 +30,8 @@ pub(super) async fn handle_beatmap_audio(
             let dedup_oauth = ctx.oauth.clone();
             let qq_for_dedup = qq;
             let sid_owned = *sid;
-            let mode_for_dedup = params.mode;
             let result = score_by_id_dedup()
-                .run_or_wait((sid_owned as i64, mode_for_dedup), move || {
+                .run_or_wait(sid_owned as i64, move || {
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
                     let qq_inner = qq_for_dedup;
@@ -58,18 +57,16 @@ pub(super) async fn handle_beatmap_audio(
                 }
             }
         }
-        (None, Some(bid)) => {
-            match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, *bid as i64).await {
-                Ok(set_id) => {
-                    ctx.last_beatmap.set(group_id, *bid);
-                    set_id
-                }
-                Err(e) => {
-                    let _ = resp_tx.send(api_error_msg(qq, &e)).await;
-                    return;
-                }
+        (None, Some(bid)) => match fetch_beatmapset_id_dedup(ctx, qq, *bid as i64).await {
+            Ok(set_id) => {
+                ctx.last_beatmap.set(group_id, *bid);
+                set_id
             }
-        }
+            Err(err_msg) => {
+                let _ = resp_tx.send(err_msg).await;
+                return;
+            }
+        },
         (None, None) => {
             match resolve_beatmapset_id_fallback(ctx, &params, qq, group_id, resp_tx).await {
                 Some(id) => id,
@@ -90,8 +87,10 @@ pub(super) async fn handle_beatmap_audio(
     let url = format!("https://b.ppy.sh/preview/{}.mp3", beatmapset_id);
 
     let write = ctx.write.clone();
-    if let Err(e) = send_group_msg_with_record(&write, group_id, &url).await {
-        warn!(error = %e, "{}", log_fmt!("main.beatmap_audio_send_failed", error = &e.to_string()));
+    if send_group_msg_with_record(&write, group_id, &url)
+        .await
+        .is_err()
+    {
         let _ = resp_tx
             .send(user_str("error.audio_send_failed").replace("{qq}", &qq.to_string()))
             .await;
@@ -113,10 +112,10 @@ async fn resolve_beatmapset_id_fallback(
     if !has_target {
         if let Some(bid) = ctx.last_beatmap.get(group_id) {
             ctx.last_beatmap.set(group_id, bid);
-            return match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, bid as i64).await {
+            return match fetch_beatmapset_id_dedup(ctx, qq, bid as i64).await {
                 Ok(set_id) => Some(set_id),
-                Err(e) => {
-                    let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                Err(err_msg) => {
+                    let _ = resp_tx.send(err_msg).await;
                     None
                 }
             };
@@ -219,4 +218,25 @@ async fn resolve_beatmapset_id_fallback(
             None
         }
     }
+}
+
+/// 通过 beatmap_id 解析 beatmapset_id，按 beatmap_id 去重并发请求。
+async fn fetch_beatmapset_id_dedup(
+    ctx: &BotContext,
+    qq: i64,
+    beatmap_id: i64,
+) -> Result<i64, String> {
+    let rl = ctx.rate_limiter.clone();
+    let oauth = ctx.oauth.clone();
+    beatmapset_dedup()
+        .run_or_wait(beatmap_id, move || {
+            let rl = rl.clone();
+            let oauth = oauth.clone();
+            async move {
+                api::get_beatmapset_id(&rl, &oauth, beatmap_id)
+                    .await
+                    .map_err(|e| api_error_msg(qq, &e))
+            }
+        })
+        .await
 }

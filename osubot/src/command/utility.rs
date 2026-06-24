@@ -34,7 +34,6 @@ pub(super) async fn handle_utility_commands(
                     score_id: *score_id,
                     beatmap_id: *beatmap_id,
                     mode: *preview_mode,
-                    resolved_mode: mode,
                     mods: mods.clone(),
                     gif: *gif,
                     times: times.clone(),

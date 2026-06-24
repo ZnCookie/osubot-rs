@@ -2187,3 +2187,21 @@ fn test_beatmap_audio_bare_one_explicit_position() {
         }
     );
 }
+
+#[test]
+fn test_beatmap_audio_mode_only_skips_cache() {
+    let cmd = parse_command("!a :1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: Some(GameMode::Taiko),
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
+}
