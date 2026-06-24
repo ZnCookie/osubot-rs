@@ -1,12 +1,19 @@
 use super::*;
+use crate::score_filter::score_matches_filters;
+use crate::SCORE_API_FETCH_LIMIT;
 
 pub(super) struct BeatmapPreviewParams {
     pub(super) score_id: Option<u64>,
     pub(super) beatmap_id: Option<u32>,
     pub(super) mode: Option<GameMode>,
+    pub(super) username: Option<String>,
+    pub(super) qq: Option<i64>,
     pub(super) mods: Option<Vec<String>>,
     pub(super) gif: bool,
     pub(super) times: Option<Vec<i64>>,
+    pub(super) limit: u32,
+    pub(super) filters: Option<Vec<String>>,
+    pub(super) explicit_position: bool,
 }
 
 pub(super) async fn handle_beatmap_preview(
@@ -15,8 +22,9 @@ pub(super) async fn handle_beatmap_preview(
     resp_tx: &mpsc::Sender<String>,
     params: BeatmapPreviewParams,
 ) {
-    let qq = msg.user_id;
     let group_id = msg.group_id;
+
+    let target_qq = params.qq.unwrap_or(msg.user_id);
 
     let resolved_bid_i64: i64 = match (&params.score_id, &params.beatmap_id) {
         (None, Some(bid)) => *bid as i64,
@@ -42,27 +50,133 @@ pub(super) async fn handle_beatmap_preview(
             match result {
                 Ok(score) => score.beatmap_id,
                 Err(e) => {
-                    let _ = resp_tx.send(score_by_id_err_msg(qq, &e)).await;
+                    let _ = resp_tx.send(score_by_id_err_msg(target_qq, &e)).await;
                     return;
                 }
             }
         }
-        (None, None) => match ctx.last_beatmap.get(group_id) {
-            Some(bid) => bid as i64,
-            None => {
-                send_error(resp_tx, qq, "query.need_beatmap_or_cache").await;
-                return;
+        (None, None) => {
+            let has_target = params.username.is_some()
+                || params.qq.is_some()
+                || params.filters.as_ref().is_some_and(|f| !f.is_empty())
+                || params.explicit_position
+                || params.mode.is_some();
+            if !has_target {
+                match ctx.last_beatmap.get(group_id) {
+                    Some(bid) => bid as i64,
+                    None => {
+                        send_error(resp_tx, target_qq, "query.need_beatmap_or_cache").await;
+                        return;
+                    }
+                }
+            } else {
+                let resolved_user_id = if let Some(ref name) = params.username {
+                    match api::fetch_user_stats_by_username(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        name,
+                        params.mode.unwrap_or(GameMode::Osu),
+                    )
+                    .await
+                    {
+                        Ok(stats) => stats.user_id,
+                        Err(ApiError::NotFound) => {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("error.not_found_named")
+                                        .replace("{qq}", &target_qq.to_string())
+                                        .replace("{name}", name),
+                                )
+                                .await;
+                            return;
+                        }
+                        Err(e) => {
+                            let _ = resp_tx.send(api_error_msg(target_qq, &e)).await;
+                            return;
+                        }
+                    }
+                } else {
+                    match ctx.resolve_binding(target_qq).await {
+                        Some((uid, _)) => uid,
+                        None => {
+                            let key = if params.qq.is_some() {
+                                "bind.user_not_bound"
+                            } else {
+                                "bind.not_bound"
+                            };
+                            let _ = resp_tx
+                                .send(user_str(key).replace("{qq}", &target_qq.to_string()))
+                                .await;
+                            return;
+                        }
+                    }
+                };
+                let api_limit = if params.filters.as_ref().is_some_and(|f| !f.is_empty()) {
+                    SCORE_API_FETCH_LIMIT
+                } else {
+                    params.limit
+                };
+                match api::get_user_recent(
+                    &ctx.rate_limiter,
+                    &ctx.oauth,
+                    resolved_user_id,
+                    params.mode.unwrap_or(GameMode::Osu),
+                    true,
+                    api_limit,
+                )
+                .await
+                {
+                    Ok(scores) => {
+                        let matching: Vec<_> = if let Some(ref filters) = params.filters {
+                            scores
+                                .into_iter()
+                                .filter(|s| score_matches_filters(s, filters))
+                                .collect()
+                        } else {
+                            scores
+                        };
+                        let index = (params.limit.saturating_sub(1)) as usize;
+                        if matching.is_empty() {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("query.no_match")
+                                        .replace("{qq}", &target_qq.to_string())
+                                        .replace("{name}", user_str("query.noun_replay")),
+                                )
+                                .await;
+                            return;
+                        }
+                        if index >= matching.len() {
+                            let _ = resp_tx
+                                .send(
+                                    user_str("query.index_out_of_range")
+                                        .replace("{qq}", &target_qq.to_string())
+                                        .replace("{pos}", &params.limit.to_string())
+                                        .replace("{name}", user_str("query.noun_replay"))
+                                        .replace("{total}", &matching.len().to_string()),
+                                )
+                                .await;
+                            return;
+                        }
+                        let score = &matching[index];
+                        score.beatmap_id
+                    }
+                    Err(e) => {
+                        let _ = resp_tx.send(api_error_msg(target_qq, &e)).await;
+                        return;
+                    }
+                }
             }
-        },
+        }
         (Some(_), Some(_)) => {
-            send_error(resp_tx, qq, "error.data_fetch_failed").await;
+            send_error(resp_tx, target_qq, "error.data_fetch_failed").await;
             return;
         }
     };
     let resolved_bid = match u32::try_from(resolved_bid_i64) {
         Ok(b) => b,
         Err(_) => {
-            send_error(resp_tx, qq, "error.data_fetch_failed").await;
+            send_error(resp_tx, target_qq, "error.data_fetch_failed").await;
             return;
         }
     };
@@ -71,7 +185,7 @@ pub(super) async fn handle_beatmap_preview(
     let beatmap_path = match api::download_beatmap_osu(resolved_bid_i64).await {
         Ok(p) => p,
         Err(e) => {
-            let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+            let _ = resp_tx.send(api_error_msg(target_qq, &e)).await;
             return;
         }
     };
@@ -98,11 +212,11 @@ pub(super) async fn handle_beatmap_preview(
         Ok(Ok(b)) => b,
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_parse_failed", error = &e.to_string()));
-            send_error(resp_tx, qq, "error.data_fetch_failed").await;
+            send_error(resp_tx, target_qq, "error.data_fetch_failed").await;
             return;
         }
         Err(_) => {
-            send_error(resp_tx, qq, "error.render_failed").await;
+            send_error(resp_tx, target_qq, "error.render_failed").await;
             return;
         }
     };
@@ -115,7 +229,7 @@ pub(super) async fn handle_beatmap_preview(
                 Ok(_) => None,
                 Err(e) => {
                     warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_mods_parse_failed", error = &e.to_string()));
-                    send_error(resp_tx, qq, "error.data_fetch_failed").await;
+                    send_error(resp_tx, target_qq, "error.data_fetch_failed").await;
                     return;
                 }
             }
@@ -146,7 +260,12 @@ pub(super) async fn handle_beatmap_preview(
                     target_mode = target_mode
                 )
             );
-            send_error(resp_tx, qq, "error.beatmap_preview_convert_unsupported").await;
+            send_error(
+                resp_tx,
+                target_qq,
+                "error.beatmap_preview_convert_unsupported",
+            )
+            .await;
             return;
         }
         let mods_for_conv = mod_settings.clone();
@@ -158,11 +277,11 @@ pub(super) async fn handle_beatmap_preview(
             Ok(Ok(b)) => b,
             Ok(Err(e)) => {
                 warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_convert_failed", error = &e.to_string()));
-                send_error(resp_tx, qq, "error.data_fetch_failed").await;
+                send_error(resp_tx, target_qq, "error.data_fetch_failed").await;
                 return;
             }
             Err(_) => {
-                send_error(resp_tx, qq, "error.render_failed").await;
+                send_error(resp_tx, target_qq, "error.render_failed").await;
                 return;
             }
         };
@@ -233,16 +352,16 @@ pub(super) async fn handle_beatmap_preview(
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(e))) => {
             warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_render_failed", error = &e.to_string()));
-            send_error(resp_tx, qq, "error.render_failed").await;
+            send_error(resp_tx, target_qq, "error.render_failed").await;
             return;
         }
         Ok(Err(_)) => {
-            send_error(resp_tx, qq, "error.render_failed").await;
+            send_error(resp_tx, target_qq, "error.render_failed").await;
             return;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.beatmap_preview_render_timeout"));
-            send_error(resp_tx, qq, "error.render_timeout").await;
+            send_error(resp_tx, target_qq, "error.render_timeout").await;
             return;
         }
     }
@@ -251,7 +370,7 @@ pub(super) async fn handle_beatmap_preview(
         Ok(d) => d,
         Err(e) => {
             warn!(error = %e, path = ?output_path, "{}", log_fmt!("main.beatmap_preview_read_failed", error = &e.to_string()));
-            send_error(resp_tx, qq, "error.render_failed").await;
+            send_error(resp_tx, target_qq, "error.render_failed").await;
             return;
         }
     };
@@ -260,7 +379,7 @@ pub(super) async fn handle_beatmap_preview(
     if let Err(e) = send_group_msg_with_image(&write, group_id, &image_data).await {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
         let _ = resp_tx
-            .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
+            .send(user_str("error.image_send_failed").replace("{qq}", &target_qq.to_string()))
             .await;
     }
 }

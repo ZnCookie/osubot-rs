@@ -165,6 +165,48 @@ fn test_pass_qq_in_text_non_numeric_returns_none() {
 }
 
 #[test]
+fn test_pass_qq_equals() {
+    let cmd = parse_command("!p qq=123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_qq_equals_and_username_mutually_exclusive() {
+    assert!(parse_command("!p ZnCookie qq=123456", None).is_none());
+}
+
+#[test]
+fn test_beatmap_audio_qq_equals() {
+    let cmd = parse_command("!a qq=123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
+}
+
+#[test]
 fn test_pass_no_conflict_with_profile() {
     let cmd = parse_command("!profile", None).unwrap();
     assert_eq!(

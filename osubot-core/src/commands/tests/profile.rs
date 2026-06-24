@@ -79,6 +79,35 @@ fn test_profile_qq_in_text_non_numeric_returns_none() {
 }
 
 #[test]
+fn test_profile_qq_equals() {
+    let cmd = parse_command("!profile qq=123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::ProfileCard {
+            username: None,
+            qq: Some(123456),
+        }
+    );
+}
+
+#[test]
+fn test_profile_qq_equals_with_mention_fallback() {
+    let cmd = parse_command("!profile qq=123456", Some(789)).unwrap();
+    assert_eq!(
+        cmd,
+        Command::ProfileCard {
+            username: None,
+            qq: Some(123456),
+        }
+    );
+}
+
+#[test]
+fn test_profile_qq_equals_non_numeric_returns_none() {
+    assert!(parse_command("!profile qq=abc", None).is_none());
+}
+
+#[test]
 fn test_profile_not_matched_as_p() {
     let cmd = parse_command("!profile", None).unwrap();
     assert!(matches!(cmd, Command::ProfileCard { .. }));
