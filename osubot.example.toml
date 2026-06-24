@@ -53,8 +53,8 @@ path = "osubot.db"
 # [groups.default]
 # 命令开关（可选，默认全部开启）
 # query = true              # ~、where、查
-# score = true              # !p、!ps、!r、!rs、!s、!ss、!b、!bs、!a
-# beatmap_preview = true    # !rv, !a
+# score = true              # !p、!ps、!r、!rs、!s、!ss、!b、!bs
+# beatmap_preview = true    # !rv、!a
 # profile = true            # !profile
 # highlight = true          # 今日高光
 # bind = true               # 绑定、解绑
