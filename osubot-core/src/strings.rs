@@ -46,6 +46,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "error.data_fetch_failed" => "[CQ:at,qq={qq}] 获取数据失败，请稍后再试",
     "error.db_error" => "[CQ:at,qq={qq}] 数据库错误",
     "error.image_send_failed" => "[CQ:at,qq={qq}] 图片发送失败",
+    "error.audio_send_failed" => "[CQ:at,qq={qq}] 音频发送失败",
     "error.get_group_member_failed" => "[CQ:at,qq={qq}] 无法获取群成员列表，请稍后重试",
     "error.render_timeout" => "[CQ:at,qq={qq}] 渲染超时，请稍后重试",
     "error.render_failed" => "[CQ:at,qq={qq}] 渲染失败，请稍后重试",
@@ -237,7 +238,6 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.send_group_msg_failed" => "发送群消息失败: {error}",
     "main.send_image_failed" => "无法发送群图片消息",
     "main.send_record_failed" => "无法发送群语音消息",
-    "main.beatmap_audio_send_failed" => "!a 发送预览音频失败: {error}",
     "main.irc_no_pending_bind" => "未找到匹配 IRC 验证码的待定绑定",
     "main.irc_pending_bind_db_error" => "查找待定绑定的数据库错误",
     "main.irc_pending_bind_username_mismatch" => "无法移除待定绑定（用户名不匹配）",
@@ -593,7 +593,6 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.beatmap_preview_render_failed" => "!rv 预览渲染失败: {error}",
     "main.beatmap_preview_render_timeout" => "!rv 预览渲染超时",
     "main.beatmap_preview_read_failed" => "!rv 读取渲染结果失败: {error}",
-    "main.beatmap_preview_send_failed" => "!rv 发送预览图片失败: {error}",
 };
 
 pub fn log_str(key: &str) -> &'static str {

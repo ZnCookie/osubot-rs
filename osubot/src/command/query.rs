@@ -1,6 +1,6 @@
 use super::*;
 
-/// Handle query commands: QuerySelf, QueryUser, QueryMentionedUser, ScoreOnBeatmap, Pass, Recent.
+/// Handle query commands: QuerySelf, QueryUser, QueryMentionedUser, ScoreOnBeatmap, Pass, Recent, Best, BeatmapAudio.
 pub(super) async fn handle_query_commands(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -245,6 +245,35 @@ pub(super) async fn handle_query_commands(
                 log_fmt!("main.best_score_command")
             );
             handle_best_score_query(ctx, msg, resp_tx, cmd, mode).await;
+        }
+        Command::BeatmapAudio {
+            score_id,
+            beatmap_id,
+            username,
+            qq,
+            filters,
+            limit,
+            explicit_position,
+            mode: cmd_mode,
+            ..
+        } => {
+            handle_beatmap_audio(
+                ctx,
+                msg,
+                resp_tx,
+                BeatmapAudioParams {
+                    score_id: *score_id,
+                    beatmap_id: *beatmap_id,
+                    username: username.clone(),
+                    qq: *qq,
+                    mode,
+                    mode_specified: cmd_mode.is_some(),
+                    filters: filters.clone(),
+                    limit: *limit,
+                    explicit_position: *explicit_position,
+                },
+            )
+            .await;
         }
         _ => unreachable!("handle_query_commands called with non-query command"),
     }

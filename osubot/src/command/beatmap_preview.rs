@@ -23,28 +23,26 @@ pub(super) async fn handle_beatmap_preview(
         (Some(sid), None) => {
             let dedup_rate_limiter = ctx.rate_limiter.clone();
             let dedup_oauth = ctx.oauth.clone();
-            let qq_for_dedup = qq;
             let sid_owned = *sid;
             let result = score_by_id_dedup()
-                .run_or_wait((sid_owned as i64, GameMode::Osu), move || {
+                .run_or_wait(sid_owned as i64, move || {
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
-                    let qq_inner = qq_for_dedup;
                     async move {
-                        api::get_score_by_id(&rl, &oauth, sid_owned)
-                            .await
-                            .map_err(|e| match e {
-                                ApiError::NotFound => user_str("query.score_not_found")
-                                    .replace("{qq}", &qq_inner.to_string()),
-                                other => api_error_msg(qq_inner, &other),
-                            })
+                        let result = api::get_score_by_id(&rl, &oauth, sid_owned).await;
+                        if let Err(ref e) = result {
+                            if !matches!(e, ApiError::NotFound) {
+                                warn!(error = ?e, "{}", log_fmt!("main.get_score_by_id_failed"));
+                            }
+                        }
+                        result.map_err(|e| DedupApiError::from_api_error(&e))
                     }
                 })
                 .await;
             match result {
                 Ok(score) => score.beatmap_id,
-                Err(err_msg) => {
-                    let _ = resp_tx.send(err_msg).await;
+                Err(e) => {
+                    let _ = resp_tx.send(score_by_id_err_msg(qq, &e)).await;
                     return;
                 }
             }
@@ -260,7 +258,10 @@ pub(super) async fn handle_beatmap_preview(
 
     let write = ctx.write.clone();
     if let Err(e) = send_group_msg_with_image(&write, group_id, &image_data).await {
-        warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
+        warn!(error = %e, "发送预览图片失败");
+        let _ = resp_tx
+            .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
+            .await;
     }
 }
 

@@ -22,6 +22,18 @@ pub(crate) fn extract_mode(rest: &str) -> (String, Option<GameMode>) {
     }
 }
 
+/// Strict range parse: returns `Some((start, end))` only if both sides are valid `u32`.
+/// Returns `None` for non-range tokens or tokens with unparseable parts.
+pub(crate) fn try_parse_range(s: &str) -> Option<(u32, u32)> {
+    let dash_pos = s.find('-')?;
+    if dash_pos == 0 || dash_pos == s.len() - 1 {
+        return None;
+    }
+    let start = s[..dash_pos].parse::<u32>().ok()?;
+    let end = s[dash_pos + 1..].parse::<u32>().ok()?;
+    Some((start, end))
+}
+
 /// Parse a limit string like "5" or "2-10" into (limit, limit_end).
 pub(crate) fn parse_limit(num_str: &str) -> (u32, Option<u32>) {
     if let Some(dash_pos) = num_str.find('-') {
@@ -143,6 +155,7 @@ pub(crate) struct CommonArgs {
     pub(crate) limit: u32,
     pub(crate) limit_end: Option<u32>,
     pub(crate) rest: String,
+    pub(crate) explicit_position: bool,
 }
 
 /// Extract :mode, +mods, #N from a string in fixed order.
@@ -150,10 +163,10 @@ pub(crate) fn extract_common_args(s: &str, default_limit: u32) -> CommonArgs {
     let (s, mode) = extract_mode(s);
     let (s, raw_mods, mut filter_suffix) = extract_plus_suffix(&s);
 
-    let (rest, limit, limit_end) = if let Some(hash_pos) = s.rfind('#') {
+    let (rest, limit, limit_end, explicit_position) = if let Some(hash_pos) = s.rfind('#') {
         let num_str = &s[hash_pos + 1..];
         let (l, le) = parse_limit(num_str);
-        (s[..hash_pos].trim().to_string(), l, le)
+        (s[..hash_pos].trim().to_string(), l, le, true)
     } else if let Some(last) = filter_suffix.as_mut().and_then(|f| f.last_mut()) {
         if let Some(hash_pos) = last.rfind('#') {
             let num_str = &last[hash_pos + 1..];
@@ -162,12 +175,12 @@ pub(crate) fn extract_common_args(s: &str, default_limit: u32) -> CommonArgs {
             if last.is_empty() {
                 filter_suffix.as_mut().map(|f| f.pop());
             }
-            (s.trim().to_string(), l, le)
+            (s.trim().to_string(), l, le, true)
         } else {
-            (s.trim().to_string(), default_limit, None)
+            (s.trim().to_string(), default_limit, None, false)
         }
     } else {
-        (s.trim().to_string(), default_limit, None)
+        (s.trim().to_string(), default_limit, None, false)
     };
 
     let filters = merge_mods_into_filters(raw_mods.clone(), filter_suffix);
@@ -179,6 +192,7 @@ pub(crate) fn extract_common_args(s: &str, default_limit: u32) -> CommonArgs {
         limit,
         limit_end,
         rest,
+        explicit_position,
     }
 }
 

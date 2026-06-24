@@ -22,7 +22,8 @@ use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage}
 use crate::score_filter::ScoreQueryParams;
 use crate::score_query::{handle_beatmap_score_query, handle_best_score_query, handle_score_query};
 use crate::{
-    api_error_msg, profile_dedup, score_by_id_dedup, send_error, BotContext, UserRateLimit,
+    api_error_msg, beatmapset_dedup, profile_dedup, score_by_id_dedup, score_by_id_err_msg,
+    send_error, BotContext, DedupApiError, UserRateLimit,
 };
 
 mod beatmap_audio;
@@ -260,9 +261,12 @@ pub(crate) fn build_cmd_payload(
             Command::ScoreOnBeatmap { limit_end, .. }
             | Command::Pass { limit_end, .. }
             | Command::Recent { limit_end, .. }
-            | Command::Best { limit_end, .. }
-            | Command::BeatmapAudio { limit_end, .. } => *limit_end,
+            | Command::Best { limit_end, .. } => *limit_end,
             _ => None,
+        },
+        "explicit_position": match cmd {
+            Command::BeatmapAudio { explicit_position, .. } => *explicit_position,
+            _ => false,
         },
     })
 }
@@ -390,7 +394,8 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         | Command::ScoreOnBeatmap { .. }
         | Command::Pass { .. }
         | Command::Recent { .. }
-        | Command::Best { .. } => {
+        | Command::Best { .. }
+        | Command::BeatmapAudio { .. } => {
             handle_query_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
         Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind => {
@@ -399,8 +404,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         Command::Help
         | Command::Highlight { .. }
         | Command::ProfileCard { .. }
-        | Command::BeatmapPreview { .. }
-        | Command::BeatmapAudio { .. } => {
+        | Command::BeatmapPreview { .. } => {
             handle_utility_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
     }

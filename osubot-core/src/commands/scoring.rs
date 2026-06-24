@@ -1,6 +1,6 @@
 use crate::types::{Command, GameMode};
 
-use super::common::{extract_common_args, parse_time_token, SCORE_ID_THRESHOLD};
+use super::common::{extract_common_args, parse_time_token, try_parse_range, SCORE_ID_THRESHOLD};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScoringCmd {
@@ -173,12 +173,13 @@ fn parse_standard_score(
             limit: default_limit,
             limit_end: None,
             filters: None,
+            explicit_position: false,
         });
     }
 
     let args = extract_common_args(rest, default_limit);
 
-    let rt = parse_remaining_tokens(&args.rest, mentioned_user_id, true)?;
+    let rt = parse_remaining_tokens(&args.rest, mentioned_user_id)?;
 
     let filters = match (args.filters, rt.filters) {
         (Some(mut f), Some(extra)) => {
@@ -192,18 +193,28 @@ fn parse_standard_score(
 
     let final_limit = rt.implicit_limit.unwrap_or(args.limit);
 
-    let final_limit_end = if rt.limit_end.is_none()
-        && matches!(
-            cmd,
-            ScoringCmd::PassSingle
-                | ScoringCmd::RecentSingle
-                | ScoringCmd::ScoreSingle
-                | ScoringCmd::BestSingle
-        ) {
+    let single_cmd = matches!(
+        cmd,
+        ScoringCmd::PassSingle
+            | ScoringCmd::RecentSingle
+            | ScoringCmd::ScoreSingle
+            | ScoringCmd::BestSingle
+    );
+    let range_given = rt.limit_end.is_some() || args.limit_end.is_some();
+
+    // single 命令与 !a 不接受区间语法（区间请用对应 summary 命令）。
+    if (single_cmd || matches!(cmd, ScoringCmd::BeatmapAudio)) && range_given {
+        return None;
+    }
+
+    let final_limit_end = if single_cmd {
         None
     } else {
         rt.limit_end.or(args.limit_end)
     };
+
+    let explicit_position = matches!(cmd, ScoringCmd::BeatmapAudio)
+        && (rt.implicit_limit.is_some() || args.explicit_position);
 
     make_score_cmd(ScoreCmdParams {
         cmd,
@@ -216,6 +227,7 @@ fn parse_standard_score(
         limit: final_limit,
         limit_end: final_limit_end,
         filters,
+        explicit_position,
     })
 }
 
@@ -230,6 +242,7 @@ struct ScoreCmdParams {
     limit: u32,
     limit_end: Option<u32>,
     filters: Option<Vec<String>>,
+    explicit_position: bool,
 }
 
 fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
@@ -326,8 +339,8 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             beatmap_id: params.beatmap_id,
             score_id: params.score_id,
             limit: params.limit,
-            limit_end: params.limit_end,
             filters: params.filters,
+            explicit_position: params.explicit_position,
         },
         ScoringCmd::BeatmapPreview => unreachable!(),
     })
@@ -343,22 +356,7 @@ struct RemainingTokens {
     limit_end: Option<u32>,
 }
 
-/// Try to parse a token as a range `N-M`. Returns `(start, end)` if valid.
-fn parse_range_token(token: &str) -> Option<(u32, u32)> {
-    let dash_pos = token.find('-')?;
-    if dash_pos == 0 || dash_pos == token.len() - 1 {
-        return None;
-    }
-    let start = token[..dash_pos].parse::<u32>().ok()?;
-    let end = token[dash_pos + 1..].parse::<u32>().ok()?;
-    Some((start, end))
-}
-
-fn parse_remaining_tokens(
-    rest: &str,
-    mentioned_user_id: Option<i64>,
-    small_number_is_limit: bool,
-) -> Option<RemainingTokens> {
+fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<RemainingTokens> {
     use super::common::{MAX_LIMIT, SCORE_ID_THRESHOLD};
 
     if rest.is_empty() {
@@ -401,27 +399,26 @@ fn parse_remaining_tokens(
             continue;
         }
         if !found_eq {
-            // Try range pattern first (e.g. "1-100")
-            if let Some((start, end)) = parse_range_token(token) {
-                if small_number_is_limit && start <= MAX_LIMIT {
-                    implicit_limit = Some(start.clamp(1, MAX_LIMIT));
-                    limit_end = Some(end.clamp(start, MAX_LIMIT));
-                    continue;
+            if let Some((start, end)) = try_parse_range(token) {
+                if start > MAX_LIMIT {
+                    return None;
                 }
-                // Not a valid range for limit — treat as username
-                name_parts.push(token);
+                let clamped_start = start.clamp(1, MAX_LIMIT);
+                implicit_limit = Some(clamped_start);
+                limit_end = Some(end.clamp(clamped_start, MAX_LIMIT));
                 continue;
             }
             if let Ok(num) = token.parse::<u64>() {
                 if num >= SCORE_ID_THRESHOLD {
                     score_id = Some(num);
-                } else if small_number_is_limit && num <= MAX_LIMIT as u64 {
-                    implicit_limit = Some(num as u32);
+                } else if num <= MAX_LIMIT as u64 {
+                    implicit_limit = Some((num as u32).clamp(1, MAX_LIMIT));
                 } else if beatmap_id.is_none() {
                     beatmap_id = Some(num as u32);
                 } else {
-                    let clamped = num.clamp(1, MAX_LIMIT as u64) as u32;
-                    implicit_limit = Some(clamped);
+                    // 第二个谱面级数字（201..SCORE_ID_THRESHOLD）与既有 beatmap_id 冲突，
+                    // 语义无法确定，直接拒绝。
+                    return None;
                 }
             } else {
                 name_parts.push(token);
@@ -446,6 +443,11 @@ fn parse_remaining_tokens(
     let qq = qq_id.or(mentioned_user_id);
 
     if qq_id.is_some() && username.is_some() {
+        return None;
+    }
+
+    // score_id 与 beatmap_id 不可共存：语义冲突，交由调用方拒绝。
+    if score_id.is_some() && beatmap_id.is_some() {
         return None;
     }
 

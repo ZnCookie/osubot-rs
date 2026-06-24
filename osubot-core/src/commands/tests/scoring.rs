@@ -893,25 +893,6 @@ fn test_pass_new_format_range_ps() {
 }
 
 #[test]
-fn test_pass_new_format_range_pr_ignored() {
-    let cmd = parse_command("!p #2-10", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 2,
-            limit_end: None,
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
 fn test_pass_new_format_multi_word_username() {
     let cmd = parse_command("!ps Zhang San miss=1", None).unwrap();
     assert_eq!(
@@ -1265,22 +1246,9 @@ fn test_s_new_format_implicit_hash() {
 }
 
 #[test]
-fn test_s_implicit_limit_clamped() {
-    let cmd = parse_command("!s 123456 999999", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::ScoreOnBeatmap {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: Some(123456),
-            score_id: None,
-            filters: None,
-            limit: 200,
-            limit_end: None,
-            is_all: false,
-        }
-    );
+fn test_s_two_beatmap_level_numbers_rejected() {
+    // 第二个 >200 的纯数字与既有 beatmap_id 冲突，应被拒绝（不再静默 clamp 成位置）。
+    assert!(parse_command("!s 123456 999999", None).is_none());
 }
 
 #[test]
@@ -1743,8 +1711,8 @@ fn test_beatmap_audio_self() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -1761,8 +1729,8 @@ fn test_beatmap_audio_username_mode() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -1779,8 +1747,8 @@ fn test_beatmap_audio_beatmap_id() {
             beatmap_id: Some(123456),
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -1803,8 +1771,8 @@ fn test_beatmap_audio_with_filters() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: Some(vec!["mod=HD".to_string()]),
+            explicit_position: false,
         }
     );
 }
@@ -1841,44 +1809,6 @@ fn test_pass_bare_number_with_space() {
             score_id: None,
             limit: 5,
             limit_end: None,
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
-fn test_pass_bare_range() {
-    let cmd = parse_command("!p1-100", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 1,
-            limit_end: Some(100),
-            is_summary: false,
-            filters: None,
-        }
-    );
-}
-
-#[test]
-fn test_pass_bare_range_with_space() {
-    let cmd = parse_command("!p 1-100", None).unwrap();
-    assert_eq!(
-        cmd,
-        Command::Pass {
-            mode: None,
-            username: None,
-            qq: None,
-            beatmap_id: None,
-            score_id: None,
-            limit: 1,
-            limit_end: Some(100),
             is_summary: false,
             filters: None,
         }
@@ -1975,6 +1905,56 @@ fn test_score_large_number_still_beatmap_id() {
 }
 
 #[test]
+fn test_two_beatmap_level_numbers_rejected() {
+    // 两个 >200 的纯数字同时出现：beatmap_id 语义冲突，应被拒绝而非静默当成位置。
+    assert!(parse_command("!p 123456 789", None).is_none());
+    assert!(parse_command("!p 123456 12345", None).is_none());
+}
+
+#[test]
+fn test_single_command_range_rejected() {
+    // single 命令不接受区间（区间请用 summary），不再静默吞尾取第 1 条。
+    assert!(parse_command("!p1-100", None).is_none());
+    assert!(parse_command("!p 1-100", None).is_none());
+    assert!(parse_command("!b1-5", None).is_none());
+    assert!(parse_command("!p #2-10", None).is_none());
+    // summary 命令的区间仍正常。
+    assert!(parse_command("!ps1-100", None).is_some());
+}
+
+#[test]
+fn test_summary_range_start_exceeds_max_rejected() {
+    // 区间起点超出 MAX_LIMIT 直接拒绝，不静默当成用户名。
+    assert!(parse_command("!ps300-400", None).is_none());
+    assert!(parse_command("!ps 300-400", None).is_none());
+    assert!(parse_command("!rs300-400", None).is_none());
+    assert!(parse_command("!bs300-400", None).is_none());
+    // 起点在范围内、终点超出的区间仍正常 clamp。
+    let cmd = parse_command("!ps1-300", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: Some(200),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_score_id_and_beatmap_id_coexist_rejected() {
+    // score_id 与 beatmap_id 不可共存，解析期即拒绝。
+    assert!(parse_command("!a 12345678 456", None).is_none());
+    assert!(parse_command("!s 12345678 456", None).is_none());
+}
+
+#[test]
 fn test_recent_bare_number_limit() {
     let cmd = parse_command("!r5", None).unwrap();
     assert_eq!(
@@ -2032,8 +2012,8 @@ fn test_pass_bare_number_clamp_max() {
 }
 
 #[test]
-fn test_pass_bare_range_clamp() {
-    let cmd = parse_command("!p1-300", None).unwrap();
+fn test_pass_summary_bare_range_clamp() {
+    let cmd = parse_command("!ps1-300", None).unwrap();
     assert_eq!(
         cmd,
         Command::Pass {
@@ -2044,8 +2024,145 @@ fn test_pass_bare_range_clamp() {
             score_id: None,
             limit: 1,
             limit_end: Some(200),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_zero_clamps_to_one() {
+    let cmd = parse_command("!p0", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: None,
             is_summary: false,
             filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_bare_number_position() {
+    let cmd = parse_command("!a 5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            filters: None,
+            explicit_position: true,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_hash_index() {
+    let cmd = parse_command("!a #5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            filters: None,
+            explicit_position: true,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_bare_range_rejected() {
+    assert!(parse_command("!a 5-10", None).is_none());
+}
+
+#[test]
+fn test_beatmap_audio_hash_range_rejected() {
+    assert!(parse_command("!a #5-10", None).is_none());
+}
+
+#[test]
+fn test_beatmap_audio_score_id() {
+    let cmd = parse_command("!a 12345678", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: Some(12345678),
+            limit: 1,
+            filters: None,
+            explicit_position: false,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_hash_one_explicit_position() {
+    let cmd = parse_command("!a #1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: true,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_bare_one_explicit_position() {
+    let cmd = parse_command("!a 1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: true,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_mode_only_skips_cache() {
+    let cmd = parse_command("!a :1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: Some(GameMode::Taiko),
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: false,
         }
     );
 }

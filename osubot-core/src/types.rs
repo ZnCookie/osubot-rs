@@ -118,8 +118,8 @@ pub enum Command {
         beatmap_id: Option<u32>,
         score_id: Option<u64>,
         limit: u32,
-        limit_end: Option<u32>,
         filters: Option<Vec<String>>,
+        explicit_position: bool,
     },
     Help,
 }
