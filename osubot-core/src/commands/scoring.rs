@@ -415,6 +415,14 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
     let mut has_invalid_mention = false;
 
     for token in &tokens {
+        if let Some(qq_str) = token.strip_prefix("qq=") {
+            if let Ok(parsed) = qq_str.parse::<i64>() {
+                qq_id = Some(parsed);
+            } else {
+                has_invalid_mention = true;
+            }
+            continue;
+        }
         if token.contains('=') {
             found_eq = true;
             for part in token.split(',') {
