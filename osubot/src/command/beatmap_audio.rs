@@ -96,14 +96,22 @@ async fn resolve_beatmapset_id_fallback(
     group_id: i64,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<i64> {
-    if let Some(bid) = ctx.last_beatmap.get(group_id) {
-        return match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, bid as i64).await {
-            Ok(set_id) => Some(set_id),
-            Err(e) => {
-                let _ = resp_tx.send(api_error_msg(qq, &e)).await;
-                None
-            }
-        };
+    // 仅在无任何目标参数（用户名/QQ/filter）时回退群缓存，避免缓存命中时
+    // 吞掉显式目标（如 !a ZnCookie / !a @QQ / !a +HD）。
+    let has_target = params.username.is_some()
+        || params.qq.is_some()
+        || params.filters.as_ref().is_some_and(|f| !f.is_empty());
+    if !has_target {
+        if let Some(bid) = ctx.last_beatmap.get(group_id) {
+            ctx.last_beatmap.set(group_id, bid);
+            return match api::get_beatmapset_id(&ctx.rate_limiter, &ctx.oauth, bid as i64).await {
+                Ok(set_id) => Some(set_id),
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                    None
+                }
+            };
+        }
     }
 
     let user_id = if let Some(ref name) = params.username {
