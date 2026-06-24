@@ -392,6 +392,17 @@ async fn fetch_beatmap(
     http::json_body(resp).await
 }
 
+/// 根据 beatmap_id 获取其所属 beatmapset_id（用于构造预览音频 URL）。
+pub async fn get_beatmapset_id(
+    rate_limiter: &RateLimiter,
+    oauth: &super::oauth::OauthTokenCache,
+    beatmap_id: i64,
+) -> Result<i64, ApiError> {
+    Ok(fetch_beatmap(rate_limiter, oauth, beatmap_id)
+        .await?
+        .beatmapset_id)
+}
+
 async fn fetch_beatmapset(
     rate_limiter: &RateLimiter,
     oauth: &super::oauth::OauthTokenCache,
