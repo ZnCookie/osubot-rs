@@ -47,6 +47,7 @@ pub(super) async fn handle_utility_commands(
             username,
             qq,
             filters,
+            limit,
             ..
         } => {
             handle_beatmap_audio(
@@ -60,6 +61,7 @@ pub(super) async fn handle_utility_commands(
                     qq: *qq,
                     mode,
                     filters: filters.clone(),
+                    limit: *limit,
                 },
             )
             .await;

@@ -10,6 +10,8 @@ pub(super) struct BeatmapAudioParams {
     pub(super) qq: Option<i64>,
     pub(super) mode: GameMode,
     pub(super) filters: Option<Vec<String>>,
+    /// 1-based 位置（与 !r #N 同语义）。limit>1 时不查群缓存，直接取用户第 N 条。
+    pub(super) limit: u32,
 }
 
 pub(super) async fn handle_beatmap_audio(
@@ -96,11 +98,12 @@ async fn resolve_beatmapset_id_fallback(
     group_id: i64,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<i64> {
-    // 仅在无任何目标参数（用户名/QQ/filter）时回退群缓存，避免缓存命中时
-    // 吞掉显式目标（如 !a ZnCookie / !a @QQ / !a +HD）。
+    // 仅在无任何目标参数（用户名/QQ/filter/位置）时回退群缓存，避免缓存命中时
+    // 吞掉显式目标（如 !a ZnCookie / !a @QQ / !a +HD / !a 5）。
     let has_target = params.username.is_some()
         || params.qq.is_some()
-        || params.filters.as_ref().is_some_and(|f| !f.is_empty());
+        || params.filters.as_ref().is_some_and(|f| !f.is_empty())
+        || params.limit > 1;
     if !has_target {
         if let Some(bid) = ctx.last_beatmap.get(group_id) {
             ctx.last_beatmap.set(group_id, bid);
@@ -153,10 +156,11 @@ async fn resolve_beatmapset_id_fallback(
     };
 
     let has_filters = params.filters.as_ref().is_some_and(|f| !f.is_empty());
+    // 与 handle_score_query 对齐：有 filter 时多取以便筛选后仍能命中第 N 条。
     let api_limit = if has_filters {
-        SCORE_API_FETCH_LIMIT
+        params.limit.max(SCORE_API_FETCH_LIMIT)
     } else {
-        1
+        params.limit.max(1)
     };
 
     match api::get_user_recent(
@@ -170,30 +174,40 @@ async fn resolve_beatmapset_id_fallback(
     .await
     {
         Ok(scores) => {
-            let matching = if let Some(ref filters) = params.filters {
+            let matching: Vec<_> = if let Some(ref filters) = params.filters {
                 scores
                     .into_iter()
                     .filter(|s| score_matches_filters(s, filters))
-                    .collect::<Vec<_>>()
+                    .collect()
             } else {
                 scores
             };
-            match matching.into_iter().next() {
-                Some(score) => {
-                    ctx.last_beatmap.set(group_id, score.beatmap_id as u32);
-                    Some(score.beatmapset_id)
-                }
-                None => {
-                    let _ = resp_tx
-                        .send(
-                            user_str("query.no_match")
-                                .replace("{qq}", &qq.to_string())
-                                .replace("{name}", user_str("query.noun_replay")),
-                        )
-                        .await;
-                    None
-                }
+            let index = (params.limit.saturating_sub(1)) as usize;
+            if matching.is_empty() {
+                let _ = resp_tx
+                    .send(
+                        user_str("query.no_match")
+                            .replace("{qq}", &qq.to_string())
+                            .replace("{name}", user_str("query.noun_replay")),
+                    )
+                    .await;
+                return None;
             }
+            if index >= matching.len() {
+                let _ = resp_tx
+                    .send(
+                        user_str("query.index_out_of_range")
+                            .replace("{qq}", &qq.to_string())
+                            .replace("{pos}", &params.limit.to_string())
+                            .replace("{name}", user_str("query.noun_replay"))
+                            .replace("{total}", &matching.len().to_string()),
+                    )
+                    .await;
+                return None;
+            }
+            let score = matching.into_iter().nth(index).expect("bounds checked");
+            ctx.last_beatmap.set(group_id, score.beatmap_id as u32);
+            Some(score.beatmapset_id)
         }
         Err(e) => {
             let _ = resp_tx.send(api_error_msg(qq, &e)).await;
