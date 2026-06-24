@@ -26,6 +26,7 @@ pub enum CommandGroup {
     Query,
     Score,
     BeatmapPreview,
+    BeatmapAudio,
     Profile,
     Highlight,
     Bind,
@@ -139,9 +140,8 @@ impl Command {
             Command::Pass { .. } | Command::Recent { .. } | Command::Best { .. } => {
                 CommandGroup::Score
             }
-            Command::BeatmapPreview { .. } | Command::BeatmapAudio { .. } => {
-                CommandGroup::BeatmapPreview
-            }
+            Command::BeatmapPreview { .. } => CommandGroup::BeatmapPreview,
+            Command::BeatmapAudio { .. } => CommandGroup::BeatmapAudio,
             Command::ProfileCard { .. } => CommandGroup::Profile,
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,

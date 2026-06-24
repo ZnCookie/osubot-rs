@@ -276,6 +276,7 @@ pub struct GroupConfig {
     pub query: Option<bool>,
     pub score: Option<bool>,
     pub beatmap_preview: Option<bool>,
+    pub beatmap_audio: Option<bool>,
     pub profile: Option<bool>,
     pub highlight: Option<bool>,
     pub bind: Option<bool>,
@@ -290,6 +291,7 @@ impl GroupConfig {
             CommandGroup::Query => self.query.unwrap_or(default),
             CommandGroup::Score => self.score.unwrap_or(default),
             CommandGroup::BeatmapPreview => self.beatmap_preview.unwrap_or(default),
+            CommandGroup::BeatmapAudio => self.beatmap_audio.unwrap_or(default),
             CommandGroup::Profile => self.profile.unwrap_or(default),
             CommandGroup::Highlight => self.highlight.unwrap_or(default),
             CommandGroup::Bind => self.bind.unwrap_or(default),
@@ -318,6 +320,7 @@ impl GroupsConfig {
                 beatmap_preview: override_cfg
                     .beatmap_preview
                     .or(self.default.beatmap_preview),
+                beatmap_audio: override_cfg.beatmap_audio.or(self.default.beatmap_audio),
                 profile: override_cfg.profile.or(self.default.profile),
                 highlight: override_cfg.highlight.or(self.default.highlight),
                 bind: override_cfg.bind.or(self.default.bind),
@@ -589,6 +592,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Query));
         assert!(cfg.is_enabled(CommandGroup::Score));
         assert!(cfg.is_enabled(CommandGroup::BeatmapPreview));
+        assert!(cfg.is_enabled(CommandGroup::BeatmapAudio));
         assert!(cfg.is_enabled(CommandGroup::Profile));
         assert!(cfg.is_enabled(CommandGroup::Highlight));
         assert!(cfg.is_enabled(CommandGroup::Bind));
@@ -602,6 +606,7 @@ mod tests {
             query: Some(true),
             score: Some(false),
             beatmap_preview: None,
+            beatmap_audio: None,
             profile: None,
             highlight: Some(false),
             bind: None,

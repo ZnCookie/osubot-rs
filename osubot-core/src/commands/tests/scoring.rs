@@ -1796,9 +1796,9 @@ fn test_beatmap_audio_beatmap_id() {
 }
 
 #[test]
-fn test_beatmap_audio_group_is_beatmap_preview() {
+fn test_beatmap_audio_group() {
     let cmd = parse_command("!a", None).unwrap();
-    assert_eq!(cmd.group_name(), CommandGroup::BeatmapPreview);
+    assert_eq!(cmd.group_name(), CommandGroup::BeatmapAudio);
 }
 
 #[test]
