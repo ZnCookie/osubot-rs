@@ -20,7 +20,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage};
 use crate::score_filter::ScoreQueryParams;
-use crate::score_query::{handle_beatmap_score_query, handle_best_score_query, handle_score_query};
+use crate::score_query::{
+    handle_beatmap_score_query, handle_best_score_query, handle_score_query, handle_today_bp_query,
+};
 use crate::{
     api_error_msg, beatmapset_dedup, profile_dedup, score_by_id_dedup, score_by_id_err_msg,
     send_error, BotContext, DedupApiError, UserRateLimit,
@@ -66,6 +68,7 @@ pub(crate) async fn resolve_cmd_target_qq(
         Command::Pass { qq: Some(qq), .. }
         | Command::Recent { qq: Some(qq), .. }
         | Command::Best { qq: Some(qq), .. }
+        | Command::TodayBest { qq: Some(qq), .. }
         | Command::ScoreOnBeatmap { qq: Some(qq), .. }
         | Command::BeatmapAudio { qq: Some(qq), .. } => Some(*qq),
         Command::Pass {
@@ -84,6 +87,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             ..
         }
         | Command::Best {
+            qq: None,
+            username: Some(username),
+            ..
+        }
+        | Command::TodayBest {
             qq: None,
             username: Some(username),
             ..
@@ -115,6 +123,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             username: None,
             ..
         }
+        | Command::TodayBest {
+            qq: None,
+            username: None,
+            ..
+        }
         | Command::ScoreOnBeatmap {
             qq: None,
             username: None,
@@ -139,6 +152,7 @@ pub(crate) fn mode_sensitive(cmd: &Command) -> bool {
             | Command::Pass { .. }
             | Command::Recent { .. }
             | Command::Best { .. }
+            | Command::TodayBest { .. }
             | Command::ScoreOnBeatmap { .. }
             | Command::Highlight { .. }
             | Command::BeatmapAudio { .. }
@@ -154,6 +168,7 @@ pub(crate) fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
         | Command::Pass { mode, .. }
         | Command::Recent { mode, .. }
         | Command::Best { mode, .. }
+        | Command::TodayBest { mode, .. }
         | Command::Highlight { mode, .. }
         | Command::ScoreOnBeatmap { mode, .. }
         | Command::BeatmapAudio { mode, .. } => *mode,
@@ -201,6 +216,7 @@ pub(crate) fn build_cmd_payload(
         | Command::Pass { username, .. }
         | Command::Recent { username, .. }
         | Command::Best { username, .. }
+        | Command::TodayBest { username, .. }
         | Command::ProfileCard { username, .. }
         | Command::BeatmapAudio { username, .. } => username.as_deref(),
         Command::BeatmapPreview { .. } => None,
@@ -219,6 +235,7 @@ pub(crate) fn build_cmd_payload(
             Command::Pass { qq, .. }
             | Command::Recent { qq, .. }
             | Command::Best { qq, .. }
+            | Command::TodayBest { qq, .. }
             | Command::ScoreOnBeatmap { qq, .. }
             | Command::ProfileCard { qq, .. }
             | Command::BeatmapAudio { qq, .. } => *qq,
@@ -246,6 +263,7 @@ pub(crate) fn build_cmd_payload(
             | Command::Pass { limit, .. }
             | Command::Recent { limit, .. }
             | Command::Best { limit, .. }
+            | Command::TodayBest { limit, .. }
             | Command::BeatmapAudio { limit, .. } => Some(*limit),
             _ => None,
         },
@@ -254,6 +272,7 @@ pub(crate) fn build_cmd_payload(
             | Command::Pass { filters, .. }
             | Command::Recent { filters, .. }
             | Command::Best { filters, .. }
+            | Command::TodayBest { filters, .. }
             | Command::BeatmapAudio { filters, .. } => filters.clone(),
             _ => None,
         },
@@ -261,7 +280,8 @@ pub(crate) fn build_cmd_payload(
             Command::ScoreOnBeatmap { limit_end, .. }
             | Command::Pass { limit_end, .. }
             | Command::Recent { limit_end, .. }
-            | Command::Best { limit_end, .. } => *limit_end,
+            | Command::Best { limit_end, .. }
+            | Command::TodayBest { limit_end, .. } => *limit_end,
             _ => None,
         },
         "explicit_position": match cmd {
@@ -395,6 +415,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         | Command::Pass { .. }
         | Command::Recent { .. }
         | Command::Best { .. }
+        | Command::TodayBest { .. }
         | Command::BeatmapAudio { .. } => {
             handle_query_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }

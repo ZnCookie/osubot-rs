@@ -13,6 +13,7 @@ pub(crate) enum ScoringCmd {
     BeatmapPreview,
     BestSingle,
     BestList,
+    TodayBest,
     BeatmapAudio,
 }
 
@@ -29,6 +30,7 @@ pub(crate) fn parse_scoring_command(
         ("!r", ScoringCmd::RecentSingle),
         ("!s", ScoringCmd::ScoreSingle),
         ("!b", ScoringCmd::BestSingle),
+        ("!t", ScoringCmd::TodayBest),
         ("!a", ScoringCmd::BeatmapAudio),
         ("!rv", ScoringCmd::BeatmapPreview),
     ];
@@ -69,6 +71,7 @@ fn parse_standard_score(
         | ScoringCmd::BeatmapAudio => 1u32,
         ScoringCmd::BestSingle => 1u32,
         ScoringCmd::BestList => 20u32,
+        ScoringCmd::TodayBest => 50u32,
         ScoringCmd::BeatmapPreview => 1u32,
     };
 
@@ -299,6 +302,15 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             limit_end: params.limit_end,
             is_summary: true,
+            filters: params.filters,
+        },
+        ScoringCmd::TodayBest => Command::TodayBest {
+            mode: params.mode,
+            username: params.username,
+            qq,
+            limit: params.limit,
+            limit_end: params.limit_end,
+            is_summary: params.limit_end.is_some() || params.limit > 1,
             filters: params.filters,
         },
         ScoringCmd::BeatmapAudio => Command::BeatmapAudio {

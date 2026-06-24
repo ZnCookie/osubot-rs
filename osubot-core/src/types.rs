@@ -101,6 +101,15 @@ pub enum Command {
         is_summary: bool,
         filters: Option<Vec<String>>,
     },
+    TodayBest {
+        mode: Option<GameMode>,
+        username: Option<String>,
+        qq: Option<i64>,
+        limit: u32,
+        limit_end: Option<u32>,
+        is_summary: bool,
+        filters: Option<Vec<String>>,
+    },
     SetDefaultMode {
         mode: Option<GameMode>,
     },
@@ -137,9 +146,10 @@ impl Command {
             Command::QuerySelf { .. }
             | Command::QueryUser { .. }
             | Command::QueryMentionedUser { .. } => CommandGroup::Query,
-            Command::Pass { .. } | Command::Recent { .. } | Command::Best { .. } => {
-                CommandGroup::Score
-            }
+            Command::Pass { .. }
+            | Command::Recent { .. }
+            | Command::Best { .. }
+            | Command::TodayBest { .. } => CommandGroup::Score,
             Command::BeatmapPreview { .. } => CommandGroup::BeatmapPreview,
             Command::BeatmapAudio { .. } => CommandGroup::BeatmapAudio,
             Command::ProfileCard { .. } => CommandGroup::Profile,
@@ -164,6 +174,7 @@ impl Command {
             Command::Pass { .. } => "!p",
             Command::Recent { .. } => "!r",
             Command::Best { .. } => "!b",
+            Command::TodayBest { .. } => "!t",
             Command::ScoreOnBeatmap { .. } => "!s",
             Command::SetDefaultMode { .. } => "!mode",
             Command::BeatmapPreview { .. } => "!rv",
