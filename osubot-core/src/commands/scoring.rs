@@ -178,7 +178,7 @@ fn parse_standard_score(
 
     let args = extract_common_args(rest, default_limit);
 
-    let rt = parse_remaining_tokens(&args.rest, mentioned_user_id)?;
+    let rt = parse_remaining_tokens(&args.rest, mentioned_user_id, true)?;
 
     let filters = match (args.filters, rt.filters) {
         (Some(mut f), Some(extra)) => {
@@ -192,16 +192,17 @@ fn parse_standard_score(
 
     let final_limit = rt.implicit_limit.unwrap_or(args.limit);
 
-    let final_limit_end = if matches!(
-        cmd,
-        ScoringCmd::PassSingle
-            | ScoringCmd::RecentSingle
-            | ScoringCmd::ScoreSingle
-            | ScoringCmd::BestSingle
-    ) {
+    let final_limit_end = if rt.limit_end.is_none()
+        && matches!(
+            cmd,
+            ScoringCmd::PassSingle
+                | ScoringCmd::RecentSingle
+                | ScoringCmd::ScoreSingle
+                | ScoringCmd::BestSingle
+        ) {
         None
     } else {
-        args.limit_end
+        rt.limit_end.or(args.limit_end)
     };
 
     make_score_cmd(ScoreCmdParams {
@@ -339,9 +340,25 @@ struct RemainingTokens {
     qq: Option<i64>,
     filters: Option<Vec<String>>,
     implicit_limit: Option<u32>,
+    limit_end: Option<u32>,
 }
 
-fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<RemainingTokens> {
+/// Try to parse a token as a range `N-M`. Returns `(start, end)` if valid.
+fn parse_range_token(token: &str) -> Option<(u32, u32)> {
+    let dash_pos = token.find('-')?;
+    if dash_pos == 0 || dash_pos == token.len() - 1 {
+        return None;
+    }
+    let start = token[..dash_pos].parse::<u32>().ok()?;
+    let end = token[dash_pos + 1..].parse::<u32>().ok()?;
+    Some((start, end))
+}
+
+fn parse_remaining_tokens(
+    rest: &str,
+    mentioned_user_id: Option<i64>,
+    small_number_is_limit: bool,
+) -> Option<RemainingTokens> {
     use super::common::{MAX_LIMIT, SCORE_ID_THRESHOLD};
 
     if rest.is_empty() {
@@ -352,6 +369,7 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
             qq: mentioned_user_id,
             filters: None,
             implicit_limit: None,
+            limit_end: None,
         });
     }
 
@@ -363,6 +381,7 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
     let mut found_eq = false;
     let mut extra_filters: Vec<String> = Vec::new();
     let mut implicit_limit: Option<u32> = None;
+    let mut limit_end: Option<u32> = None;
     let mut has_invalid_mention = false;
 
     for token in &tokens {
@@ -382,9 +401,22 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
             continue;
         }
         if !found_eq {
+            // Try range pattern first (e.g. "1-100")
+            if let Some((start, end)) = parse_range_token(token) {
+                if small_number_is_limit && start <= MAX_LIMIT {
+                    implicit_limit = Some(start.clamp(1, MAX_LIMIT));
+                    limit_end = Some(end.clamp(start, MAX_LIMIT));
+                    continue;
+                }
+                // Not a valid range for limit — treat as username
+                name_parts.push(token);
+                continue;
+            }
             if let Ok(num) = token.parse::<u64>() {
                 if num >= SCORE_ID_THRESHOLD {
                     score_id = Some(num);
+                } else if small_number_is_limit && num <= MAX_LIMIT as u64 {
+                    implicit_limit = Some(num as u32);
                 } else if beatmap_id.is_none() {
                     beatmap_id = Some(num as u32);
                 } else {
@@ -424,5 +456,6 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
         qq,
         filters,
         implicit_limit,
+        limit_end,
     })
 }

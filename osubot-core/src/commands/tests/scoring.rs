@@ -1808,3 +1808,244 @@ fn test_beatmap_audio_with_filters() {
         }
     );
 }
+
+#[test]
+fn test_pass_bare_number_limit() {
+    let cmd = parse_command("!p5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_number_with_space() {
+    let cmd = parse_command("!p 5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_range() {
+    let cmd = parse_command("!p1-100", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: Some(100),
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_range_with_space() {
+    let cmd = parse_command("!p 1-100", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: Some(100),
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_bare_number_limit() {
+    let cmd = parse_command("!b5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 5,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_bare_range() {
+    let cmd = parse_command("!bs2-10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 2,
+            limit_end: Some(10),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_bare_range_with_space() {
+    let cmd = parse_command("!bs 2-10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 2,
+            limit_end: Some(10),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_large_number_still_beatmap_id() {
+    let cmd = parse_command("!p 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_score_large_number_still_beatmap_id() {
+    let cmd = parse_command("!s 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::ScoreOnBeatmap {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_all: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_recent_bare_number_limit() {
+    let cmd = parse_command("!r5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Recent {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_recent_list_bare_range() {
+    let cmd = parse_command("!rs3-8", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Recent {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 3,
+            limit_end: Some(8),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_number_clamp_max() {
+    let cmd = parse_command("!p2000", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(2000),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_pass_bare_range_clamp() {
+    let cmd = parse_command("!p1-300", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            limit_end: Some(200),
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
