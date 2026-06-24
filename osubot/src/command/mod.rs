@@ -25,11 +25,13 @@ use crate::{
     api_error_msg, profile_dedup, score_by_id_dedup, send_error, BotContext, UserRateLimit,
 };
 
+mod beatmap_audio;
 mod beatmap_preview;
 mod query;
 mod settings;
 mod utility;
 
+use beatmap_audio::{handle_beatmap_audio, BeatmapAudioParams};
 use beatmap_preview::{handle_beatmap_preview, BeatmapPreviewParams};
 use query::handle_query_commands;
 use settings::handle_settings_commands;
@@ -63,7 +65,8 @@ pub(crate) async fn resolve_cmd_target_qq(
         Command::Pass { qq: Some(qq), .. }
         | Command::Recent { qq: Some(qq), .. }
         | Command::Best { qq: Some(qq), .. }
-        | Command::ScoreOnBeatmap { qq: Some(qq), .. } => Some(*qq),
+        | Command::ScoreOnBeatmap { qq: Some(qq), .. }
+        | Command::BeatmapAudio { qq: Some(qq), .. } => Some(*qq),
         Command::Pass {
             qq: None,
             username: Some(username),
@@ -80,6 +83,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             ..
         }
         | Command::Best {
+            qq: None,
+            username: Some(username),
+            ..
+        }
+        | Command::BeatmapAudio {
             qq: None,
             username: Some(username),
             ..
@@ -110,6 +118,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             qq: None,
             username: None,
             ..
+        }
+        | Command::BeatmapAudio {
+            qq: None,
+            username: None,
+            ..
         } => Some(msg.user_id),
         _ => None,
     }
@@ -127,6 +140,7 @@ pub(crate) fn mode_sensitive(cmd: &Command) -> bool {
             | Command::Best { .. }
             | Command::ScoreOnBeatmap { .. }
             | Command::Highlight { .. }
+            | Command::BeatmapAudio { .. }
     )
 }
 
@@ -140,7 +154,8 @@ pub(crate) fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
         | Command::Recent { mode, .. }
         | Command::Best { mode, .. }
         | Command::Highlight { mode, .. }
-        | Command::ScoreOnBeatmap { mode, .. } => *mode,
+        | Command::ScoreOnBeatmap { mode, .. }
+        | Command::BeatmapAudio { mode, .. } => *mode,
         _ => None,
     }
 }
@@ -185,7 +200,8 @@ pub(crate) fn build_cmd_payload(
         | Command::Pass { username, .. }
         | Command::Recent { username, .. }
         | Command::Best { username, .. }
-        | Command::ProfileCard { username, .. } => username.as_deref(),
+        | Command::ProfileCard { username, .. }
+        | Command::BeatmapAudio { username, .. } => username.as_deref(),
         Command::BeatmapPreview { .. } => None,
         _ => None,
     };
@@ -203,7 +219,8 @@ pub(crate) fn build_cmd_payload(
             | Command::Recent { qq, .. }
             | Command::Best { qq, .. }
             | Command::ScoreOnBeatmap { qq, .. }
-            | Command::ProfileCard { qq, .. } => *qq,
+            | Command::ProfileCard { qq, .. }
+            | Command::BeatmapAudio { qq, .. } => *qq,
             Command::BeatmapPreview { .. } => None,
             _ => None,
         },
@@ -211,35 +228,40 @@ pub(crate) fn build_cmd_payload(
             Command::ScoreOnBeatmap { beatmap_id, .. }
             | Command::Pass { beatmap_id, .. }
             | Command::Recent { beatmap_id, .. }
-            | Command::BeatmapPreview { beatmap_id, .. } => *beatmap_id,
+            | Command::BeatmapPreview { beatmap_id, .. }
+            | Command::BeatmapAudio { beatmap_id, .. } => *beatmap_id,
             _ => None,
         },
         "score_id": match cmd {
             Command::ScoreOnBeatmap { score_id, .. }
             | Command::Pass { score_id, .. }
             | Command::Recent { score_id, .. }
-            | Command::BeatmapPreview { score_id, .. } => *score_id,
+            | Command::BeatmapPreview { score_id, .. }
+            | Command::BeatmapAudio { score_id, .. } => *score_id,
             _ => None,
         },
         "limit": match cmd {
             Command::ScoreOnBeatmap { limit, .. }
             | Command::Pass { limit, .. }
             | Command::Recent { limit, .. }
-            | Command::Best { limit, .. } => Some(*limit),
+            | Command::Best { limit, .. }
+            | Command::BeatmapAudio { limit, .. } => Some(*limit),
             _ => None,
         },
         "filters": match cmd {
             Command::ScoreOnBeatmap { filters, .. }
             | Command::Pass { filters, .. }
             | Command::Recent { filters, .. }
-            | Command::Best { filters, .. } => filters.clone(),
+            | Command::Best { filters, .. }
+            | Command::BeatmapAudio { filters, .. } => filters.clone(),
             _ => None,
         },
         "limit_end": match cmd {
             Command::ScoreOnBeatmap { limit_end, .. }
             | Command::Pass { limit_end, .. }
             | Command::Recent { limit_end, .. }
-            | Command::Best { limit_end, .. } => *limit_end,
+            | Command::Best { limit_end, .. }
+            | Command::BeatmapAudio { limit_end, .. } => *limit_end,
             _ => None,
         },
     })
@@ -377,7 +399,8 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         Command::Help
         | Command::Highlight { .. }
         | Command::ProfileCard { .. }
-        | Command::BeatmapPreview { .. } => {
+        | Command::BeatmapPreview { .. }
+        | Command::BeatmapAudio { .. } => {
             handle_utility_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
     }

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Handle utility commands: Help, Highlight, ProfileCard, BeatmapPreview.
+/// Handle utility commands: Help, Highlight, ProfileCard, BeatmapPreview, BeatmapAudio.
 pub(super) async fn handle_utility_commands(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -37,6 +37,27 @@ pub(super) async fn handle_utility_commands(
                     mods: mods.clone(),
                     gif: *gif,
                     times: times.clone(),
+                },
+            )
+            .await;
+        }
+        Command::BeatmapAudio {
+            score_id,
+            beatmap_id,
+            username,
+            qq,
+            ..
+        } => {
+            handle_beatmap_audio(
+                ctx,
+                msg,
+                resp_tx,
+                BeatmapAudioParams {
+                    score_id: *score_id,
+                    beatmap_id: *beatmap_id,
+                    username: username.clone(),
+                    qq: *qq,
+                    mode,
                 },
             )
             .await;
