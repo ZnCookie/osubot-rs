@@ -258,7 +258,7 @@ pub(super) async fn handle_beatmap_preview(
 
     let write = ctx.write.clone();
     if let Err(e) = send_group_msg_with_image(&write, group_id, &image_data).await {
-        warn!(error = %e, "发送预览图片失败");
+        warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
         let _ = resp_tx
             .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
             .await;

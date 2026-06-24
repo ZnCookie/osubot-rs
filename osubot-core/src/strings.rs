@@ -593,6 +593,8 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.beatmap_preview_render_failed" => "!rv 预览渲染失败: {error}",
     "main.beatmap_preview_render_timeout" => "!rv 预览渲染超时",
     "main.beatmap_preview_read_failed" => "!rv 读取渲染结果失败: {error}",
+    "main.beatmap_audio_send_failed" => "发送预览音频失败: {error}",
+    "main.beatmap_preview_send_failed" => "发送预览图片失败: {error}",
 };
 
 pub fn log_str(key: &str) -> &'static str {
