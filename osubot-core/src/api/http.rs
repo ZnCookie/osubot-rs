@@ -143,32 +143,30 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
 pub async fn download_beatmap_preview_mp3(beatmapset_id: i64) -> Result<Vec<u8>, ApiError> {
     let cache_path = beatmap_audio_cache_dir().join(format!("{}.mp3", beatmapset_id));
 
-    let cache_valid = tokio::task::spawn_blocking({
+    let cached = tokio::task::spawn_blocking({
         let cache_path = cache_path.clone();
-        move || -> bool {
-            if !cache_path.exists() {
-                return false;
+        move || -> Option<Vec<u8>> {
+            let meta = std::fs::metadata(&cache_path).ok()?;
+            if meta.len() == 0 {
+                return None;
             }
-            match std::fs::metadata(&cache_path) {
-                Ok(meta) if meta.len() > 0 => {
-                    if let Ok(modified) = meta.modified() {
-                        modified.elapsed().unwrap_or(std::time::Duration::MAX)
-                            < std::time::Duration::from_secs(7 * 86400)
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
+            let fresh = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d < std::time::Duration::from_secs(7 * 86400))
+                .unwrap_or(false);
+            if !fresh {
+                return None;
             }
+            std::fs::read(&cache_path).ok()
         }
     })
     .await
-    .unwrap_or(false);
+    .unwrap_or(None);
 
-    if cache_valid {
-        if let Ok(bytes) = tokio::fs::read(&cache_path).await {
-            return Ok(bytes);
-        }
+    if let Some(bytes) = cached {
+        return Ok(bytes);
     }
 
     let client = http_client();

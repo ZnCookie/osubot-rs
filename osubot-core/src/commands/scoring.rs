@@ -403,9 +403,8 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
                 if start > MAX_LIMIT {
                     return None;
                 }
-                let clamped_start = start.clamp(1, MAX_LIMIT);
-                implicit_limit = Some(clamped_start);
-                limit_end = Some(end.clamp(clamped_start, MAX_LIMIT));
+                implicit_limit = Some(start.clamp(1, MAX_LIMIT));
+                limit_end = Some(end.clamp(start.clamp(1, MAX_LIMIT), MAX_LIMIT));
                 continue;
             }
             if let Ok(num) = token.parse::<u64>() {
