@@ -34,6 +34,7 @@ path = "osubot.db"
 # group_trigger_cooldown_hours = 1
 # retention_days = 180
 # cache_retention_days = 7
+# max_cache_size_bytes = 2147483648   # 渲染缓存最大大小（字节），默认 2GB
 
 # [irc]
 # IRC 鉴权绑定（需在 https://osu.ppy.sh/p/irc 获取密码）
@@ -52,7 +53,7 @@ path = "osubot.db"
 # [groups.default]
 # 命令开关（可选，默认全部开启）
 # query = true              # ~、where、查
-# score = true              # !p、!ps、!r、!rs、!s、!ss
+# score = true              # !p、!ps、!r、!rs、!s、!ss、!b、!bs、!a
 # beatmap_preview = true    # !rv
 # profile = true            # !profile
 # highlight = true          # 今日高光
