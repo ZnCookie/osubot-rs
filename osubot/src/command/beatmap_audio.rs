@@ -10,8 +10,8 @@ pub(super) struct BeatmapAudioParams {
     pub(super) qq: Option<i64>,
     pub(super) mode: GameMode,
     pub(super) filters: Option<Vec<String>>,
-    /// 1-based 位置（与 !r #N 同语义）。limit>1 时不查群缓存，直接取用户第 N 条。
     pub(super) limit: u32,
+    pub(super) explicit_position: bool,
 }
 
 pub(super) async fn handle_beatmap_audio(
@@ -29,8 +29,9 @@ pub(super) async fn handle_beatmap_audio(
             let dedup_oauth = ctx.oauth.clone();
             let qq_for_dedup = qq;
             let sid_owned = *sid;
+            let mode_for_dedup = params.mode;
             let result = score_by_id_dedup()
-                .run_or_wait((sid_owned as i64, GameMode::Osu), move || {
+                .run_or_wait((sid_owned as i64, mode_for_dedup), move || {
                     let rl = dedup_rate_limiter.clone();
                     let oauth = dedup_oauth.clone();
                     let qq_inner = qq_for_dedup;
@@ -90,6 +91,9 @@ pub(super) async fn handle_beatmap_audio(
     let write = ctx.write.clone();
     if let Err(e) = send_group_msg_with_record(&write, group_id, &url).await {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_audio_send_failed", error = &e.to_string()));
+        let _ = resp_tx
+            .send(user_str("error.audio_send_failed").replace("{qq}", &qq.to_string()))
+            .await;
     }
 }
 
@@ -100,12 +104,10 @@ async fn resolve_beatmapset_id_fallback(
     group_id: i64,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<i64> {
-    // 仅在无任何目标参数（用户名/QQ/filter/位置）时回退群缓存，避免缓存命中时
-    // 吞掉显式目标（如 !a ZnCookie / !a @QQ / !a +HD / !a 5）。
     let has_target = params.username.is_some()
         || params.qq.is_some()
         || params.filters.as_ref().is_some_and(|f| !f.is_empty())
-        || params.limit > 1;
+        || params.explicit_position;
     if !has_target {
         if let Some(bid) = ctx.last_beatmap.get(group_id) {
             ctx.last_beatmap.set(group_id, bid);

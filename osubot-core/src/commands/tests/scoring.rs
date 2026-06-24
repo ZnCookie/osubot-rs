@@ -1743,8 +1743,8 @@ fn test_beatmap_audio_self() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -1761,8 +1761,8 @@ fn test_beatmap_audio_username_mode() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -1779,8 +1779,8 @@ fn test_beatmap_audio_beatmap_id() {
             beatmap_id: Some(123456),
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
         }
     );
 }
@@ -1803,8 +1803,8 @@ fn test_beatmap_audio_with_filters() {
             beatmap_id: None,
             score_id: None,
             limit: 1,
-            limit_end: None,
             filters: Some(vec!["mod=HD".to_string()]),
+            explicit_position: false,
         }
     );
 }
@@ -2100,8 +2100,8 @@ fn test_beatmap_audio_bare_number_position() {
             beatmap_id: None,
             score_id: None,
             limit: 5,
-            limit_end: None,
             filters: None,
+            explicit_position: true,
         }
     );
 }
@@ -2118,8 +2118,8 @@ fn test_beatmap_audio_hash_index() {
             beatmap_id: None,
             score_id: None,
             limit: 5,
-            limit_end: None,
             filters: None,
+            explicit_position: true,
         }
     );
 }
@@ -2146,8 +2146,44 @@ fn test_beatmap_audio_score_id() {
             beatmap_id: None,
             score_id: Some(12345678),
             limit: 1,
-            limit_end: None,
             filters: None,
+            explicit_position: false,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_hash_one_explicit_position() {
+    let cmd = parse_command("!a #1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: true,
+        }
+    );
+}
+
+#[test]
+fn test_beatmap_audio_bare_one_explicit_position() {
+    let cmd = parse_command("!a 1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::BeatmapAudio {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            filters: None,
+            explicit_position: true,
         }
     );
 }

@@ -173,6 +173,7 @@ fn parse_standard_score(
             limit: default_limit,
             limit_end: None,
             filters: None,
+            explicit_position: false,
         });
     }
 
@@ -209,6 +210,8 @@ fn parse_standard_score(
         return None;
     }
 
+    let explicit_position = rt.implicit_limit.is_some() || args.explicit_position;
+
     make_score_cmd(ScoreCmdParams {
         cmd,
         mentioned_user_id,
@@ -220,6 +223,7 @@ fn parse_standard_score(
         limit: final_limit,
         limit_end: final_limit_end,
         filters,
+        explicit_position,
     })
 }
 
@@ -234,6 +238,7 @@ struct ScoreCmdParams {
     limit: u32,
     limit_end: Option<u32>,
     filters: Option<Vec<String>>,
+    explicit_position: bool,
 }
 
 fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
@@ -330,8 +335,8 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             beatmap_id: params.beatmap_id,
             score_id: params.score_id,
             limit: params.limit,
-            limit_end: params.limit_end,
             filters: params.filters,
+            explicit_position: params.explicit_position,
         },
         ScoringCmd::BeatmapPreview => unreachable!(),
     })
