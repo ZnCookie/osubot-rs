@@ -222,28 +222,41 @@ pub async fn get_user_best(
     mode: GameMode,
     limit: u32,
 ) -> Result<Vec<Score>, ApiError> {
-    let url = format!(
-        "https://osu.ppy.sh/api/v2/users/{}/scores/best?mode={}&limit={}&legacy_only=0",
-        user_id,
-        mode.api_value(),
-        limit
-    );
+    const PAGE_SIZE: u32 = 100;
 
-    let resp = http::authenticated_get(&url, rate_limiter, oauth).await?;
-
-    let raw_json: serde_json::Value = http::json_body(resp).await?;
-
-    let plays: Vec<OsuApiScore> = serde_json::from_value(raw_json).map_err(|e| {
-        tracing::error!(error = %e, "{}", log_fmt!("api.parse_score_json_failed"));
-        ApiError::InvalidResponse
-    })?;
-    let scores_raw: Vec<Score> = plays
-        .into_iter()
-        .map(|p| api_score_to_score(p, mode))
-        .collect();
     let mode_str = mode.api_value().to_string();
+    let mut all_scores: Vec<Score> = Vec::new();
 
-    let scores: Vec<Score> = stream::iter(scores_raw)
+    while all_scores.len() < limit as usize {
+        let remaining = limit - all_scores.len() as u32;
+        let fetch = remaining.min(PAGE_SIZE);
+        let offset = all_scores.len() as u32;
+
+        let url = format!(
+            "https://osu.ppy.sh/api/v2/users/{}/scores/best?mode={}&limit={}&offset={}&legacy_only=0",
+            user_id,
+            mode.api_value(),
+            fetch,
+            offset,
+        );
+
+        let resp = http::authenticated_get(&url, rate_limiter, oauth).await?;
+        let raw_json: serde_json::Value = http::json_body(resp).await?;
+
+        let plays: Vec<OsuApiScore> = serde_json::from_value(raw_json).map_err(|e| {
+            tracing::error!(error = %e, "{}", log_fmt!("api.parse_score_json_failed"));
+            ApiError::InvalidResponse
+        })?;
+
+        let page_len = plays.len();
+        all_scores.extend(plays.into_iter().map(|p| api_score_to_score(p, mode)));
+
+        if page_len < fetch as usize {
+            break;
+        }
+    }
+
+    let scores: Vec<Score> = stream::iter(all_scores)
         .map(|mut score| {
             let rl = rate_limiter.clone();
             let oa = oauth.clone();

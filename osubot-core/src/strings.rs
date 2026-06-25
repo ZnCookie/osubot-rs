@@ -237,6 +237,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.pass_command" => "Pass 命令",
     "main.recent_command" => "Recent 命令",
     "main.best_score_command" => "Best 命令",
+    "main.today_best_command" => "TodayBest 命令",
     "main.help_command" => "Help 命令",
     "main.send_group_msg_failed" => "发送群消息失败: {error}",
     "main.send_image_failed" => "无法发送群图片消息",
