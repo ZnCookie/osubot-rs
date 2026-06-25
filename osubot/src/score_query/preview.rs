@@ -15,10 +15,25 @@ pub(super) async fn render_beatmap_preview_from_score(
     score: &Score,
     mode: GameMode,
 ) {
+    let resolved_bid = score.beatmap_id as u32;
+    ctx.last_beatmap.set(msg.group_id, resolved_bid);
+    render_beatmap_preview_by_id(ctx, msg, resp_tx, mods, gif, times, resolved_bid, mode).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn render_beatmap_preview_by_id(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    mods: &Option<Vec<String>>,
+    gif: bool,
+    times: &Option<Vec<i64>>,
+    beatmap_id: u32,
+    mode: GameMode,
+) {
     let qq = msg.user_id;
     let group_id = msg.group_id;
-    let resolved_bid = score.beatmap_id as u32;
-    ctx.last_beatmap.set(group_id, resolved_bid);
+    let resolved_bid = beatmap_id;
 
     let mods = mods.clone();
 

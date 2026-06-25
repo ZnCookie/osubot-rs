@@ -9,10 +9,18 @@ pub(super) async fn render_audio(
     score: &Score,
     _mode: GameMode,
 ) {
+    render_audio_by_beatmapset_id(ctx, msg, resp_tx, score.beatmapset_id).await;
+}
+
+pub(super) async fn render_audio_by_beatmapset_id(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    beatmapset_id: i64,
+) {
     let qq = msg.user_id;
     let group_id = msg.group_id;
 
-    let beatmapset_id = score.beatmapset_id;
     if beatmapset_id <= 0 {
         send_error(resp_tx, qq, "error.data_fetch_failed").await;
         return;

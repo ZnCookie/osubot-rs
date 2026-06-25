@@ -32,9 +32,9 @@ use osubot_core::RateLimiter;
 use crate::api_error_msg;
 use crate::onebot::{send_group_msg_with_image, QQMessage};
 use crate::{
-    audio_score_dedup, beatmap_scores_dedup, best_scores_dedup, preview_score_dedup,
-    score_by_id_dedup, score_by_id_err_msg, score_dedup, today_best_scores_dedup, DedupApiError,
-    SCORE_API_FETCH_LIMIT,
+    audio_score_dedup, beatmap_scores_dedup, beatmapset_dedup, best_scores_dedup,
+    preview_score_dedup, score_by_id_dedup, score_by_id_err_msg, score_dedup,
+    today_best_scores_dedup, DedupApiError, SCORE_API_FETCH_LIMIT,
 };
 
 mod audio;
@@ -454,8 +454,78 @@ pub(crate) async fn handle_score_query(
                 qq,
                 limit,
                 filters,
+                score_id,
+                beatmap_id,
                 ..
             } => {
+                // score_id 直达：获取成绩后播放其谱面音频，无需绑定。
+                if let Some(sid) = score_id {
+                    let sid_val = *sid;
+                    let score_result = score_by_id_dedup()
+                        .run_or_wait(sid_val as i64, move || {
+                            let rate_limiter = ctx.rate_limiter.clone();
+                            let oauth = ctx.oauth.clone();
+                            async move {
+                                api::get_score_by_id(&rate_limiter, &oauth, sid_val)
+                                    .await
+                                    .map_err(|e| {
+                                        if !matches!(e, api::ApiError::NotFound) {
+                                            tracing::warn!(
+                                                error = ?e,
+                                                "{}",
+                                                log_fmt!("main.get_score_by_id_failed")
+                                            );
+                                        }
+                                        DedupApiError::from_api_error(&e)
+                                    })
+                            }
+                        })
+                        .await;
+                    let score = match score_result {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = resp_tx.send(score_by_id_err_msg(msg.user_id, &e)).await;
+                            return;
+                        }
+                    };
+                    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+                    audio::render_audio(ctx, msg, resp_tx, &score, mode).await;
+                    return;
+                }
+
+                // beatmap_id 直达：解析 beatmapset_id 后播放音频，无需绑定。
+                if let Some(bid) = beatmap_id {
+                    let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, *bid as i64).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            let _ = resp_tx.send(e.to_user_msg(msg.user_id)).await;
+                            return;
+                        }
+                    };
+                    ctx.last_beatmap.set(msg.group_id, *bid);
+                    audio::render_audio_by_beatmapset_id(ctx, msg, resp_tx, beatmapset_id).await;
+                    return;
+                }
+
+                // last_beatmap 缓存兜底：无参时直接用缓存 beatmap_id 转音频。
+                let has_target = username.is_some()
+                    || qq.is_some()
+                    || filters.as_ref().is_some_and(|f| !f.is_empty());
+                if !has_target {
+                    if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
+                        let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, bid as i64).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = resp_tx.send(e.to_user_msg(msg.user_id)).await;
+                                return;
+                            }
+                        };
+                        audio::render_audio_by_beatmapset_id(ctx, msg, resp_tx, beatmapset_id)
+                            .await;
+                        return;
+                    }
+                }
+
                 let spec = ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
                         audio_score_dedup().run_or_wait((uid, true, l, m), move || {
@@ -503,8 +573,80 @@ pub(crate) async fn handle_score_query(
                 mods,
                 gif,
                 times,
+                score_id,
+                beatmap_id,
                 ..
             } => {
+                // score_id 直达：获取成绩后渲染其谱面预览，无需绑定。
+                if let Some(sid) = score_id {
+                    let sid_val = *sid;
+                    let score_result = score_by_id_dedup()
+                        .run_or_wait(sid_val as i64, move || {
+                            let rate_limiter = ctx.rate_limiter.clone();
+                            let oauth = ctx.oauth.clone();
+                            async move {
+                                api::get_score_by_id(&rate_limiter, &oauth, sid_val)
+                                    .await
+                                    .map_err(|e| {
+                                        if !matches!(e, api::ApiError::NotFound) {
+                                            tracing::warn!(
+                                                error = ?e,
+                                                "{}",
+                                                log_fmt!("main.get_score_by_id_failed")
+                                            );
+                                        }
+                                        DedupApiError::from_api_error(&e)
+                                    })
+                            }
+                        })
+                        .await;
+                    let score = match score_result {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = resp_tx.send(score_by_id_err_msg(msg.user_id, &e)).await;
+                            return;
+                        }
+                    };
+                    let resolved_bid = score.beatmap_id as u32;
+                    ctx.last_beatmap.set(msg.group_id, resolved_bid);
+                    preview::render_beatmap_preview_by_id(
+                        ctx,
+                        msg,
+                        resp_tx,
+                        mods,
+                        *gif,
+                        times,
+                        resolved_bid,
+                        mode,
+                    )
+                    .await;
+                    return;
+                }
+
+                // beatmap_id 直达
+                if let Some(bid) = beatmap_id {
+                    ctx.last_beatmap.set(msg.group_id, *bid);
+                    preview::render_beatmap_preview_by_id(
+                        ctx, msg, resp_tx, mods, *gif, times, *bid, mode,
+                    )
+                    .await;
+                    return;
+                }
+
+                // last_beatmap 缓存兜底
+                let has_target = username.is_some()
+                    || qq.is_some()
+                    || filters.as_ref().is_some_and(|f| !f.is_empty());
+                if !has_target {
+                    if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
+                        preview::render_beatmap_preview_by_id(
+                            ctx, msg, resp_tx, mods, *gif, times, bid, mode,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+
                 let spec = ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
                         preview_score_dedup().run_or_wait((uid, true, l, m), move || {
@@ -1001,4 +1143,24 @@ async fn run_score_query_pipeline(
             }
         }
     }
+}
+
+/// 通过 beatmap_id 解析 beatmapset_id，按 beatmap_id 去重并发请求。
+async fn fetch_beatmapset_id_dedup(
+    ctx: &BotContext,
+    beatmap_id: i64,
+) -> Result<i64, DedupApiError> {
+    let rl = ctx.rate_limiter.clone();
+    let oauth = ctx.oauth.clone();
+    beatmapset_dedup()
+        .run_or_wait(beatmap_id, move || {
+            let rl = rl.clone();
+            let oauth = oauth.clone();
+            async move {
+                api::get_beatmapset_id(&rl, &oauth, beatmap_id)
+                    .await
+                    .map_err(|e| DedupApiError::from_api_error(&e))
+            }
+        })
+        .await
 }
