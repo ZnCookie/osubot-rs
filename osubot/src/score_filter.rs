@@ -1,18 +1,5 @@
 use osubot_core::types::Score;
 
-#[allow(dead_code)]
-pub(crate) struct ScoreQueryParams<'a> {
-    pub username: &'a Option<String>,
-    pub qq: &'a Option<i64>,
-    pub is_pass: bool,
-    pub beatmap_id: Option<u32>,
-    pub score_id: Option<u64>,
-    pub limit: u32,
-    pub is_single: bool,
-    pub limit_end: Option<u32>,
-    pub filters: Option<&'a [String]>,
-}
-
 /// Comparison operator extracted from a `key<op>value` filter token.
 /// `=` maps to `Eq` and `==` maps to `EqEq`. For numeric keys the two
 /// have identical semantics (equality), but for the `mod` key `Eq` means

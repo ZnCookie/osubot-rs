@@ -199,6 +199,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn render_and_send_score_list(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -207,6 +208,8 @@ pub(super) async fn render_and_send_score_list(
     user_stats: &UserStats,
     username: &str,
     mode: GameMode,
+    label_key: &'static str,
+    index_offset: usize,
 ) {
     let cover_images: Vec<Option<image::DynamicImage>> = join_all(scores.iter().map(|s| {
         let url = s.cover_url.clone();
@@ -254,7 +257,7 @@ pub(super) async fn render_and_send_score_list(
     let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
     let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
 
-    let score_label = user_str("fmt.beatmap_score");
+    let score_label = user_str(label_key);
     let score_count_text = user_str("fmt.score_count");
     let render_result = tokio::time::timeout(
         Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
@@ -276,7 +279,7 @@ pub(super) async fn render_and_send_score_list(
             count_text: score_count_text,
             cover_images,
             hero_cover_url: &hero_cover_url,
-            index_offset: 0,
+            index_offset,
         }),
     )
     .await;
@@ -302,12 +305,12 @@ pub(super) async fn render_and_send_score_list(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-            let text = format_scores(scores, username, mode, user_str("fmt.beatmap_score"));
+            let text = format_scores(scores, username, mode, user_str(label_key));
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-            let text = format_scores(scores, username, mode, user_str("fmt.beatmap_score"));
+            let text = format_scores(scores, username, mode, user_str(label_key));
             let _ = resp_tx.send(text).await;
         }
     }
