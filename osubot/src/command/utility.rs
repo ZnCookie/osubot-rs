@@ -18,39 +18,6 @@ pub(super) async fn handle_utility_commands(
         Command::ProfileCard { username, qq } => {
             handle_profile_card(ctx, msg, resp_tx, username, qq, mode).await;
         }
-        Command::BeatmapPreview {
-            score_id,
-            beatmap_id,
-            mode: preview_mode,
-            username,
-            qq,
-            mods,
-            gif,
-            times,
-            limit,
-            filters,
-            explicit_position,
-        } => {
-            handle_beatmap_preview(
-                ctx,
-                msg,
-                resp_tx,
-                BeatmapPreviewParams {
-                    score_id: *score_id,
-                    beatmap_id: *beatmap_id,
-                    mode: *preview_mode,
-                    username: username.clone(),
-                    qq: *qq,
-                    mods: mods.clone(),
-                    gif: *gif,
-                    times: times.clone(),
-                    limit: *limit,
-                    filters: filters.clone(),
-                    explicit_position: *explicit_position,
-                },
-            )
-            .await;
-        }
         _ => unreachable!("handle_utility_commands called with non-utility command"),
     }
 }

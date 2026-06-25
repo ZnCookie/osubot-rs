@@ -2,6 +2,7 @@ use super::*;
 
 /// 描述单次谱面分数查询的 fetch 配置。
 /// 用于将 is_all / limit==1 / else 三分支的参数差异封装到一个类型。
+#[allow(dead_code)]
 pub(super) struct ScoreQueryPlan {
     /// osu! API 单次请求的最大数量。`None` 表示使用 API 默认。
     pub(super) api_limit: Option<u32>,
@@ -16,6 +17,7 @@ pub(super) struct ScoreQueryPlan {
 impl ScoreQueryPlan {
     /// `!sb` 不带 limit_end 的默认单分查询。
     /// `api_limit: Some(1)` 让 `/all` 端点只返回首条成绩，避免无意义地传输最多 50 条。
+    #[allow(dead_code)]
     pub(super) fn single() -> Self {
         Self {
             api_limit: Some(1),
@@ -26,6 +28,7 @@ impl ScoreQueryPlan {
     }
 
     /// `!sb <n>` 单分查询，可能带 filters。
+    #[allow(dead_code)]
     pub(super) fn single_with_filters(api_limit: u32) -> Self {
         Self {
             api_limit: Some(api_limit),
@@ -36,6 +39,7 @@ impl ScoreQueryPlan {
     }
 
     /// `!sb *` 列出所有分（按 limit / limit_end 截取）。
+    #[allow(dead_code)]
     pub(super) fn list(api_limit: Option<u32>) -> Self {
         Self {
             api_limit,
@@ -46,6 +50,7 @@ impl ScoreQueryPlan {
     }
 
     /// `!sb [n, m]` 范围查询。
+    #[allow(dead_code)]
     pub(super) fn range(api_limit: u32) -> Self {
         Self {
             api_limit: Some(api_limit),
@@ -56,6 +61,7 @@ impl ScoreQueryPlan {
     }
 }
 
+#[allow(dead_code)]
 fn filter_scores(scores: Vec<Score>, filters: Option<&[String]>) -> Vec<Score> {
     if let Some(filters) = filters {
         scores
@@ -67,6 +73,7 @@ fn filter_scores(scores: Vec<Score>, filters: Option<&[String]>) -> Vec<Score> {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn process_scores(
     scores: Vec<Score>,
     filters: Option<&[String]>,

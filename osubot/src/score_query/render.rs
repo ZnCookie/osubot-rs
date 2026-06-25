@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(dead_code)]
 pub(super) async fn render_single_score(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -23,6 +24,7 @@ pub(super) async fn render_single_score(
     .await;
 }
 
+#[allow(dead_code)]
 pub(super) async fn render_scores(
     ctx: &BotContext,
     msg: &QQMessage,

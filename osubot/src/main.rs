@@ -154,6 +154,7 @@ pub(crate) fn api_error_msg(qq: i64, e: &ApiError) -> String {
 
 /// 同 `DedupApiError::to_user_msg`，但 `NotFound` 映射为按 score_id 取谱面专用的
 /// `query.score_not_found`，而非通用 not-found 文案。
+#[allow(dead_code)]
 pub(crate) fn score_by_id_err_msg(qq: i64, e: &DedupApiError) -> String {
     match e {
         DedupApiError::NotFound => {
@@ -266,15 +267,19 @@ pub(crate) fn score_dedup() -> &'static ScoreDedup {
     DEDUP.get_or_init(RequestDedup::new)
 }
 
+#[allow(dead_code)]
 pub(crate) type ScoreByIdDedup = RequestDedup<i64, Score, DedupApiError>;
 
+#[allow(dead_code)]
 pub(crate) fn score_by_id_dedup() -> &'static ScoreByIdDedup {
     static DEDUP: OnceLock<ScoreByIdDedup> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 
+#[allow(dead_code)]
 pub(crate) type BeatmapsetDedup = RequestDedup<i64, i64, DedupApiError>;
 
+#[allow(dead_code)]
 pub(crate) fn beatmapset_dedup() -> &'static BeatmapsetDedup {
     static DEDUP: OnceLock<BeatmapsetDedup> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)

@@ -1,5 +1,6 @@
 use osubot_core::types::Score;
 
+#[allow(dead_code)]
 pub(crate) struct ScoreQueryParams<'a> {
     pub username: &'a Option<String>,
     pub qq: &'a Option<i64>,

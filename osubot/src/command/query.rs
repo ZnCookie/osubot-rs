@@ -165,125 +165,21 @@ pub(super) async fn handle_query_commands(
                 }
             }
         }
-        Command::ScoreOnBeatmap { .. } => {
-            info!(
-                user_id = msg.user_id,
-                group_id = msg.group_id,
-                "{}",
-                log_fmt!("main.score_on_beatmap_cmd")
-            );
-            handle_beatmap_score_query(ctx, msg, resp_tx, cmd, mode).await;
-        }
-        Command::Pass {
-            mode: _,
-            username,
-            qq,
-            beatmap_id,
-            score_id,
-            limit,
-            limit_end,
-            is_summary,
-            filters,
-        } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = *limit, "{}", log_fmt!("main.pass_command"));
-            handle_score_query(
-                ctx,
-                msg,
-                resp_tx,
-                ScoreQueryParams {
-                    username,
-                    qq,
-                    is_pass: true,
-                    beatmap_id: *beatmap_id,
-                    score_id: *score_id,
-                    limit: *limit,
-                    is_single: !*is_summary,
-                    limit_end: *limit_end,
-                    filters: filters.as_deref(),
-                },
-                mode,
-            )
-            .await;
-        }
-        Command::Recent {
-            mode: _,
-            username,
-            qq,
-            beatmap_id,
-            score_id,
-            limit,
-            limit_end,
-            is_summary,
-            filters,
-        } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, limit = *limit, "{}", log_fmt!("main.recent_command"));
-            handle_score_query(
-                ctx,
-                msg,
-                resp_tx,
-                ScoreQueryParams {
-                    username,
-                    qq,
-                    is_pass: false,
-                    beatmap_id: *beatmap_id,
-                    score_id: *score_id,
-                    limit: *limit,
-                    is_single: !*is_summary,
-                    limit_end: *limit_end,
-                    filters: filters.as_deref(),
-                },
-                mode,
-            )
-            .await;
-        }
-        Command::Best { .. } => {
+        Command::ScoreOnBeatmap { .. }
+        | Command::Pass { .. }
+        | Command::Recent { .. }
+        | Command::Best { .. }
+        | Command::TodayBest { .. }
+        | Command::BeatmapAudio { .. }
+        | Command::BeatmapPreview { .. } => {
             info!(
                 user_id = msg.user_id,
                 group_id = msg.group_id,
                 mode = ?mode,
                 "{}",
-                log_fmt!("main.best_score_command")
+                log_fmt!("main.score_query_command")
             );
-            handle_best_score_query(ctx, msg, resp_tx, cmd, mode).await;
-        }
-        Command::TodayBest { .. } => {
-            info!(
-                user_id = msg.user_id,
-                group_id = msg.group_id,
-                mode = ?mode,
-                "{}",
-                log_fmt!("main.today_best_command")
-            );
-            handle_today_bp_query(ctx, msg, resp_tx, cmd, mode).await;
-        }
-        Command::BeatmapAudio {
-            score_id,
-            beatmap_id,
-            username,
-            qq,
-            filters,
-            limit,
-            explicit_position,
-            mode: cmd_mode,
-            ..
-        } => {
-            handle_beatmap_audio(
-                ctx,
-                msg,
-                resp_tx,
-                BeatmapAudioParams {
-                    score_id: *score_id,
-                    beatmap_id: *beatmap_id,
-                    username: username.clone(),
-                    qq: *qq,
-                    mode,
-                    mode_specified: cmd_mode.is_some(),
-                    filters: filters.clone(),
-                    limit: *limit,
-                    explicit_position: *explicit_position,
-                },
-            )
-            .await;
+            handle_score_query(ctx, msg, resp_tx, cmd, mode).await;
         }
         _ => unreachable!("handle_query_commands called with non-query command"),
     }

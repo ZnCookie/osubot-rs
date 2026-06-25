@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use osubot_core::{
-    api::{self, ApiError},
+    api,
     highlight::{format_highlight, get_highlight, HighlightError},
     log_fmt, parse_command,
     response::format_stats_with_change,
@@ -19,23 +19,13 @@ use osubot_render::{render_profile_card, PROFILE_VIEWPORT_WIDTH};
 use tracing::{debug, error, info, warn};
 
 use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage};
-use crate::score_filter::ScoreQueryParams;
-use crate::score_query::{
-    handle_beatmap_score_query, handle_best_score_query, handle_score_query, handle_today_bp_query,
-};
-use crate::{
-    api_error_msg, beatmapset_dedup, profile_dedup, score_by_id_dedup, score_by_id_err_msg,
-    send_error, BotContext, DedupApiError, UserRateLimit,
-};
+use crate::score_query::handle_score_query;
+use crate::{api_error_msg, profile_dedup, BotContext, UserRateLimit};
 
-mod beatmap_audio;
-mod beatmap_preview;
 mod query;
 mod settings;
 mod utility;
 
-use beatmap_audio::{handle_beatmap_audio, BeatmapAudioParams};
-use beatmap_preview::{handle_beatmap_preview, BeatmapPreviewParams};
 use query::handle_query_commands;
 use settings::handle_settings_commands;
 use utility::handle_utility_commands;
@@ -70,7 +60,8 @@ pub(crate) async fn resolve_cmd_target_qq(
         | Command::Best { qq: Some(qq), .. }
         | Command::TodayBest { qq: Some(qq), .. }
         | Command::ScoreOnBeatmap { qq: Some(qq), .. }
-        | Command::BeatmapAudio { qq: Some(qq), .. } => Some(*qq),
+        | Command::BeatmapAudio { qq: Some(qq), .. }
+        | Command::BeatmapPreview { qq: Some(qq), .. } => Some(*qq),
         Command::Pass {
             qq: None,
             username: Some(username),
@@ -97,6 +88,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             ..
         }
         | Command::BeatmapAudio {
+            qq: None,
+            username: Some(username),
+            ..
+        }
+        | Command::BeatmapPreview {
             qq: None,
             username: Some(username),
             ..
@@ -137,6 +133,11 @@ pub(crate) async fn resolve_cmd_target_qq(
             qq: None,
             username: None,
             ..
+        }
+        | Command::BeatmapPreview {
+            qq: None,
+            username: None,
+            ..
         } => Some(msg.user_id),
         _ => None,
     }
@@ -156,6 +157,7 @@ pub(crate) fn mode_sensitive(cmd: &Command) -> bool {
             | Command::ScoreOnBeatmap { .. }
             | Command::Highlight { .. }
             | Command::BeatmapAudio { .. }
+            | Command::BeatmapPreview { .. }
     )
 }
 
@@ -171,7 +173,8 @@ pub(crate) fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
         | Command::TodayBest { mode, .. }
         | Command::Highlight { mode, .. }
         | Command::ScoreOnBeatmap { mode, .. }
-        | Command::BeatmapAudio { mode, .. } => *mode,
+        | Command::BeatmapAudio { mode, .. }
+        | Command::BeatmapPreview { mode, .. } => *mode,
         _ => None,
     }
 }
@@ -218,8 +221,8 @@ pub(crate) fn build_cmd_payload(
         | Command::Best { username, .. }
         | Command::TodayBest { username, .. }
         | Command::ProfileCard { username, .. }
-        | Command::BeatmapAudio { username, .. } => username.as_deref(),
-        Command::BeatmapPreview { .. } => None,
+        | Command::BeatmapAudio { username, .. }
+        | Command::BeatmapPreview { username, .. } => username.as_deref(),
         _ => None,
     };
     serde_json::json!({
@@ -238,8 +241,8 @@ pub(crate) fn build_cmd_payload(
             | Command::TodayBest { qq, .. }
             | Command::ScoreOnBeatmap { qq, .. }
             | Command::ProfileCard { qq, .. }
-            | Command::BeatmapAudio { qq, .. } => *qq,
-            Command::BeatmapPreview { .. } => None,
+            | Command::BeatmapAudio { qq, .. }
+            | Command::BeatmapPreview { qq, .. } => *qq,
             _ => None,
         },
         "beatmap_id": match cmd {
@@ -264,7 +267,8 @@ pub(crate) fn build_cmd_payload(
             | Command::Recent { limit, .. }
             | Command::Best { limit, .. }
             | Command::TodayBest { limit, .. }
-            | Command::BeatmapAudio { limit, .. } => Some(*limit),
+            | Command::BeatmapAudio { limit, .. }
+            | Command::BeatmapPreview { limit, .. } => Some(*limit),
             _ => None,
         },
         "filters": match cmd {
@@ -273,7 +277,8 @@ pub(crate) fn build_cmd_payload(
             | Command::Recent { filters, .. }
             | Command::Best { filters, .. }
             | Command::TodayBest { filters, .. }
-            | Command::BeatmapAudio { filters, .. } => filters.clone(),
+            | Command::BeatmapAudio { filters, .. }
+            | Command::BeatmapPreview { filters, .. } => filters.clone(),
             _ => None,
         },
         "limit_end": match cmd {
@@ -285,7 +290,8 @@ pub(crate) fn build_cmd_payload(
             _ => None,
         },
         "explicit_position": match cmd {
-            Command::BeatmapAudio { explicit_position, .. } => *explicit_position,
+            Command::BeatmapAudio { explicit_position, .. }
+            | Command::BeatmapPreview { explicit_position, .. } => *explicit_position,
             _ => false,
         },
     })
@@ -416,16 +422,14 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         | Command::Recent { .. }
         | Command::Best { .. }
         | Command::TodayBest { .. }
-        | Command::BeatmapAudio { .. } => {
+        | Command::BeatmapAudio { .. }
+        | Command::BeatmapPreview { .. } => {
             handle_query_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
         Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind => {
             handle_settings_commands(&ctx, &msg, &resp_tx, &cmd).await;
         }
-        Command::Help
-        | Command::Highlight { .. }
-        | Command::ProfileCard { .. }
-        | Command::BeatmapPreview { .. } => {
+        Command::Help | Command::Highlight { .. } | Command::ProfileCard { .. } => {
             handle_utility_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
     }
