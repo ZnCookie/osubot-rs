@@ -18,11 +18,16 @@ use osubot_core::{
 use osubot_render::cache as render_cache;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
 use osubot_render::{render_score_card, render_score_list_card};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+use osubot_core::OauthTokenCache;
+use osubot_core::RateLimiter;
 
 use crate::api_error_msg;
 use crate::onebot::{send_group_msg_with_image, QQMessage};
@@ -38,6 +43,73 @@ use plan::{process_scores, ScoreQueryPlan};
 use render::{
     render_and_send_single_score, render_scores, render_single_score, SingleScoreRenderParams,
 };
+
+#[expect(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RenderOutput {
+    SingleScoreCard,
+    ScoreListCard,
+    Audio,
+    BeatmapPreview,
+}
+
+#[expect(dead_code)]
+pub(crate) trait FetchFn: Send + Sync {
+    fn call(
+        &self,
+        rate_limiter: &Arc<RateLimiter>,
+        oauth: &Arc<OauthTokenCache>,
+        user_id: i64,
+        beatmap_id: Option<i64>,
+        mode: GameMode,
+        limit: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>>;
+}
+
+#[expect(dead_code)]
+fn make_fetch<F, Fut>(f: F) -> Box<dyn FetchFn>
+where
+    F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, Option<i64>, GameMode, u32) -> Fut
+        + Send
+        + Sync
+        + 'static,
+    Fut: Future<Output = Result<Vec<Score>, String>> + Send + 'static,
+{
+    struct Impl<F>(F);
+    impl<F, Fut> FetchFn for Impl<F>
+    where
+        F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, Option<i64>, GameMode, u32) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: Future<Output = Result<Vec<Score>, String>> + Send + 'static,
+    {
+        fn call(
+            &self,
+            rl: &Arc<RateLimiter>,
+            oa: &Arc<OauthTokenCache>,
+            uid: i64,
+            bid: Option<i64>,
+            mode: GameMode,
+            limit: u32,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>> {
+            Box::pin((self.0)(rl.clone(), oa.clone(), uid, bid, mode, limit))
+        }
+    }
+    Box::new(Impl(f))
+}
+
+#[expect(dead_code)]
+pub(crate) struct ScoreQuerySpec {
+    pub(crate) fetch: Box<dyn FetchFn>,
+    pub(crate) post_process: Option<fn(&mut Vec<Score>)>,
+    pub(crate) render: RenderOutput,
+    pub(crate) label_key: &'static str,
+    pub(crate) noun_key: &'static str,
+    pub(crate) empty_msg_key: &'static str,
+    pub(crate) truncate_bare_list: bool,
+    pub(crate) single_needs_backfill: bool,
+}
 
 const TODAY_BP_API_LIMIT: u32 = 200;
 
