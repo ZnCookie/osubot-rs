@@ -71,7 +71,7 @@ fn parse_standard_score(
         | ScoringCmd::BeatmapAudio => 1u32,
         ScoringCmd::BestSingle => 1u32,
         ScoringCmd::BestList => 20u32,
-        ScoringCmd::TodayBest => 50u32,
+        ScoringCmd::TodayBest => 20u32,
         ScoringCmd::BeatmapPreview => 1u32,
     };
 
@@ -185,7 +185,7 @@ fn parse_standard_score(
         rt.limit_end.or(args.limit_end)
     };
 
-    let explicit_position = matches!(cmd, ScoringCmd::BeatmapAudio)
+    let explicit_position = matches!(cmd, ScoringCmd::BeatmapAudio | ScoringCmd::TodayBest)
         && (rt.implicit_limit.is_some() || args.explicit_position);
 
     make_score_cmd(ScoreCmdParams {
@@ -310,7 +310,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             qq,
             limit: params.limit,
             limit_end: params.limit_end,
-            is_summary: params.limit_end.is_some() || params.limit > 1,
+            is_summary: params.limit_end.is_some() || !params.explicit_position,
             filters: params.filters,
         },
         ScoringCmd::BeatmapAudio => Command::BeatmapAudio {

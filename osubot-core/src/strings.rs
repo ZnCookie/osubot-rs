@@ -92,6 +92,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "query.noun_score" => "成绩",
     "query.noun_best" => "最佳成绩",
     "query.no_records_best" => "[CQ:at,qq={qq}] 暂无最佳成绩",
+    "query.no_records_today_best" => "[CQ:at,qq={qq}] 今天暂无打入最佳榜的成绩",
 
     // ── 格式化输出 ──
     "fmt.recent_pass" => "最近通过",
@@ -108,6 +109,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "fmt.profile_playtime" => "游玩时间",
     "fmt.beatmap_score" => "谱面成绩",
     "fmt.best_score" => "最高成绩",
+    "fmt.today_best" => "今日最佳",
     "fmt.score_count" => "{} 条记录",
 
     // ── 高光 ──

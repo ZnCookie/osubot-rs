@@ -567,6 +567,37 @@ pub(crate) async fn handle_score_query(
     }
 }
 
+/// 描述 `!b` 与 `!t` 两条「最佳成绩类」查询之间的差异，
+/// 公共流程由 [`handle_best_like_query`] 统一处理。
+struct BestLikeQuerySpec {
+    /// osu! API 抓取量。
+    api_limit: u32,
+    /// 去重实例（`!b` 与 `!t` 各用独立实例，缓存互不串）。
+    dedup: &'static crate::BestScoresDedup,
+    /// 是否过滤出最近 24 小时内的成绩（仅 `!t`）。
+    filter_last_24h: bool,
+    /// 空结果文案 key。
+    empty_msg_key: &'static str,
+    /// 卡片 label key。
+    label_key: &'static str,
+    /// 无区间裸列表时是否按 limit 截断（仅 `!t`）。
+    truncate_bare_list: bool,
+}
+
+/// [`handle_best_like_query`] 的入参，聚合避免过多函数参数。
+struct BestLikeParams<'a> {
+    ctx: &'a BotContext,
+    msg: &'a QQMessage,
+    resp_tx: &'a mpsc::Sender<String>,
+    mode: GameMode,
+    username: Option<&'a str>,
+    qq: Option<i64>,
+    limit: u32,
+    limit_end: Option<u32>,
+    is_summary: bool,
+    filters: Option<&'a [String]>,
+}
+
 pub(crate) async fn handle_best_score_query(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -594,7 +625,6 @@ pub(crate) async fn handle_best_score_query(
         _ => return,
     };
 
-    let is_self = username.is_none() && qq.is_none();
     let raw_limit = limit_end.unwrap_or(limit);
     let has_client_filter = filters.is_some_and(|f| !f.is_empty());
     let api_limit = if has_client_filter {
@@ -602,6 +632,100 @@ pub(crate) async fn handle_best_score_query(
     } else {
         raw_limit
     };
+
+    handle_best_like_query(
+        BestLikeParams {
+            ctx,
+            msg,
+            resp_tx,
+            mode,
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+        },
+        BestLikeQuerySpec {
+            api_limit,
+            dedup: best_scores_dedup(),
+            filter_last_24h: false,
+            empty_msg_key: "query.no_records_best",
+            label_key: "fmt.best_score",
+            truncate_bare_list: false,
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn handle_today_bp_query(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    cmd: &Command,
+    mode: GameMode,
+) {
+    let (username, qq, limit, limit_end, is_summary, filters) = match cmd {
+        Command::TodayBest {
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+            ..
+        } => (
+            username.as_deref(),
+            *qq,
+            *limit,
+            *limit_end,
+            *is_summary,
+            filters.as_deref(),
+        ),
+        _ => return,
+    };
+
+    handle_best_like_query(
+        BestLikeParams {
+            ctx,
+            msg,
+            resp_tx,
+            mode,
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+        },
+        BestLikeQuerySpec {
+            api_limit: TODAY_BP_API_LIMIT,
+            dedup: today_best_scores_dedup(),
+            filter_last_24h: true,
+            empty_msg_key: "query.no_records_today_best",
+            label_key: "fmt.today_best",
+            truncate_bare_list: true,
+        },
+    )
+    .await;
+}
+
+async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQuerySpec) {
+    let BestLikeParams {
+        ctx,
+        msg,
+        resp_tx,
+        mode,
+        username,
+        qq,
+        limit,
+        limit_end,
+        is_summary,
+        filters,
+    } = params;
+
+    let is_self = username.is_none() && qq.is_none();
+    let api_limit = spec.api_limit;
 
     let (user_id, resolved_username, user_stats, score_result) = if is_self {
         let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
@@ -620,7 +744,7 @@ pub(crate) async fn handle_best_score_query(
 
         let (stats_result, scores) = tokio::join!(
             api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
-            best_scores_dedup().run_or_wait((uid, mode, api_limit), move || {
+            spec.dedup.run_or_wait((uid, mode, api_limit), move || {
                 let rate_limiter = ctx.rate_limiter.clone();
                 let oauth = ctx.oauth.clone();
 
@@ -682,7 +806,8 @@ pub(crate) async fn handle_best_score_query(
         ctx.scheduler.trigger_update(uid, mode).await;
         let dedup_mode = mode;
 
-        let scores: Result<Vec<Score>, String> = best_scores_dedup()
+        let scores: Result<Vec<Score>, String> = spec
+            .dedup
             .run_or_wait((uid, mode, api_limit), move || {
                 let dedup_rate_limiter = ctx.rate_limiter.clone();
                 let dedup_oauth = ctx.oauth.clone();
@@ -709,11 +834,20 @@ pub(crate) async fn handle_best_score_query(
 
     match score_result {
         Ok(mut scores) => {
+            // 仅 `!t`：过滤出最近 24 小时内打入最佳榜的成绩。
+            // created_at 与 cutoff 都是绝对时间（UTC），时区无关。
+            if spec.filter_last_24h {
+                let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
+                scores.retain(|s| {
+                    chrono::DateTime::parse_from_rfc3339(&s.created_at)
+                        .ok()
+                        .is_some_and(|dt| dt.naive_utc() > cutoff.naive_utc())
+                });
+            }
+
             if scores.is_empty() {
                 let _ = resp_tx
-                    .send(
-                        user_str("query.no_records_best").replace("{qq}", &msg.user_id.to_string()),
-                    )
+                    .send(user_str(spec.empty_msg_key).replace("{qq}", &msg.user_id.to_string()))
                     .await;
                 return;
             }
@@ -756,6 +890,9 @@ pub(crate) async fn handle_best_score_query(
                     index_offset = start;
                     let _ = scores.drain(..start);
                     scores.truncate(end - start);
+                } else if spec.truncate_bare_list {
+                    // 仅 `!t`：无区间裸列表最多展示 limit 条。
+                    scores.truncate(limit as usize);
                 }
 
                 let results =
@@ -827,7 +964,7 @@ pub(crate) async fn handle_best_score_query(
                 let pp_change = change.as_ref().and_then(|c| c.pp_change);
                 let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
                 let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
-                let score_label = user_str("fmt.best_score");
+                let score_label = user_str(spec.label_key);
                 let score_count_text = user_str("fmt.score_count");
                 let render_result = tokio::time::timeout(
                     std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
@@ -912,393 +1049,13 @@ pub(crate) async fn handle_best_score_query(
                     mode,
                     user_stats: &user_stats,
                     position: Some(index),
-                    label: user_str("fmt.best_score"),
+                    label: user_str(spec.label_key),
                 })
                 .await;
             }
         }
         Err(err_msg) => {
             let _ = resp_tx.send(err_msg).await;
-        }
-    }
-}
-
-pub(crate) async fn handle_today_bp_query(
-    ctx: &BotContext,
-    msg: &QQMessage,
-    resp_tx: &mpsc::Sender<String>,
-    cmd: &Command,
-    mode: GameMode,
-) {
-    let (username, qq, limit, limit_end, is_summary, filters) = match cmd {
-        Command::TodayBest {
-            username,
-            qq,
-            limit,
-            limit_end,
-            is_summary,
-            filters,
-            ..
-        } => (
-            username.as_deref(),
-            *qq,
-            *limit,
-            *limit_end,
-            *is_summary,
-            filters.as_deref(),
-        ),
-        _ => return,
-    };
-
-    let is_self = username.is_none() && qq.is_none();
-    let api_limit = TODAY_BP_API_LIMIT;
-
-    let (_user_id, resolved_username, user_stats, score_result) = if is_self {
-        let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
-            Some(binding) => binding,
-            None => {
-                let _ = resp_tx
-                    .send(user_str("bind.not_bound").replace("{qq}", &msg.user_id.to_string()))
-                    .await;
-                return;
-            }
-        };
-
-        ctx.scheduler.trigger_update(uid, mode).await;
-
-        let qq = msg.user_id;
-
-        let (stats_result, scores) = tokio::join!(
-            api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
-            today_best_scores_dedup().run_or_wait((uid, mode, api_limit), move || {
-                let rate_limiter = ctx.rate_limiter.clone();
-                let oauth = ctx.oauth.clone();
-
-                async move {
-                    api::get_user_best(&rate_limiter, &oauth, uid, mode, api_limit)
-                        .await
-                        .map_err(|e| {
-                            warn!(user_id = uid, mode = ?mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
-                            if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
-                            }
-                            api_error_msg(qq, &e)
-                        })
-                }
-            }),
-        );
-
-        let user_stats = match stats_result {
-            Ok(stats) => {
-                if let Err(e) = ctx
-                    .storage
-                    .set_user_id(&stats.username, stats.user_id)
-                    .await
-                {
-                    tracing::warn!(
-                        username = %stats.username,
-                        user_id = stats.user_id,
-                        error = %e,
-                        "{}",
-                        log_fmt!("main.cache_user_id_failed")
-                    );
-                }
-                stats
-            }
-            Err(e) => {
-                tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.resolve_bound_user_failed"));
-                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
-                return;
-            }
-        };
-
-        (uid, name, user_stats, scores)
-    } else {
-        let qq_for_error = msg.user_id;
-        let (uid, name, user_stats) = match resolve_score_user(
-            ctx,
-            msg,
-            &username.map(|s| s.to_string()),
-            &qq,
-            mode,
-            resp_tx,
-        )
-        .await
-        {
-            Some(u) => u,
-            None => return,
-        };
-
-        ctx.scheduler.trigger_update(uid, mode).await;
-        let dedup_mode = mode;
-
-        let scores: Result<Vec<Score>, String> = today_best_scores_dedup()
-            .run_or_wait((uid, mode, api_limit), move || {
-                let dedup_rate_limiter = ctx.rate_limiter.clone();
-                let dedup_oauth = ctx.oauth.clone();
-
-                async move {
-                    api::get_user_best(&dedup_rate_limiter, &dedup_oauth, uid, dedup_mode, api_limit)
-                        .await
-                        .map_err(|e| {
-                            warn!(user_id = uid, mode = ?dedup_mode, error = ?e, "{}", log_fmt!("main.score_query_failed"));
-                            if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
-                            }
-                            api_error_msg(qq_for_error, &e)
-                        })
-                }
-            })
-            .await;
-
-        (uid, name, user_stats, scores)
-    };
-
-    // ==== Post-fetch processing ====
-    let dedup_username = resolved_username.clone();
-    let qq = msg.user_id;
-
-    match score_result {
-        Ok(mut scores) => {
-            // Step 1: Filter by last 24h (UTC+8)
-            let now = chrono::Utc::now();
-            let cutoff = now - chrono::Duration::hours(24);
-
-            scores.retain(|s| {
-                chrono::DateTime::parse_from_rfc3339(&s.created_at)
-                    .ok()
-                    .is_some_and(|dt| {
-                        let dt_utc8 =
-                            dt.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
-                        // Compare absolute times (both in UTC+8 offset)
-                        dt_utc8.naive_utc() > cutoff.naive_utc()
-                    })
-            });
-
-            if scores.is_empty() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.no_records_best").replace("{qq}", &msg.user_id.to_string()),
-                    )
-                    .await;
-                return;
-            }
-
-            ctx.last_beatmap
-                .set(msg.group_id, scores[0].beatmap_id as u32);
-
-            if let Some(filters) = filters {
-                scores.retain(|s| score_matches_filters(s, filters));
-                if scores.is_empty() {
-                    let _ = resp_tx
-                        .send(
-                            user_str("query.no_match")
-                                .replace("{qq}", &msg.user_id.to_string())
-                                .replace("{name}", user_str("query.noun_best")),
-                        )
-                        .await;
-                    return;
-                }
-            }
-
-            let mut index_offset: usize = 0;
-            if is_summary {
-                if let Some(end) = limit_end {
-                    let start = (limit - 1) as usize;
-                    let end = end as usize;
-                    if start >= scores.len() {
-                        let _ = resp_tx
-                            .send(
-                                user_str("query.index_out_of_range")
-                                    .replace("{qq}", &msg.user_id.to_string())
-                                    .replace("{pos}", &limit.to_string())
-                                    .replace("{name}", user_str("query.noun_best"))
-                                    .replace("{total}", &scores.len().to_string()),
-                            )
-                            .await;
-                        return;
-                    }
-                    let end = end.min(scores.len());
-                    index_offset = start;
-                    let _ = scores.drain(..start);
-                    scores.truncate(end - start);
-                }
-
-                let results =
-                    futures_util::future::join_all(scores.iter().enumerate().map(|(i, s)| {
-                        let cover_url = s.cover_url.clone();
-                        let needs_enrich = s.pp.is_none() && s.beatmap_id > 0;
-                        let score_clone = if needs_enrich { Some(s.clone()) } else { None };
-                        async move {
-                            let enriched = if let Some(mut sc) = score_clone {
-                                osubot_core::enrich_score_with_pp(&mut sc, mode, false).await;
-                                Some(sc)
-                            } else {
-                                None
-                            };
-                            let cover = if !cover_url.is_empty() {
-                                match render_cache::fetch_and_cache(
-                                    &cover_url,
-                                    render_cache::http_client(),
-                                    false,
-                                )
-                                .await
-                                {
-                                    Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                                    Err(_) => None,
-                                }
-                            } else {
-                                None
-                            };
-                            (i, enriched, cover)
-                        }
-                    }))
-                    .await;
-
-                let scores_vec: Vec<Score> = scores.to_vec();
-                let mut scores_mut = scores_vec;
-                let mut cover_images: Vec<Option<image::DynamicImage>> =
-                    vec![None; scores_mut.len()];
-                for (i, enriched, cover) in results {
-                    if let Some(new_s) = enriched {
-                        scores_mut[i] = new_s;
-                    }
-                    cover_images[i] = cover;
-                }
-
-                let user_global_rank = if user_stats.rank > 0 {
-                    Some(user_stats.rank)
-                } else {
-                    None
-                };
-                let user_country_rank = if user_stats.country_rank > 0 {
-                    Some(user_stats.country_rank)
-                } else {
-                    None
-                };
-
-                let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
-                let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
-
-                let change = ctx
-                    .storage
-                    .calculate_change(user_stats.user_id, mode, &user_stats)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            user_id = user_stats.user_id,
-                            mode = ?mode,
-                            error = %e,
-                            "{}",
-                            log_fmt!("main.calculate_change_failed")
-                        )
-                    })
-                    .ok()
-                    .flatten();
-                let pp_change = change.as_ref().and_then(|c| c.pp_change);
-                let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
-                let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
-
-                let score_label = user_str("fmt.best_score");
-                let score_count_text = user_str("fmt.score_count");
-
-                let render_result = tokio::time::timeout(
-                    Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
-                    osubot_render::render_score_list_card(osubot_render::ScoreListCardParams {
-                        user: osubot_render::UserContext {
-                            username: &dedup_username,
-                            mode,
-                            user_pp: user_stats.pp,
-                            user_global_rank,
-                            user_country_rank,
-                            country_code: &user_stats.country_code,
-                            avatar_url: &avatar_url,
-                            pp_change,
-                            global_rank_change,
-                            country_rank_change,
-                        },
-                        scores: &scores_mut,
-                        label: score_label,
-                        count_text: score_count_text,
-                        cover_images,
-                        hero_cover_url: &hero_cover_url,
-                        index_offset,
-                    }),
-                )
-                .await;
-
-                match render_result {
-                    Ok(Ok(jpeg_bytes)) => {
-                        let write = ctx.write.clone();
-                        let group_id = msg.group_id;
-                        let resp_tx_img = resp_tx.clone();
-
-                        tokio::spawn(async move {
-                            if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
-                                .await
-                                .is_err()
-                            {
-                                let _ = resp_tx_img
-                                    .send(
-                                        user_str("error.image_send_failed")
-                                            .replace("{qq}", &qq.to_string()),
-                                    )
-                                    .await;
-                            }
-                        });
-                    }
-                    Ok(Err(e)) => {
-                        warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-                        let text = osubot_core::format_scores(
-                            &scores_mut,
-                            &dedup_username,
-                            mode,
-                            score_label,
-                        );
-                        let _ = resp_tx.send(text).await;
-                    }
-                    Err(_) => {
-                        warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-                        let text = osubot_core::format_scores(
-                            &scores_mut,
-                            &dedup_username,
-                            mode,
-                            score_label,
-                        );
-                        let _ = resp_tx.send(text).await;
-                    }
-                }
-            } else {
-                // Single card mode (!t #N)
-                let idx = (limit - 1) as usize;
-                if idx >= scores.len() {
-                    let _ = resp_tx
-                        .send(
-                            user_str("query.index_out_of_range")
-                                .replace("{qq}", &msg.user_id.to_string())
-                                .replace("{pos}", &limit.to_string())
-                                .replace("{name}", user_str("query.noun_best"))
-                                .replace("{total}", &scores.len().to_string()),
-                        )
-                        .await;
-                    return;
-                }
-                let score = scores.remove(idx);
-                render_and_send_single_score(SingleScoreRenderParams {
-                    ctx,
-                    msg,
-                    resp_tx,
-                    score: &score,
-                    mode,
-                    user_stats: &user_stats,
-                    position: Some(idx),
-                    label: user_str("fmt.best_score"),
-                })
-                .await;
-            }
-        }
-        Err(e) => {
-            let _ = resp_tx.send(e).await;
         }
     }
 }
