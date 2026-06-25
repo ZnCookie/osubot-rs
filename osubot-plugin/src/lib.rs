@@ -23,7 +23,7 @@ use instance::{PluginInstance, PluginInstanceParams};
 pub use types::{PluginAction as PluginActionResult, PluginError, TickRegistration};
 pub use wasmtime::StoreLimitsBuilder;
 
-const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_PLUGIN_TIMEOUT_SECS: u64 = 30;
 
 /// WASM Store 内存上限（字节）
 const WASM_MEMORY_LIMIT: usize = 100 * 1024 * 1024;

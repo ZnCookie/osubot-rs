@@ -82,7 +82,7 @@ pub async fn fetch_user_stats_by_user_id(
     fetch_user_stats_internal(rate_limiter, oauth, &url).await
 }
 
-async fn backfill_score_details(
+pub async fn backfill_score_details(
     rate_limiter: &Arc<RateLimiter>,
     oauth: &Arc<super::oauth::OauthTokenCache>,
     score: &mut Score,
@@ -172,6 +172,7 @@ pub async fn get_user_recent(
     mode: GameMode,
     include_fails: bool,
     limit: u32,
+    backfill: bool,
 ) -> Result<Vec<Score>, ApiError> {
     let url = format!(
         "https://osu.ppy.sh/api/v2/users/{}/scores/recent?mode={}&include_fails={}&limit={}&legacy_only=0",
@@ -196,23 +197,26 @@ pub async fn get_user_recent(
     // NOTE: created_at is an ISO 8601 string (YYYY-MM-DDTHH:MM:SSZ). Lexicographic
     // ordering equals chronological ordering only because the format is fixed-width.
     scores_raw.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    let mode_str = mode.api_value().to_string();
 
-    let scores: Vec<Score> = stream::iter(scores_raw)
-        .map(|mut score| {
-            let rl = rate_limiter.clone();
-            let oa = oauth.clone();
-            let ruleset = mode_str.clone();
-            async move {
-                backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
-                score
-            }
-        })
-        .buffered(5)
-        .collect()
-        .await;
-
-    Ok(scores)
+    if backfill {
+        let mode_str = mode.api_value().to_string();
+        let scores: Vec<Score> = stream::iter(scores_raw)
+            .map(|mut score| {
+                let rl = rate_limiter.clone();
+                let oa = oauth.clone();
+                let ruleset = mode_str.clone();
+                async move {
+                    backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                    score
+                }
+            })
+            .buffered(5)
+            .collect()
+            .await;
+        Ok(scores)
+    } else {
+        Ok(scores_raw)
+    }
 }
 
 pub async fn get_user_best(
@@ -224,7 +228,6 @@ pub async fn get_user_best(
 ) -> Result<Vec<Score>, ApiError> {
     const PAGE_SIZE: u32 = 100;
 
-    let mode_str = mode.api_value().to_string();
     let mut all_scores: Vec<Score> = Vec::new();
 
     while all_scores.len() < limit as usize {
@@ -256,21 +259,7 @@ pub async fn get_user_best(
         }
     }
 
-    let scores: Vec<Score> = stream::iter(all_scores)
-        .map(|mut score| {
-            let rl = rate_limiter.clone();
-            let oa = oauth.clone();
-            let ruleset = mode_str.clone();
-            async move {
-                backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
-                score
-            }
-        })
-        .buffered(5)
-        .collect()
-        .await;
-
-    Ok(scores)
+    Ok(all_scores)
 }
 
 pub async fn get_user_beatmap_scores_all(
@@ -280,6 +269,7 @@ pub async fn get_user_beatmap_scores_all(
     user_id: i64,
     mode: GameMode,
     limit: Option<u32>,
+    backfill: bool,
 ) -> Result<Vec<Score>, ApiError> {
     let mut url_primary = format!(
         "https://osu.ppy.sh/api/v2/beatmaps/{}/scores/users/{}/all?legacy_only=0",
@@ -307,21 +297,26 @@ pub async fn get_user_beatmap_scores_all(
             .into_iter()
             .map(|s| api_score_to_score(s, mode))
             .collect();
-        let mode_str = mode.api_value().to_string();
 
-        let scores: Vec<Score> = stream::iter(scores_raw)
-            .map(|mut score| {
-                let rl = rate_limiter.clone();
-                let oa = oauth.clone();
-                let ruleset = mode_str.clone();
-                async move {
-                    backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
-                    score
-                }
-            })
-            .buffered(5)
-            .collect()
-            .await;
+        let scores = if backfill {
+            let mode_str = mode.api_value().to_string();
+            let scores: Vec<Score> = stream::iter(scores_raw)
+                .map(|mut score| {
+                    let rl = rate_limiter.clone();
+                    let oa = oauth.clone();
+                    let ruleset = mode_str.clone();
+                    async move {
+                        backfill_score_details(&rl, &oa, &mut score, &ruleset).await;
+                        score
+                    }
+                })
+                .buffered(5)
+                .collect()
+                .await;
+            scores
+        } else {
+            scores_raw
+        };
 
         if let Some(n) = limit {
             let mut limited = scores;

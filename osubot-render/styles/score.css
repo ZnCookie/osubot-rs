@@ -20,11 +20,11 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 .score-card {
-  width: 2560px;
-  height: 1440px;
+  width: 1920px;
+  height: 1080px;
   position: relative;
   overflow: hidden;
-  border-radius: 48px;
+  border-radius: 36px;
   font-family: 'Noto Sans', 'Source Han Sans CN', sans-serif;
   color: var(--on-surface);
   background: var(--surface);
@@ -54,8 +54,8 @@
   flex-direction: column;
   justify-content: center;
   height: 100%;
-  padding: 48px 320px;
-  gap: 16px;
+  padding: 48px 240px;
+  gap: 12px;
 }
 
 .surface {
@@ -67,14 +67,14 @@
 .chip {
   display: inline-flex;
   align-items: center;
-  height: 56px;
-  padding: 0 24px;
-  border-radius: 16px;
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 12px;
   border: 2px solid rgba(73, 69, 79, 0.8);
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 600;
   color: #cac4d0;
-  gap: 6px;
+  gap: 5px;
   white-space: nowrap;
 }
 
@@ -135,9 +135,9 @@
   background: rgba(240, 192, 160, 0.15);
   border-color: rgba(240, 192, 160, 0.3);
   color: #f0c0a0;
-  max-width: 560px;
+  max-width: 420px;
   overflow: hidden;
-  gap: 10px;
+  gap: 8px;
 }
 
 .chip-diff .star { flex-shrink: 0; }
@@ -147,23 +147,23 @@
   background: rgba(255, 90, 90, 0.25);
   border: 2px solid rgba(255, 90, 90, 0.4);
   color: #fff;
-  gap: 12px;
+  gap: 9px;
 }
 
-.chip-fav .chip-icon { font-size: 28px; }
+.chip-fav .chip-icon { font-size: 21px; }
 
 .chip-plays {
   background: rgba(90, 160, 255, 0.25);
   border: 2px solid rgba(90, 160, 255, 0.4);
   color: #fff;
-  gap: 12px;
+  gap: 9px;
 }
 
 .chip-plays .chip-icon {
   width: 0;
   height: 0;
   border-style: solid;
-  border-width: 12px 0 12px 20px;
+  border-width: 9px 0 9px 15px;
   border-color: transparent transparent transparent #fff;
   flex-shrink: 0;
 }
@@ -172,63 +172,63 @@
   background: rgba(255,255,255,0.06);
   border: 2px solid rgba(255,255,255,0.15);
   color: #b0adb5;
-  gap: 8px;
+  gap: 6px;
 }
 
 .chip-info .chip-icon {
-  font-size: 24px;
+  font-size: 18px;
   opacity: 0.7;
 }
 
 .chip-info .chip-label {
-  font-size: 18px;
+  font-size: 14px;
   opacity: 0.6;
 }
 
 /* ===== Top Row ===== */
 .top-row {
   display: flex;
-  gap: 24px;
+  gap: 18px;
   flex-shrink: 0;
 }
 
 .top-row > .beatmap-card {
   flex: 0 0 auto;
-  width: calc(1920px - 24px - 440px);
-  max-width: calc(1920px - 24px - 440px);
+  width: calc(1440px - 18px - 330px);
+  max-width: calc(1440px - 18px - 330px);
 }
 
 /* ===== Middle Row ===== */
 .middle-row {
   display: flex;
-  gap: 24px;
+  gap: 18px;
   flex-shrink: 0;
 }
 
 .middle-row > .user-card {
   flex: 0 0 auto;
-  width: calc(1920px - 24px - 440px);
-  max-width: calc(1920px - 24px - 440px);
+  width: calc(1440px - 18px - 330px);
+  max-width: calc(1440px - 18px - 330px);
 }
 
 /* ===== Score Row ===== */
 .score-row {
   display: flex;
-  gap: 24px;
+  gap: 18px;
   flex-shrink: 0;
 }
 
 .beatmap-card {
   display: flex;
-  gap: 32px;
+  gap: 24px;
   align-items: center;
-  padding: 32px 40px;
+  padding: 24px 30px;
   min-width: 0;
 }
 
 .cover-wrap {
-  width: 384px; height: 216px;
-  border-radius: 28px;
+  width: 288px; height: 162px;
+  border-radius: 21px;
   overflow: hidden;
   flex-shrink: 0;
   box-shadow: 0 8px 48px rgba(0,0,0,0.5);
@@ -240,35 +240,35 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
 .beatmap-title {
-  font-size: 52px;
+  font-size: 39px;
   font-weight: 500;
   color: #e6e1e5;
-  line-height: 68px;
+  line-height: 51px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .beatmap-artist {
-  font-size: 30px;
+  font-size: 23px;
   color: var(--outline);
 }
 
 .bottom-chips {
   display: flex;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
   align-items: center;
 }
 
 .info-chips {
   display: flex;
-  gap: 12px;
+  gap: 9px;
   flex-wrap: wrap;
   align-items: center;
 }
@@ -277,8 +277,8 @@
   display: flex;
   flex-direction: column;
   justify-content: space-around;
-  padding: 32px 48px;
-  width: 440px;
+  padding: 24px 36px;
+  width: 330px;
   flex-shrink: 0;
   box-sizing: border-box;
 }
@@ -286,42 +286,42 @@
 .meta-line {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .meta-label {
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 500;
   color: var(--outline);
   letter-spacing: 1px;
   text-transform: uppercase;
-  width: 100px;
+  width: 75px;
   flex-shrink: 0;
 }
 
 .meta-val {
-  font-size: 34px;
+  font-size: 26px;
   color: #cac4d0;
   text-align: center;
   flex: 1;
 }
 
 .meta-val-big {
-  font-size: 52px;
+  font-size: 39px;
   font-weight: 600;
 }
 
 .user-card {
-  padding: 32px 40px;
+  padding: 24px 30px;
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 21px;
   min-width: 0;
 }
 
 .user-avatar {
-  width: 128px;
-  height: 128px;
+  width: 96px;
+  height: 96px;
   border-radius: 50%;
   background: rgba(79, 55, 139, 0.7);
   flex-shrink: 0;
@@ -332,72 +332,72 @@
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  border: 8px solid var(--primary-container);
+  border: 6px solid var(--primary-container);
 }
 
 .user-info-mid {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 9px;
 }
 
 .user-name {
-  font-size: 44px;
+  font-size: 33px;
   font-weight: 500;
   color: #e6e1e5;
-  line-height: 56px;
+  line-height: 42px;
 }
 
 .user-ranks {
   display: flex;
-  gap: 32px;
+  gap: 24px;
   align-items: center;
 }
 
 .rank-item {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
 }
 
 .rank-hash {
-  font-size: 28px;
+  font-size: 21px;
   font-weight: 700;
   color: var(--primary);
 }
 
 .rank-val {
-  font-size: 40px;
+  font-size: 30px;
   font-weight: 600;
   color: #e6e1e5;
 }
 
 .rank-label {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 500;
   color: var(--outline);
-  margin-left: 4px;
+  margin-left: 3px;
 }
 
 .user-pp-section {
   display: flex;
   align-items: baseline;
-  gap: 16px;
+  gap: 12px;
   flex-shrink: 0;
 }
 
 .user-pp-val {
-  font-size: 44px;
+  font-size: 33px;
   font-weight: 600;
   color: var(--primary);
-  line-height: 56px;
+  line-height: 42px;
 }
 
 .user-pp-change {
-  font-size: 28px;
+  font-size: 21px;
   font-weight: 500;
-  line-height: 40px;
+  line-height: 30px;
 }
 
 .user-pp-change.up { color: #a0e0aa; }
@@ -405,9 +405,9 @@
 .user-pp-change.zero { color: rgba(255, 255, 255, 0.5); }
 
 .rank-change {
-  font-size: 28px;
+  font-size: 21px;
   font-weight: 500;
-  margin-left: 8px;
+  margin-left: 6px;
 }
 
 .rank-change.up { color: #a0e0aa; }
@@ -415,34 +415,34 @@
 .rank-change.zero { color: rgba(255, 255, 255, 0.5); }
 
 .stats-card {
-  padding: 32px 48px;
+  padding: 24px 36px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 14px;
+  gap: 11px;
   flex-shrink: 0;
-  width: 440px;
+  width: 330px;
   box-sizing: border-box;
 }
 
 .stat-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .stat-row .label {
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 500;
   color: var(--outline);
-  width: 44px;
+  width: 33px;
 }
 
 .stat-row .track {
   flex: 1;
-  height: 8px;
+  height: 6px;
   background: rgba(73, 69, 79, 0.8);
-  border-radius: 4px;
+  border-radius: 3px;
   position: relative;
   overflow: hidden;
 }
@@ -452,7 +452,7 @@
   left: 0;
   top: 0;
   height: 100%;
-  border-radius: 4px;
+  border-radius: 3px;
   background: linear-gradient(90deg, var(--primary-container), var(--primary));
   z-index: 2;
 }
@@ -462,7 +462,7 @@
   top: 0;
   height: 100%;
   z-index: 1;
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 3px 3px 0;
   background: linear-gradient(90deg, rgba(255,80,80,0.6), rgba(255,40,40,0.9));
 }
 
@@ -471,17 +471,17 @@
   top: 0;
   height: 100%;
   z-index: 1;
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 3px 3px 0;
   background: linear-gradient(90deg, rgba(80,200,100,0.6), rgba(60,220,80,0.9));
 }
 
 .stat-row .val {
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 500;
   color: #cac4d0;
   text-align: right;
   white-space: nowrap;
-  flex: 0 0 100px;
+  flex: 0 0 75px;
 }
 
 .stat-row .val span { display: inline; }
@@ -494,36 +494,36 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 18px 24px;
+  gap: 6px;
+  padding: 14px 18px;
 }
 
 .hits-row {
   display: flex;
-  gap: 16px;
+  gap: 12px;
 }
 
 .hit-card {
-  width: 132px;
-  height: 132px;
+  width: 99px;
+  height: 99px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border-radius: 28px;
+  border-radius: 21px;
   flex-shrink: 0;
   overflow: hidden;
 }
 
 .hit-card .num {
-  font-size: 42px;
+  font-size: 32px;
   font-weight: 600;
-  line-height: 52px;
-  margin-top: 4px;
+  line-height: 39px;
+  margin-top: 3px;
 }
 
 .hit-card .label {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--outline);
   margin-top: 2px;
@@ -567,18 +567,18 @@
 
 .detail-card {
   flex: 1;
-  padding: 20px 28px;
+  padding: 15px 21px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 9px;
   position: relative;
 }
 
 /* detail-card 子卡布局 */
 .detail-subcard-row {
   display: flex;
-  gap: 12px;
+  gap: 9px;
   width: 100%;
   flex-shrink: 0;
 }
@@ -587,12 +587,12 @@
   flex: 2;
   background: rgba(126,200,255,0.2);
   border: 2px solid rgba(126,200,255,0.35);
-  border-radius: 20px;
+  border-radius: 15px;
   display: flex;
   flex-direction: column;
   align-items: center;
   box-shadow: 0 0 32px rgba(126,200,255,0.15);
-  padding-bottom: 12px;
+  padding-bottom: 9px;
 }
 
 .subcard-valwrap {
@@ -604,7 +604,7 @@
 }
 
 .subcard-pp .pp-val {
-  font-size: 120px;
+  font-size: 90px;
   font-weight: 700;
   color: #a8dcff;
   line-height: 1;
@@ -612,13 +612,13 @@
 }
 
 .subcard-pp .pp-unit {
-  font-size: 28px;
+  font-size: 21px;
   font-weight: 500;
-  margin-left: 4px;
+  margin-left: 3px;
 }
 
 .subcard-pp .pp-label {
-  font-size: 13px;
+  font-size: 10px;
   color: #7ec8ff;
   letter-spacing: 3px;
   font-weight: 500;
@@ -628,62 +628,62 @@
 .subcard-pp-predict {
   width: 100%;
   background: rgba(255,255,255,0.04);
-  border-radius: 14px;
+  border-radius: 11px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 10px 0;
+  gap: 6px;
+  padding: 8px 0;
 }
 
 .subcard-breakdown {
   width: 100%;
-  padding: 0 20px;
+  padding: 0 15px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .subcard-if-acc {
   width: 100%;
-  padding: 0 20px;
+  padding: 0 15px;
   display: flex;
   justify-content: space-around;
 }
 
 .detail-subcard-footer-row {
   display: flex;
-  gap: 12px;
+  gap: 9px;
   width: 100%;
   flex-shrink: 0;
 }
 
 .subcard-if-fc, .subcard-ur {
   background: rgba(255,255,255,0.04);
-  border-radius: 18px;
-  padding: 16px 28px;
+  border-radius: 14px;
+  padding: 12px 21px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  min-width: 240px;
+  gap: 3px;
+  min-width: 180px;
 }
 
 .subcard-combo {
   flex: 1;
   background: linear-gradient(to right, rgba(160,224,170,0.25) var(--combo-pct, 50%), rgba(43,41,48,0.4) var(--combo-pct, 50%));
   border: 2px solid rgba(160,224,170,0.6);
-  border-radius: 20px;
-  padding: 16px 28px;
+  border-radius: 15px;
+  padding: 12px 21px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .subcard-combo .fc-label {
-  font-size: 13px;
+  font-size: 10px;
   color: #b0adb5;
   letter-spacing: 3px;
   font-weight: 500;
@@ -691,7 +691,7 @@
 }
 
 .subcard-combo .fc-val {
-  font-size: 72px;
+  font-size: 54px;
   font-weight: 600;
   line-height: 1.1;
   text-align: center;
@@ -707,15 +707,15 @@
 }
 
 .subcard-combo .combo-unit {
-  font-size: 28px;
+  font-size: 21px;
   font-weight: 500;
-  margin-left: 4px;
+  margin-left: 3px;
 }
 
 .subcard-combo .combo-sep {
-  font-size: 28px;
+  font-size: 21px;
   color: #938f99;
-  margin: 0 6px;
+  margin: 0 5px;
 }
 
 .subcard-combo.combo-fc .fc-label {
@@ -731,28 +731,28 @@
 }
 
 .subcard-if-fc .fc-label, .subcard-ur .ur-label {
-  font-size: 28px;
+  font-size: 21px;
   color: #938f99;
   letter-spacing: 2px;
   font-weight: 500;
 }
 
 .subcard-if-fc .fc-val, .subcard-ur .ur-val {
-  font-size: 44px;
+  font-size: 33px;
   font-weight: 600;
   color: #cac4d0;
 }
 
 .subcard-if-fc .pp-unit {
-  font-size: 28px;
+  font-size: 21px;
   font-weight: 500;
-  margin-left: 4px;
+  margin-left: 3px;
 }
 
 .chip-unit {
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 500;
-  margin-left: 3px;
+  margin-left: 2px;
   opacity: 0.7;
 }
 
@@ -761,9 +761,9 @@
 }
 
 .if-acc-item .val-unit {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 500;
-  margin-left: 4px;
+  margin-left: 3px;
   opacity: 0.65;
 }
 
@@ -798,14 +798,14 @@
 }
 
 .rank-badge {
-  width: 280px;
-  height: 280px;
-  border-radius: 40px;
+  width: 210px;
+  height: 210px;
+  border-radius: 30px;
   background: rgba(92, 42, 26, 0.8);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 220px;
+  font-size: 165px;
   font-weight: 900;
   color: #ffdad0;
   flex-shrink: 0;
@@ -855,7 +855,7 @@
 
 .mod-chips {
   display: flex;
-  gap: 12px;
+  gap: 9px;
   flex-wrap: wrap;
   justify-content: center;
 }
@@ -868,32 +868,32 @@
 }
 
 .if-acc-item .label {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--outline);
 }
 
 .if-acc-item .val {
-  font-size: 34px;
+  font-size: 26px;
   font-weight: 500;
   color: #cac4d0;
-  line-height: 42px;
+  line-height: 32px;
 }
 
 /* ===== Score/ACC modules ===== */
 .score-acc-row {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .score-acc-stack {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
-  width: 280px;
-  height: 280px;
+  gap: 6px;
+  width: 210px;
+  height: 210px;
 }
 
 .stat-mod {
@@ -901,20 +901,20 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border-radius: 16px;
+  border-radius: 12px;
   flex: 1;
   min-height: 0;
 }
 
 .stat-mod .stat-val {
-  font-size: 56px;
+  font-size: 42px;
   font-weight: 600;
   color: #e6e1e5;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .stat-mod .stat-label {
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 500;
   color: var(--outline);
 }

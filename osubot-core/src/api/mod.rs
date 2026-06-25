@@ -14,9 +14,9 @@ pub use http::{retry_with_backoff, RetryAction, RetryConfig};
 pub(crate) use oauth::retry_on_401;
 pub use oauth::OauthTokenCache;
 pub use osu_api::{
-    fetch_user_profile, fetch_user_stats_by_user_id, fetch_user_stats_by_username,
-    get_beatmapset_id, get_score_by_id, get_user_beatmap_scores_all, get_user_best, get_user_info,
-    get_user_recent, OsuUserInfo,
+    backfill_score_details, fetch_user_profile, fetch_user_stats_by_user_id,
+    fetch_user_stats_by_username, get_beatmapset_id, get_score_by_id, get_user_beatmap_scores_all,
+    get_user_best, get_user_info, get_user_recent, OsuUserInfo,
 };
 pub use pp::{calculate_pp_breakdown, calculate_pp_if_acc, enrich_score_with_pp, PpCalcParams};
 

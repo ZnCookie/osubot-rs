@@ -100,16 +100,16 @@ pub struct BotConfig {
 }
 
 fn default_command_timeout_secs() -> u64 {
-    120
+    180
 }
 fn default_render_timeout_secs() -> u64 {
-    60
+    120
 }
 fn default_onebot_api_timeout_secs() -> u64 {
-    5
+    10
 }
 fn default_ur_timeout_secs() -> u64 {
-    10
+    15
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -534,10 +534,10 @@ impl Default for Config {
             bot: BotConfig {
                 onebot_url: std::env::var("ONEBOT_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
-                command_timeout_secs: 120,
-                render_timeout_secs: 60,
-                onebot_api_timeout_secs: 5,
-                ur_timeout_secs: 10,
+                command_timeout_secs: 180,
+                render_timeout_secs: 120,
+                onebot_api_timeout_secs: 10,
+                ur_timeout_secs: 15,
             },
             database: DatabaseConfig {
                 path: std::env::var("DATABASE_PATH").unwrap_or_else(|_| "osubot.db".to_string()),

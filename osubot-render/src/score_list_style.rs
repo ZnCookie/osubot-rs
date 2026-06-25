@@ -615,14 +615,14 @@ mod tests {
         );
     }
 
-    /// hero 高度通过 min-height 锁定到 640px,与 .hero 上的 2560×640 banner
+    /// hero 高度通过 min-height 锁定到 480px,与 .hero 上的 1920×480 banner
     /// 背景图 1:1 匹配;background-size: cover 退化为 100% 100%。无 banner 时
-    /// 加 .hero--empty 让高度回归内容(避免 640px 纯灰方块)。
+    /// 加 .hero--empty 让高度回归内容(避免 480px 纯灰方块)。
     #[test]
     fn test_hero_min_height_matches_banner() {
         assert!(
-            SCORE_LIST_CSS.contains("min-height: 640px"),
-            ".hero must have min-height: 640px to match the 2560x640 banner image"
+            SCORE_LIST_CSS.contains("min-height: 480px"),
+            ".hero must have min-height: 480px to match the 1920x480 banner image"
         );
         assert!(
             SCORE_LIST_CSS.contains(".hero--empty"),

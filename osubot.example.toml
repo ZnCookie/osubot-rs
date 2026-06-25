@@ -8,17 +8,17 @@ client_id = "your-client-id-here"
 # OneBot 11 WebSocket 地址
 onebot_url = "ws://127.0.0.1:8080"
 
-# 命令处理总超时（秒），默认 120
-# command_timeout_secs = 120
+# 命令处理总超时（秒），默认 180
+# command_timeout_secs = 180
 
-# profile 渲染超时（秒），默认 60
-# render_timeout_secs = 60
+# profile 渲染超时（秒），默认 120
+# render_timeout_secs = 120
 
-# OneBot API 请求超时（秒），默认 5
-# onebot_api_timeout_secs = 5
+# OneBot API 请求超时（秒），默认 10
+# onebot_api_timeout_secs = 10
 
-# UR 计算超时（秒），默认 10
-# ur_timeout_secs = 10
+# UR 计算超时（秒），默认 15
+# ur_timeout_secs = 15
 
 [database]
 path = "osubot.db"

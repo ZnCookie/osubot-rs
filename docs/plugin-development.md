@@ -180,14 +180,14 @@ key = "value"
 
 - **避免内置命令前缀**：`~` `where` `绑定` `解绑` `今日高光` `!p` `!r` `!ps` `!rs` `!s` `!ss` `!b` `!bs` `!t` `!a` `!rv` `!profile` `!mode` `!help`。建议用 `!` + 特有名称
 - **不要 panic**：所有宿主调用返回 `Result`，用 `?` 或 match 处理
-- **保持轻量**：插件调用有 10 秒超时，耗时操作用 `http_request` 委托
+- **保持轻量**：插件调用有 30 秒超时，耗时操作用 `http_request` 委托
 - **热重载丢失内存状态**：重载/重连后插件实例重建，持久化数据用 `http_request` 存外部服务
 - **`on_load` 分配的资源在 `on_unload` 释放**
 
 ## 故障隔离
 
 - 内存上限 100MB（wasmtime StoreLimits）
-- 10 秒超时（tokio::timeout），10 秒 epoch 中断最后防线
+- 30 秒超时（tokio::timeout），10 秒 epoch 中断最后防线
 - 无文件系统/线程访问，仅通过宿主函数做网络和数据库操作
 - 连续 5 次错误自动重载
 
