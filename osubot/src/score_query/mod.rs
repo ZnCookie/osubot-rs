@@ -36,7 +36,9 @@ use crate::{
     today_best_scores_dedup, DedupApiError, SCORE_API_FETCH_LIMIT,
 };
 
+mod audio;
 mod plan;
+mod preview;
 mod render;
 
 use plan::{process_scores, ScoreQueryPlan};
@@ -54,7 +56,6 @@ pub(crate) enum RenderOutput {
     BeatmapPreview,
 }
 
-#[expect(dead_code)]
 pub(crate) trait FetchFn: Send + Sync {
     fn call(
         &self,
@@ -100,7 +101,6 @@ where
     Box::new(Impl(f))
 }
 
-#[expect(dead_code)]
 pub(crate) struct ScoreQuerySpec {
     pub(crate) fetch: Box<dyn FetchFn>,
     pub(crate) post_process: Option<fn(&mut Vec<Score>)>,
@@ -112,7 +112,6 @@ pub(crate) struct ScoreQuerySpec {
     pub(crate) single_needs_backfill: bool,
 }
 
-#[expect(dead_code)]
 struct PipelineParams<'a> {
     username: Option<&'a str>,
     qq: Option<i64>,
@@ -1489,7 +1488,7 @@ async fn fetch_scores_with_dedup(
 #[expect(dead_code)]
 async fn run_score_query_pipeline(
     spec: ScoreQuerySpec,
-    _cmd: &Command,
+    cmd: &Command,
     params: PipelineParams<'_>,
     ctx: &BotContext,
     msg: &QQMessage,
@@ -1510,9 +1509,8 @@ async fn run_score_query_pipeline(
     let is_self = username.is_none() && qq.is_none();
 
     let raw_limit = limit_end.unwrap_or(limit);
-    let has_client_filter = filters.is_some_and(|f| !f.is_empty())
-        || beatmap_id.is_some()
-        || score_id.is_some();
+    let has_client_filter =
+        filters.is_some_and(|f| !f.is_empty()) || beatmap_id.is_some() || score_id.is_some();
     let api_limit = if has_client_filter {
         raw_limit.max(SCORE_API_FETCH_LIMIT)
     } else {
@@ -1564,13 +1562,19 @@ async fn run_score_query_pipeline(
 
         (uid, name, user_stats, scores)
     } else {
-        let (uid, name, user_stats) =
-            match resolve_score_user(ctx, msg, &username.map(|s| s.to_string()), &qq, mode, resp_tx)
-                .await
-            {
-                Some(u) => u,
-                None => return,
-            };
+        let (uid, name, user_stats) = match resolve_score_user(
+            ctx,
+            msg,
+            &username.map(|s| s.to_string()),
+            &qq,
+            mode,
+            resp_tx,
+        )
+        .await
+        {
+            Some(u) => u,
+            None => return,
+        };
 
         ctx.scheduler.trigger_update(uid, mode).await;
 
@@ -1669,8 +1673,16 @@ async fn run_score_query_pipeline(
             scores.truncate(limit as usize);
         }
 
-        render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &resolved_username, mode)
-            .await;
+        render_and_send_score_list(
+            ctx,
+            msg,
+            resp_tx,
+            &scores,
+            &user_stats,
+            &resolved_username,
+            mode,
+        )
+        .await;
     } else {
         let index = (limit - 1) as usize;
         if index >= scores.len() {
@@ -1712,41 +1724,24 @@ async fn run_score_query_pipeline(
                 .await;
             }
             RenderOutput::Audio => {
-                render_audio(ctx, msg, resp_tx, &scores[index], mode, &user_stats).await;
+                audio::render_audio(ctx, msg, resp_tx, &scores[index], mode).await;
             }
             RenderOutput::BeatmapPreview => {
-                render_beatmap_preview_from_score(ctx, msg, resp_tx, &scores[index], mode, &user_stats)
-                    .await;
+                preview::render_beatmap_preview_from_score(
+                    ctx,
+                    msg,
+                    resp_tx,
+                    cmd,
+                    &scores[index],
+                    mode,
+                )
+                .await;
             }
             RenderOutput::ScoreListCard => {
                 unreachable!()
             }
         }
     }
-}
-
-#[expect(dead_code)]
-async fn render_audio(
-    _ctx: &BotContext,
-    _msg: &QQMessage,
-    _resp_tx: &mpsc::Sender<String>,
-    _score: &Score,
-    _mode: GameMode,
-    _user_stats: &UserStats,
-) {
-    todo!()
-}
-
-#[expect(dead_code)]
-async fn render_beatmap_preview_from_score(
-    _ctx: &BotContext,
-    _msg: &QQMessage,
-    _resp_tx: &mpsc::Sender<String>,
-    _score: &Score,
-    _mode: GameMode,
-    _user_stats: &UserStats,
-) {
-    todo!()
 }
 
 #[cfg(test)]
