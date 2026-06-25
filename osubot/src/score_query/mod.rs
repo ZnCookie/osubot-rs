@@ -41,7 +41,8 @@ mod render;
 
 use plan::{process_scores, ScoreQueryPlan};
 use render::{
-    render_and_send_single_score, render_scores, render_single_score, SingleScoreRenderParams,
+    render_and_send_score_list, render_and_send_single_score, render_scores, render_single_score,
+    SingleScoreRenderParams,
 };
 
 #[expect(dead_code)]
@@ -109,6 +110,18 @@ pub(crate) struct ScoreQuerySpec {
     pub(crate) empty_msg_key: &'static str,
     pub(crate) truncate_bare_list: bool,
     pub(crate) single_needs_backfill: bool,
+}
+
+#[expect(dead_code)]
+struct PipelineParams<'a> {
+    username: Option<&'a str>,
+    qq: Option<i64>,
+    beatmap_id: Option<i64>,
+    score_id: Option<u64>,
+    limit: u32,
+    limit_end: Option<u32>,
+    is_summary: bool,
+    filters: Option<&'a [String]>,
 }
 
 const TODAY_BP_API_LIMIT: u32 = 200;
@@ -1471,6 +1484,269 @@ async fn fetch_scores_with_dedup(
             }
         })
         .await
+}
+
+#[expect(dead_code)]
+async fn run_score_query_pipeline(
+    spec: ScoreQuerySpec,
+    _cmd: &Command,
+    params: PipelineParams<'_>,
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    mode: GameMode,
+) {
+    let PipelineParams {
+        username,
+        qq,
+        beatmap_id,
+        score_id,
+        limit,
+        limit_end,
+        is_summary,
+        filters,
+    } = params;
+
+    let is_self = username.is_none() && qq.is_none();
+
+    let raw_limit = limit_end.unwrap_or(limit);
+    let has_client_filter = filters.is_some_and(|f| !f.is_empty())
+        || beatmap_id.is_some()
+        || score_id.is_some();
+    let api_limit = if has_client_filter {
+        raw_limit.max(SCORE_API_FETCH_LIMIT)
+    } else {
+        raw_limit
+    };
+
+    let (_user_id, resolved_username, user_stats, score_result) = if is_self {
+        let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
+            Some(binding) => binding,
+            None => {
+                let _ = resp_tx
+                    .send(user_str("bind.not_bound").replace("{qq}", &msg.user_id.to_string()))
+                    .await;
+                return;
+            }
+        };
+
+        ctx.scheduler.trigger_update(uid, mode).await;
+
+        let (stats_result, scores) = tokio::join!(
+            api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
+            spec.fetch
+                .call(&ctx.rate_limiter, &ctx.oauth, uid, None, mode, api_limit),
+        );
+
+        let user_stats = match stats_result {
+            Ok(stats) => {
+                if let Err(e) = ctx
+                    .storage
+                    .set_user_id(&stats.username, stats.user_id)
+                    .await
+                {
+                    tracing::warn!(
+                        username = %stats.username,
+                        user_id = stats.user_id,
+                        error = %e,
+                        "{}",
+                        log_fmt!("main.cache_user_id_failed")
+                    );
+                }
+                stats
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, user_id = uid, "{}", log_fmt!("main.resolve_bound_user_failed"));
+                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                return;
+            }
+        };
+
+        (uid, name, user_stats, scores)
+    } else {
+        let (uid, name, user_stats) =
+            match resolve_score_user(ctx, msg, &username.map(|s| s.to_string()), &qq, mode, resp_tx)
+                .await
+            {
+                Some(u) => u,
+                None => return,
+            };
+
+        ctx.scheduler.trigger_update(uid, mode).await;
+
+        let scores = spec
+            .fetch
+            .call(&ctx.rate_limiter, &ctx.oauth, uid, None, mode, api_limit)
+            .await;
+
+        (uid, name, user_stats, scores)
+    };
+
+    let mut scores = match score_result {
+        Ok(scores) => scores,
+        Err(err_msg) => {
+            let _ = resp_tx.send(err_msg).await;
+            return;
+        }
+    };
+
+    if let Some(pp) = spec.post_process {
+        pp(&mut scores);
+    }
+
+    if scores.is_empty() {
+        let _ = resp_tx
+            .send(user_str(spec.empty_msg_key).replace("{qq}", &msg.user_id.to_string()))
+            .await;
+        return;
+    }
+
+    ctx.last_beatmap
+        .set(msg.group_id, scores[0].beatmap_id as u32);
+
+    if let Some(bid) = beatmap_id {
+        scores.retain(|s| s.beatmap_id == bid);
+        if scores.is_empty() {
+            let _ = resp_tx
+                .send(
+                    user_str("query.no_match")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{name}", user_str(spec.noun_key)),
+                )
+                .await;
+            return;
+        }
+    }
+
+    if let Some(sid) = score_id {
+        scores.retain(|s| s.score_id == sid as i64);
+        if scores.is_empty() {
+            let _ = resp_tx
+                .send(
+                    user_str("query.no_match")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{name}", user_str(spec.noun_key)),
+                )
+                .await;
+            return;
+        }
+    }
+
+    if let Some(filters) = filters {
+        scores.retain(|s| score_matches_filters(s, filters));
+        if scores.is_empty() {
+            let _ = resp_tx
+                .send(
+                    user_str("query.no_match")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{name}", user_str(spec.noun_key)),
+                )
+                .await;
+            return;
+        }
+    }
+
+    if is_summary || limit_end.is_some() {
+        if let Some(end) = limit_end {
+            let start = (limit - 1) as usize;
+            let end = end as usize;
+            if start >= scores.len() {
+                let _ = resp_tx
+                    .send(
+                        user_str("query.index_out_of_range")
+                            .replace("{qq}", &msg.user_id.to_string())
+                            .replace("{pos}", &limit.to_string())
+                            .replace("{name}", user_str(spec.noun_key))
+                            .replace("{total}", &scores.len().to_string()),
+                    )
+                    .await;
+                return;
+            }
+            let end = end.min(scores.len());
+            let _ = scores.drain(..start);
+            scores.truncate(end - start);
+        } else if spec.truncate_bare_list {
+            scores.truncate(limit as usize);
+        }
+
+        render_and_send_score_list(ctx, msg, resp_tx, &scores, &user_stats, &resolved_username, mode)
+            .await;
+    } else {
+        let index = (limit - 1) as usize;
+        if index >= scores.len() {
+            let _ = resp_tx
+                .send(
+                    user_str("query.index_out_of_range")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{pos}", &limit.to_string())
+                        .replace("{name}", user_str(spec.noun_key))
+                        .replace("{total}", &scores.len().to_string()),
+                )
+                .await;
+            return;
+        }
+
+        if spec.single_needs_backfill {
+            let mode_str = mode.api_value().to_string();
+            api::backfill_score_details(
+                &ctx.rate_limiter,
+                &ctx.oauth,
+                &mut scores[index],
+                &mode_str,
+            )
+            .await;
+        }
+
+        match spec.render {
+            RenderOutput::SingleScoreCard => {
+                render_and_send_single_score(SingleScoreRenderParams {
+                    ctx,
+                    msg,
+                    resp_tx,
+                    score: &scores[index],
+                    mode,
+                    user_stats: &user_stats,
+                    position: Some(index),
+                    label: user_str(spec.label_key),
+                })
+                .await;
+            }
+            RenderOutput::Audio => {
+                render_audio(ctx, msg, resp_tx, &scores[index], mode, &user_stats).await;
+            }
+            RenderOutput::BeatmapPreview => {
+                render_beatmap_preview_from_score(ctx, msg, resp_tx, &scores[index], mode, &user_stats)
+                    .await;
+            }
+            RenderOutput::ScoreListCard => {
+                unreachable!()
+            }
+        }
+    }
+}
+
+#[expect(dead_code)]
+async fn render_audio(
+    _ctx: &BotContext,
+    _msg: &QQMessage,
+    _resp_tx: &mpsc::Sender<String>,
+    _score: &Score,
+    _mode: GameMode,
+    _user_stats: &UserStats,
+) {
+    todo!()
+}
+
+#[expect(dead_code)]
+async fn render_beatmap_preview_from_score(
+    _ctx: &BotContext,
+    _msg: &QQMessage,
+    _resp_tx: &mpsc::Sender<String>,
+    _score: &Score,
+    _mode: GameMode,
+    _user_stats: &UserStats,
+) {
+    todo!()
 }
 
 #[cfg(test)]
