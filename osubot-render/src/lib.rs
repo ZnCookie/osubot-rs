@@ -23,7 +23,7 @@ pub use render::render_html_to_image;
 pub const PROFILE_VIEWPORT_WIDTH: u32 = 1000;
 
 /// !ps / !rs 渲染超时（秒）。比单 score card 渲染慢：4 列网格 HTML 体积更大，blitz 布局耗时增加。
-pub const SCORE_LIST_RENDER_TIMEOUT_SECS: u64 = 60;
+pub const SCORE_LIST_RENDER_TIMEOUT_SECS: u64 = 120;
 
 static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
 
@@ -260,10 +260,10 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     let (bg_uri, thumb_uri, hue, sat) = if let Some(ref img) = preloaded_cover_image {
         let img_clone = img.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<_, RenderError> {
-            let bg = crop_and_resize(&img_clone, 2560, 1440);
+            let bg = crop_and_resize(&img_clone, 1920, 1080);
             let bg_uri = image_to_data_uri(&bg, 85)?;
 
-            let thumb = crop_and_resize(&img_clone, 536, 300);
+            let thumb = crop_and_resize(&img_clone, 384, 216);
             let thumb_uri = image_to_data_uri(&thumb, 90)?;
 
             let (h, s) = extract_dominant_hue(&img_clone);
@@ -323,7 +323,7 @@ pub async fn render_score_card(params: ScoreCardParams<'_>) -> Result<Vec<u8>, R
     let html = score_style::wrap_score_html(&data);
     tracing::debug!("{}", log_fmt!("render.html_generated"));
 
-    let (pixels, w, h) = run_render(html, 2560, 1440, 60, external_cancel).await?;
+    let (pixels, w, h) = run_render(html, 1920, 1080, 60, external_cancel).await?;
     let jpeg = encode::encode_jpeg(pixels, w, h, 90).await?;
     Ok(jpeg)
 }
@@ -485,7 +485,7 @@ pub async fn render_score_list_card(
                         let img = image::load_from_memory(&bytes).map_err(|_| {
                             RenderError::Render(log_fmt!("render.err_hero_decode").to_string())
                         })?;
-                        let cropped = crop_and_resize(&img, 2560, 640);
+                        let cropped = crop_and_resize(&img, 1920, 480);
                         Ok(match image_to_data_uri(&cropped, 80) {
                             Ok(uri) => uri,
                             Err(e) => {
@@ -508,7 +508,7 @@ pub async fn render_score_list_card(
         .filter_map(|opt| {
             let img = opt.as_ref()?.clone();
             Some(tokio::task::spawn_blocking(move || -> String {
-                let thumb = crop_and_resize(&img, 620, 220);
+                let thumb = crop_and_resize(&img, 465, 165);
                 match image_to_data_uri(&thumb, 70) {
                     Ok(uri) => uri,
                     Err(e) => {
@@ -559,18 +559,16 @@ pub async fn render_score_list_card(
     };
     let html = score_list_style::wrap_score_list_html(&html_params);
 
-    // Estimate height: 640px hero (matches the 2560x640 banner image; .hero has
-    // min-height: 640px so background-size: cover is effectively 100% 100%)
-    // + 36px score-list padding + ceil(N/4) rows of 400px cards.
-    // Card height = 220px cover strip + ~180px body. The render code uses
-    // `max(computed_height, height)`, so this is a lower bound; the actual
-    // layout height is used if it exceeds the estimate.
+    // Estimate height: 480px hero (matches the 1920x480 banner image; .hero has
+    // min-height: 480px so background-size: cover is effectively 100% 100%)
+    // + 36px score-list padding + ceil(N/4) rows of 330px cards.
+    // Card height ≈ 165px cover + 165px body (padding + title + sub + mods + rows).
     let rows = (scores.len() as u32).div_ceil(4);
-    let estimated_height = 640 + 36 + rows * 400;
+    let estimated_height = 480 + 36 + rows * 330;
 
     let (pixels, w, h) = run_render(
         html,
-        2560,
+        1920,
         estimated_height,
         SCORE_LIST_RENDER_TIMEOUT_SECS,
         None,
@@ -583,6 +581,16 @@ pub async fn render_score_list_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_score_list_estimated_height_matches_1920_css() {
+        let source = include_str!("lib.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            production.contains("rows * 330"),
+            "score-list height estimate should match 1920 CSS row height"
+        );
+    }
 
     #[tokio::test]
     async fn test_extract_panic_message_from_str_panic() {

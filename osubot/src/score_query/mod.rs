@@ -205,7 +205,7 @@ pub(crate) async fn handle_score_query(
                 let oauth = ctx.oauth.clone();
 
                 async move {
-                    api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, api_limit)
+                    api::get_user_recent(&rate_limiter, &oauth, uid, mode, include_fails, api_limit, false)
                         .await
                         .map(Arc::new)
                         .map_err(|e| {
@@ -291,6 +291,7 @@ pub(crate) async fn handle_score_query(
                         dedup_mode,
                         include_fails,
                         api_limit,
+                        false,
                     )
                     .await
                     .map(Arc::new)
@@ -422,46 +423,27 @@ pub(crate) async fn handle_score_query(
                     scores_arc.truncate(end - start);
                 }
 
-                let results =
-                    futures_util::future::join_all(scores.iter().enumerate().map(|(i, s)| {
-                        let cover_url = s.cover_url.clone();
-                        let needs_enrich = s.pp.is_none() && s.beatmap_id > 0;
-                        let score_clone = if needs_enrich { Some(s.clone()) } else { None };
+                let scores_mut = Arc::make_mut(&mut scores);
+                let cover_images: Vec<Option<image::DynamicImage>> =
+                    futures_util::future::join_all(scores_mut.iter().map(|s| {
+                        let url = s.cover_url.clone();
                         async move {
-                            let enriched = if let Some(mut sc) = score_clone {
-                                osubot_core::enrich_score_with_pp(&mut sc, mode, false).await;
-                                Some(sc)
-                            } else {
-                                None
-                            };
-                            let cover = if !cover_url.is_empty() {
-                                match osubot_render::cache::fetch_and_cache(
-                                    &cover_url,
-                                    osubot_render::cache::http_client(),
-                                    false,
-                                )
-                                .await
-                                {
-                                    Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                                    Err(_) => None,
-                                }
-                            } else {
-                                None
-                            };
-                            (i, enriched, cover)
+                            if url.is_empty() {
+                                return None;
+                            }
+                            match osubot_render::cache::fetch_and_cache(
+                                &url,
+                                osubot_render::cache::http_client(),
+                                false,
+                            )
+                            .await
+                            {
+                                Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                                Err(_) => None,
+                            }
                         }
                     }))
                     .await;
-
-                let scores_mut = Arc::make_mut(&mut scores);
-                let mut cover_images: Vec<Option<image::DynamicImage>> =
-                    vec![None; scores_mut.len()];
-                for (i, enriched, cover) in results {
-                    if let Some(new_s) = enriched {
-                        scores_mut[i] = new_s;
-                    }
-                    cover_images[i] = cover;
-                }
 
                 let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
                 let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
@@ -899,44 +881,26 @@ async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQueryS
                     scores.truncate(limit as usize);
                 }
 
-                let results =
-                    futures_util::future::join_all(scores.iter().enumerate().map(|(i, s)| {
-                        let cover_url = s.cover_url.clone();
-                        let needs_enrich = s.pp.is_none() && s.beatmap_id > 0;
-                        let score_clone = if needs_enrich { Some(s.clone()) } else { None };
+                let cover_images: Vec<Option<image::DynamicImage>> =
+                    futures_util::future::join_all(scores.iter().map(|s| {
+                        let url = s.cover_url.clone();
                         async move {
-                            let enriched = if let Some(mut sc) = score_clone {
-                                osubot_core::enrich_score_with_pp(&mut sc, mode, false).await;
-                                Some(sc)
-                            } else {
-                                None
-                            };
-                            let cover = if !cover_url.is_empty() {
-                                match osubot_render::cache::fetch_and_cache(
-                                    &cover_url,
-                                    osubot_render::cache::http_client(),
-                                    false,
-                                )
-                                .await
-                                {
-                                    Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                                    Err(_) => None,
-                                }
-                            } else {
-                                None
-                            };
-                            (i, enriched, cover)
+                            if url.is_empty() {
+                                return None;
+                            }
+                            match osubot_render::cache::fetch_and_cache(
+                                &url,
+                                osubot_render::cache::http_client(),
+                                false,
+                            )
+                            .await
+                            {
+                                Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                                Err(_) => None,
+                            }
                         }
                     }))
                     .await;
-
-                let mut cover_images: Vec<Option<image::DynamicImage>> = vec![None; scores.len()];
-                for (i, enriched, cover) in results {
-                    if let Some(new_s) = enriched {
-                        scores[i] = new_s;
-                    }
-                    cover_images[i] = cover;
-                }
 
                 let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
                 let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
@@ -1043,6 +1007,17 @@ async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQueryS
                         )
                         .await;
                     return;
+                }
+                // backfill 只处理将要展示的单条成绩
+                {
+                    let mode_str = mode.api_value().to_string();
+                    api::backfill_score_details(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        &mut scores[index],
+                        &mode_str,
+                    )
+                    .await;
                 }
                 let score = &scores[index];
                 render_and_send_single_score(SingleScoreRenderParams {
@@ -1407,6 +1382,7 @@ async fn fetch_scores_with_dedup(
                     user_id,
                     mode,
                     api_limit,
+                    false,
                 )
                 .await
                 .map_err(|e| {

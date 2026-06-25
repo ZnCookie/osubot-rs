@@ -175,6 +175,7 @@ async fn resolve_beatmapset_id_fallback(
         params.mode,
         true,
         api_limit,
+        false,
     )
     .await
     {

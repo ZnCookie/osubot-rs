@@ -123,6 +123,7 @@ pub(super) async fn handle_beatmap_preview(
                     params.mode.unwrap_or(GameMode::Osu),
                     true,
                     api_limit,
+                    false,
                 )
                 .await
                 {

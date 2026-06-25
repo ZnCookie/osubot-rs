@@ -257,41 +257,19 @@ pub(super) async fn render_and_send_score_list(
     username: &str,
     mode: GameMode,
 ) {
-    let results = join_all(scores.iter().enumerate().map(|(i, s)| {
-        let cover_url = s.cover_url.clone();
-        let needs_enrich = s.pp.is_none() && s.beatmap_id > 0;
-        let score_clone = if needs_enrich { Some(s.clone()) } else { None };
+    let cover_images: Vec<Option<image::DynamicImage>> = join_all(scores.iter().map(|s| {
+        let url = s.cover_url.clone();
         async move {
-            let enriched = if let Some(mut sc) = score_clone {
-                enrich_score_with_pp(&mut sc, mode, false).await;
-                Some(sc)
-            } else {
-                None
-            };
-            let cover = if !cover_url.is_empty() {
-                match render_cache::fetch_and_cache(&cover_url, render_cache::http_client(), false)
-                    .await
-                {
-                    Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
-            (i, enriched, cover)
+            if url.is_empty() {
+                return None;
+            }
+            match render_cache::fetch_and_cache(&url, render_cache::http_client(), false).await {
+                Ok((bytes, _, _)) => image::load_from_memory(&bytes).ok(),
+                Err(_) => None,
+            }
         }
     }))
     .await;
-
-    let scores_vec: Vec<Score> = scores.to_vec();
-    let mut scores_mut = scores_vec;
-    let mut cover_images: Vec<Option<image::DynamicImage>> = vec![None; scores_mut.len()];
-    for (i, enriched, cover) in results {
-        if let Some(new_s) = enriched {
-            scores_mut[i] = new_s;
-        }
-        cover_images[i] = cover;
-    }
 
     let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
     let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
@@ -342,7 +320,7 @@ pub(super) async fn render_and_send_score_list(
                 global_rank_change,
                 country_rank_change,
             },
-            scores: &scores_mut,
+            scores,
             label: score_label,
             count_text: score_count_text,
             cover_images,
@@ -373,12 +351,12 @@ pub(super) async fn render_and_send_score_list(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-            let text = format_scores(&scores_mut, username, mode, user_str("fmt.beatmap_score"));
+            let text = format_scores(scores, username, mode, user_str("fmt.beatmap_score"));
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-            let text = format_scores(&scores_mut, username, mode, user_str("fmt.beatmap_score"));
+            let text = format_scores(scores, username, mode, user_str("fmt.beatmap_score"));
             let _ = resp_tx.send(text).await;
         }
     }
