@@ -91,6 +91,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "query.noun_replay" => "记录",
     "query.noun_score" => "成绩",
     "query.noun_best" => "最佳成绩",
+    "query.noun_today_best" => "今日最佳",
     "query.no_records_best" => "[CQ:at,qq={qq}] 暂无最佳成绩",
     "query.no_records_today_best" => "[CQ:at,qq={qq}] 今天暂无打入最佳榜的成绩",
 

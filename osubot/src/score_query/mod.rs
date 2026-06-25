@@ -582,6 +582,8 @@ struct BestLikeQuerySpec {
     label_key: &'static str,
     /// 无区间裸列表时是否按 limit 截断（仅 `!t`）。
     truncate_bare_list: bool,
+    /// 名词 key（filter 无匹配/索引越界时替换 {name}）。
+    noun_key: &'static str,
 }
 
 /// [`handle_best_like_query`] 的入参，聚合避免过多函数参数。
@@ -653,6 +655,7 @@ pub(crate) async fn handle_best_score_query(
             empty_msg_key: "query.no_records_best",
             label_key: "fmt.best_score",
             truncate_bare_list: false,
+            noun_key: "query.noun_best",
         },
     )
     .await;
@@ -705,6 +708,7 @@ pub(crate) async fn handle_today_bp_query(
             empty_msg_key: "query.no_records_today_best",
             label_key: "fmt.today_best",
             truncate_bare_list: true,
+            noun_key: "query.noun_today_best",
         },
     )
     .await;
@@ -862,7 +866,7 @@ async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQueryS
                         .send(
                             user_str("query.no_match")
                                 .replace("{qq}", &msg.user_id.to_string())
-                                .replace("{name}", user_str("query.noun_best")),
+                                .replace("{name}", user_str(spec.noun_key)),
                         )
                         .await;
                     return;
@@ -880,7 +884,7 @@ async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQueryS
                                 user_str("query.index_out_of_range")
                                     .replace("{qq}", &msg.user_id.to_string())
                                     .replace("{pos}", &limit.to_string())
-                                    .replace("{name}", user_str("query.noun_best"))
+                                    .replace("{name}", user_str(spec.noun_key))
                                     .replace("{total}", &scores.len().to_string()),
                             )
                             .await;
@@ -1034,7 +1038,7 @@ async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQueryS
                             user_str("query.index_out_of_range")
                                 .replace("{qq}", &msg.user_id.to_string())
                                 .replace("{pos}", &limit.to_string())
-                                .replace("{name}", user_str("query.noun_best"))
+                                .replace("{name}", user_str(spec.noun_key))
                                 .replace("{total}", &scores.len().to_string()),
                         )
                         .await;
