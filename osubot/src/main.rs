@@ -152,18 +152,6 @@ pub(crate) fn api_error_msg(qq: i64, e: &ApiError) -> String {
     DedupApiError::from_api_error(e).to_user_msg(qq)
 }
 
-/// 同 `DedupApiError::to_user_msg`，但 `NotFound` 映射为按 score_id 取谱面专用的
-/// `query.score_not_found`，而非通用 not-found 文案。
-#[allow(dead_code)]
-pub(crate) fn score_by_id_err_msg(qq: i64, e: &DedupApiError) -> String {
-    match e {
-        DedupApiError::NotFound => {
-            user_str("query.score_not_found").replace("{qq}", &qq.to_string())
-        }
-        other => other.to_user_msg(qq),
-    }
-}
-
 /// Send an error message to the response channel.
 pub(crate) async fn send_error(resp_tx: &mpsc::Sender<String>, qq: i64, key: &str) {
     let _ = resp_tx
@@ -264,24 +252,6 @@ pub(crate) type ScoreDedup = RequestDedup<(i64, bool, u32, GameMode), Arc<Vec<Sc
 
 pub(crate) fn score_dedup() -> &'static ScoreDedup {
     static DEDUP: OnceLock<ScoreDedup> = OnceLock::new();
-    DEDUP.get_or_init(RequestDedup::new)
-}
-
-#[allow(dead_code)]
-pub(crate) type ScoreByIdDedup = RequestDedup<i64, Score, DedupApiError>;
-
-#[allow(dead_code)]
-pub(crate) fn score_by_id_dedup() -> &'static ScoreByIdDedup {
-    static DEDUP: OnceLock<ScoreByIdDedup> = OnceLock::new();
-    DEDUP.get_or_init(RequestDedup::new)
-}
-
-#[allow(dead_code)]
-pub(crate) type BeatmapsetDedup = RequestDedup<i64, i64, DedupApiError>;
-
-#[allow(dead_code)]
-pub(crate) fn beatmapset_dedup() -> &'static BeatmapsetDedup {
-    static DEDUP: OnceLock<BeatmapsetDedup> = OnceLock::new();
     DEDUP.get_or_init(RequestDedup::new)
 }
 

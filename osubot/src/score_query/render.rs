@@ -1,56 +1,5 @@
 use super::*;
 
-#[allow(dead_code)]
-pub(super) async fn render_single_score(
-    ctx: &BotContext,
-    msg: &QQMessage,
-    resp_tx: &mpsc::Sender<String>,
-    score: &Score,
-    user_stats: &UserStats,
-    mode: GameMode,
-    n: usize,
-) {
-    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-    render_and_send_single_score(SingleScoreRenderParams {
-        ctx,
-        msg,
-        resp_tx,
-        score,
-        mode,
-        user_stats,
-        position: Some(n - 1),
-        label: user_str("fmt.recent_pass"),
-    })
-    .await;
-}
-
-#[allow(dead_code)]
-pub(super) async fn render_scores(
-    ctx: &BotContext,
-    msg: &QQMessage,
-    resp_tx: &mpsc::Sender<String>,
-    scores: &[Score],
-    user_stats: &UserStats,
-    username: &str,
-    mode: GameMode,
-) {
-    if scores.len() == 1 {
-        render_and_send_single_score(SingleScoreRenderParams {
-            ctx,
-            msg,
-            resp_tx,
-            score: &scores[0],
-            mode,
-            user_stats,
-            position: None,
-            label: user_str("fmt.recent_pass"),
-        })
-        .await;
-    } else {
-        render_and_send_score_list(ctx, msg, resp_tx, scores, user_stats, username, mode).await;
-    }
-}
-
 pub(super) struct SingleScoreRenderParams<'a> {
     pub(super) ctx: &'a BotContext,
     pub(super) msg: &'a QQMessage,

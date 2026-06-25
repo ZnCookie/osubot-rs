@@ -4,11 +4,14 @@ use osubot_beatmap_preview::{
     self, convert_beatmap, parse_beatmap_from_bytes, parse_mods, validate_mods,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn render_beatmap_preview_from_score(
     ctx: &BotContext,
     msg: &QQMessage,
     resp_tx: &mpsc::Sender<String>,
-    cmd: &Command,
+    mods: &Option<Vec<String>>,
+    gif: bool,
+    times: &Option<Vec<i64>>,
     score: &Score,
     mode: GameMode,
 ) {
@@ -17,12 +20,7 @@ pub(super) async fn render_beatmap_preview_from_score(
     let resolved_bid = score.beatmap_id as u32;
     ctx.last_beatmap.set(group_id, resolved_bid);
 
-    let (mods, gif, times) = match cmd {
-        Command::BeatmapPreview {
-            mods, gif, times, ..
-        } => (mods.clone(), *gif, times.clone()),
-        _ => (None, false, None),
-    };
+    let mods = mods.clone();
 
     let beatmap_path = match api::download_beatmap_osu(resolved_bid as i64).await {
         Ok(p) => p,

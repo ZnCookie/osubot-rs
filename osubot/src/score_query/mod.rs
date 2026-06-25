@@ -103,6 +103,9 @@ pub(crate) struct ScoreQuerySpec {
     pub(crate) empty_msg_key: &'static str,
     pub(crate) truncate_bare_list: bool,
     pub(crate) single_needs_backfill: bool,
+    pub(crate) preview_mods: Option<Vec<String>>,
+    pub(crate) preview_gif: bool,
+    pub(crate) preview_times: Option<Vec<i64>>,
 }
 
 struct PipelineParams<'a> {
@@ -115,9 +118,6 @@ struct PipelineParams<'a> {
     is_summary: bool,
     filters: Option<&'a [String]>,
 }
-
-#[allow(dead_code)]
-const TODAY_BP_API_LIMIT: u32 = 200;
 
 /// 发送错误消息到响应通道。
 async fn resolve_score_user(
@@ -265,6 +265,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_records_pass",
                     truncate_bare_list: false,
                     single_needs_backfill: false,
+                    preview_mods: None,
+                    preview_gif: false,
+                    preview_times: None,
                 };
                 (
                     spec,
@@ -315,6 +318,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_records",
                     truncate_bare_list: false,
                     single_needs_backfill: false,
+                    preview_mods: None,
+                    preview_gif: false,
+                    preview_times: None,
                 };
                 (
                     spec,
@@ -363,6 +369,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_records_best",
                     truncate_bare_list: false,
                     single_needs_backfill: true,
+                    preview_mods: None,
+                    preview_gif: false,
+                    preview_times: None,
                 };
                 (
                     spec,
@@ -418,6 +427,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_records_today_best",
                     truncate_bare_list: true,
                     single_needs_backfill: true,
+                    preview_mods: None,
+                    preview_gif: false,
+                    preview_times: None,
                 };
                 (
                     spec,
@@ -460,6 +472,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_records",
                     truncate_bare_list: false,
                     single_needs_backfill: false,
+                    preview_mods: None,
+                    preview_gif: false,
+                    preview_times: None,
                 };
                 (
                     spec,
@@ -478,6 +493,9 @@ pub(crate) async fn handle_score_query(
                 qq,
                 limit,
                 filters,
+                mods,
+                gif,
+                times,
                 ..
             } => {
                 let spec = ScoreQuerySpec {
@@ -502,6 +520,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_records",
                     truncate_bare_list: false,
                     single_needs_backfill: false,
+                    preview_mods: mods.clone(),
+                    preview_gif: *gif,
+                    preview_times: times.clone(),
                 };
                 (
                     spec,
@@ -571,6 +592,9 @@ pub(crate) async fn handle_score_query(
                     empty_msg_key: "query.no_score_on_map",
                     truncate_bare_list: false,
                     single_needs_backfill: false,
+                    preview_mods: None,
+                    preview_gif: false,
+                    preview_times: None,
                 };
                 (
                     spec,
@@ -589,7 +613,6 @@ pub(crate) async fn handle_score_query(
 
     run_score_query_pipeline(
         spec,
-        cmd,
         PipelineParams {
             username,
             qq,
@@ -610,7 +633,6 @@ pub(crate) async fn handle_score_query(
 
 async fn run_score_query_pipeline(
     spec: ScoreQuerySpec,
-    cmd: &Command,
     params: PipelineParams<'_>,
     ctx: &BotContext,
     msg: &QQMessage,
@@ -853,7 +875,9 @@ async fn run_score_query_pipeline(
                     ctx,
                     msg,
                     resp_tx,
-                    cmd,
+                    &spec.preview_mods,
+                    spec.preview_gif,
+                    &spec.preview_times,
                     &scores[index],
                     mode,
                 )
