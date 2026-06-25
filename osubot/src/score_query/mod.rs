@@ -28,7 +28,7 @@ use crate::api_error_msg;
 use crate::onebot::{send_group_msg_with_image, QQMessage};
 use crate::{
     beatmap_scores_dedup, best_scores_dedup, score_by_id_dedup, score_by_id_err_msg, score_dedup,
-    DedupApiError, SCORE_API_FETCH_LIMIT,
+    today_best_scores_dedup, DedupApiError, SCORE_API_FETCH_LIMIT,
 };
 
 mod plan;
@@ -38,6 +38,8 @@ use plan::{process_scores, ScoreQueryPlan};
 use render::{
     render_and_send_single_score, render_scores, render_single_score, SingleScoreRenderParams,
 };
+
+const TODAY_BP_API_LIMIT: u32 = 200;
 
 /// 发送错误消息到响应通道。
 /// 用于消除 `let _ = resp_tx.send(...).await; return;` 样板。
@@ -565,6 +567,39 @@ pub(crate) async fn handle_score_query(
     }
 }
 
+/// 描述 `!b` 与 `!t` 两条「最佳成绩类」查询之间的差异，
+/// 公共流程由 [`handle_best_like_query`] 统一处理。
+struct BestLikeQuerySpec {
+    /// osu! API 抓取量。
+    api_limit: u32,
+    /// 去重实例（`!b` 与 `!t` 各用独立实例，缓存互不串）。
+    dedup: &'static crate::BestScoresDedup,
+    /// 是否过滤出最近 24 小时内的成绩（仅 `!t`）。
+    filter_last_24h: bool,
+    /// 空结果文案 key。
+    empty_msg_key: &'static str,
+    /// 卡片 label key。
+    label_key: &'static str,
+    /// 无区间裸列表时是否按 limit 截断（仅 `!t`）。
+    truncate_bare_list: bool,
+    /// 名词 key（filter 无匹配/索引越界时替换 {name}）。
+    noun_key: &'static str,
+}
+
+/// [`handle_best_like_query`] 的入参，聚合避免过多函数参数。
+struct BestLikeParams<'a> {
+    ctx: &'a BotContext,
+    msg: &'a QQMessage,
+    resp_tx: &'a mpsc::Sender<String>,
+    mode: GameMode,
+    username: Option<&'a str>,
+    qq: Option<i64>,
+    limit: u32,
+    limit_end: Option<u32>,
+    is_summary: bool,
+    filters: Option<&'a [String]>,
+}
+
 pub(crate) async fn handle_best_score_query(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -592,7 +627,6 @@ pub(crate) async fn handle_best_score_query(
         _ => return,
     };
 
-    let is_self = username.is_none() && qq.is_none();
     let raw_limit = limit_end.unwrap_or(limit);
     let has_client_filter = filters.is_some_and(|f| !f.is_empty());
     let api_limit = if has_client_filter {
@@ -600,6 +634,102 @@ pub(crate) async fn handle_best_score_query(
     } else {
         raw_limit
     };
+
+    handle_best_like_query(
+        BestLikeParams {
+            ctx,
+            msg,
+            resp_tx,
+            mode,
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+        },
+        BestLikeQuerySpec {
+            api_limit,
+            dedup: best_scores_dedup(),
+            filter_last_24h: false,
+            empty_msg_key: "query.no_records_best",
+            label_key: "fmt.best_score",
+            truncate_bare_list: false,
+            noun_key: "query.noun_best",
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn handle_today_bp_query(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    cmd: &Command,
+    mode: GameMode,
+) {
+    let (username, qq, limit, limit_end, is_summary, filters) = match cmd {
+        Command::TodayBest {
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+            ..
+        } => (
+            username.as_deref(),
+            *qq,
+            *limit,
+            *limit_end,
+            *is_summary,
+            filters.as_deref(),
+        ),
+        _ => return,
+    };
+
+    handle_best_like_query(
+        BestLikeParams {
+            ctx,
+            msg,
+            resp_tx,
+            mode,
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+        },
+        BestLikeQuerySpec {
+            api_limit: TODAY_BP_API_LIMIT,
+            dedup: today_best_scores_dedup(),
+            filter_last_24h: true,
+            empty_msg_key: "query.no_records_today_best",
+            label_key: "fmt.today_best",
+            truncate_bare_list: true,
+            noun_key: "query.noun_today_best",
+        },
+    )
+    .await;
+}
+
+async fn handle_best_like_query(params: BestLikeParams<'_>, spec: BestLikeQuerySpec) {
+    let BestLikeParams {
+        ctx,
+        msg,
+        resp_tx,
+        mode,
+        username,
+        qq,
+        limit,
+        limit_end,
+        is_summary,
+        filters,
+    } = params;
+
+    let is_self = username.is_none() && qq.is_none();
+    let api_limit = spec.api_limit;
 
     let (user_id, resolved_username, user_stats, score_result) = if is_self {
         let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
@@ -618,7 +748,7 @@ pub(crate) async fn handle_best_score_query(
 
         let (stats_result, scores) = tokio::join!(
             api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
-            best_scores_dedup().run_or_wait((uid, mode, api_limit), move || {
+            spec.dedup.run_or_wait((uid, mode, api_limit), move || {
                 let rate_limiter = ctx.rate_limiter.clone();
                 let oauth = ctx.oauth.clone();
 
@@ -680,7 +810,8 @@ pub(crate) async fn handle_best_score_query(
         ctx.scheduler.trigger_update(uid, mode).await;
         let dedup_mode = mode;
 
-        let scores: Result<Vec<Score>, String> = best_scores_dedup()
+        let scores: Result<Vec<Score>, String> = spec
+            .dedup
             .run_or_wait((uid, mode, api_limit), move || {
                 let dedup_rate_limiter = ctx.rate_limiter.clone();
                 let dedup_oauth = ctx.oauth.clone();
@@ -707,11 +838,20 @@ pub(crate) async fn handle_best_score_query(
 
     match score_result {
         Ok(mut scores) => {
+            // 仅 `!t`：过滤出最近 24 小时内打入最佳榜的成绩。
+            // created_at 与 cutoff 都是绝对时间（UTC），时区无关。
+            if spec.filter_last_24h {
+                let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
+                scores.retain(|s| {
+                    chrono::DateTime::parse_from_rfc3339(&s.created_at)
+                        .ok()
+                        .is_some_and(|dt| dt.naive_utc() > cutoff.naive_utc())
+                });
+            }
+
             if scores.is_empty() {
                 let _ = resp_tx
-                    .send(
-                        user_str("query.no_records_best").replace("{qq}", &msg.user_id.to_string()),
-                    )
+                    .send(user_str(spec.empty_msg_key).replace("{qq}", &msg.user_id.to_string()))
                     .await;
                 return;
             }
@@ -726,7 +866,7 @@ pub(crate) async fn handle_best_score_query(
                         .send(
                             user_str("query.no_match")
                                 .replace("{qq}", &msg.user_id.to_string())
-                                .replace("{name}", user_str("query.noun_best")),
+                                .replace("{name}", user_str(spec.noun_key)),
                         )
                         .await;
                     return;
@@ -744,7 +884,7 @@ pub(crate) async fn handle_best_score_query(
                                 user_str("query.index_out_of_range")
                                     .replace("{qq}", &msg.user_id.to_string())
                                     .replace("{pos}", &limit.to_string())
-                                    .replace("{name}", user_str("query.noun_best"))
+                                    .replace("{name}", user_str(spec.noun_key))
                                     .replace("{total}", &scores.len().to_string()),
                             )
                             .await;
@@ -754,6 +894,9 @@ pub(crate) async fn handle_best_score_query(
                     index_offset = start;
                     let _ = scores.drain(..start);
                     scores.truncate(end - start);
+                } else if spec.truncate_bare_list {
+                    // 仅 `!t`：无区间裸列表最多展示 limit 条。
+                    scores.truncate(limit as usize);
                 }
 
                 let results =
@@ -825,7 +968,7 @@ pub(crate) async fn handle_best_score_query(
                 let pp_change = change.as_ref().and_then(|c| c.pp_change);
                 let global_rank_change = change.as_ref().and_then(|c| c.rank_change);
                 let country_rank_change = change.as_ref().and_then(|c| c.country_rank_change);
-                let score_label = user_str("fmt.best_score");
+                let score_label = user_str(spec.label_key);
                 let score_count_text = user_str("fmt.score_count");
                 let render_result = tokio::time::timeout(
                     std::time::Duration::from_secs(SCORE_LIST_RENDER_TIMEOUT_SECS),
@@ -895,7 +1038,7 @@ pub(crate) async fn handle_best_score_query(
                             user_str("query.index_out_of_range")
                                 .replace("{qq}", &msg.user_id.to_string())
                                 .replace("{pos}", &limit.to_string())
-                                .replace("{name}", user_str("query.noun_best"))
+                                .replace("{name}", user_str(spec.noun_key))
                                 .replace("{total}", &scores.len().to_string()),
                         )
                         .await;
@@ -910,7 +1053,7 @@ pub(crate) async fn handle_best_score_query(
                     mode,
                     user_stats: &user_stats,
                     position: Some(index),
-                    label: user_str("fmt.best_score"),
+                    label: user_str(spec.label_key),
                 })
                 .await;
             }

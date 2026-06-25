@@ -91,7 +91,9 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "query.noun_replay" => "记录",
     "query.noun_score" => "成绩",
     "query.noun_best" => "最佳成绩",
+    "query.noun_today_best" => "今日最佳",
     "query.no_records_best" => "[CQ:at,qq={qq}] 暂无最佳成绩",
+    "query.no_records_today_best" => "[CQ:at,qq={qq}] 今天暂无打入最佳榜的成绩",
 
     // ── 格式化输出 ──
     "fmt.recent_pass" => "最近通过",
@@ -108,6 +110,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "fmt.profile_playtime" => "游玩时间",
     "fmt.beatmap_score" => "谱面成绩",
     "fmt.best_score" => "最高成绩",
+    "fmt.today_best" => "今日最佳",
     "fmt.score_count" => "{} 条记录",
 
     // ── 高光 ──
@@ -128,7 +131,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "mode.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 osu! 账号，无法设置默认模式",
 
     // ── 系统 ──
-    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!a/!profile/!mode/!rv/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",

@@ -246,6 +246,16 @@ pub(super) async fn handle_query_commands(
             );
             handle_best_score_query(ctx, msg, resp_tx, cmd, mode).await;
         }
+        Command::TodayBest { .. } => {
+            info!(
+                user_id = msg.user_id,
+                group_id = msg.group_id,
+                mode = ?mode,
+                "{}",
+                log_fmt!("main.today_best_command")
+            );
+            handle_today_bp_query(ctx, msg, resp_tx, cmd, mode).await;
+        }
         Command::BeatmapAudio {
             score_id,
             beatmap_id,

@@ -1742,6 +1742,266 @@ fn test_best_command_name() {
 }
 
 #[test]
+fn test_today_best_self() {
+    let cmd = parse_command("!t", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_mode() {
+    let cmd = parse_command("!t :1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: Some(GameMode::Taiko),
+            username: None,
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_username() {
+    let cmd = parse_command("!t ZnCookie", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_with_hash() {
+    let cmd = parse_command("!t #3", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 3,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_single_card() {
+    let cmd = parse_command("!t #1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_range() {
+    let cmd = parse_command("!t #1-5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 1,
+            limit_end: Some(5),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_with_mods() {
+    let cmd = parse_command("!t +HD", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: Some(vec!["mod=HD".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_today_best_with_mods_and_filters() {
+    let cmd = parse_command("!t +HD,miss=0", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: Some(vec!["miss=0".to_string(), "mod=HD".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_today_best_qq_equals() {
+    let cmd = parse_command("!t qq=123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_mention() {
+    let cmd = parse_command("!t @123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_bare_number() {
+    let cmd = parse_command("!t5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 5,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_bare_range() {
+    let cmd = parse_command("!t 2-10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 2,
+            limit_end: Some(10),
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_today_best_full_args() {
+    let cmd = parse_command("!t :1 ZnCookie +HDDT #1-3", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: Some(GameMode::Taiko),
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            limit: 1,
+            limit_end: Some(3),
+            is_summary: true,
+            filters: Some(vec!["mod=HDDT".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_today_best_not_matched_as_other() {
+    assert!(parse_command("!today", None).is_none());
+}
+
+#[test]
+fn test_today_best_group_name() {
+    assert_eq!(
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+        .group_name(),
+        CommandGroup::Score
+    );
+}
+
+#[test]
+fn test_today_best_command_name() {
+    assert_eq!(
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+        .command_name(),
+        "!t"
+    );
+}
+
+#[test]
 fn test_beatmap_audio_self() {
     let cmd = parse_command("!a", None).unwrap();
     assert_eq!(
