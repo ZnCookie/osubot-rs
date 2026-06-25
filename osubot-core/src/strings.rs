@@ -599,6 +599,9 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.beatmap_preview_read_failed" => "!rv 读取渲染结果失败: {error}",
     "main.beatmap_audio_send_failed" => "发送预览音频失败: {error}",
     "main.beatmap_preview_send_failed" => "发送预览图片失败: {error}",
+
+    // ===== osubot/src/score_query/mod.rs =====
+    "pipeline.unexpected_score_list_card_in_single_path" => "run_score_query_pipeline: 单成绩分支遇到 ScoreListCard，请检查 is_summary 配置",
 };
 
 pub fn log_str(key: &str) -> &'static str {

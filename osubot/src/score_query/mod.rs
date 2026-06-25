@@ -57,7 +57,6 @@ pub(crate) trait FetchFn: Send + Sync {
         rate_limiter: &Arc<RateLimiter>,
         oauth: &Arc<OauthTokenCache>,
         user_id: i64,
-        beatmap_id: Option<i64>,
         mode: GameMode,
         limit: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>>;
@@ -65,7 +64,7 @@ pub(crate) trait FetchFn: Send + Sync {
 
 fn make_fetch<F, Fut>(f: F) -> Box<dyn FetchFn>
 where
-    F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, Option<i64>, GameMode, u32) -> Fut
+    F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, GameMode, u32) -> Fut
         + Send
         + Sync
         + 'static,
@@ -74,7 +73,7 @@ where
     struct Impl<F>(F);
     impl<F, Fut> FetchFn for Impl<F>
     where
-        F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, Option<i64>, GameMode, u32) -> Fut
+        F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, GameMode, u32) -> Fut
             + Send
             + Sync
             + 'static,
@@ -85,11 +84,10 @@ where
             rl: &Arc<RateLimiter>,
             oa: &Arc<OauthTokenCache>,
             uid: i64,
-            bid: Option<i64>,
             mode: GameMode,
             limit: u32,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>> {
-            Box::pin((self.0)(rl.clone(), oa.clone(), uid, bid, mode, limit))
+            Box::pin((self.0)(rl.clone(), oa.clone(), uid, mode, limit))
         }
     }
     Box::new(Impl(f))
@@ -242,7 +240,7 @@ pub(crate) async fn handle_score_query(
                 ..
             } => {
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         score_dedup().run_or_wait((uid, true, l, m), move || {
                         let rl = rl.clone();
                         let oa = oa.clone();
@@ -296,7 +294,7 @@ pub(crate) async fn handle_score_query(
                 ..
             } => {
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         score_dedup().run_or_wait((uid, false, l, m), move || {
                         let rl = rl.clone();
                         let oa = oa.clone();
@@ -348,7 +346,7 @@ pub(crate) async fn handle_score_query(
                 ..
             } => {
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         best_scores_dedup().run_or_wait((uid, m, l), move || {
                         let rl = rl.clone();
                         let oa = oa.clone();
@@ -400,7 +398,7 @@ pub(crate) async fn handle_score_query(
                 ..
             } => {
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         today_best_scores_dedup().run_or_wait((uid, m, l), move || {
                         let rl = rl.clone();
                         let oa = oa.clone();
@@ -531,7 +529,7 @@ pub(crate) async fn handle_score_query(
                 }
 
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         audio_score_dedup().run_or_wait((uid, true, l, m), move || {
                         let rl = rl.clone();
                         let oa = oa.clone();
@@ -656,7 +654,7 @@ pub(crate) async fn handle_score_query(
                 }
 
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         preview_score_dedup().run_or_wait((uid, true, l, m), move || {
                         let rl = rl.clone();
                         let oa = oa.clone();
@@ -814,7 +812,7 @@ pub(crate) async fn handle_score_query(
                 };
                 ctx.last_beatmap.set(msg.group_id, resolved_bid as u32);
                 let spec = ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, _bid, m, l| async move {
+                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         beatmap_scores_dedup().run_or_wait((uid, resolved_bid, m, Some(l)), move || {
                             let rl = rl.clone();
                             let oa = oa.clone();
@@ -930,7 +928,7 @@ async fn run_score_query_pipeline(
         let (stats_result, scores) = tokio::join!(
             api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
             spec.fetch
-                .call(&ctx.rate_limiter, &ctx.oauth, uid, None, mode, api_limit),
+                .call(&ctx.rate_limiter, &ctx.oauth, uid, mode, api_limit),
         );
 
         let user_stats = match stats_result {
@@ -977,7 +975,7 @@ async fn run_score_query_pipeline(
 
         let scores = spec
             .fetch
-            .call(&ctx.rate_limiter, &ctx.oauth, uid, None, mode, api_limit)
+            .call(&ctx.rate_limiter, &ctx.oauth, uid, mode, api_limit)
             .await;
 
         (uid, name, user_stats, scores)
@@ -1147,7 +1145,13 @@ async fn run_score_query_pipeline(
                 .await;
             }
             RenderOutput::ScoreListCard => {
-                unreachable!()
+                tracing::error!(
+                    "{}",
+                    log_fmt!("pipeline.unexpected_score_list_card_in_single_path")
+                );
+                let _ = resp_tx
+                    .send(user_str("error.render_failed").replace("{qq}", &msg.user_id.to_string()))
+                    .await;
             }
         }
     }
