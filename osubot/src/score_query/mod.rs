@@ -456,6 +456,8 @@ pub(crate) async fn handle_score_query(
                 filters,
                 score_id,
                 beatmap_id,
+                explicit_position,
+                mode: cmd_mode,
                 ..
             } => {
                 // score_id 直达：获取成绩后播放其谱面音频，无需绑定。
@@ -510,7 +512,9 @@ pub(crate) async fn handle_score_query(
                 // last_beatmap 缓存兜底：无参时直接用缓存 beatmap_id 转音频。
                 let has_target = username.is_some()
                     || qq.is_some()
-                    || filters.as_ref().is_some_and(|f| !f.is_empty());
+                    || filters.as_ref().is_some_and(|f| !f.is_empty())
+                    || *explicit_position
+                    || cmd_mode.is_some();
                 if !has_target {
                     if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
                         let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, bid as i64).await {
@@ -575,6 +579,8 @@ pub(crate) async fn handle_score_query(
                 times,
                 score_id,
                 beatmap_id,
+                explicit_position,
+                mode: cmd_mode,
                 ..
             } => {
                 // score_id 直达：获取成绩后渲染其谱面预览，无需绑定。
@@ -636,7 +642,9 @@ pub(crate) async fn handle_score_query(
                 // last_beatmap 缓存兜底
                 let has_target = username.is_some()
                     || qq.is_some()
-                    || filters.as_ref().is_some_and(|f| !f.is_empty());
+                    || filters.as_ref().is_some_and(|f| !f.is_empty())
+                    || *explicit_position
+                    || cmd_mode.is_some();
                 if !has_target {
                     if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
                         preview::render_beatmap_preview_by_id(
