@@ -1011,21 +1011,26 @@ async fn run_score_query_pipeline(
     ctx.last_beatmap
         .set(msg.group_id, scores[0].beatmap_id as u32);
 
+    let mut indexed: Vec<(usize, Score)> = scores.drain(..).enumerate().collect();
+
     if let Some(bid) = beatmap_id {
-        scores.retain(|s| s.beatmap_id == bid);
-        if scores.is_empty() {
+        indexed.retain(|(_, s)| s.beatmap_id == bid);
+        if indexed.is_empty() {
             send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
         }
     }
 
     if let Some(filters) = filters {
-        scores.retain(|s| score_matches_filters(s, filters));
-        if scores.is_empty() {
+        indexed.retain(|(_, s)| score_matches_filters(s, filters));
+        if indexed.is_empty() {
             send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
         }
     }
+
+    let filter_offset = indexed.first().map(|(i, _)| *i).unwrap_or(0);
+    scores = indexed.into_iter().map(|(_, s)| s).collect();
 
     let list_index_offset: usize = if is_summary || limit_end.is_some() {
         if let Some(end) = limit_end {
@@ -1044,7 +1049,7 @@ async fn run_score_query_pipeline(
             if spec.truncate_bare_list {
                 scores.truncate(limit as usize);
             }
-            0
+            filter_offset
         }
     } else {
         0
