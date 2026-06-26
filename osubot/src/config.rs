@@ -85,16 +85,16 @@ impl std::fmt::Debug for OsuConfig {
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct BotConfig {
     pub onebot_url: String,
-    /// 命令处理超时（秒），默认 120
+    /// 命令处理超时（秒），默认 180
     #[serde(default = "default_command_timeout_secs")]
     pub command_timeout_secs: u64,
-    /// 渲染超时（秒），默认 60
+    /// 渲染超时（秒），默认 120
     #[serde(default = "default_render_timeout_secs")]
     pub render_timeout_secs: u64,
-    /// OneBot API 请求超时（秒），默认 5
+    /// OneBot API 请求超时（秒），默认 10
     #[serde(default = "default_onebot_api_timeout_secs")]
     pub onebot_api_timeout_secs: u64,
-    /// UR 计算超时（秒），默认 10
+    /// UR 计算超时（秒），默认 15
     #[serde(default = "default_ur_timeout_secs")]
     pub ur_timeout_secs: u64,
 }

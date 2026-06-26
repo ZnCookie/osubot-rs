@@ -1,4 +1,10 @@
 use super::*;
+use futures_util::stream::{self, StreamExt};
+use std::borrow::Cow;
+
+/// 并发补全 PP 的最大请求数。osu! API 对单 IP 的并发有限制，
+/// 3 是经验值，在响应速度和稳定性之间取得平衡。
+const ENRICH_CONCURRENCY: usize = 3;
 
 pub(super) struct SingleScoreRenderParams<'a> {
     pub(super) ctx: &'a BotContext,
@@ -225,34 +231,34 @@ pub(super) async fn render_and_send_score_list(
     }))
     .await;
 
-    let mut scores: Vec<Score> = scores.to_vec();
-    {
-        use futures_util::stream::{self, StreamExt};
-        let enrich_indices: Vec<usize> = scores
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
-            .map(|(i, _)| i)
-            .collect();
-        if !enrich_indices.is_empty() {
-            // Move scores out of Vec so each future owns its score, then put back.
-            let mut owned: Vec<Option<Score>> = scores.drain(..).map(Some).collect();
-            let futs = enrich_indices.into_iter().filter_map(|i| {
-                let score = owned[i].take()?;
-                Some(async move {
-                    let mut s = score;
-                    enrich_score_with_pp(&mut s, mode, false).await;
-                    (i, s)
-                })
-            });
-            let enriched: Vec<(usize, Score)> =
-                stream::iter(futs).buffer_unordered(3).collect().await;
-            for (i, s) in enriched {
-                owned[i] = Some(s);
-            }
-            scores = owned.into_iter().flatten().collect();
+    let enrich_indices: Vec<usize> = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
+        .map(|(i, _)| i)
+        .collect();
+    let scores: Cow<'_, [Score]> = if enrich_indices.is_empty() {
+        Cow::Borrowed(scores)
+    } else {
+        let mut owned: Vec<Score> = scores.to_vec();
+        let mut slots: Vec<Option<Score>> = owned.drain(..).map(Some).collect();
+        let futs = enrich_indices.into_iter().filter_map(|i| {
+            let score = slots[i].take()?;
+            Some(async move {
+                let mut s = score;
+                enrich_score_with_pp(&mut s, mode, false).await;
+                (i, s)
+            })
+        });
+        let enriched: Vec<(usize, Score)> = stream::iter(futs)
+            .buffer_unordered(ENRICH_CONCURRENCY)
+            .collect()
+            .await;
+        for (i, s) in enriched {
+            slots[i] = Some(s);
         }
-    }
+        Cow::Owned(slots.into_iter().flatten().collect())
+    };
 
     let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
     let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();

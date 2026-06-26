@@ -17,7 +17,7 @@
 | `on_unload` (可选) | `() -> *const u8` | 卸载时清理，返回值被丢弃 |
 | `on_command` (可选) | `(cmd_ptr: u32, cmd_len: u32) -> *const u8` | 匹配到注册命令时调用，返回 `PluginAction` |
 | `on_message` (可选) | `(msg_ptr: u32, msg_len: u32) -> *const u8` | 收到群消息时调用，返回 `PluginAction` |
-| `on_tick` (可选) | `(tick_ptr: u32, tick_len: u32) -> *const u8` | 定时任务触发，传入 JSON 数字 tick_id（如 `42`），返回值被丢弃 |
+| `on_tick` (可选) | `(tick_ptr: u32, tick_len: u32) -> *const u8` | 定时任务触发，传入 JSON `{"tick_id": <number>}`，返回值被丢弃 |
 
 ### 内存协议
 
@@ -25,11 +25,15 @@
 
 ## 类型参考
 
+### `PROTOCOL_VERSION`
+
+SDK 导出 `pub const PROTOCOL_VERSION: u32 = 1;`，插件应在 `PluginMetadata::protocol_version` 中使用此常量。宿主会校验版本号，高于当前协议版本的插件将被拒绝加载。
+
 ### `PluginMetadata`
 
 ```rust
 pub struct PluginMetadata {
-    pub protocol_version: u32,  // 协议版本号，宿主会与 PROTOCOL_VERSION 对比校验
+    pub protocol_version: u32,  // 应使用 SDK 导出的 PROTOCOL_VERSION 常量
     pub name: String,
     pub version: String,
     pub author: String,
@@ -47,6 +51,20 @@ pub enum PluginAction {
     Intercepted,       // 拦截（插件内部已异步处理）
 }
 ```
+
+### `serialize_return` / `PluginReturn`
+
+SDK 提供 `serialize_return<T: Serialize>(val: &T) -> Option<PluginReturn>` 用于 FFI 导出函数的返回值序列化。`PluginReturn` 是 RAII 类型，Drop 时自动释放内存；调用 `.into_raw()` 可取出裸指针交给宿主（类似 `Box::into_raw`）。
+
+```rust
+fn return_ptr<T: serde::Serialize>(val: &T) -> *const u8 {
+    osubot_plugin_sdk::serialize_return(val)
+        .map(|r| r.into_raw())
+        .unwrap_or(core::ptr::null())
+}
+```
+
+**宿主调用响应大小限制**：宿主函数返回值最大 64 MB，超出时返回错误。
 
 ### `Command`
 
