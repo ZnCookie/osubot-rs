@@ -168,7 +168,7 @@ pub(crate) fn apply_filter(score: &Score, key: &str, op: FilterOp, value: &str) 
             .is_ok_and(|v| cmp_i64(score.score_value, v, op)),
         "acc" => value
             .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.accuracy * 100.0, v, op, 0.5)),
+            .is_ok_and(|v| cmp_f64(score.accuracy * 100.0, v, op, 0.01)),
         "mod" => apply_mod_filter(score, op, value),
         "ar" => value
             .parse::<f64>()
@@ -630,11 +630,11 @@ mod filter_tests {
     #[test]
     fn acc_eq_tolerance() {
         // accuracy is stored as fraction; 95.5% → 0.955
-        let s = score_with_acc(0.954);
-        // 0.954 * 100 = 95.4, |95.4 - 95.5| = 0.1 < 0.5
+        let s = score_with_acc(0.95505);
+        // 0.95505 * 100 = 95.505, |95.505 - 95.5| = 0.005 < 0.01
         assert!(score_matches_filters(&s, &["acc=95.5".to_string()]));
-        let s = score_with_acc(0.946);
-        // 94.6, |94.6 - 95.5| = 0.9 >= 0.5
+        let s = score_with_acc(0.95515);
+        // 95.515, |95.515 - 95.5| = 0.015 >= 0.01
         assert!(!score_matches_filters(&s, &["acc=95.5".to_string()]));
     }
 
