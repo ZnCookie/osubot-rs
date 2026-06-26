@@ -2707,3 +2707,157 @@ fn test_beatmap_audio_mode_only_skips_cache() {
         }
     );
 }
+
+// === Filter token with > / < operators ===
+
+#[test]
+fn test_best_gt_filter() {
+    let cmd = parse_command("!bs ar>9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["ar>9".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_lt_filter() {
+    let cmd = parse_command("!bs ar<10", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["ar<10".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_recent_gt_filter() {
+    let cmd = parse_command("!r ar>9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Recent {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: Some(vec!["ar>9".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_pass_gt_filter() {
+    let cmd = parse_command("!p ar>9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: Some(vec!["ar>9".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_gteq_filter() {
+    let cmd = parse_command("!bs ar>=9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["ar>=9".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_noteq_filter() {
+    let cmd = parse_command("!bs ar!=9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["ar!=9".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_username_and_gt_filter() {
+    let cmd = parse_command("!bs ZnCookie ar>9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["ar>9".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_limit_and_gt_filter() {
+    let cmd = parse_command("!bs 50 ar>9", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 50,
+            is_summary: true,
+            limit_end: None,
+            filters: Some(vec!["ar>9".to_string()]),
+        }
+    );
+}

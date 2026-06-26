@@ -355,6 +355,26 @@ struct RemainingTokens {
     limit_end: Option<u32>,
 }
 
+/// Check if a token looks like a filter expression `key<op>value`.
+/// Supports operators `=`, `==`, `!=`, `>`, `>=`, `<`, `<=`.
+fn is_filter_token(token: &str) -> bool {
+    for op in &["==", ">=", "<=", "!="] {
+        if let Some(idx) = token.find(op) {
+            if idx > 0 && idx + op.len() < token.len() {
+                return true;
+            }
+        }
+    }
+    for op in &['=', '>', '<'] {
+        if let Some(idx) = token.find(*op) {
+            if idx > 0 && idx + 1 < token.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<RemainingTokens> {
     use super::common::{MAX_LIMIT, SCORE_ID_THRESHOLD};
 
@@ -390,7 +410,7 @@ fn parse_remaining_tokens(rest: &str, mentioned_user_id: Option<i64>) -> Option<
             }
             continue;
         }
-        if token.contains('=') {
+        if is_filter_token(token) {
             found_eq = true;
             for part in token.split(',') {
                 extra_filters.push(part.to_string());
