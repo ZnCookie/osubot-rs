@@ -31,7 +31,9 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
         label,
     } = params;
     let mut score = score.clone();
-    enrich_score_with_pp(&mut score, mode, true).await;
+    if score.pp_breakdown.is_none() {
+        enrich_score_with_pp(&mut score, mode, true).await;
+    }
 
     let ur_value = if mode == GameMode::Osu && score.score_id > 0 && score.has_replay {
         tracing::trace!(score_id = score.score_id, mode = ?mode, is_lazer = score.is_lazer, length = score.length_seconds, "{}", log_fmt!("main.ur_calculation_start"));

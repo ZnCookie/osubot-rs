@@ -1013,6 +1013,31 @@ async fn run_score_query_pipeline(
 
     let mut indexed: Vec<(usize, Score)> = scores.drain(..).enumerate().collect();
 
+    // PP 预补全：过滤器含 pp 条件时，先对 pp=None 的成绩做本地 PP 计算
+    if filters.is_some_and(|f| f.iter().any(|s| s.starts_with("pp"))) {
+        let enrich: Vec<usize> = indexed
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, s))| s.pp.is_none() && s.beatmap_id > 0)
+            .map(|(i, _)| i)
+            .collect();
+        if !enrich.is_empty() {
+            let futs: Vec<_> = enrich
+                .iter()
+                .map(|&i| {
+                    let mut s = indexed[i].1.clone();
+                    async move {
+                        enrich_score_with_pp(&mut s, mode, true).await;
+                        s
+                    }
+                })
+                .collect();
+            for (&i, s) in enrich.iter().zip(join_all(futs).await) {
+                indexed[i].1 = s;
+            }
+        }
+    }
+
     if let Some(bid) = beatmap_id {
         indexed.retain(|(_, s)| s.beatmap_id == bid);
         if indexed.is_empty() {
