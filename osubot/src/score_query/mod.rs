@@ -857,7 +857,7 @@ pub(crate) async fn handle_score_query(
                                 let rl = rl.clone();
                                 let oa = oa.clone();
                                 async move {
-                                    api::get_user_beatmap_scores_all(&rl, &oa, resolved_bid, uid, m, Some(l), false).await.map_err(|e| {
+                                    api::get_user_beatmap_scores_all(&rl, &oa, resolved_bid, uid, m, Some(l), true).await.map_err(|e| {
                                         if !matches!(e, api::ApiError::NotFound) {
                                             tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
                                         }
@@ -879,7 +879,7 @@ pub(crate) async fn handle_score_query(
                     noun_key: "query.noun_score",
                     empty_msg_key: "query.no_score_on_map",
                     truncate_bare_list: false,
-                    single_needs_backfill: false,
+                    single_needs_backfill: true,
                     api_fetch_limit: None,
                     preview_mods: None,
                     preview_gif: false,
