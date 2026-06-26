@@ -187,7 +187,6 @@ struct PipelineParams<'a> {
     username: Option<&'a str>,
     qq: Option<i64>,
     beatmap_id: Option<i64>,
-    score_id: Option<u64>,
     limit: u32,
     limit_end: Option<u32>,
     is_summary: bool,
@@ -442,7 +441,6 @@ pub(crate) async fn handle_score_query(
                     username: username.as_deref(),
                     qq: *qq,
                     beatmap_id: beatmap_id.map(|b| b as i64),
-                    score_id: *score_id,
                     limit: *limit,
                     limit_end: *limit_end,
                     is_summary: *is_summary,
@@ -499,7 +497,6 @@ pub(crate) async fn handle_score_query(
                     username: username.as_deref(),
                     qq: *qq,
                     beatmap_id: beatmap_id.map(|b| b as i64),
-                    score_id: *score_id,
                     limit: *limit,
                     limit_end: *limit_end,
                     is_summary: *is_summary,
@@ -554,7 +551,6 @@ pub(crate) async fn handle_score_query(
                     username: username.as_deref(),
                     qq: *qq,
                     beatmap_id: beatmap_id.map(|b| b as i64),
-                    score_id: *score_id, // 已由 try_score_id_early_return 处理，此处仅保持一致性
                     limit: *limit,
                     limit_end: *limit_end,
                     is_summary: *is_summary,
@@ -616,7 +612,6 @@ pub(crate) async fn handle_score_query(
                     username: username.as_deref(),
                     qq: *qq,
                     beatmap_id: beatmap_id.map(|b| b as i64),
-                    score_id: *score_id,
                     limit: *limit,
                     limit_end: *limit_end,
                     is_summary: *is_summary,
@@ -716,7 +711,6 @@ pub(crate) async fn handle_score_query(
                     limit_end: None,
                     is_summary: false,
                     beatmap_id: None,
-                    score_id: None,
                     filters: filters.as_deref(),
                 },
             )
@@ -819,7 +813,6 @@ pub(crate) async fn handle_score_query(
                     limit_end: None,
                     is_summary: false,
                     beatmap_id: None,
-                    score_id: None,
                     filters: filters.as_deref(),
                 },
             )
@@ -899,7 +892,6 @@ pub(crate) async fn handle_score_query(
                     limit_end: *limit_end,
                     is_summary: *is_all || limit_end.is_some(),
                     beatmap_id: Some(resolved_bid),
-                    score_id: *score_id,
                     filters: filters.as_deref(),
                 },
             )
@@ -922,7 +914,6 @@ async fn run_score_query_pipeline(
         username,
         qq,
         beatmap_id,
-        score_id,
         limit,
         limit_end,
         is_summary,
@@ -932,8 +923,7 @@ async fn run_score_query_pipeline(
     let is_self = username.is_none() && qq.is_none();
 
     let raw_limit = limit_end.unwrap_or(limit);
-    let has_client_filter =
-        filters.is_some_and(|f| !f.is_empty()) || beatmap_id.is_some() || score_id.is_some();
+    let has_client_filter = filters.is_some_and(|f| !f.is_empty()) || beatmap_id.is_some();
     let api_limit = spec.api_fetch_limit.unwrap_or_else(|| {
         if has_client_filter {
             raw_limit.max(SCORE_API_FETCH_LIMIT)
@@ -1023,15 +1013,6 @@ async fn run_score_query_pipeline(
 
     if let Some(bid) = beatmap_id {
         scores.retain(|s| s.beatmap_id == bid);
-        if scores.is_empty() {
-            send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
-            return;
-        }
-    }
-
-    if let Some(sid) = score_id {
-        // PipelineParams.score_id 为 u64，Score.score_id 为 i64，需转换
-        scores.retain(|s| s.score_id == sid as i64);
         if scores.is_empty() {
             send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
