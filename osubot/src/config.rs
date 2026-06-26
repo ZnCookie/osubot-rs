@@ -65,7 +65,6 @@ pub struct Config {
 
 #[derive(Deserialize, Clone)]
 pub struct OsuConfig {
-    #[serde(alias = "api_key")]
     // NOTE: stored as plain String. Debug is manually redacted (see Debug impl below).
     // Not zeroized: the value also lives as plain String in OauthTokenCache and is
     // cloned at startup, so zeroize::Zeroizing here would give incomplete coverage.
@@ -526,9 +525,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             osu: OsuConfig {
-                client_secret: std::env::var("OSU_CLIENT_SECRET")
-                    .or_else(|_| std::env::var("OSU_API_KEY"))
-                    .unwrap_or_default(),
+                client_secret: std::env::var("OSU_CLIENT_SECRET").unwrap_or_default(),
                 client_id: std::env::var("OSU_CLIENT_ID").unwrap_or_default(),
             },
             bot: BotConfig {
@@ -669,7 +666,7 @@ mod tests {
     fn test_config_from_toml_missing_groups() {
         let toml_str = r#"
             [osu]
-            api_key = "test"
+            client_secret = "test"
             client_id = "test"
             [bot]
             onebot_url = "ws://localhost"
@@ -687,7 +684,7 @@ mod tests {
     fn test_config_from_toml_with_groups() {
         let toml_str = r#"
             [osu]
-            api_key = "test"
+            client_secret = "test"
             client_id = "test"
             [bot]
             onebot_url = "ws://localhost"
@@ -720,7 +717,7 @@ mod tests {
     fn test_config_from_toml_with_upstream() {
         let toml_str = r#"
             [osu]
-            api_key = "test"
+            client_secret = "test"
             client_id = "test"
             [bot]
             onebot_url = "ws://localhost"
@@ -751,7 +748,7 @@ mod tests {
     fn test_group_filter_invalid_mode_fails() {
         let toml_str = r#"
             [osu]
-            api_key = "test"
+            client_secret = "test"
             client_id = "test"
             [bot]
             onebot_url = "ws://localhost"
@@ -769,7 +766,7 @@ mod tests {
     fn test_group_filter_uppercase_whitelist_fails() {
         let toml_str = r#"
             [osu]
-            api_key = "test"
+            client_secret = "test"
             client_id = "test"
             [bot]
             onebot_url = "ws://localhost"
@@ -797,21 +794,6 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.osu.client_secret, "my-secret");
         assert_eq!(config.osu.client_id, "my-id");
-    }
-
-    #[test]
-    fn test_config_accepts_api_key_as_alias() {
-        let toml_str = r#"
-            [osu]
-            api_key = "old-api-key"
-            client_id = "my-id"
-            [bot]
-            onebot_url = "ws://localhost"
-            [database]
-            path = "test.db"
-        "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.osu.client_secret, "old-api-key");
     }
 
     #[test]

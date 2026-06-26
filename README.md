@@ -36,7 +36,7 @@ osu! API v2 凭据在 [osu! 设置](https://osu.ppy.sh/home/account/edit#oauth) 
 
 IRC 鉴权、群黑白名单、群命令开关、超时等配置说明见 `osubot.example.toml`。
 
-也支持通过环境变量配置（优先级低于配置文件）：`OSU_CLIENT_SECRET`/`OSU_API_KEY`、`OSU_CLIENT_ID`、`ONEBOT_URL`、`DATABASE_PATH`。
+也支持通过环境变量配置（优先级低于配置文件）：`OSU_CLIENT_SECRET`、`OSU_CLIENT_ID`、`ONEBOT_URL`、`DATABASE_PATH`。
 
 ## 安装
 

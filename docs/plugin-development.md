@@ -64,7 +64,7 @@ fn return_ptr<T: serde::Serialize>(val: &T) -> *const u8 {
 }
 ```
 
-**宿主调用响应大小限制**：宿主函数返回值最大 64 MB，超出时返回错误。
+**宿主调用响应大小限制**：宿主函数返回值最大 64 MB，超出时返回错误。HTTP 请求响应体最大 10 MB。
 
 ### `Command`
 
@@ -94,7 +94,7 @@ fn return_ptr<T: serde::Serialize>(val: &T) -> *const u8 {
 | `http_request_with_method(url, method, body)` | `String` | HTTP 自定义方法请求（`body` 为 `Option<&str>`） |
 | `db_get_binding(qq)` | `Option<(i64, String)>` | 查询 QQ 绑定的 osu! 用户（用户 ID, 用户名） |
 | `osu_api_fetch_user(username, mode: GameMode)` | `String` | 查询 osu! 用户统计，返回 API JSON。`mode` 为 `GameMode` 枚举（序列化为 `"osu"` / `"taiko"` / `"catch"` / `"mania"`） |
-| `register_tick(name, interval_secs)` | `u32` | 注册定时任务（最小 5 秒，最多 8 个/插件），返回 tick_id |
+| `register_tick(name, interval_secs)` | `u32` | 注册定时任务（最小 5 秒，最大 86400 秒，最多 8 个/插件），返回 tick_id |
 | `get_plugin_config()` | `serde_json::Value` | 获取插件自定义配置 |
 
 ## 开发流程
@@ -207,7 +207,7 @@ key = "value"
 - 内存上限 100MB（wasmtime StoreLimits）
 - 30 秒超时（tokio::timeout），10 秒 epoch 中断最后防线
 - 无文件系统/线程访问，仅通过宿主函数做网络和数据库操作
-- 连续 5 次错误自动重载
+- 连续 5 次错误自动重载（重载连续失败 3 次后放弃，需手动干预）
 
 ## 版本兼容
 

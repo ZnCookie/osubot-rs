@@ -155,7 +155,7 @@ pub(crate) fn apply_filter(score: &Score, key: &str, op: FilterOp, value: &str) 
         "score" => value
             .parse::<i64>()
             .is_ok_and(|v| cmp_i64(score.score_value, v, op)),
-        "acc" | "accuracy" => value
+        "acc" => value
             .parse::<f64>()
             .is_ok_and(|v| cmp_f64(score.accuracy * 100.0, v, op, 0.5)),
         "mod" => apply_mod_filter(score, op, value),
