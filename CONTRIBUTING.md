@@ -8,7 +8,7 @@
 |-------|------|----------|
 | `osubot` | 主程序入口，消息处理、命令分发 | osubot-core, osubot-render, osubot-plugin, osubot-beatmap-preview |
 | `osubot-core` | 核心业务逻辑（查询、绑定、调度） | osubot-types, osubot-game-mode |
-| `osubot-types` | 共享类型定义（GameMode, Command 等） | osubot-game-mode |
+| `osubot-types` | 共享类型定义（Score/PpBreakdown/PpIfAcc/ScoreStatistics）及格式化工具函数 | osubot-game-mode |
 | `osubot-render` | 卡片渲染（SVG→PNG/GIF） | osubot-core, osubot-types |
 | `osubot-plugin-sdk` | WASM 插件开发 SDK | osubot-game-mode |
 | `osubot-plugin` | 插件宿主（加载、调度、隔离） | osubot-core, osubot-game-mode, osubot-types, osubot-plugin-sdk |
@@ -46,17 +46,24 @@ osu! API 查询 → 数据处理 → 卡片渲染
 #### 错误处理
 
 ```rust
-use crate::api::{http, ApiError};
+use osubot_core::api::{ApiError, OauthTokenCache};
+use osubot_core::rate_limiter::RateLimiter;
 
 // ✅ 推荐：使用 Result 传播错误
-async fn query_user(username: &str) -> Result<UserStats, ApiError> {
-    let url = format!("/api/v2/users/{username}");
-    let resp = http::authenticated_get(&url, &rate_limiter, &oauth).await?;
-    http::json_body::<UserStats>(resp).await
+async fn query_user(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    username: &str,
+) -> Result<(), ApiError> {
+    let user = osubot_core::api::fetch_user_stats_by_username(rate_limiter, oauth, username, GameMode::Osu).await?;
+    // 处理 user...
+    Ok(())
 }
 
 // ❌ 避免：unwrap/expect（除非确实不可能失败）
-let stats = http::json_body::<UserStats>(resp).await.unwrap();
+let stats = osubot_core::api::fetch_user_stats_by_username(username, GameMode::Osu)
+    .await
+    .unwrap();
 ```
 
 #### 日志使用
@@ -84,6 +91,22 @@ info!("用户 {} 绑定成功", username);
 // ✅ 推荐
 info!("{}", log_fmt!("main.bind_success", username = username));
 ```
+
+#### 用户可见文本
+
+所有发送给 QQ 群/用户的文本定义在 `osubot-core/src/strings.rs` 的 `USER_STRINGS` phf map 中，通过 `user_str()` 函数获取：
+
+```rust
+use osubot_core::strings::user_str;
+
+// ✅ 推荐：使用 key 引用，支持 {qq}/{name} 等占位符
+let msg = user_str("error.not_found").replace("{qq}", &msg.user_id.to_string());
+
+// ❌ 避免：内联中文
+let msg = format!("[CQ:at,qq={}] 未找到该用户", msg.user_id);
+```
+
+用户文本 key（如 `"error.not_found"`）在 `osubot-core/src/strings.rs` 的 `USER_STRINGS` map 中定义，使用 `{placeholder}` 占位符格式，调用时通过 `.replace()` 注入实际值。
 
 #### 注释规范
 
@@ -128,7 +151,7 @@ osubot/                  # 主程序入口、消息循环、命令调度
 
 osubot-core/             # 核心业务逻辑
 ├── src/api/             # osu! API v2 调用（OAuth/PP/谱面/成绩）
-├── src/commands/        # 命令解析（parse_command）
+├── src/commands/        # 命令解析（parse_command），子模块：mod.rs/common.rs/scoring.rs
 ├── src/storage.rs       # 数据库操作
 ├── src/ssrf.rs          # SSRF 防护
 ├── src/dedup.rs         # 请求去重
@@ -144,6 +167,16 @@ osubot-core/             # 核心业务逻辑
 └── src/lib.rs           # crate 根
 
 osubot-render/           # 卡片渲染（SVG→PNG/GIF）
+├── src/lib.rs           # crate 根，渲染入口
+├── src/cache.rs         # 渲染缓存
+├── src/encode.rs        # 编码输出
+├── src/error.rs         # 错误类型
+├── src/render.rs        # 渲染主流程
+├── src/score_style.rs   # 单成绩卡片样式
+├── src/score_list_style.rs # 成绩列表卡片样式
+├── src/style.rs         # 通用样式
+└── src/svg_css.rs       # SVG CSS 定义
+
 osubot-plugin/           # WASM 插件宿主（加载/调度/热重载）
 osubot-plugin-sdk/       # WASM 插件开发 SDK
 osubot-types/            # 共享类型定义（Score/PpBreakdown）
@@ -242,6 +275,7 @@ fn std_breakdown_populates_aim_speed_acc() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PluginMetadata;
 
     #[test]
     fn test_metadata_deserialize() {
@@ -293,10 +327,12 @@ cargo +nightly udeps
 
 ### 编写测试的最佳实践
 
-1. **测试命名**：`test_<功能>_<场景>_<预期结果>`
+1. **测试命名**：`<模块>_<功能>_<场景>`，不强制 `test_` 前缀
    ```rust
    #[test]
-   fn test_parse_command_invalid_mode_returns_error() { ... }
+   fn parse_token_gt() { ... }
+   #[test]
+   fn std_breakdown_populates_aim_speed_acc() { ... }
    ```
 
 2. **测试组织**：使用 `mod tests` 将相关测试分组
