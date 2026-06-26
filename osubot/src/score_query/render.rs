@@ -1,6 +1,9 @@
 use super::*;
+use futures_util::stream::{self, StreamExt};
 use std::borrow::Cow;
 
+/// 并发补全 PP 的最大请求数。osu! API 对单 IP 的并发有限制，
+/// 3 是经验值，在响应速度和稳定性之间取得平衡。
 const ENRICH_CONCURRENCY: usize = 3;
 
 pub(super) struct SingleScoreRenderParams<'a> {
@@ -228,7 +231,6 @@ pub(super) async fn render_and_send_score_list(
     }))
     .await;
 
-    use futures_util::stream::{self, StreamExt};
     let enrich_indices: Vec<usize> = scores
         .iter()
         .enumerate()

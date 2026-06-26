@@ -168,21 +168,6 @@ where
     Box::new(Impl(f))
 }
 
-struct ScoreCommandConfig {
-    fetch: Box<dyn FetchFn>,
-    post_process: Option<fn(&mut Vec<Score>)>,
-    render: RenderOutput,
-    label_key: &'static str,
-    noun_key: &'static str,
-    empty_msg_key: &'static str,
-    truncate_bare_list: bool,
-    single_needs_backfill: bool,
-    api_fetch_limit: Option<u32>,
-    preview_mods: Option<Vec<String>>,
-    preview_gif: bool,
-    preview_times: Option<Vec<i64>>,
-}
-
 pub(crate) struct ScoreQuerySpec {
     pub(crate) fetch: Box<dyn FetchFn>,
     pub(crate) post_process: Option<fn(&mut Vec<Score>)>,
@@ -407,7 +392,7 @@ pub(crate) async fn handle_score_query(
     mode: GameMode,
 ) {
     let qq_for_err = msg.user_id;
-    let (config, params) = match cmd {
+    let (spec, params) = match cmd {
         Command::Pass {
             username,
             qq,
@@ -425,7 +410,7 @@ pub(crate) async fn handle_score_query(
             }
 
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         score_dedup()
                             .run_or_wait((uid, true, l, m), move || {
@@ -482,7 +467,7 @@ pub(crate) async fn handle_score_query(
             }
 
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         score_dedup()
                             .run_or_wait((uid, false, l, m), move || {
@@ -539,7 +524,7 @@ pub(crate) async fn handle_score_query(
             }
 
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         best_scores_dedup()
                             .run_or_wait((uid, m, l), move || {
@@ -594,7 +579,7 @@ pub(crate) async fn handle_score_query(
             }
 
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         today_best_scores_dedup()
                             .run_or_wait((uid, m, l), move || {
@@ -696,7 +681,7 @@ pub(crate) async fn handle_score_query(
             }
 
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         audio_score_dedup()
                             .run_or_wait((uid, true, l, m), move || {
@@ -799,7 +784,7 @@ pub(crate) async fn handle_score_query(
             }
 
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         preview_score_dedup()
                             .run_or_wait((uid, true, l, m), move || {
@@ -873,7 +858,7 @@ pub(crate) async fn handle_score_query(
             };
             ctx.last_beatmap.set(msg.group_id, resolved_bid as u32);
             (
-                ScoreCommandConfig {
+                ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         beatmap_scores_dedup().run_or_wait((uid, resolved_bid, m, Some(l)), move || {
                                 let rl = rl.clone();
@@ -922,11 +907,11 @@ pub(crate) async fn handle_score_query(
         _ => return,
     };
 
-    run_score_query_pipeline(config, params, ctx, msg, resp_tx, mode).await;
+    run_score_query_pipeline(spec, params, ctx, msg, resp_tx, mode).await;
 }
 
 async fn run_score_query_pipeline(
-    config: ScoreCommandConfig,
+    spec: ScoreQuerySpec,
     params: PipelineParams<'_>,
     ctx: &BotContext,
     msg: &QQMessage,
@@ -943,21 +928,6 @@ async fn run_score_query_pipeline(
         is_summary,
         filters,
     } = params;
-
-    let spec = ScoreQuerySpec {
-        fetch: config.fetch,
-        post_process: config.post_process,
-        render: config.render,
-        label_key: config.label_key,
-        noun_key: config.noun_key,
-        empty_msg_key: config.empty_msg_key,
-        truncate_bare_list: config.truncate_bare_list,
-        single_needs_backfill: config.single_needs_backfill,
-        api_fetch_limit: config.api_fetch_limit,
-        preview_mods: config.preview_mods,
-        preview_gif: config.preview_gif,
-        preview_times: config.preview_times,
-    };
 
     let is_self = username.is_none() && qq.is_none();
 
