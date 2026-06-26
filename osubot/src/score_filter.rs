@@ -172,16 +172,16 @@ pub(crate) fn apply_filter(score: &Score, key: &str, op: FilterOp, value: &str) 
         "mod" => apply_mod_filter(score, op, value),
         "ar" => value
             .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.ar, v, op, 0.1)),
+            .is_ok_and(|v| cmp_f64(score.ar, v, op, 0.01)),
         "od" => value
             .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.od, v, op, 0.1)),
+            .is_ok_and(|v| cmp_f64(score.od, v, op, 0.01)),
         "cs" => value
             .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.cs, v, op, 0.1)),
+            .is_ok_and(|v| cmp_f64(score.cs, v, op, 0.01)),
         "hp" => value
             .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.hp, v, op, 0.1)),
+            .is_ok_and(|v| cmp_f64(score.hp, v, op, 0.01)),
         "star" => value
             .parse::<f64>()
             .is_ok_and(|v| cmp_f64(score.star_rating, v, op, 0.01)),
@@ -682,11 +682,11 @@ mod filter_tests {
     fn ar_eq_tolerance() {
         let s = score_with_ar(9.0);
         assert!(score_matches_filters(&s, &["ar=9".to_string()]));
-        let s = score_with_ar(9.05);
-        // |9.05 - 9| = 0.05 < 0.1
+        let s = score_with_ar(9.005);
+        // |9.005 - 9| = 0.005 < 0.01
         assert!(score_matches_filters(&s, &["ar=9".to_string()]));
-        let s = score_with_ar(9.15);
-        // |9.15 - 9| = 0.15 >= 0.1
+        let s = score_with_ar(9.015);
+        // |9.015 - 9| = 0.015 >= 0.01
         assert!(!score_matches_filters(&s, &["ar=9".to_string()]));
     }
 
@@ -705,11 +705,11 @@ mod filter_tests {
     fn od_eq_tolerance() {
         let s = score_with_od(8.0);
         assert!(score_matches_filters(&s, &["od=8".to_string()]));
-        let s = score_with_od(8.08);
-        // |8.08 - 8| = 0.08 < 0.1
+        let s = score_with_od(8.008);
+        // |8.008 - 8| = 0.008 < 0.01
         assert!(score_matches_filters(&s, &["od=8".to_string()]));
-        let s = score_with_od(8.15);
-        // |8.15 - 8| = 0.15 >= 0.1
+        let s = score_with_od(8.015);
+        // |8.015 - 8| = 0.015 >= 0.01
         assert!(!score_matches_filters(&s, &["od=8".to_string()]));
     }
 
@@ -717,8 +717,8 @@ mod filter_tests {
     fn od_noteq() {
         let s = score_with_od(8.2);
         assert!(score_matches_filters(&s, &["od!=8".to_string()]));
-        let s = score_with_od(8.03);
-        // |8.03 - 8| = 0.03 < 0.1 → within tolerance, so == 8
+        let s = score_with_od(8.003);
+        // |8.003 - 8| = 0.003 < 0.01 → within tolerance, so == 8
         assert!(!score_matches_filters(&s, &["od!=8".to_string()]));
     }
 
@@ -726,9 +726,9 @@ mod filter_tests {
     fn cs_eq_tolerance() {
         let s = score_with_cs(4.0);
         assert!(score_matches_filters(&s, &["cs=4".to_string()]));
-        let s = score_with_cs(4.05);
+        let s = score_with_cs(4.005);
         assert!(score_matches_filters(&s, &["cs=4".to_string()]));
-        let s = score_with_cs(4.15);
+        let s = score_with_cs(4.015);
         assert!(!score_matches_filters(&s, &["cs=4".to_string()]));
     }
 
@@ -744,9 +744,9 @@ mod filter_tests {
     fn hp_eq_tolerance() {
         let s = score_with_hp(6.0);
         assert!(score_matches_filters(&s, &["hp=6".to_string()]));
-        let s = score_with_hp(6.08);
+        let s = score_with_hp(6.008);
         assert!(score_matches_filters(&s, &["hp=6".to_string()]));
-        let s = score_with_hp(6.15);
+        let s = score_with_hp(6.015);
         assert!(!score_matches_filters(&s, &["hp=6".to_string()]));
     }
 
