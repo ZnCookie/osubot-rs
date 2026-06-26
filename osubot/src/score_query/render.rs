@@ -225,6 +225,35 @@ pub(super) async fn render_and_send_score_list(
     }))
     .await;
 
+    let mut scores: Vec<Score> = scores.to_vec();
+    {
+        use futures_util::stream::{self, StreamExt};
+        let enrich_indices: Vec<usize> = scores
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
+            .map(|(i, _)| i)
+            .collect();
+        if !enrich_indices.is_empty() {
+            // Move scores out of Vec so each future owns its score, then put back.
+            let mut owned: Vec<Option<Score>> = scores.drain(..).map(Some).collect();
+            let futs = enrich_indices.into_iter().filter_map(|i| {
+                let score = owned[i].take()?;
+                Some(async move {
+                    let mut s = score;
+                    enrich_score_with_pp(&mut s, mode, false).await;
+                    (i, s)
+                })
+            });
+            let enriched: Vec<(usize, Score)> =
+                stream::iter(futs).buffer_unordered(3).collect().await;
+            for (i, s) in enriched {
+                owned[i] = Some(s);
+            }
+            scores = owned.into_iter().flatten().collect();
+        }
+    }
+
     let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
     let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
     let user_global_rank = if user_stats.rank > 0 {
@@ -274,7 +303,7 @@ pub(super) async fn render_and_send_score_list(
                 global_rank_change,
                 country_rank_change,
             },
-            scores,
+            scores: &scores,
             label: score_label,
             count_text: score_count_text,
             cover_images,
@@ -305,12 +334,12 @@ pub(super) async fn render_and_send_score_list(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-            let text = format_scores(scores, username, mode, user_str(label_key));
+            let text = format_scores(&scores, username, mode, user_str(label_key));
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-            let text = format_scores(scores, username, mode, user_str(label_key));
+            let text = format_scores(&scores, username, mode, user_str(label_key));
             let _ = resp_tx.send(text).await;
         }
     }
