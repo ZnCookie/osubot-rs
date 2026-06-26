@@ -29,7 +29,7 @@ pub fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .redirect(crate::ssrf::redirect_policy(
                 crate::ssrf::is_blocked_redirect_url,
             ))
