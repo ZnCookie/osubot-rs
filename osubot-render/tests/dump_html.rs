@@ -367,7 +367,7 @@ fn dump_score_list_html() {
         pp_change: Some(12.5),
         global_rank_change: Some(-99),
         country_rank_change: Some(50),
-        index_offset: 0,
+        original_indices: &[0; 20],
     };
     let html = wrap_score_list_html(&params);
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dump");
@@ -394,7 +394,7 @@ fn test_wrap_score_list_html_basic() {
         pp_change: Some(12.5),
         global_rank_change: Some(-99),
         country_rank_change: Some(50),
-        index_offset: 0,
+        original_indices: &[0; 20],
     };
     let html = wrap_score_list_html(&params);
 
