@@ -62,6 +62,81 @@ pub(crate) trait FetchFn: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>>;
 }
 
+/// 生成 score fetch 闭包中的错误处理函数。
+fn score_fetch_error_handler(qq: i64) -> impl Fn(api::ApiError) -> String + Clone {
+    move |e: api::ApiError| {
+        if !matches!(
+            e,
+            api::ApiError::NotFound
+                | api::ApiError::RateLimitedWithRetryAfter(_)
+                | api::ApiError::ClientRateLimited
+        ) {
+            tracing::error!(
+                user_id = qq,
+                error = ?e,
+                "{}",
+                log_fmt!("main.score_query_error_details")
+            );
+        }
+        api_error_msg(qq, &e)
+    }
+}
+
+fn summary_or_single(is_summary: bool) -> RenderOutput {
+    if is_summary {
+        RenderOutput::ScoreListCard
+    } else {
+        RenderOutput::SingleScoreCard
+    }
+}
+
+/// 缓存 user_id 到 storage，失败时 warn 日志。
+async fn cache_user_id(ctx: &BotContext, stats: &UserStats) {
+    if let Err(e) = ctx
+        .storage
+        .set_user_id(&stats.username, stats.user_id)
+        .await
+    {
+        tracing::warn!(
+            username = %stats.username,
+            user_id = stats.user_id,
+            error = %e,
+            "{}",
+            log_fmt!("main.cache_user_id_failed")
+        );
+    }
+}
+
+/// 发送"无匹配"错误消息。
+async fn send_no_match(resp_tx: &mpsc::Sender<String>, qq: i64, noun_key: &'static str) {
+    let _ = resp_tx
+        .send(
+            user_str("query.no_match")
+                .replace("{qq}", &qq.to_string())
+                .replace("{name}", user_str(noun_key)),
+        )
+        .await;
+}
+
+/// 发送"索引超出范围"错误消息。
+async fn send_index_out_of_range(
+    resp_tx: &mpsc::Sender<String>,
+    qq: i64,
+    noun_key: &'static str,
+    pos: u32,
+    total: usize,
+) {
+    let _ = resp_tx
+        .send(
+            user_str("query.index_out_of_range")
+                .replace("{qq}", &qq.to_string())
+                .replace("{pos}", &pos.to_string())
+                .replace("{name}", user_str(noun_key))
+                .replace("{total}", &total.to_string()),
+        )
+        .await;
+}
+
 fn make_fetch<F, Fut>(f: F) -> Box<dyn FetchFn>
 where
     F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, GameMode, u32) -> Fut
@@ -91,6 +166,21 @@ where
         }
     }
     Box::new(Impl(f))
+}
+
+struct ScoreCommandConfig {
+    fetch: Box<dyn FetchFn>,
+    post_process: Option<fn(&mut Vec<Score>)>,
+    render: RenderOutput,
+    label_key: &'static str,
+    noun_key: &'static str,
+    empty_msg_key: &'static str,
+    truncate_bare_list: bool,
+    single_needs_backfill: bool,
+    api_fetch_limit: Option<u32>,
+    preview_mods: Option<Vec<String>>,
+    preview_gif: bool,
+    preview_times: Option<Vec<i64>>,
 }
 
 pub(crate) struct ScoreQuerySpec {
@@ -137,19 +227,7 @@ async fn resolve_score_user(
         );
         match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
             Ok(stats) => {
-                if let Err(e) = ctx
-                    .storage
-                    .set_user_id(&stats.username, stats.user_id)
-                    .await
-                {
-                    tracing::warn!(
-                        username = %stats.username,
-                        user_id = stats.user_id,
-                        error = %e,
-                        "{}",
-                        log_fmt!("main.cache_user_id_failed")
-                    );
-                }
+                cache_user_id(ctx, &stats).await;
                 Some((stats.user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -194,19 +272,7 @@ async fn resolve_score_user(
         );
         match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
             Ok(stats) => {
-                if let Err(e) = ctx
-                    .storage
-                    .set_user_id(&stats.username, stats.user_id)
-                    .await
-                {
-                    tracing::warn!(
-                        username = %stats.username,
-                        user_id = stats.user_id,
-                        error = %e,
-                        "{}",
-                        log_fmt!("main.cache_user_id_failed")
-                    );
-                }
+                cache_user_id(ctx, &stats).await;
                 Some((user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -218,6 +284,120 @@ async fn resolve_score_user(
     }
 }
 
+/// 通过 score_id 直接获取成绩，发送错误消息后返回 None。
+async fn fetch_score_by_id(
+    ctx: &BotContext,
+    score_id: u64,
+    user_id: i64,
+    resp_tx: &mpsc::Sender<String>,
+) -> Option<Score> {
+    let rl = ctx.rate_limiter.clone();
+    let oauth = ctx.oauth.clone();
+    let result = score_by_id_dedup()
+        .run_or_wait(score_id as i64, move || {
+            let rl = rl.clone();
+            let oauth = oauth.clone();
+            async move {
+                api::get_score_by_id(&rl, &oauth, score_id)
+                    .await
+                    .map_err(|e| {
+                        if !matches!(e, api::ApiError::NotFound) {
+                            tracing::warn!(
+                                error = ?e,
+                                "{}",
+                                log_fmt!("main.get_score_by_id_failed")
+                            );
+                        }
+                        DedupApiError::from_api_error(&e)
+                    })
+            }
+        })
+        .await;
+    match result {
+        Ok(s) => Some(s),
+        Err(e) => {
+            let _ = resp_tx.send(score_by_id_err_msg(user_id, &e)).await;
+            None
+        }
+    }
+}
+
+/// 处理 score_id 直达后的成绩卡片渲染（获取用户 stats + 渲染单条成绩）。
+async fn handle_score_id_render(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    score: &Score,
+    mode: GameMode,
+    label: &'static str,
+) {
+    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+    let user_id = score.user.user_id.unwrap_or(0);
+    if user_id == 0 {
+        let _ = resp_tx
+            .send(user_str("query.user_info_failed").replace("{qq}", &msg.user_id.to_string()))
+            .await;
+        return;
+    }
+    let user_stats = match api::fetch_user_stats_by_user_id(
+        &ctx.rate_limiter,
+        &ctx.oauth,
+        user_id,
+        mode,
+    )
+    .await
+    {
+        Ok(stats) => {
+            cache_user_id(ctx, &stats).await;
+            ctx.scheduler.trigger_update(user_id, mode).await;
+            stats
+        }
+        Err(e) => {
+            if !matches!(e, api::ApiError::NotFound) {
+                tracing::warn!(
+                    user_id = user_id,
+                    error = ?e,
+                    "{}",
+                    log_fmt!("main.fetch_stats_score_id_failed")
+                );
+            }
+            let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+            return;
+        }
+    };
+    render_and_send_single_score(SingleScoreRenderParams {
+        ctx,
+        msg,
+        resp_tx,
+        score,
+        mode,
+        user_stats: &user_stats,
+        position: None,
+        label: user_str(label),
+    })
+    .await;
+}
+
+/// 尝试 score_id 直达：如果 score_id 存在，获取成绩并渲染，返回 true。
+/// 否则返回 false，调用方应继续走正常流程。
+async fn try_score_id_early_return(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    score_id: &Option<u64>,
+    mode: GameMode,
+    label: &'static str,
+) -> bool {
+    let Some(sid) = score_id else {
+        return false;
+    };
+    let Some(score) = fetch_score_by_id(ctx, *sid, msg.user_id, resp_tx).await else {
+        return true; // fetch 失败，已发送错误消息
+    };
+    handle_score_id_render(ctx, msg, resp_tx, &score, mode, label).await;
+    true
+}
+
 pub(crate) async fn handle_score_query(
     ctx: &BotContext,
     msg: &QQMessage,
@@ -226,40 +406,42 @@ pub(crate) async fn handle_score_query(
     mode: GameMode,
 ) {
     let qq_for_err = msg.user_id;
-    let (spec, username, qq, limit, limit_end, is_summary, beatmap_id, score_id, filters) =
-        match cmd {
-            Command::Pass {
-                username,
-                qq,
-                limit,
-                limit_end,
-                is_summary,
-                beatmap_id,
-                score_id,
-                filters,
-                ..
-            } => {
-                let spec = ScoreQuerySpec {
+    let (config, params) = match cmd {
+        Command::Pass {
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            beatmap_id,
+            score_id,
+            filters,
+            ..
+        } => {
+            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.recent_pass").await
+            {
+                return;
+            }
+
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        score_dedup().run_or_wait((uid, true, l, m), move || {
-                        let rl = rl.clone();
-                        let oa = oa.clone();
-                        async move {
-                            api::get_user_recent(&rl, &oa, uid, m, false, l, false).await.map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                    tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        score_dedup()
+                            .run_or_wait((uid, true, l, m), move || {
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_recent(&rl, &oa, uid, m, false, l, false)
+                                        .await
+                                        .map_err(score_fetch_error_handler(qq_for_err))
+                                        .map(Arc::new)
                                 }
-                                api_error_msg(qq_for_err, &e)
-                            }).map(Arc::new)
-                        }
-                    }).await.map(|arc| (*arc).clone())
+                            })
+                            .await
+                            .map(|arc| (*arc).clone())
                     }),
                     post_process: None,
-                    render: if *is_summary {
-                        RenderOutput::ScoreListCard
-                    } else {
-                        RenderOutput::SingleScoreCard
-                    },
+                    render: summary_or_single(*is_summary),
                     label_key: "fmt.recent_pass",
                     noun_key: "query.noun_replay",
                     empty_msg_key: "query.no_records_pass",
@@ -269,51 +451,54 @@ pub(crate) async fn handle_score_query(
                     preview_mods: None,
                     preview_gif: false,
                     preview_times: None,
-                };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    *limit_end,
-                    *is_summary,
-                    beatmap_id.map(|b| b as i64),
-                    *score_id,
-                    filters.as_deref(),
-                )
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    beatmap_id: beatmap_id.map(|b| b as i64),
+                    score_id: *score_id,
+                    limit: *limit,
+                    limit_end: *limit_end,
+                    is_summary: *is_summary,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        Command::Recent {
+            username,
+            qq,
+            limit,
+            limit_end,
+            is_summary,
+            beatmap_id,
+            score_id,
+            filters,
+            ..
+        } => {
+            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.recent_play").await
+            {
+                return;
             }
-            Command::Recent {
-                username,
-                qq,
-                limit,
-                limit_end,
-                is_summary,
-                beatmap_id,
-                score_id,
-                filters,
-                ..
-            } => {
-                let spec = ScoreQuerySpec {
+
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        score_dedup().run_or_wait((uid, false, l, m), move || {
-                        let rl = rl.clone();
-                        let oa = oa.clone();
-                        async move {
-                            api::get_user_recent(&rl, &oa, uid, m, true, l, false).await.map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                    tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        score_dedup()
+                            .run_or_wait((uid, false, l, m), move || {
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_recent(&rl, &oa, uid, m, true, l, false)
+                                        .await
+                                        .map_err(score_fetch_error_handler(qq_for_err))
+                                        .map(Arc::new)
                                 }
-                                api_error_msg(qq_for_err, &e)
-                            }).map(Arc::new)
-                        }
-                    }).await.map(|arc| (*arc).clone())
+                            })
+                            .await
+                            .map(|arc| (*arc).clone())
                     }),
                     post_process: None,
-                    render: if *is_summary {
-                        RenderOutput::ScoreListCard
-                    } else {
-                        RenderOutput::SingleScoreCard
-                    },
+                    render: summary_or_single(*is_summary),
                     label_key: "fmt.recent_play",
                     noun_key: "query.noun_replay",
                     empty_msg_key: "query.no_records",
@@ -323,49 +508,52 @@ pub(crate) async fn handle_score_query(
                     preview_mods: None,
                     preview_gif: false,
                     preview_times: None,
-                };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    *limit_end,
-                    *is_summary,
-                    beatmap_id.map(|b| b as i64),
-                    *score_id,
-                    filters.as_deref(),
-                )
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    beatmap_id: beatmap_id.map(|b| b as i64),
+                    score_id: *score_id,
+                    limit: *limit,
+                    limit_end: *limit_end,
+                    is_summary: *is_summary,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        Command::Best {
+            username,
+            qq,
+            beatmap_id,
+            score_id,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+            ..
+        } => {
+            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.best_score").await
+            {
+                return;
             }
-            Command::Best {
-                username,
-                qq,
-                limit,
-                limit_end,
-                is_summary,
-                filters,
-                ..
-            } => {
-                let spec = ScoreQuerySpec {
+
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        best_scores_dedup().run_or_wait((uid, m, l), move || {
-                        let rl = rl.clone();
-                        let oa = oa.clone();
-                        async move {
-                            api::get_user_best(&rl, &oa, uid, m, l).await.map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                    tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        best_scores_dedup()
+                            .run_or_wait((uid, m, l), move || {
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_best(&rl, &oa, uid, m, l)
+                                        .await
+                                        .map_err(score_fetch_error_handler(qq_for_err))
                                 }
-                                api_error_msg(qq_for_err, &e)
                             })
-                        }
-                    }).await
+                            .await
                     }),
                     post_process: None,
-                    render: if *is_summary {
-                        RenderOutput::ScoreListCard
-                    } else {
-                        RenderOutput::SingleScoreCard
-                    },
+                    render: summary_or_single(*is_summary),
                     label_key: "fmt.best_score",
                     noun_key: "query.noun_best",
                     empty_msg_key: "query.no_records_best",
@@ -375,42 +563,49 @@ pub(crate) async fn handle_score_query(
                     preview_mods: None,
                     preview_gif: false,
                     preview_times: None,
-                };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    *limit_end,
-                    *is_summary,
-                    None,
-                    None,
-                    filters.as_deref(),
-                )
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    beatmap_id: beatmap_id.map(|b| b as i64),
+                    score_id: None,
+                    limit: *limit,
+                    limit_end: *limit_end,
+                    is_summary: *is_summary,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        Command::TodayBest {
+            username,
+            qq,
+            beatmap_id,
+            score_id,
+            limit,
+            limit_end,
+            is_summary,
+            filters,
+            ..
+        } => {
+            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.today_best").await
+            {
+                return;
             }
-            Command::TodayBest {
-                username,
-                qq,
-                limit,
-                limit_end,
-                is_summary,
-                filters,
-                ..
-            } => {
-                let spec = ScoreQuerySpec {
+
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        today_best_scores_dedup().run_or_wait((uid, m, l), move || {
-                        let rl = rl.clone();
-                        let oa = oa.clone();
-                        async move {
-                            api::get_user_best(&rl, &oa, uid, m, l).await.map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                    tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        today_best_scores_dedup()
+                            .run_or_wait((uid, m, l), move || {
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_best(&rl, &oa, uid, m, l)
+                                        .await
+                                        .map_err(score_fetch_error_handler(qq_for_err))
                                 }
-                                api_error_msg(qq_for_err, &e)
                             })
-                        }
-                    }).await
+                            .await
                     }),
                     post_process: Some(|scores| {
                         let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
@@ -420,11 +615,7 @@ pub(crate) async fn handle_score_query(
                                 .is_some_and(|dt| dt.naive_utc() > cutoff.naive_utc())
                         });
                     }),
-                    render: if *is_summary {
-                        RenderOutput::ScoreListCard
-                    } else {
-                        RenderOutput::SingleScoreCard
-                    },
+                    render: summary_or_single(*is_summary),
                     label_key: "fmt.today_best",
                     noun_key: "query.noun_today_best",
                     empty_msg_key: "query.no_records_today_best",
@@ -434,114 +625,91 @@ pub(crate) async fn handle_score_query(
                     preview_mods: None,
                     preview_gif: false,
                     preview_times: None,
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    beatmap_id: beatmap_id.map(|b| b as i64),
+                    score_id: *score_id,
+                    limit: *limit,
+                    limit_end: *limit_end,
+                    is_summary: *is_summary,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        Command::BeatmapAudio {
+            username,
+            qq,
+            limit,
+            filters,
+            score_id,
+            beatmap_id,
+            explicit_position,
+            mode: cmd_mode,
+            ..
+        } => {
+            // score_id 直达：获取成绩后播放其谱面音频，无需绑定。
+            if let Some(sid) = score_id {
+                let score = match fetch_score_by_id(ctx, *sid, msg.user_id, resp_tx).await {
+                    Some(s) => s,
+                    None => return,
                 };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    *limit_end,
-                    *is_summary,
-                    None,
-                    None,
-                    filters.as_deref(),
-                )
+                ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+                audio::render_audio(ctx, msg, resp_tx, &score, mode).await;
+                return;
             }
-            Command::BeatmapAudio {
-                username,
-                qq,
-                limit,
-                filters,
-                score_id,
-                beatmap_id,
-                explicit_position,
-                mode: cmd_mode,
-                ..
-            } => {
-                // score_id 直达：获取成绩后播放其谱面音频，无需绑定。
-                if let Some(sid) = score_id {
-                    let sid_val = *sid;
-                    let score_result = score_by_id_dedup()
-                        .run_or_wait(sid_val as i64, move || {
-                            let rate_limiter = ctx.rate_limiter.clone();
-                            let oauth = ctx.oauth.clone();
-                            async move {
-                                api::get_score_by_id(&rate_limiter, &oauth, sid_val)
-                                    .await
-                                    .map_err(|e| {
-                                        if !matches!(e, api::ApiError::NotFound) {
-                                            tracing::warn!(
-                                                error = ?e,
-                                                "{}",
-                                                log_fmt!("main.get_score_by_id_failed")
-                                            );
-                                        }
-                                        DedupApiError::from_api_error(&e)
-                                    })
-                            }
-                        })
-                        .await;
-                    let score = match score_result {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = resp_tx.send(score_by_id_err_msg(msg.user_id, &e)).await;
-                            return;
-                        }
-                    };
-                    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-                    audio::render_audio(ctx, msg, resp_tx, &score, mode).await;
-                    return;
-                }
 
-                // beatmap_id 直达：解析 beatmapset_id 后播放音频，无需绑定。
-                if let Some(bid) = beatmap_id {
-                    let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, *bid as i64).await {
+            // beatmap_id 直达：解析 beatmapset_id 后播放音频，无需绑定。
+            if let Some(bid) = beatmap_id {
+                let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, *bid as i64).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let _ = resp_tx.send(e.to_user_msg(msg.user_id)).await;
+                        return;
+                    }
+                };
+                ctx.last_beatmap.set(msg.group_id, *bid);
+                audio::render_audio_by_beatmapset_id(ctx, msg, resp_tx, beatmapset_id).await;
+                return;
+            }
+
+            // last_beatmap 缓存兜底：无参时直接用缓存 beatmap_id 转音频。
+            let has_target = username.is_some()
+                || qq.is_some()
+                || filters.as_ref().is_some_and(|f| !f.is_empty())
+                || *explicit_position
+                || cmd_mode.is_some();
+            if !has_target {
+                if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
+                    let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, bid as i64).await {
                         Ok(id) => id,
                         Err(e) => {
                             let _ = resp_tx.send(e.to_user_msg(msg.user_id)).await;
                             return;
                         }
                     };
-                    ctx.last_beatmap.set(msg.group_id, *bid);
                     audio::render_audio_by_beatmapset_id(ctx, msg, resp_tx, beatmapset_id).await;
                     return;
                 }
+            }
 
-                // last_beatmap 缓存兜底：无参时直接用缓存 beatmap_id 转音频。
-                let has_target = username.is_some()
-                    || qq.is_some()
-                    || filters.as_ref().is_some_and(|f| !f.is_empty())
-                    || *explicit_position
-                    || cmd_mode.is_some();
-                if !has_target {
-                    if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
-                        let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, bid as i64).await {
-                            Ok(id) => id,
-                            Err(e) => {
-                                let _ = resp_tx.send(e.to_user_msg(msg.user_id)).await;
-                                return;
-                            }
-                        };
-                        audio::render_audio_by_beatmapset_id(ctx, msg, resp_tx, beatmapset_id)
-                            .await;
-                        return;
-                    }
-                }
-
-                let spec = ScoreQuerySpec {
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        audio_score_dedup().run_or_wait((uid, true, l, m), move || {
-                        let rl = rl.clone();
-                        let oa = oa.clone();
-                        async move {
-                            api::get_user_recent(&rl, &oa, uid, m, true, l, false).await.map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                    tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        audio_score_dedup()
+                            .run_or_wait((uid, true, l, m), move || {
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_recent(&rl, &oa, uid, m, true, l, false)
+                                        .await
+                                        .map_err(score_fetch_error_handler(qq_for_err))
+                                        .map(Arc::new)
                                 }
-                                api_error_msg(qq_for_err, &e)
-                            }).map(Arc::new)
-                        }
-                    }).await.map(|arc| (*arc).clone())
+                            })
+                            .await
+                            .map(|arc| (*arc).clone())
                     }),
                     post_process: None,
                     render: RenderOutput::Audio,
@@ -554,119 +722,97 @@ pub(crate) async fn handle_score_query(
                     preview_mods: None,
                     preview_gif: false,
                     preview_times: None,
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    limit: *limit,
+                    limit_end: None,
+                    is_summary: false,
+                    beatmap_id: None,
+                    score_id: None,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        Command::BeatmapPreview {
+            username,
+            qq,
+            limit,
+            filters,
+            mods,
+            gif,
+            times,
+            score_id,
+            beatmap_id,
+            explicit_position,
+            mode: cmd_mode,
+            ..
+        } => {
+            // score_id 直达：获取成绩后渲染其谱面预览，无需绑定。
+            if let Some(sid) = score_id {
+                let score = match fetch_score_by_id(ctx, *sid, msg.user_id, resp_tx).await {
+                    Some(s) => s,
+                    None => return,
                 };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    None,
-                    false,
-                    None,
-                    None,
-                    filters.as_deref(),
+                let resolved_bid = score.beatmap_id as u32;
+                ctx.last_beatmap.set(msg.group_id, resolved_bid);
+                preview::render_beatmap_preview_by_id(
+                    ctx,
+                    msg,
+                    resp_tx,
+                    mods,
+                    *gif,
+                    times,
+                    resolved_bid,
+                    mode,
                 )
+                .await;
+                return;
             }
-            Command::BeatmapPreview {
-                username,
-                qq,
-                limit,
-                filters,
-                mods,
-                gif,
-                times,
-                score_id,
-                beatmap_id,
-                explicit_position,
-                mode: cmd_mode,
-                ..
-            } => {
-                // score_id 直达：获取成绩后渲染其谱面预览，无需绑定。
-                if let Some(sid) = score_id {
-                    let sid_val = *sid;
-                    let score_result = score_by_id_dedup()
-                        .run_or_wait(sid_val as i64, move || {
-                            let rate_limiter = ctx.rate_limiter.clone();
-                            let oauth = ctx.oauth.clone();
-                            async move {
-                                api::get_score_by_id(&rate_limiter, &oauth, sid_val)
-                                    .await
-                                    .map_err(|e| {
-                                        if !matches!(e, api::ApiError::NotFound) {
-                                            tracing::warn!(
-                                                error = ?e,
-                                                "{}",
-                                                log_fmt!("main.get_score_by_id_failed")
-                                            );
-                                        }
-                                        DedupApiError::from_api_error(&e)
-                                    })
-                            }
-                        })
-                        .await;
-                    let score = match score_result {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = resp_tx.send(score_by_id_err_msg(msg.user_id, &e)).await;
-                            return;
-                        }
-                    };
-                    let resolved_bid = score.beatmap_id as u32;
-                    ctx.last_beatmap.set(msg.group_id, resolved_bid);
+
+            // beatmap_id 直达
+            if let Some(bid) = beatmap_id {
+                ctx.last_beatmap.set(msg.group_id, *bid);
+                preview::render_beatmap_preview_by_id(
+                    ctx, msg, resp_tx, mods, *gif, times, *bid, mode,
+                )
+                .await;
+                return;
+            }
+
+            // last_beatmap 缓存兜底
+            let has_target = username.is_some()
+                || qq.is_some()
+                || filters.as_ref().is_some_and(|f| !f.is_empty())
+                || *explicit_position
+                || cmd_mode.is_some();
+            if !has_target {
+                if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
                     preview::render_beatmap_preview_by_id(
-                        ctx,
-                        msg,
-                        resp_tx,
-                        mods,
-                        *gif,
-                        times,
-                        resolved_bid,
-                        mode,
+                        ctx, msg, resp_tx, mods, *gif, times, bid, mode,
                     )
                     .await;
                     return;
                 }
+            }
 
-                // beatmap_id 直达
-                if let Some(bid) = beatmap_id {
-                    ctx.last_beatmap.set(msg.group_id, *bid);
-                    preview::render_beatmap_preview_by_id(
-                        ctx, msg, resp_tx, mods, *gif, times, *bid, mode,
-                    )
-                    .await;
-                    return;
-                }
-
-                // last_beatmap 缓存兜底
-                let has_target = username.is_some()
-                    || qq.is_some()
-                    || filters.as_ref().is_some_and(|f| !f.is_empty())
-                    || *explicit_position
-                    || cmd_mode.is_some();
-                if !has_target {
-                    if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
-                        preview::render_beatmap_preview_by_id(
-                            ctx, msg, resp_tx, mods, *gif, times, bid, mode,
-                        )
-                        .await;
-                        return;
-                    }
-                }
-
-                let spec = ScoreQuerySpec {
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        preview_score_dedup().run_or_wait((uid, true, l, m), move || {
-                        let rl = rl.clone();
-                        let oa = oa.clone();
-                        async move {
-                            api::get_user_recent(&rl, &oa, uid, m, true, l, false).await.map_err(|e| {
-                                if !matches!(e, api::ApiError::NotFound | api::ApiError::RateLimitedWithRetryAfter(_) | api::ApiError::ClientRateLimited) {
-                                    tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.score_query_error_details"));
+                        preview_score_dedup()
+                            .run_or_wait((uid, true, l, m), move || {
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_recent(&rl, &oa, uid, m, true, l, false)
+                                        .await
+                                        .map_err(score_fetch_error_handler(qq_for_err))
+                                        .map(Arc::new)
                                 }
-                                api_error_msg(qq_for_err, &e)
-                            }).map(Arc::new)
-                        }
-                    }).await.map(|arc| (*arc).clone())
+                            })
+                            .await
+                            .map(|arc| (*arc).clone())
                     }),
                     post_process: None,
                     render: RenderOutput::BeatmapPreview,
@@ -679,155 +825,70 @@ pub(crate) async fn handle_score_query(
                     preview_mods: mods.clone(),
                     preview_gif: *gif,
                     preview_times: times.clone(),
-                };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    None,
-                    false,
-                    None,
-                    None,
-                    filters.as_deref(),
-                )
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    limit: *limit,
+                    limit_end: None,
+                    is_summary: false,
+                    beatmap_id: None,
+                    score_id: None,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        Command::ScoreOnBeatmap {
+            username,
+            qq,
+            beatmap_id,
+            score_id,
+            filters,
+            limit,
+            limit_end,
+            is_all,
+            ..
+        } => {
+            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.beatmap_score")
+                .await
+            {
+                return;
             }
-            Command::ScoreOnBeatmap {
-                username,
-                qq,
-                beatmap_id,
-                score_id,
-                filters,
-                limit,
-                limit_end,
-                is_all,
-                ..
-            } => {
-                if let Some(sid) = score_id {
-                    let sid_val = *sid;
-                    let score_result = score_by_id_dedup()
-                        .run_or_wait(sid_val as i64, move || {
-                            let rate_limiter = ctx.rate_limiter.clone();
-                            let oauth = ctx.oauth.clone();
-                            async move {
-                                api::get_score_by_id(&rate_limiter, &oauth, sid_val)
-                                    .await
-                                    .map_err(|e| {
-                                        if !matches!(e, api::ApiError::NotFound) {
-                                            tracing::warn!(
-                                                error = ?e,
-                                                "{}",
-                                                log_fmt!("main.get_score_by_id_failed")
-                                            );
-                                        }
-                                        DedupApiError::from_api_error(&e)
-                                    })
-                            }
-                        })
-                        .await;
-                    let score = match score_result {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = resp_tx.send(score_by_id_err_msg(msg.user_id, &e)).await;
-                            return;
-                        }
-                    };
-                    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
-                    let user_id = score.user.user_id.unwrap_or(0);
-                    if user_id == 0 {
+
+            let resolved_bid = match beatmap_id {
+                Some(bid) => *bid as i64,
+                None => match ctx.last_beatmap.get(msg.group_id) {
+                    Some(bid) => bid as i64,
+                    None => {
                         let _ = resp_tx
                             .send(
-                                user_str("query.user_info_failed")
+                                user_str("query.need_beatmap_or_cache")
                                     .replace("{qq}", &msg.user_id.to_string()),
                             )
                             .await;
                         return;
                     }
-                    let user_stats = match api::fetch_user_stats_by_user_id(
-                        &ctx.rate_limiter,
-                        &ctx.oauth,
-                        user_id,
-                        mode,
-                    )
-                    .await
-                    {
-                        Ok(stats) => {
-                            if let Err(e) = ctx
-                                .storage
-                                .set_user_id(&stats.username, stats.user_id)
-                                .await
-                            {
-                                tracing::warn!(
-                                    username = %stats.username,
-                                    user_id = stats.user_id,
-                                    error = %e,
-                                    "{}",
-                                    log_fmt!("main.cache_user_id_failed")
-                                );
-                            }
-                            ctx.scheduler.trigger_update(user_id, mode).await;
-                            stats
-                        }
-                        Err(e) => {
-                            if !matches!(e, api::ApiError::NotFound) {
-                                tracing::warn!(
-                                    user_id = user_id,
-                                    error = ?e,
-                                    "{}",
-                                    log_fmt!("main.fetch_stats_score_id_failed")
-                                );
-                            }
-                            let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
-                            return;
-                        }
-                    };
-                    render_and_send_single_score(SingleScoreRenderParams {
-                        ctx,
-                        msg,
-                        resp_tx,
-                        score: &score,
-                        mode,
-                        user_stats: &user_stats,
-                        position: None,
-                        label: user_str("fmt.beatmap_score"),
-                    })
-                    .await;
-                    return;
-                }
-
-                let resolved_bid = match beatmap_id {
-                    Some(bid) => *bid as i64,
-                    None => match ctx.last_beatmap.get(msg.group_id) {
-                        Some(bid) => bid as i64,
-                        None => {
-                            let _ = resp_tx
-                                .send(
-                                    user_str("query.need_beatmap_or_cache")
-                                        .replace("{qq}", &msg.user_id.to_string()),
-                                )
-                                .await;
-                            return;
-                        }
-                    },
-                };
-                ctx.last_beatmap.set(msg.group_id, resolved_bid as u32);
-                let spec = ScoreQuerySpec {
+                },
+            };
+            ctx.last_beatmap.set(msg.group_id, resolved_bid as u32);
+            (
+                ScoreCommandConfig {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
                         beatmap_scores_dedup().run_or_wait((uid, resolved_bid, m, Some(l)), move || {
-                            let rl = rl.clone();
-                            let oa = oa.clone();
-                            async move {
-                                api::get_user_beatmap_scores_all(&rl, &oa, resolved_bid, uid, m, Some(l), false).await.map_err(|e| {
-                                    if !matches!(e, api::ApiError::NotFound) {
-                                        tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
-                                    }
-                                    match e {
-                                        api::ApiError::NotFound => user_str("query.no_score_on_map").replace("{qq}", &qq_for_err.to_string()),
-                                        other => api_error_msg(qq_for_err, &other),
-                                    }
-                                })
-                            }
-                        }).await
+                                let rl = rl.clone();
+                                let oa = oa.clone();
+                                async move {
+                                    api::get_user_beatmap_scores_all(&rl, &oa, resolved_bid, uid, m, Some(l), false).await.map_err(|e| {
+                                        if !matches!(e, api::ApiError::NotFound) {
+                                            tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
+                                        }
+                                        match e {
+                                            api::ApiError::NotFound => user_str("query.no_score_on_map").replace("{qq}", &qq_for_err.to_string()),
+                                            other => api_error_msg(qq_for_err, &other),
+                                        }
+                                    })
+                                }
+                            }).await
                     }),
                     post_process: None,
                     render: if *is_all || limit_end.is_some() {
@@ -844,44 +905,27 @@ pub(crate) async fn handle_score_query(
                     preview_mods: None,
                     preview_gif: false,
                     preview_times: None,
-                };
-                (
-                    spec,
-                    username.as_deref(),
-                    *qq,
-                    *limit,
-                    *limit_end,
-                    *is_all || limit_end.is_some(),
-                    Some(resolved_bid),
-                    *score_id,
-                    filters.as_deref(),
-                )
-            }
-            _ => return,
-        };
+                },
+                PipelineParams {
+                    username: username.as_deref(),
+                    qq: *qq,
+                    limit: *limit,
+                    limit_end: *limit_end,
+                    is_summary: *is_all || limit_end.is_some(),
+                    beatmap_id: Some(resolved_bid),
+                    score_id: *score_id,
+                    filters: filters.as_deref(),
+                },
+            )
+        }
+        _ => return,
+    };
 
-    run_score_query_pipeline(
-        spec,
-        PipelineParams {
-            username,
-            qq,
-            beatmap_id,
-            score_id,
-            limit,
-            limit_end,
-            is_summary,
-            filters,
-        },
-        ctx,
-        msg,
-        resp_tx,
-        mode,
-    )
-    .await;
+    run_score_query_pipeline(config, params, ctx, msg, resp_tx, mode).await;
 }
 
 async fn run_score_query_pipeline(
-    spec: ScoreQuerySpec,
+    config: ScoreCommandConfig,
     params: PipelineParams<'_>,
     ctx: &BotContext,
     msg: &QQMessage,
@@ -898,6 +942,21 @@ async fn run_score_query_pipeline(
         is_summary,
         filters,
     } = params;
+
+    let spec = ScoreQuerySpec {
+        fetch: config.fetch,
+        post_process: config.post_process,
+        render: config.render,
+        label_key: config.label_key,
+        noun_key: config.noun_key,
+        empty_msg_key: config.empty_msg_key,
+        truncate_bare_list: config.truncate_bare_list,
+        single_needs_backfill: config.single_needs_backfill,
+        api_fetch_limit: config.api_fetch_limit,
+        preview_mods: config.preview_mods,
+        preview_gif: config.preview_gif,
+        preview_times: config.preview_times,
+    };
 
     let is_self = username.is_none() && qq.is_none();
 
@@ -933,19 +992,7 @@ async fn run_score_query_pipeline(
 
         let user_stats = match stats_result {
             Ok(stats) => {
-                if let Err(e) = ctx
-                    .storage
-                    .set_user_id(&stats.username, stats.user_id)
-                    .await
-                {
-                    tracing::warn!(
-                        username = %stats.username,
-                        user_id = stats.user_id,
-                        error = %e,
-                        "{}",
-                        log_fmt!("main.cache_user_id_failed")
-                    );
-                }
+                cache_user_id(ctx, &stats).await;
                 stats
             }
             Err(e) => {
@@ -1006,13 +1053,7 @@ async fn run_score_query_pipeline(
     if let Some(bid) = beatmap_id {
         scores.retain(|s| s.beatmap_id == bid);
         if scores.is_empty() {
-            let _ = resp_tx
-                .send(
-                    user_str("query.no_match")
-                        .replace("{qq}", &msg.user_id.to_string())
-                        .replace("{name}", user_str(spec.noun_key)),
-                )
-                .await;
+            send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
         }
     }
@@ -1020,13 +1061,7 @@ async fn run_score_query_pipeline(
     if let Some(sid) = score_id {
         scores.retain(|s| s.score_id == sid as i64);
         if scores.is_empty() {
-            let _ = resp_tx
-                .send(
-                    user_str("query.no_match")
-                        .replace("{qq}", &msg.user_id.to_string())
-                        .replace("{name}", user_str(spec.noun_key)),
-                )
-                .await;
+            send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
         }
     }
@@ -1034,13 +1069,7 @@ async fn run_score_query_pipeline(
     if let Some(filters) = filters {
         scores.retain(|s| score_matches_filters(s, filters));
         if scores.is_empty() {
-            let _ = resp_tx
-                .send(
-                    user_str("query.no_match")
-                        .replace("{qq}", &msg.user_id.to_string())
-                        .replace("{name}", user_str(spec.noun_key)),
-                )
-                .await;
+            send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
         }
     }
@@ -1050,14 +1079,7 @@ async fn run_score_query_pipeline(
             let start = (limit - 1) as usize;
             let end = end as usize;
             if start >= scores.len() {
-                let _ = resp_tx
-                    .send(
-                        user_str("query.index_out_of_range")
-                            .replace("{qq}", &msg.user_id.to_string())
-                            .replace("{pos}", &limit.to_string())
-                            .replace("{name}", user_str(spec.noun_key))
-                            .replace("{total}", &scores.len().to_string()),
-                    )
+                send_index_out_of_range(resp_tx, msg.user_id, spec.noun_key, limit, scores.len())
                     .await;
                 return;
             }
@@ -1091,15 +1113,7 @@ async fn run_score_query_pipeline(
     } else {
         let index = (limit - 1) as usize;
         if index >= scores.len() {
-            let _ = resp_tx
-                .send(
-                    user_str("query.index_out_of_range")
-                        .replace("{qq}", &msg.user_id.to_string())
-                        .replace("{pos}", &limit.to_string())
-                        .replace("{name}", user_str(spec.noun_key))
-                        .replace("{total}", &scores.len().to_string()),
-                )
-                .await;
+            send_index_out_of_range(resp_tx, msg.user_id, spec.noun_key, limit, scores.len()).await;
             return;
         }
 

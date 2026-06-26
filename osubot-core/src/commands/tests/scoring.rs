@@ -1477,6 +1477,8 @@ fn test_best_self() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1494,6 +1496,8 @@ fn test_best_list_self() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             is_summary: true,
             limit_end: None,
@@ -1511,6 +1515,8 @@ fn test_best_mode() {
             mode: Some(GameMode::Taiko),
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1528,6 +1534,8 @@ fn test_best_username() {
             mode: None,
             username: Some("ZnCookie".to_string()),
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1545,6 +1553,8 @@ fn test_best_mention() {
             mode: None,
             username: None,
             qq: Some(123456),
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1562,6 +1572,8 @@ fn test_best_qq_in_text() {
             mode: None,
             username: None,
             qq: Some(123456),
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1579,6 +1591,8 @@ fn test_best_with_hash() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 3,
             is_summary: false,
             limit_end: None,
@@ -1596,6 +1610,8 @@ fn test_best_list_with_hash() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 5,
             is_summary: true,
             limit_end: None,
@@ -1613,6 +1629,8 @@ fn test_best_list_range() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 2,
             limit_end: Some(10),
             is_summary: true,
@@ -1630,6 +1648,8 @@ fn test_best_with_mods() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1647,6 +1667,8 @@ fn test_best_with_filters() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             is_summary: true,
             limit_end: None,
@@ -1664,6 +1686,8 @@ fn test_best_full_args() {
             mode: Some(GameMode::Catch),
             username: Some("ZnCookie".to_string()),
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 5,
             limit_end: Some(10),
             is_summary: true,
@@ -1699,6 +1723,8 @@ fn test_best_mode_no_space() {
             mode: Some(GameMode::Mania),
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1714,6 +1740,8 @@ fn test_best_group_name() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1731,6 +1759,8 @@ fn test_best_command_name() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             is_summary: false,
             limit_end: None,
@@ -1738,6 +1768,179 @@ fn test_best_command_name() {
         }
         .command_name(),
         "!b"
+    );
+}
+
+// === !b / !bs beatmap_id / score_id tests ===
+
+#[test]
+fn test_best_with_beatmap_id() {
+    let cmd = parse_command("!b 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_with_beatmap_id() {
+    let cmd = parse_command("!bs 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_score_id() {
+    let cmd = parse_command("!b 12345678901", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: Some(12345678901),
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_mode_and_beatmap_id() {
+    let cmd = parse_command("!b :1 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: Some(GameMode::Taiko),
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_list_with_mode_and_beatmap_id() {
+    let cmd = parse_command("!bs :2 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: Some(GameMode::Catch),
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_beatmap_id_and_user() {
+    let cmd = parse_command("!b 123456 ZnCookie", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_beatmap_id_and_mods() {
+    let cmd = parse_command("!b 123456 +HD", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: Some(vec!["mod=HD".to_string()]),
+        }
+    );
+}
+
+#[test]
+fn test_best_with_beatmap_id_and_qq() {
+    let cmd = parse_command("!b 123456 @123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: Some(123456),
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_summary: false,
+            filters: None,
+        }
+    );
+}
+
+#[test]
+fn test_best_with_beatmap_id_and_hash() {
+    let cmd = parse_command("!bs 123456 #3", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 3,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+        }
     );
 }
 
@@ -1750,6 +1953,8 @@ fn test_today_best_self() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1767,6 +1972,8 @@ fn test_today_best_mode() {
             mode: Some(GameMode::Taiko),
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1784,6 +1991,8 @@ fn test_today_best_username() {
             mode: None,
             username: Some("ZnCookie".to_string()),
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1801,6 +2010,8 @@ fn test_today_best_with_hash() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 3,
             limit_end: None,
             is_summary: false,
@@ -1818,6 +2029,8 @@ fn test_today_best_single_card() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             limit_end: None,
             is_summary: false,
@@ -1835,6 +2048,8 @@ fn test_today_best_range() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             limit_end: Some(5),
             is_summary: true,
@@ -1852,6 +2067,8 @@ fn test_today_best_with_mods() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1869,6 +2086,8 @@ fn test_today_best_with_mods_and_filters() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1886,6 +2105,8 @@ fn test_today_best_qq_equals() {
             mode: None,
             username: None,
             qq: Some(123456),
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1903,6 +2124,8 @@ fn test_today_best_mention() {
             mode: None,
             username: None,
             qq: Some(123456),
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1920,6 +2143,8 @@ fn test_today_best_bare_number() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 5,
             limit_end: None,
             is_summary: false,
@@ -1937,6 +2162,8 @@ fn test_today_best_bare_range() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 2,
             limit_end: Some(10),
             is_summary: true,
@@ -1954,6 +2181,8 @@ fn test_today_best_full_args() {
             mode: Some(GameMode::Taiko),
             username: Some("ZnCookie".to_string()),
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 1,
             limit_end: Some(3),
             is_summary: true,
@@ -1974,6 +2203,8 @@ fn test_today_best_group_name() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -1991,6 +2222,8 @@ fn test_today_best_command_name() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 20,
             limit_end: None,
             is_summary: true,
@@ -2126,6 +2359,8 @@ fn test_best_bare_number_limit() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 5,
             limit_end: None,
             is_summary: false,
@@ -2143,6 +2378,8 @@ fn test_best_list_bare_range() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 2,
             limit_end: Some(10),
             is_summary: true,
@@ -2160,6 +2397,8 @@ fn test_best_list_bare_range_with_space() {
             mode: None,
             username: None,
             qq: None,
+            beatmap_id: None,
+            score_id: None,
             limit: 2,
             limit_end: Some(10),
             is_summary: true,
