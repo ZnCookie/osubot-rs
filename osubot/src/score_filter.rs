@@ -23,6 +23,17 @@ pub(crate) enum FilterOp {
 /// Returns `None` for malformed input (empty key, empty value, or no
 /// recognized operator).
 pub(crate) fn parse_filter_token(token: &str) -> Option<(String, FilterOp, String)> {
+    // 全角 → ASCII 标准化（支持中文输入法直接输入的运算符）
+    let normalized: String = token
+        .chars()
+        .map(|c| match c {
+            '\u{FF01}' => '!',
+            '\u{FF1D}' => '=',
+            '\u{FF1E}' => '>',
+            '\u{FF1C}' => '<',
+            other => other,
+        })
+        .collect();
     // Two-character operators must be tried before single-character ones
     // to avoid `>=` being misread as `>` with value `=5`.
     const TWO_CHAR_OPS: &[(&str, FilterOp)] = &[
@@ -32,9 +43,9 @@ pub(crate) fn parse_filter_token(token: &str) -> Option<(String, FilterOp, Strin
         ("!=", FilterOp::NotEq),
     ];
     for (op_str, op) in TWO_CHAR_OPS {
-        if let Some(idx) = token.find(op_str) {
-            let key = &token[..idx];
-            let value = &token[idx + op_str.len()..];
+        if let Some(idx) = normalized.find(op_str) {
+            let key = &normalized[..idx];
+            let value = &normalized[idx + op_str.len()..];
             if key.is_empty() {
                 continue;
             }
@@ -51,9 +62,9 @@ pub(crate) fn parse_filter_token(token: &str) -> Option<(String, FilterOp, Strin
         ('<', FilterOp::Lt),
     ];
     for (op_char, op) in ONE_CHAR_OPS {
-        if let Some(idx) = token.find(*op_char) {
-            let key = &token[..idx];
-            let value = &token[idx + 1..];
+        if let Some(idx) = normalized.find(*op_char) {
+            let key = &normalized[..idx];
+            let value = &normalized[idx + 1..];
             if key.is_empty() {
                 continue;
             }
@@ -157,8 +168,26 @@ pub(crate) fn apply_filter(score: &Score, key: &str, op: FilterOp, value: &str) 
             .is_ok_and(|v| cmp_i64(score.score_value, v, op)),
         "acc" => value
             .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.accuracy * 100.0, v, op, 0.5)),
+            .is_ok_and(|v| cmp_f64(score.accuracy * 100.0, v, op, 0.01)),
         "mod" => apply_mod_filter(score, op, value),
+        "ar" => value
+            .parse::<f64>()
+            .is_ok_and(|v| cmp_f64(score.ar, v, op, 0.01)),
+        "od" => value
+            .parse::<f64>()
+            .is_ok_and(|v| cmp_f64(score.od, v, op, 0.01)),
+        "cs" => value
+            .parse::<f64>()
+            .is_ok_and(|v| cmp_f64(score.cs, v, op, 0.01)),
+        "hp" => value
+            .parse::<f64>()
+            .is_ok_and(|v| cmp_f64(score.hp, v, op, 0.01)),
+        "star" => value
+            .parse::<f64>()
+            .is_ok_and(|v| cmp_f64(score.star_rating, v, op, 0.01)),
+        "bpm" => value
+            .parse::<f64>()
+            .is_ok_and(|v| cmp_f64(score.bpm, v, op, 0.5)),
         _ => true, // 未知 key 静默忽略（与现有行为一致）
     }
 }
@@ -384,6 +413,75 @@ mod filter_tests {
         assert_eq!(parse_filter_token(""), None);
     }
 
+    // === 全角运算符 ===
+
+    #[test]
+    fn parse_fullwidth_eq() {
+        let r = parse_filter_token("miss＝0");
+        assert_eq!(r, Some(("miss".to_string(), FilterOp::Eq, "0".to_string())));
+    }
+
+    #[test]
+    fn parse_fullwidth_eqeq() {
+        let r = parse_filter_token("miss＝＝0");
+        assert_eq!(
+            r,
+            Some(("miss".to_string(), FilterOp::EqEq, "0".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_fullwidth_noteq() {
+        let r = parse_filter_token("miss！＝0");
+        assert_eq!(
+            r,
+            Some(("miss".to_string(), FilterOp::NotEq, "0".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_fullwidth_gt() {
+        let r = parse_filter_token("miss＞0");
+        assert_eq!(r, Some(("miss".to_string(), FilterOp::Gt, "0".to_string())));
+    }
+
+    #[test]
+    fn parse_fullwidth_lt() {
+        let r = parse_filter_token("miss＜10");
+        assert_eq!(
+            r,
+            Some(("miss".to_string(), FilterOp::Lt, "10".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_fullwidth_gteq() {
+        let r = parse_filter_token("miss＞＝5");
+        assert_eq!(
+            r,
+            Some(("miss".to_string(), FilterOp::GtEq, "5".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_fullwidth_lteq() {
+        let r = parse_filter_token("miss＜＝10");
+        assert_eq!(
+            r,
+            Some(("miss".to_string(), FilterOp::LtEq, "10".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_mixed_ascii_and_fullwidth() {
+        // 全角 ＝ 在 key 侧不影响 ASCII == 解析
+        let r = parse_filter_token("star＝＝6.32");
+        assert_eq!(
+            r,
+            Some(("star".to_string(), FilterOp::EqEq, "6.32".to_string()))
+        );
+    }
+
     // === Integer key × 6 operators ===
 
     fn score_with_miss(miss: i64) -> Score {
@@ -532,11 +630,11 @@ mod filter_tests {
     #[test]
     fn acc_eq_tolerance() {
         // accuracy is stored as fraction; 95.5% → 0.955
-        let s = score_with_acc(0.954);
-        // 0.954 * 100 = 95.4, |95.4 - 95.5| = 0.1 < 0.5
+        let s = score_with_acc(0.95505);
+        // 0.95505 * 100 = 95.505, |95.505 - 95.5| = 0.005 < 0.01
         assert!(score_matches_filters(&s, &["acc=95.5".to_string()]));
-        let s = score_with_acc(0.946);
-        // 94.6, |94.6 - 95.5| = 0.9 >= 0.5
+        let s = score_with_acc(0.95515);
+        // 95.515, |95.515 - 95.5| = 0.015 >= 0.01
         assert!(!score_matches_filters(&s, &["acc=95.5".to_string()]));
     }
 
@@ -552,6 +650,217 @@ mod filter_tests {
         assert!(score_matches_filters(&s, &["acc>90".to_string()]));
         assert!(score_matches_filters(&s, &["acc>=95".to_string()]));
         assert!(!score_matches_filters(&s, &["acc>95".to_string()]));
+    }
+
+    // === Float key (ar/od/cs/hp) — tolerance 0.1 ===
+
+    fn score_with_ar(v: f64) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.ar = v;
+        s
+    }
+
+    fn score_with_od(v: f64) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.od = v;
+        s
+    }
+
+    fn score_with_cs(v: f64) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.cs = v;
+        s
+    }
+
+    fn score_with_hp(v: f64) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.hp = v;
+        s
+    }
+
+    #[test]
+    fn ar_eq_tolerance() {
+        let s = score_with_ar(9.0);
+        assert!(score_matches_filters(&s, &["ar=9".to_string()]));
+        let s = score_with_ar(9.005);
+        // |9.005 - 9| = 0.005 < 0.01
+        assert!(score_matches_filters(&s, &["ar=9".to_string()]));
+        let s = score_with_ar(9.015);
+        // |9.015 - 9| = 0.015 >= 0.01
+        assert!(!score_matches_filters(&s, &["ar=9".to_string()]));
+    }
+
+    #[test]
+    fn ar_ordering() {
+        let s = score_with_ar(9.0);
+        assert!(score_matches_filters(&s, &["ar>8".to_string()]));
+        assert!(score_matches_filters(&s, &["ar>=9".to_string()]));
+        assert!(!score_matches_filters(&s, &["ar>9".to_string()]));
+        assert!(score_matches_filters(&s, &["ar<10".to_string()]));
+        assert!(score_matches_filters(&s, &["ar<=9".to_string()]));
+        assert!(!score_matches_filters(&s, &["ar<9".to_string()]));
+    }
+
+    #[test]
+    fn od_eq_tolerance() {
+        let s = score_with_od(8.0);
+        assert!(score_matches_filters(&s, &["od=8".to_string()]));
+        let s = score_with_od(8.008);
+        // |8.008 - 8| = 0.008 < 0.01
+        assert!(score_matches_filters(&s, &["od=8".to_string()]));
+        let s = score_with_od(8.015);
+        // |8.015 - 8| = 0.015 >= 0.01
+        assert!(!score_matches_filters(&s, &["od=8".to_string()]));
+    }
+
+    #[test]
+    fn od_noteq() {
+        let s = score_with_od(8.2);
+        assert!(score_matches_filters(&s, &["od!=8".to_string()]));
+        let s = score_with_od(8.003);
+        // |8.003 - 8| = 0.003 < 0.01 → within tolerance, so == 8
+        assert!(!score_matches_filters(&s, &["od!=8".to_string()]));
+    }
+
+    #[test]
+    fn cs_eq_tolerance() {
+        let s = score_with_cs(4.0);
+        assert!(score_matches_filters(&s, &["cs=4".to_string()]));
+        let s = score_with_cs(4.005);
+        assert!(score_matches_filters(&s, &["cs=4".to_string()]));
+        let s = score_with_cs(4.015);
+        assert!(!score_matches_filters(&s, &["cs=4".to_string()]));
+    }
+
+    #[test]
+    fn cs_ordering() {
+        let s = score_with_cs(4.0);
+        assert!(score_matches_filters(&s, &["cs>=4".to_string()]));
+        assert!(score_matches_filters(&s, &["cs<=4".to_string()]));
+        assert!(!score_matches_filters(&s, &["cs>4".to_string()]));
+    }
+
+    #[test]
+    fn hp_eq_tolerance() {
+        let s = score_with_hp(6.0);
+        assert!(score_matches_filters(&s, &["hp=6".to_string()]));
+        let s = score_with_hp(6.008);
+        assert!(score_matches_filters(&s, &["hp=6".to_string()]));
+        let s = score_with_hp(6.015);
+        assert!(!score_matches_filters(&s, &["hp=6".to_string()]));
+    }
+
+    #[test]
+    fn hp_ordering() {
+        let s = score_with_hp(6.0);
+        assert!(score_matches_filters(&s, &["hp>5".to_string()]));
+        assert!(score_matches_filters(&s, &["hp>=6".to_string()]));
+        assert!(!score_matches_filters(&s, &["hp<6".to_string()]));
+    }
+
+    // === Float key (star) — tolerance 0.01 ===
+
+    fn score_with_star(v: f64) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.star_rating = v;
+        s
+    }
+
+    #[test]
+    fn star_eq_tolerance() {
+        let s = score_with_star(6.32);
+        assert!(score_matches_filters(&s, &["star=6.32".to_string()]));
+        let s = score_with_star(6.325);
+        // |6.325 - 6.32| = 0.005 < 0.01
+        assert!(score_matches_filters(&s, &["star=6.32".to_string()]));
+        let s = score_with_star(6.335);
+        // |6.335 - 6.32| = 0.015 >= 0.01
+        assert!(!score_matches_filters(&s, &["star=6.32".to_string()]));
+    }
+
+    #[test]
+    fn star_ordering() {
+        let s = score_with_star(6.5);
+        assert!(score_matches_filters(&s, &["star>6".to_string()]));
+        assert!(score_matches_filters(&s, &["star>=6.5".to_string()]));
+        assert!(!score_matches_filters(&s, &["star>6.5".to_string()]));
+        assert!(score_matches_filters(&s, &["star<7".to_string()]));
+        assert!(score_matches_filters(&s, &["star<=6.5".to_string()]));
+        assert!(!score_matches_filters(&s, &["star<6.5".to_string()]));
+    }
+
+    // === Float key (bpm) — tolerance 0.5 ===
+
+    fn score_with_bpm(v: f64) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.bpm = v;
+        s
+    }
+
+    #[test]
+    fn bpm_eq_tolerance() {
+        let s = score_with_bpm(200.0);
+        assert!(score_matches_filters(&s, &["bpm=200".to_string()]));
+        let s = score_with_bpm(200.3);
+        // |200.3 - 200| = 0.3 < 0.5
+        assert!(score_matches_filters(&s, &["bpm=200".to_string()]));
+        let s = score_with_bpm(200.6);
+        // |200.6 - 200| = 0.6 >= 0.5
+        assert!(!score_matches_filters(&s, &["bpm=200".to_string()]));
+    }
+
+    #[test]
+    fn bpm_ordering() {
+        let s = score_with_bpm(200.0);
+        assert!(score_matches_filters(&s, &["bpm>180".to_string()]));
+        assert!(score_matches_filters(&s, &["bpm>=200".to_string()]));
+        assert!(!score_matches_filters(&s, &["bpm>200".to_string()]));
+        assert!(score_matches_filters(&s, &["bpm<220".to_string()]));
+        assert!(score_matches_filters(&s, &["bpm<=200".to_string()]));
+        assert!(!score_matches_filters(&s, &["bpm<200".to_string()]));
+    }
+
+    #[test]
+    fn bpm_noteq() {
+        let s = score_with_bpm(200.3);
+        // |200.3 - 200| = 0.3 < 0.5 → within tolerance, so == 200
+        assert!(!score_matches_filters(&s, &["bpm!=200".to_string()]));
+        let s = score_with_bpm(201.0);
+        // |201.0 - 200| = 1.0 >= 0.5 → not equal
+        assert!(score_matches_filters(&s, &["bpm!=200".to_string()]));
+    }
+
+    // === 全角运算符集成测试 ===
+
+    #[test]
+    fn fullwidth_ar_filter() {
+        let s = score_with_ar(9.0);
+        assert!(score_matches_filters(&s, &["ar＝9".to_string()]));
+        assert!(score_matches_filters(&s, &["ar＞8".to_string()]));
+        assert!(!score_matches_filters(&s, &["ar＞9".to_string()]));
+    }
+
+    #[test]
+    fn fullwidth_star_filter() {
+        let s = score_with_star(6.32);
+        assert!(score_matches_filters(&s, &["star＝＝6.32".to_string()]));
+        assert!(score_matches_filters(&s, &["star＞6".to_string()]));
+        assert!(!score_matches_filters(&s, &["star＜6".to_string()]));
+    }
+
+    #[test]
+    fn fullwidth_bpm_filter() {
+        let s = score_with_bpm(200.0);
+        assert!(score_matches_filters(&s, &["bpm＝200".to_string()]));
+        assert!(score_matches_filters(&s, &["bpm＞＝200".to_string()]));
+        assert!(!score_matches_filters(&s, &["bpm＜＝180".to_string()]));
+    }
+
+    #[test]
+    fn fullwidth_noteq_filter() {
+        let s = score_with_cs(4.0);
+        assert!(score_matches_filters(&s, &["cs！＝5".to_string()]));
+        assert!(!score_matches_filters(&s, &["cs！＝4".to_string()]));
     }
 
     #[test]
