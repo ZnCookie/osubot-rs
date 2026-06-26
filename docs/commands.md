@@ -93,8 +93,11 @@
 
 ### 条件过滤
 
-`key=value`（`miss` `combo` `pp` `score` `acc` `mod`）
-- 操作符：`=` `==` `!=` `>` `<` `>=` `<=`
+`key=value`（`miss` `combo` `pp` `score` `acc` `mod` `ar` `od` `cs` `hp` `star` `bpm`）
+- 操作符：`=` `==` `!=` `>` `<` `>=` `<=`（也支持全角：`＝` `！` `＞` `＜`）
 - `+MODS` 等价于 `mod=MODS`，可混用：`+HDHR,miss=1`
-- 浮点键（`pp`/`acc`）`==`/`!=` 容差 0.5
+- `==`/`!=` 容差因字段而异：
+  - `pp`/`acc`/`bpm`：0.5
+  - `ar`/`od`/`cs`/`hp`：0.1
+  - `star`：0.01
 - `mod=` 子集包含，`mod==` 精确集合，`mod!=` 子集取反
