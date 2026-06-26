@@ -31,7 +31,7 @@
 |--------|------|----------|
 | `SemiActive` | 4 小时内有游玩 | `semi_active_interval_hours`（默认 4h） |
 | `Normal` | 当天有游玩 | `normal_interval_hours`（默认 8h） |
-| `NoRecent` | 最近 8 小时无游玩 | `no_recent_interval_hours`（默认 6h） |
+| `NoRecent` | 距上次更新 < 8h（短间隔重试） | `no_recent_interval_hours`（默认 6h） |
 | `Inactive` | 超过 48 小时无游玩 | `inactive_interval_hours`（默认 48h） |
 | `UserNotExists` | osu! API 返回 404 | `user_not_exists_interval_hours`（默认 24h） |
 
