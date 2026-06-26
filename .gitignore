@@ -5,6 +5,7 @@ osubot.toml
 .env
 *.key
 *.pem
+.codegraph/
 .claude/
 docs/superpowers/
 .superpowers/
