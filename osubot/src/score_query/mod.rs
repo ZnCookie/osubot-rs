@@ -1029,10 +1029,10 @@ async fn run_score_query_pipeline(
         }
     }
 
-    let filter_offset = indexed.first().map(|(i, _)| *i).unwrap_or(0);
-    scores = indexed.into_iter().map(|(_, s)| s).collect();
+    if is_summary || limit_end.is_some() {
+        let mut original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+        scores = indexed.into_iter().map(|(_, s)| s).collect();
 
-    let list_index_offset: usize = if is_summary || limit_end.is_some() {
         if let Some(end) = limit_end {
             let start = (limit - 1) as usize;
             let end = end as usize;
@@ -1044,18 +1044,15 @@ async fn run_score_query_pipeline(
             let end = end.min(scores.len());
             let _ = scores.drain(..start);
             scores.truncate(end - start);
-            start
+            let _ = original_indices.drain(..start);
+            original_indices.truncate(end - start);
         } else {
             if spec.truncate_bare_list {
                 scores.truncate(limit as usize);
+                original_indices.truncate(limit as usize);
             }
-            filter_offset
         }
-    } else {
-        0
-    };
 
-    if is_summary || limit_end.is_some() {
         render_and_send_score_list(
             ctx,
             msg,
@@ -1065,10 +1062,11 @@ async fn run_score_query_pipeline(
             &resolved_username,
             mode,
             spec.label_key,
-            list_index_offset,
+            &original_indices,
         )
         .await;
     } else {
+        scores = indexed.into_iter().map(|(_, s)| s).collect();
         let index = (limit - 1) as usize;
         if index >= scores.len() {
             send_index_out_of_range(resp_tx, msg.user_id, spec.noun_key, limit, scores.len()).await;

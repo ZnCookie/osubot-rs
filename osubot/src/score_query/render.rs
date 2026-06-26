@@ -215,7 +215,7 @@ pub(super) async fn render_and_send_score_list(
     username: &str,
     mode: GameMode,
     label_key: &'static str,
-    index_offset: usize,
+    original_indices: &[usize],
 ) {
     let cover_images: Vec<Option<image::DynamicImage>> = join_all(scores.iter().map(|s| {
         let url = s.cover_url.clone();
@@ -314,7 +314,7 @@ pub(super) async fn render_and_send_score_list(
             count_text: score_count_text,
             cover_images,
             hero_cover_url: &hero_cover_url,
-            index_offset,
+            original_indices,
         }),
     )
     .await;
@@ -340,12 +340,24 @@ pub(super) async fn render_and_send_score_list(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "{}", log_fmt!("main.render_score_list_failed_text"));
-            let text = format_scores(&scores, username, mode, user_str(label_key));
+            let text = format_scores(
+                &scores,
+                username,
+                mode,
+                user_str(label_key),
+                original_indices,
+            );
             let _ = resp_tx.send(text).await;
         }
         Err(_) => {
             warn!("{}", log_fmt!("main.render_score_list_timeout_text"));
-            let text = format_scores(&scores, username, mode, user_str(label_key));
+            let text = format_scores(
+                &scores,
+                username,
+                mode,
+                user_str(label_key),
+                original_indices,
+            );
             let _ = resp_tx.send(text).await;
         }
     }

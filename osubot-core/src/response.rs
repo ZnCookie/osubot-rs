@@ -193,7 +193,13 @@ pub fn format_score(
 
 /// 将多条成绩格式化为带序号的并列中文成绩列表文本。
 #[must_use]
-pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, label: &str) -> String {
+pub fn format_scores(
+    scores: &[Score],
+    username: &str,
+    mode: GameMode,
+    label: &str,
+    original_indices: &[usize],
+) -> String {
     let mode_name = mode.name();
 
     let mut lines = {
@@ -205,6 +211,7 @@ pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, label: &s
     };
 
     for (i, score) in scores.iter().enumerate() {
+        let idx = original_indices.get(i).copied().unwrap_or(i) + 1;
         let fields = compute_display_fields(score);
 
         let mods_str = if score.mods.is_empty() {
@@ -224,7 +231,7 @@ pub fn format_scores(scores: &[Score], username: &str, mode: GameMode, label: &s
             "#{idx} {artist} - {title} [{version}]\n\
                 {stars} [{length}]\n\
                 [{rank}] {pp}pp // {acc} // {combo}{mods} // {play_time}",
-            idx = i + 1,
+            idx = idx,
             artist = score.artist,
             title = score.title,
             version = score.version,
@@ -841,6 +848,7 @@ mod tests {
             "TestUser",
             GameMode::Osu,
             user_str("fmt.recent_pass"),
+            &[0, 1],
         );
         assert!(output.contains("HD HR"));
         assert!(output.contains("2024/01/01 08:00:00"));
