@@ -1,4 +1,4 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 use osubot_plugin_sdk::*;
 
@@ -133,4 +133,61 @@ pub extern "C" fn on_tick(tick_ptr: u32, tick_len: u32) -> *const u8 {
     // 通过 Command::group_id 或 QQMessage::group_id 获取并存储群号，
     // 然后在 on_tick 中使用存储的群号调用 send_group_msg。
     return_ptr(&serde_json::json!({"ok": true, "tick_id": tick_id}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metadata_deserialize() {
+        let json = r#"{"protocol_version":1,"name":"test","version":"1.0","author":"me","description":"desc","commands":["!ping"]}"#;
+        let meta: PluginMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.protocol_version, 1);
+        assert_eq!(meta.name, "test");
+        assert_eq!(meta.commands, vec!["!ping"]);
+    }
+
+    #[test]
+    fn test_command_serde() {
+        let cmd = Command {
+            command_type: "!hello".into(),
+            user_id: Some(123),
+            group_id: Some(456),
+            message: Some("hello".into()),
+            mode: None,
+            username: Some("test_user".into()),
+            qq: Some(789),
+            beatmap_id: None,
+            score_id: None,
+            filters: None,
+            limit: None,
+            limit_end: None,
+            mentioned_user_id: None,
+            explicit_position: false,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: Command = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.command_type, "!hello");
+        assert!(matches!(deserialized.group_id, Some(456)));
+        assert!(matches!(deserialized.username, Some(ref n) if n == "test_user"));
+    }
+
+    #[test]
+    fn test_plugin_action_serde() {
+        let handled = PluginAction::Handled("response".into());
+        let json = serde_json::to_string(&handled).unwrap();
+        let deserialized: PluginAction = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, PluginAction::Handled(ref s) if s == "response"));
+
+        let next = PluginAction::Next;
+        let json = serde_json::to_string(&next).unwrap();
+        let deserialized: PluginAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{:?}", deserialized), "Next");
+
+        let intercepted = PluginAction::Intercepted;
+        let json = serde_json::to_string(&intercepted).unwrap();
+        let deserialized: PluginAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{:?}", deserialized), "Intercepted");
+    }
 }
