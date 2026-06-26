@@ -1,4 +1,5 @@
-use osubot_core::types::Score;
+use osubot_core::apply_mod_adjustment_to_stats;
+use osubot_core::types::{GameMode, Score};
 
 /// Comparison operator extracted from a `key<op>value` filter token.
 /// `=` maps to `Eq` and `==` maps to `EqEq`. For numeric keys the two
@@ -132,7 +133,7 @@ pub(crate) fn parse_mod_filter(value: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-pub(crate) fn score_matches_filters(score: &Score, filters: &[String]) -> bool {
+pub(crate) fn score_matches_filters(score: &Score, filters: &[String], mode: GameMode) -> bool {
     for filter in filters {
         // Special case: "mod=" with empty value means "no required mods" → passes.
         // parse_filter_token rejects empty values, so we handle this here to
@@ -143,14 +144,20 @@ pub(crate) fn score_matches_filters(score: &Score, filters: &[String]) -> bool {
         let Some((key, op, value)) = parse_filter_token(filter) else {
             return false;
         };
-        if !apply_filter(score, &key, op, &value) {
+        if !apply_filter(score, &key, op, &value, mode) {
             return false;
         }
     }
     true
 }
 
-pub(crate) fn apply_filter(score: &Score, key: &str, op: FilterOp, value: &str) -> bool {
+pub(crate) fn apply_filter(
+    score: &Score,
+    key: &str,
+    op: FilterOp,
+    value: &str,
+    mode: GameMode,
+) -> bool {
     match key {
         "miss" => value
             .parse::<i64>()
@@ -170,24 +177,68 @@ pub(crate) fn apply_filter(score: &Score, key: &str, op: FilterOp, value: &str) 
             .parse::<f64>()
             .is_ok_and(|v| cmp_f64(score.accuracy * 100.0, v, op, 0.01)),
         "mod" => apply_mod_filter(score, op, value),
-        "ar" => value
-            .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.ar, v, op, 0.01)),
-        "od" => value
-            .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.od, v, op, 0.01)),
-        "cs" => value
-            .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.cs, v, op, 0.01)),
-        "hp" => value
-            .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.hp, v, op, 0.01)),
+        "ar" => {
+            let (eff_ar, _, _, _) = apply_mod_adjustment_to_stats(
+                mode,
+                score.ar,
+                score.od,
+                score.cs,
+                score.hp,
+                &score.mods,
+            );
+            value
+                .parse::<f64>()
+                .is_ok_and(|v| cmp_f64(eff_ar, v, op, 0.01))
+        }
+        "od" => {
+            let (_, eff_od, _, _) = apply_mod_adjustment_to_stats(
+                mode,
+                score.ar,
+                score.od,
+                score.cs,
+                score.hp,
+                &score.mods,
+            );
+            value
+                .parse::<f64>()
+                .is_ok_and(|v| cmp_f64(eff_od, v, op, 0.01))
+        }
+        "cs" => {
+            let (_, _, eff_cs, _) = apply_mod_adjustment_to_stats(
+                mode,
+                score.ar,
+                score.od,
+                score.cs,
+                score.hp,
+                &score.mods,
+            );
+            value
+                .parse::<f64>()
+                .is_ok_and(|v| cmp_f64(eff_cs, v, op, 0.01))
+        }
+        "hp" => {
+            let (_, _, _, eff_hp) = apply_mod_adjustment_to_stats(
+                mode,
+                score.ar,
+                score.od,
+                score.cs,
+                score.hp,
+                &score.mods,
+            );
+            value
+                .parse::<f64>()
+                .is_ok_and(|v| cmp_f64(eff_hp, v, op, 0.01))
+        }
         "star" => value
             .parse::<f64>()
             .is_ok_and(|v| cmp_f64(score.star_rating, v, op, 0.01)),
-        "bpm" => value
-            .parse::<f64>()
-            .is_ok_and(|v| cmp_f64(score.bpm, v, op, 0.5)),
+        "bpm" => {
+            let clock_rate = score.mods.clock_rate().unwrap_or(1.0);
+            let eff_bpm = score.bpm * clock_rate;
+            value
+                .parse::<f64>()
+                .is_ok_and(|v| cmp_f64(eff_bpm, v, op, 0.5))
+        }
         _ => true, // 未知 key 静默忽略（与现有行为一致）
     }
 }
@@ -517,63 +568,151 @@ mod filter_tests {
     #[test]
     fn miss_eq() {
         let s = score_with_miss(5);
-        assert!(score_matches_filters(&s, &["miss=5".to_string()]));
-        assert!(score_matches_filters(&s, &["miss==5".to_string()]));
-        assert!(!score_matches_filters(&s, &["miss=4".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["miss=5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["miss==5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["miss=4".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn miss_noteq() {
         let s = score_with_miss(5);
-        assert!(score_matches_filters(&s, &["miss!=4".to_string()]));
-        assert!(!score_matches_filters(&s, &["miss!=5".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["miss!=4".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["miss!=5".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn miss_ordering() {
         let s = score_with_miss(5);
-        assert!(score_matches_filters(&s, &["miss>4".to_string()]));
-        assert!(score_matches_filters(&s, &["miss>=5".to_string()]));
-        assert!(!score_matches_filters(&s, &["miss>5".to_string()]));
-        assert!(score_matches_filters(&s, &["miss<6".to_string()]));
-        assert!(score_matches_filters(&s, &["miss<=5".to_string()]));
-        assert!(!score_matches_filters(&s, &["miss<5".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["miss>4".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["miss>=5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["miss>5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["miss<6".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["miss<=5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["miss<5".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn combo_eq() {
         let s = score_with_combo(500);
-        assert!(score_matches_filters(&s, &["combo=500".to_string()]));
-        assert!(!score_matches_filters(&s, &["combo=501".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["combo=500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["combo=501".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn combo_noteq() {
         let s = score_with_combo(500);
-        assert!(score_matches_filters(&s, &["combo!=501".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["combo!=501".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn combo_ordering() {
         let s = score_with_combo(500);
-        assert!(score_matches_filters(&s, &["combo>499".to_string()]));
-        assert!(score_matches_filters(&s, &["combo>=500".to_string()]));
-        assert!(score_matches_filters(&s, &["combo<501".to_string()]));
-        assert!(score_matches_filters(&s, &["combo<=500".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["combo>499".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["combo>=500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["combo<501".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["combo<=500".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn score_value_eq() {
         let s = score_with_score_value(1_000_000);
-        assert!(score_matches_filters(&s, &["score=1000000".to_string()]));
-        assert!(!score_matches_filters(&s, &["score=999999".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["score=1000000".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["score=999999".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn score_value_ordering() {
         let s = score_with_score_value(1_000_000);
-        assert!(score_matches_filters(&s, &["score>999999".to_string()]));
-        assert!(!score_matches_filters(&s, &["score<999999".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["score>999999".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["score<999999".to_string()],
+            GameMode::Osu
+        ));
     }
 
     // === Float key (pp) — tolerance 0.5 ===
@@ -582,29 +721,65 @@ mod filter_tests {
     fn pp_eq_tolerance() {
         let s = score_with_pp(500.4);
         // |500.4 - 500| = 0.4 < 0.5
-        assert!(score_matches_filters(&s, &["pp=500".to_string()]));
-        assert!(score_matches_filters(&s, &["pp==500".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["pp=500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["pp==500".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_pp(500.6);
         // |500.6 - 500| = 0.6 >= 0.5
-        assert!(!score_matches_filters(&s, &["pp=500".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["pp=500".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn pp_noteq_tolerance() {
         let s = score_with_pp(500.6);
-        assert!(score_matches_filters(&s, &["pp!=500".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["pp!=500".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_pp(500.4);
-        assert!(!score_matches_filters(&s, &["pp!=500".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["pp!=500".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn pp_ordering_strict() {
         let s = score_with_pp(500.0);
         // Strict: 500.0 is NOT > 500.0
-        assert!(!score_matches_filters(&s, &["pp>500".to_string()]));
-        assert!(score_matches_filters(&s, &["pp>=500".to_string()]));
-        assert!(!score_matches_filters(&s, &["pp<500".to_string()]));
-        assert!(score_matches_filters(&s, &["pp<=500".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["pp>500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["pp>=500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["pp<500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["pp<=500".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
@@ -614,15 +789,31 @@ mod filter_tests {
         // `pp>500`: 499.6 is not strictly > 500. If `>` were degraded
         // to `a > b - tol = a > 499.5`, the assertion would fail.
         let s = score_with_pp(499.6);
-        assert!(score_matches_filters(&s, &["pp=500".to_string()]));
-        assert!(!score_matches_filters(&s, &["pp>500".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["pp=500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["pp>500".to_string()],
+            GameMode::Osu
+        ));
 
         // Symmetric case: 500.4 is within == tolerance of 500 and
         // strictly < 501. Strict `<500` must reject it. If `<` were
         // degraded to `a < b + tol = a < 500.5`, the assertion would fail.
         let s2 = score_with_pp(500.4);
-        assert!(score_matches_filters(&s2, &["pp=500".to_string()]));
-        assert!(!score_matches_filters(&s2, &["pp<500".to_string()]));
+        assert!(score_matches_filters(
+            &s2,
+            &["pp=500".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s2,
+            &["pp<500".to_string()],
+            GameMode::Osu
+        ));
     }
 
     // === Float key (acc) ===
@@ -632,24 +823,48 @@ mod filter_tests {
         // accuracy is stored as fraction; 95.5% → 0.955
         let s = score_with_acc(0.95505);
         // 0.95505 * 100 = 95.505, |95.505 - 95.5| = 0.005 < 0.01
-        assert!(score_matches_filters(&s, &["acc=95.5".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["acc=95.5".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_acc(0.95515);
         // 95.515, |95.515 - 95.5| = 0.015 >= 0.01
-        assert!(!score_matches_filters(&s, &["acc=95.5".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["acc=95.5".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn acc_alias_accuracy() {
         let s = score_with_acc(0.955);
-        assert!(score_matches_filters(&s, &["accuracy=95.5".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["accuracy=95.5".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn acc_ordering_strict() {
         let s = score_with_acc(0.95);
-        assert!(score_matches_filters(&s, &["acc>90".to_string()]));
-        assert!(score_matches_filters(&s, &["acc>=95".to_string()]));
-        assert!(!score_matches_filters(&s, &["acc>95".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["acc>90".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["acc>=95".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["acc>95".to_string()],
+            GameMode::Osu
+        ));
     }
 
     // === Float key (ar/od/cs/hp) — tolerance 0.1 ===
@@ -681,81 +896,185 @@ mod filter_tests {
     #[test]
     fn ar_eq_tolerance() {
         let s = score_with_ar(9.0);
-        assert!(score_matches_filters(&s, &["ar=9".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["ar=9".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_ar(9.005);
         // |9.005 - 9| = 0.005 < 0.01
-        assert!(score_matches_filters(&s, &["ar=9".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["ar=9".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_ar(9.015);
         // |9.015 - 9| = 0.015 >= 0.01
-        assert!(!score_matches_filters(&s, &["ar=9".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["ar=9".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn ar_ordering() {
         let s = score_with_ar(9.0);
-        assert!(score_matches_filters(&s, &["ar>8".to_string()]));
-        assert!(score_matches_filters(&s, &["ar>=9".to_string()]));
-        assert!(!score_matches_filters(&s, &["ar>9".to_string()]));
-        assert!(score_matches_filters(&s, &["ar<10".to_string()]));
-        assert!(score_matches_filters(&s, &["ar<=9".to_string()]));
-        assert!(!score_matches_filters(&s, &["ar<9".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["ar>8".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["ar>=9".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["ar>9".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["ar<10".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["ar<=9".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["ar<9".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn od_eq_tolerance() {
         let s = score_with_od(8.0);
-        assert!(score_matches_filters(&s, &["od=8".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["od=8".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_od(8.008);
         // |8.008 - 8| = 0.008 < 0.01
-        assert!(score_matches_filters(&s, &["od=8".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["od=8".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_od(8.015);
         // |8.015 - 8| = 0.015 >= 0.01
-        assert!(!score_matches_filters(&s, &["od=8".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["od=8".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn od_noteq() {
         let s = score_with_od(8.2);
-        assert!(score_matches_filters(&s, &["od!=8".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["od!=8".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_od(8.003);
         // |8.003 - 8| = 0.003 < 0.01 → within tolerance, so == 8
-        assert!(!score_matches_filters(&s, &["od!=8".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["od!=8".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn cs_eq_tolerance() {
         let s = score_with_cs(4.0);
-        assert!(score_matches_filters(&s, &["cs=4".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["cs=4".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_cs(4.005);
-        assert!(score_matches_filters(&s, &["cs=4".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["cs=4".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_cs(4.015);
-        assert!(!score_matches_filters(&s, &["cs=4".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["cs=4".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn cs_ordering() {
         let s = score_with_cs(4.0);
-        assert!(score_matches_filters(&s, &["cs>=4".to_string()]));
-        assert!(score_matches_filters(&s, &["cs<=4".to_string()]));
-        assert!(!score_matches_filters(&s, &["cs>4".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["cs>=4".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["cs<=4".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["cs>4".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn hp_eq_tolerance() {
         let s = score_with_hp(6.0);
-        assert!(score_matches_filters(&s, &["hp=6".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["hp=6".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_hp(6.008);
-        assert!(score_matches_filters(&s, &["hp=6".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["hp=6".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_hp(6.015);
-        assert!(!score_matches_filters(&s, &["hp=6".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["hp=6".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn hp_ordering() {
         let s = score_with_hp(6.0);
-        assert!(score_matches_filters(&s, &["hp>5".to_string()]));
-        assert!(score_matches_filters(&s, &["hp>=6".to_string()]));
-        assert!(!score_matches_filters(&s, &["hp<6".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["hp>5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["hp>=6".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["hp<6".to_string()],
+            GameMode::Osu
+        ));
     }
 
     // === Float key (star) — tolerance 0.01 ===
@@ -769,24 +1088,60 @@ mod filter_tests {
     #[test]
     fn star_eq_tolerance() {
         let s = score_with_star(6.32);
-        assert!(score_matches_filters(&s, &["star=6.32".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["star=6.32".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_star(6.325);
         // |6.325 - 6.32| = 0.005 < 0.01
-        assert!(score_matches_filters(&s, &["star=6.32".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["star=6.32".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_star(6.335);
         // |6.335 - 6.32| = 0.015 >= 0.01
-        assert!(!score_matches_filters(&s, &["star=6.32".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["star=6.32".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn star_ordering() {
         let s = score_with_star(6.5);
-        assert!(score_matches_filters(&s, &["star>6".to_string()]));
-        assert!(score_matches_filters(&s, &["star>=6.5".to_string()]));
-        assert!(!score_matches_filters(&s, &["star>6.5".to_string()]));
-        assert!(score_matches_filters(&s, &["star<7".to_string()]));
-        assert!(score_matches_filters(&s, &["star<=6.5".to_string()]));
-        assert!(!score_matches_filters(&s, &["star<6.5".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["star>6".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["star>=6.5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["star>6.5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["star<7".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["star<=6.5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["star<6.5".to_string()],
+            GameMode::Osu
+        ));
     }
 
     // === Float key (bpm) — tolerance 0.5 ===
@@ -800,34 +1155,78 @@ mod filter_tests {
     #[test]
     fn bpm_eq_tolerance() {
         let s = score_with_bpm(200.0);
-        assert!(score_matches_filters(&s, &["bpm=200".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm=200".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_bpm(200.3);
         // |200.3 - 200| = 0.3 < 0.5
-        assert!(score_matches_filters(&s, &["bpm=200".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm=200".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_bpm(200.6);
         // |200.6 - 200| = 0.6 >= 0.5
-        assert!(!score_matches_filters(&s, &["bpm=200".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["bpm=200".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn bpm_ordering() {
         let s = score_with_bpm(200.0);
-        assert!(score_matches_filters(&s, &["bpm>180".to_string()]));
-        assert!(score_matches_filters(&s, &["bpm>=200".to_string()]));
-        assert!(!score_matches_filters(&s, &["bpm>200".to_string()]));
-        assert!(score_matches_filters(&s, &["bpm<220".to_string()]));
-        assert!(score_matches_filters(&s, &["bpm<=200".to_string()]));
-        assert!(!score_matches_filters(&s, &["bpm<200".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm>180".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm>=200".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["bpm>200".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm<220".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm<=200".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["bpm<200".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn bpm_noteq() {
         let s = score_with_bpm(200.3);
         // |200.3 - 200| = 0.3 < 0.5 → within tolerance, so == 200
-        assert!(!score_matches_filters(&s, &["bpm!=200".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["bpm!=200".to_string()],
+            GameMode::Osu
+        ));
         let s = score_with_bpm(201.0);
         // |201.0 - 200| = 1.0 >= 0.5 → not equal
-        assert!(score_matches_filters(&s, &["bpm!=200".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm!=200".to_string()],
+            GameMode::Osu
+        ));
     }
 
     // === 全角运算符集成测试 ===
@@ -835,76 +1234,148 @@ mod filter_tests {
     #[test]
     fn fullwidth_ar_filter() {
         let s = score_with_ar(9.0);
-        assert!(score_matches_filters(&s, &["ar＝9".to_string()]));
-        assert!(score_matches_filters(&s, &["ar＞8".to_string()]));
-        assert!(!score_matches_filters(&s, &["ar＞9".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["ar＝9".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["ar＞8".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["ar＞9".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn fullwidth_star_filter() {
         let s = score_with_star(6.32);
-        assert!(score_matches_filters(&s, &["star＝＝6.32".to_string()]));
-        assert!(score_matches_filters(&s, &["star＞6".to_string()]));
-        assert!(!score_matches_filters(&s, &["star＜6".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["star＝＝6.32".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["star＞6".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["star＜6".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn fullwidth_bpm_filter() {
         let s = score_with_bpm(200.0);
-        assert!(score_matches_filters(&s, &["bpm＝200".to_string()]));
-        assert!(score_matches_filters(&s, &["bpm＞＝200".to_string()]));
-        assert!(!score_matches_filters(&s, &["bpm＜＝180".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm＝200".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm＞＝200".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["bpm＜＝180".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn fullwidth_noteq_filter() {
         let s = score_with_cs(4.0);
-        assert!(score_matches_filters(&s, &["cs！＝5".to_string()]));
-        assert!(!score_matches_filters(&s, &["cs！＝4".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["cs！＝5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["cs！＝4".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_matches_single_mod() {
         let score = make_score(mods_with(&["HD"]));
-        assert!(score_matches_filters(&score, &["mod=HD".to_string()]));
+        assert!(score_matches_filters(
+            &score,
+            &["mod=HD".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_does_not_match_missing_mod() {
         let score = make_score(mods_with(&["DT"]));
-        assert!(!score_matches_filters(&score, &["mod=HD".to_string()]));
+        assert!(!score_matches_filters(
+            &score,
+            &["mod=HD".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_subset_match() {
         // score has HDDT; mod=HD should still match (subset)
         let score = make_score(mods_with(&["HD", "DT"]));
-        assert!(score_matches_filters(&score, &["mod=HD".to_string()]));
+        assert!(score_matches_filters(
+            &score,
+            &["mod=HD".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_combined_concat() {
         let score = make_score(mods_with(&["HD", "DT"]));
-        assert!(score_matches_filters(&score, &["mod=HDDT".to_string()]));
+        assert!(score_matches_filters(
+            &score,
+            &["mod=HDDT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_combined_concat_no_match() {
         // score has only HD; mod=HDDT requires DT too
         let score = make_score(mods_with(&["HD"]));
-        assert!(!score_matches_filters(&score, &["mod=HDDT".to_string()]));
+        assert!(!score_matches_filters(
+            &score,
+            &["mod=HDDT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_comma_separated() {
         let score = make_score(mods_with(&["HD", "DT"]));
-        assert!(score_matches_filters(&score, &["mod=HD,DT".to_string()]));
+        assert!(score_matches_filters(
+            &score,
+            &["mod=HD,DT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_no_mods_score() {
         let score = make_score(GameMods::new());
-        assert!(!score_matches_filters(&score, &["mod=HD".to_string()]));
+        assert!(!score_matches_filters(
+            &score,
+            &["mod=HD".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
@@ -913,7 +1384,8 @@ mod filter_tests {
         let score = make_score(mods_with(&["HD"]));
         assert!(score_matches_filters(
             &score,
-            &["mod=HD".to_string(), "miss=0".to_string()]
+            &["mod=HD".to_string(), "miss=0".to_string()],
+            GameMode::Osu
         ));
     }
 
@@ -921,28 +1393,44 @@ mod filter_tests {
     fn mod_filter_odd_length_fails_match() {
         // mod=HDT (odd length) → entry cannot be parsed → false
         let score = make_score(mods_with(&["HD", "DT"]));
-        assert!(!score_matches_filters(&score, &["mod=HDT".to_string()]));
+        assert!(!score_matches_filters(
+            &score,
+            &["mod=HDT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_filter_empty_value_no_op() {
         // mod= with no mods → no required mods → passes
         let score = make_score(GameMods::new());
-        assert!(score_matches_filters(&score, &["mod=".to_string()]));
+        assert!(score_matches_filters(
+            &score,
+            &["mod=".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_eqeq_exact_match() {
         // 纯 DT 分数匹配 mod==DT
         let s = make_score(mods_with(&["DT"]));
-        assert!(score_matches_filters(&s, &["mod==DT".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["mod==DT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_eqeq_does_not_match_superset() {
         // HDDT 不匹配 mod==DT
         let s = make_score(mods_with(&["HD", "DT"]));
-        assert!(!score_matches_filters(&s, &["mod==DT".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["mod==DT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
@@ -952,33 +1440,57 @@ mod filter_tests {
 
         // No mods → matches mod==NM
         let s = make_score(GameMods::new());
-        assert!(score_matches_filters(&s, &["mod==NM".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["mod==NM".to_string()],
+            GameMode::Osu
+        ));
 
         // Has any mod → does NOT match mod==NM
         let s = make_score(mods_with(&["HD"]));
-        assert!(!score_matches_filters(&s, &["mod==NM".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["mod==NM".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_eq_subset_still_works() {
         // mod=DT (单 =) 是子集匹配
         let s = make_score(mods_with(&["HD", "DT"]));
-        assert!(score_matches_filters(&s, &["mod=DT".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["mod=DT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
     fn mod_noteq_negation_of_subset() {
         // 纯 HD 不包含 DT → 匹配 mod!=DT
         let s = make_score(mods_with(&["HD"]));
-        assert!(score_matches_filters(&s, &["mod!=DT".to_string()]));
+        assert!(score_matches_filters(
+            &s,
+            &["mod!=DT".to_string()],
+            GameMode::Osu
+        ));
 
         // 纯 DT 包含 DT → 不匹配 mod!=DT
         let s = make_score(mods_with(&["DT"]));
-        assert!(!score_matches_filters(&s, &["mod!=DT".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["mod!=DT".to_string()],
+            GameMode::Osu
+        ));
 
         // HDDT 包含 DT → 不匹配 mod!=DT
         let s = make_score(mods_with(&["HD", "DT"]));
-        assert!(!score_matches_filters(&s, &["mod!=DT".to_string()]));
+        assert!(!score_matches_filters(
+            &s,
+            &["mod!=DT".to_string()],
+            GameMode::Osu
+        ));
     }
 
     #[test]
@@ -987,7 +1499,7 @@ mod filter_tests {
         let s = make_score(mods_with(&["HD"]));
         for op_filter in &["mod>DT", "mod<DT", "mod>=DT", "mod<=DT"] {
             assert!(
-                score_matches_filters(&s, &[op_filter.to_string()]),
+                score_matches_filters(&s, &[op_filter.to_string()], GameMode::Osu),
                 "{op_filter} should silently pass"
             );
         }
@@ -1043,5 +1555,150 @@ mod filter_tests {
         assert!(cmp_f64(499.4, 500.0, FilterOp::Lt, 0.5));
         assert!(cmp_f64(499.6, 500.0, FilterOp::Lt, 0.5));
         assert!(cmp_f64(500.0, 500.0, FilterOp::LtEq, 0.5));
+    }
+
+    // === Mod-adjusted filtering tests ===
+
+    #[test]
+    fn dt_increases_ar_for_filter() {
+        // Base AR=9, DT makes effective AR≈10.67 (capped at 11)
+        let mut s = make_score(mods_with(&["DT"]));
+        s.ar = 9.0;
+        // ar>10 should match because DT raises AR above 10
+        assert!(score_matches_filters(
+            &s,
+            &["ar>10".to_string()],
+            GameMode::Osu
+        ));
+        // ar>11 should NOT match (AR capped at 11)
+        assert!(!score_matches_filters(
+            &s,
+            &["ar>11".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn dt_increases_od_for_filter() {
+        // Base OD=8, DT makes effective OD higher
+        let mut s = make_score(mods_with(&["DT"]));
+        s.od = 8.0;
+        // od>9 should match because DT raises OD
+        assert!(score_matches_filters(
+            &s,
+            &["od>9".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn dt_increases_bpm_for_filter() {
+        // Base BPM=180, DT makes effective BPM=270
+        let mut s = make_score(mods_with(&["DT"]));
+        s.bpm = 180.0;
+        // bpm>200 should match because DT raises BPM to 270
+        assert!(score_matches_filters(
+            &s,
+            &["bpm>200".to_string()],
+            GameMode::Osu
+        ));
+        // bpm=270 should match
+        assert!(score_matches_filters(
+            &s,
+            &["bpm=270".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn ht_decreases_bpm_for_filter() {
+        // Base BPM=200, HT makes effective BPM=150
+        let mut s = make_score(mods_with(&["HT"]));
+        s.bpm = 200.0;
+        // bpm<160 should match because HT lowers BPM to 150
+        assert!(score_matches_filters(
+            &s,
+            &["bpm<160".to_string()],
+            GameMode::Osu
+        ));
+        // bpm=150 should match
+        assert!(score_matches_filters(
+            &s,
+            &["bpm=150".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn hr_increases_ar_od_cs_hp_for_filter() {
+        // HR scales AR, OD, CS, HP
+        let mut s = make_score(mods_with(&["HR"]));
+        s.ar = 5.0;
+        s.od = 5.0;
+        s.cs = 4.0;
+        s.hp = 5.0;
+        // HR: ar→7, od→7, cs→5.2, hp→7
+        assert!(score_matches_filters(
+            &s,
+            &["ar>6".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["od>6".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["cs>5".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["hp>6".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn no_mod_uses_base_values() {
+        let mut s = make_score(GameMods::new());
+        s.ar = 9.0;
+        s.bpm = 180.0;
+        // Without mods, filters compare against base values
+        assert!(score_matches_filters(
+            &s,
+            &["ar=9".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["bpm=180".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["ar>9".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn custom_dt_rate_adjusts_bpm() {
+        // DA with custom speed change (1.25x DT)
+        use rosu_mods::generated_mods::DoubleTimeOsu;
+        let mut mods = GameMods::new();
+        mods.insert(rosu_mods::GameMod::DoubleTimeOsu(DoubleTimeOsu {
+            speed_change: Some(1.25),
+            ..Default::default()
+        }));
+        let mut s = make_score(mods);
+        s.bpm = 200.0;
+        // BPM * 1.25 = 250
+        assert!(score_matches_filters(
+            &s,
+            &["bpm=250".to_string()],
+            GameMode::Osu
+        ));
     }
 }

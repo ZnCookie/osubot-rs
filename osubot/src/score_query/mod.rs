@@ -1047,7 +1047,7 @@ async fn run_score_query_pipeline(
     }
 
     if let Some(filters) = filters {
-        indexed.retain(|(_, s)| score_matches_filters(s, filters));
+        indexed.retain(|(_, s)| score_matches_filters(s, filters, mode));
         if indexed.is_empty() {
             send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
             return;
