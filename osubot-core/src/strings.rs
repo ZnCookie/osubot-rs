@@ -158,6 +158,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.resolve_score_user_lookup_bound_failed" => "resolve_score_user: 已绑定用户的 API 查找失败",
     "main.handle_score_query_start" => "handle_score_query: 开始",
     "main.handle_score_query_bound" => "handle_score_query: 已绑定用户, user_id={user_id}, username={username}",
+    "main.score_query_command" => "成绩查询命令",
     "main.score_query_failed" => "成绩查询失败",
     "main.score_query_error_details" => "成绩查询错误详情",
     "main.resolve_bound_user_failed" => "resolve: 已绑定用户的 API 查找失败",
