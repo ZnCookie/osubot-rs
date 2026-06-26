@@ -1,5 +1,7 @@
 use super::*;
 
+const ENRICH_CONCURRENCY: usize = 3;
+
 pub(super) struct SingleScoreRenderParams<'a> {
     pub(super) ctx: &'a BotContext,
     pub(super) msg: &'a QQMessage,
@@ -245,8 +247,10 @@ pub(super) async fn render_and_send_score_list(
                     (i, s)
                 })
             });
-            let enriched: Vec<(usize, Score)> =
-                stream::iter(futs).buffer_unordered(3).collect().await;
+            let enriched: Vec<(usize, Score)> = stream::iter(futs)
+                .buffer_unordered(ENRICH_CONCURRENCY)
+                .collect()
+                .await;
             for (i, s) in enriched {
                 owned[i] = Some(s);
             }

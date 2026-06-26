@@ -372,6 +372,7 @@ async fn handle_score_id_render(
         score,
         mode,
         user_stats: &user_stats,
+        // TODO: 对于 !b <score_id> 等场景，可考虑额外 API 调用获取排名
         position: None,
         label: user_str(label),
     })
@@ -568,7 +569,7 @@ pub(crate) async fn handle_score_query(
                     username: username.as_deref(),
                     qq: *qq,
                     beatmap_id: beatmap_id.map(|b| b as i64),
-                    score_id: None,
+                    score_id: *score_id, // 已由 try_score_id_early_return 处理，此处仅保持一致性
                     limit: *limit,
                     limit_end: *limit_end,
                     is_summary: *is_summary,
@@ -1059,6 +1060,7 @@ async fn run_score_query_pipeline(
     }
 
     if let Some(sid) = score_id {
+        // PipelineParams.score_id 为 u64，Score.score_id 为 i64，需转换
         scores.retain(|s| s.score_id == sid as i64);
         if scores.is_empty() {
             send_no_match(resp_tx, msg.user_id, spec.noun_key).await;
