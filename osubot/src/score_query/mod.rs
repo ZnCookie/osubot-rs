@@ -1029,11 +1029,9 @@ async fn run_score_query_pipeline(
         }
     }
 
-    let original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
-    scores = indexed.into_iter().map(|(_, s)| s).collect();
-
     if is_summary || limit_end.is_some() {
-        let mut original_indices = original_indices;
+        let mut original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+        scores = indexed.into_iter().map(|(_, s)| s).collect();
 
         if let Some(end) = limit_end {
             let start = (limit - 1) as usize;
@@ -1068,6 +1066,7 @@ async fn run_score_query_pipeline(
         )
         .await;
     } else {
+        scores = indexed.into_iter().map(|(_, s)| s).collect();
         let index = (limit - 1) as usize;
         if index >= scores.len() {
             send_index_out_of_range(resp_tx, msg.user_id, spec.noun_key, limit, scores.len()).await;
