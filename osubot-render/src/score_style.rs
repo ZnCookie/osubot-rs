@@ -603,16 +603,6 @@ mod tests {
     fn test_wrap_score_html_uses_css_variables() {
         let data = make_test_score_data();
         let html = wrap_score_html(&data);
-        // Debug: print first 500 chars if render failed
-        if html.len() < 100 {
-            eprintln!("=== SHORT HTML len={} ===\n{}", html.len(), html);
-        } else {
-            eprintln!(
-                "=== HTML len={} ===\n{}",
-                html.len(),
-                &html[..html.len().min(2000)]
-            );
-        }
         assert!(html.contains("--score-hue: 200"), "missing hue CSS var");
         assert!(html.contains("--score-sat: 60%"), "missing sat CSS var");
         assert!(
