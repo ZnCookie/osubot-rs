@@ -24,6 +24,10 @@ fn tera_instance() -> &'static Tera {
 pub(crate) fn render(name: &str, ctx: &Context) -> String {
     tera_instance()
         .render(name, ctx)
+        .map_err(|e| {
+            eprintln!("Tera render error for '{name}': {:#}", e);
+            e
+        })
         .unwrap_or_else(|e| format!("Tera render error: {e}"))
 }
 
