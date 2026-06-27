@@ -24,7 +24,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libcairo2-dev libpango1.0-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev liblzma-dev libzstd-dev
 
       - name: Setup nightly for udeps
         run: rustup toolchain install nightly
@@ -79,7 +79,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libcairo2-dev libpango1.0-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev liblzma-dev libzstd-dev
 
       - name: Cache cargo registry
         uses: actions/cache@v5
@@ -155,10 +155,9 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-librsvg
-            mingw-w64-x86_64-cairo
-            mingw-w64-x86_64-glib2
-            mingw-w64-x86_64-pango
+            mingw-w64-x86_64-fontconfig
+            mingw-w64-x86_64-xz
+            mingw-w64-x86_64-zstd
             mingw-w64-x86_64-pkgconf
             zip
 
