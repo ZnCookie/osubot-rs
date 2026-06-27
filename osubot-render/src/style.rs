@@ -8,13 +8,6 @@ pub(crate) fn escape_html(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 /// Wrap osu! profile page HTML fragment with the necessary CSS.
 ///
 /// `avatar_data_uri` should be a `data:image/...;base64,...` URI produced by
@@ -27,40 +20,18 @@ pub fn wrap_osu_profile_html(
     avatar_data_uri: &str,
     username: &str,
 ) -> String {
-    let avatar_img = if avatar_data_uri.is_empty() {
-        String::new()
-    } else {
-        format!(
-            r#"<div style="display:flex;justify-content:center;align-items:center;margin-bottom:20px">
-<img src="{}" style="width:200px;height:200px;border-radius:50%">
-</div>"#,
-            escape_attr(avatar_data_uri)
-        )
-    };
     let css = PROFILE_CSS
         .replace("{{PROFILE_HUE}}", &profile_hue.to_string())
         .replace(
             "{{VIEWPORT_WIDTH}}",
             &crate::PROFILE_VIEWPORT_WIDTH.to_string(),
         );
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<style>
-{css}
-</style>
-</head>
-<body>
-{avatar_img}
-<div class="user-name" style="text-align:center;margin-bottom:20px">{}</div>
-<hr style="border:0;height:1px;background:#ffffff;margin:20px 0">
-{html}
-</body>
-</html>"#,
-        escape_html(username)
-    )
+    let mut ctx = tera::Context::new();
+    ctx.insert("html", html);
+    ctx.insert("avatar_data_uri", avatar_data_uri);
+    ctx.insert("username", username);
+    ctx.insert("css", &css);
+    crate::template::render("profile.html", &ctx)
 }
 
 /// 构造 `render_profile_card` 喂给渲染器的最终 HTML 字符串：
@@ -92,10 +63,14 @@ fn format_pp_delta(delta: f64) -> String {
     }
 }
 
-/// 渲染 pp 变化 HTML(已带 `user-pp-change` 类和 up/down/zero 颜色)
+/// 渲染 pp 变化 HTML（已转义，可安全用于 Tera `| safe`）。
+///
+/// 输出格式: `<span class="user-pp-change up|down|zero">±N</span>`
+/// 所有数值通过固定格式字符串构造，不含未转义的用户输入。
+///
 /// `None` → 空字符串
 #[must_use]
-pub fn format_pp_change_html(change: Option<f64>) -> String {
+pub(crate) fn format_pp_change_html(change: Option<f64>) -> String {
     match change {
         Some(delta) if delta > 0.0 => {
             format!(
@@ -114,10 +89,14 @@ pub fn format_pp_change_html(change: Option<f64>) -> String {
     }
 }
 
-/// 渲染 rank 变化 HTML(已带 `rank-change` 类和 up/down/zero 颜色)
+/// 渲染 rank 变化 HTML（已转义，可安全用于 Tera `| safe`）。
+///
+/// 输出格式: `<span class="rank-change up|down|zero">±N</span>`
+/// 所有数值通过固定格式字符串构造，不含未转义的用户输入。
+///
 /// `None` → 空字符串
 #[must_use]
-pub fn format_rank_change_html(change: Option<i64>) -> String {
+pub(crate) fn format_rank_change_html(change: Option<i64>) -> String {
     match change {
         Some(delta) if delta > 0 => format!(r#"<span class="rank-change up">+{}</span>"#, delta),
         Some(delta) if delta < 0 => format!(r#"<span class="rank-change down">{}</span>"#, delta),

@@ -6,6 +6,7 @@ pub mod score_list_style;
 pub mod score_style;
 pub mod style;
 pub mod svg_css;
+pub mod template;
 
 use base64::Engine;
 use image::{imageops, GenericImageView};

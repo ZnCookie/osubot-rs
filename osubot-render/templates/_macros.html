@@ -1,0 +1,63 @@
+{# rank_badge 宏 #}
+{% macro rank_badge(rank_class, rank_display) %}
+<div class="rank {{ rank_class }}">{{ rank_display }}</div>
+{% endmacro %}
+
+{# stat_bar 宏 #}
+{% macro stat_bar(label, base_pct, base_val, eff_pct, eff_val, eff_gt, eff_lt, has_eff, fill_diff_up, fill_diff_down) %}
+<div class="stat-row">
+<span class="label">{{ label }}</span>
+<div class="track">
+<div class="fill" style="width:{{ base_pct }}%"></div>
+{% if has_eff %}
+{% if eff_gt %}
+<div class="fill-over" style="left:calc({{ base_pct }}% - 2px); width:calc({{ fill_diff_up }}% + 2px)"></div>
+{% elif eff_lt %}
+<div class="fill-under" style="left:calc({{ eff_pct }}% - 2px); width:calc({{ fill_diff_down }}% + 2px)"></div>
+{% endif %}
+{% endif %}
+</div>
+<span class="val">
+{% if has_eff %}
+{% if eff_gt or eff_lt %}
+<span class="{% if eff_gt %}val-eff-up{% elif eff_lt %}val-eff-down{% endif %}">{{ eff_val }}</span>
+<span>[{{ base_val }}]</span>
+{% else %}
+<span>{{ eff_val }}</span>
+{% endif %}
+{% else %}
+<span>{{ base_val }}</span>
+{% endif %}
+</span>
+</div>
+{% endmacro %}
+
+{# mini_card 宏 #}
+{% macro mini_card(idx, card) %}
+<div class="mini-card">
+{% if card.cover_data_uri %}
+<div class="cover-strip" style="background-image: url(&quot;{{ card.cover_data_uri | safe }}&quot;);">
+{% else %}
+<div class="cover-strip">
+{% endif %}
+{{ self::rank_badge(rank_class=card.rank_class, rank_display=card.rank_display) }}
+<span class="idx">#{{ idx + 1 }}</span>
+<span class="star-in-cover">★ {{ card.score.star_rating_formatted }}</span>
+<span class="time-in-cover">{{ card.relative_time }}</span>
+<span class="bid-in-cover">{{ card.score.beatmap_id }}</span>
+</div>
+<div class="body">
+<div class="title">{{ card.score.title }}</div>
+<div class="sub"><span>{{ card.score.artist }}</span></div>
+<div class="row"><div class="mods">{{ card.mods_html | safe }}</div></div>
+<div class="row2">
+<span class="acc">{{ card.acc_formatted }}</span>
+{% if card.passed %}
+<span class="pp">{{ card.pp_formatted }}<span class="pp-unit">pp</span></span>
+{% else %}
+<span class="pp pp-fail">{{ card.pp_formatted }}<span class="pp-unit">pp</span></span>
+{% endif %}
+</div>
+</div>
+</div>
+{% endmacro %}

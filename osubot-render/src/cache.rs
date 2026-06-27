@@ -272,7 +272,7 @@ struct ImageRef {
 ///
 /// 这不是一个完整的 HTML 解析器——它无法处理注释中的 img 标签、转义引号、
 /// 或除 `src` 之外的其他属性写法。适用范围仅限于 blitz 渲染引擎输出的
-/// 结构规整的 `<img>` 标签。若将来引入 maud 或其他模板引擎，应考虑
+/// 结构规整的 `<img>` 标签。若将来引入真正的 HTML 解析器，应考虑
 /// 改用真正的 HTML 解析器（如 `html5ever` 或 `ego-tree`）。
 fn extract_image_refs(html: &str) -> Vec<ImageRef> {
     let mut refs = Vec::new();

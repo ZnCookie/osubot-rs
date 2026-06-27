@@ -1,0 +1,58 @@
+{% import "_macros.html" as _macros %}
+<!DOCTYPE html>
+<html>
+<head>
+<style>{{ css | safe }}</style>
+</head>
+<body>
+<div class="score-list-card">
+{% if hero_bg_data_uri %}
+<div class="hero" style="background-image: url(&quot;{{ hero_bg_data_uri | safe }}&quot;);">
+{% else %}
+<div class="hero hero--empty">
+{% endif %}
+<div class="hero-overlay"></div>
+<div class="hero-content">
+<div class="hero-avatar"><img src="{{ avatar_data_uri | safe }}" /></div>
+<div class="hero-info">
+<div class="hero-name">{{ username }}</div>
+<div class="hero-rank-pp">
+{% if user_global_rank %}
+<div class="rank-item">
+<span class="rank-hash">#</span>
+<span class="rank-val">{{ user_global_rank_formatted }}</span>
+{{ rank_change_html_global | safe }}
+<span class="rank-label">Global</span>
+</div>
+{% endif %}
+{% if user_country_rank %}
+<div class="rank-item">
+<span class="rank-hash">#</span>
+<span class="rank-val">{{ user_country_rank_formatted }}</span>
+{{ rank_change_html_country | safe }}
+<span class="rank-label">{{ country_code }}</span>
+</div>
+{% endif %}
+<div class="user-pp-section">
+<span class="user-pp-val">{{ user_pp_formatted }}pp</span>
+{{ pp_change_html | safe }}
+</div>
+</div>
+</div>
+<div class="hero-meta">
+<span>{{ label }}</span>
+<span class="dot">·</span>
+<span>{{ mode_name }}</span>
+<span class="dot">·</span>
+<span>{{ count_text }}</span>
+</div>
+</div>
+</div>
+<div class="score-list">
+{% for card in cards %}
+{{ _macros::mini_card(idx=original_indices[loop.index0], card=card) }}
+{% endfor %}
+</div>
+</div>
+</body>
+</html>
