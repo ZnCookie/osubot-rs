@@ -3,11 +3,6 @@
 <div class="rank {{ rank_class }}">{{ rank_display }}</div>
 {% endmacro %}
 
-{# mod_tag 宏 #}
-{% macro mod_tag(acronym) %}
-<span class="mod-tag">{{ acronym }}</span>
-{% endmacro %}
-
 {# stat_bar 宏 #}
 {% macro stat_bar(label, base_pct, base_val, eff_pct, eff_val, eff_gt, eff_lt, has_eff, fill_diff_up, fill_diff_down) %}
 <div class="stat-row">

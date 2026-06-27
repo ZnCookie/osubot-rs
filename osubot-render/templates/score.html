@@ -64,7 +64,7 @@
 </div>
 <div class="meta-line">
 <span class="meta-label">Played</span>
-<span class="meta-val">{% if play_time %}{{ play_time | safe }}{% else %}--{% endif %}</span>
+<span class="meta-val">{% if play_time %}{{ play_time | safe }}{% else %}--{% endif %}</span>{# `| safe` 必须保留：Tera autoescape 会转义 `/` 为 `&#x2F;`（OWASP 规则），视觉无影响但会被测试断言字面量匹配拦截 #}
 </div>
 </div>
 </div>

@@ -72,7 +72,7 @@ fn format_pp_delta(delta: f64) -> String {
 ///
 /// `None` → 空字符串
 #[must_use]
-pub fn format_pp_change_html(change: Option<f64>) -> String {
+pub(crate) fn format_pp_change_html(change: Option<f64>) -> String {
     match change {
         Some(delta) if delta > 0.0 => {
             format!(
@@ -98,7 +98,7 @@ pub fn format_pp_change_html(change: Option<f64>) -> String {
 ///
 /// `None` → 空字符串
 #[must_use]
-pub fn format_rank_change_html(change: Option<i64>) -> String {
+pub(crate) fn format_rank_change_html(change: Option<i64>) -> String {
     match change {
         Some(delta) if delta > 0 => format!(r#"<span class="rank-change up">+{}</span>"#, delta),
         Some(delta) if delta < 0 => format!(r#"<span class="rank-change down">{}</span>"#, delta),
