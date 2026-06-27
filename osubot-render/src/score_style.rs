@@ -286,6 +286,8 @@ pub fn wrap_score_html(data: &ScoreCardData) -> String {
     let star_rating_fmt = format!("{:.2}", score.star_rating);
     let bpm_fmt = format!("{:.0}", score.bpm);
 
+    let ur_value_display = data.ur_value.map(|ur| format!("{:.0}", ur));
+
     let mut ctx = tera::Context::new();
     ctx.insert("css", SCORE_CSS);
     ctx.insert("hue", &data.hue);
@@ -325,7 +327,7 @@ pub fn wrap_score_html(data: &ScoreCardData) -> String {
     ctx.insert("if_fc_pp", &if_fc_pp);
     ctx.insert("combo_pct", &combo_pct);
     ctx.insert("combo_classes", &combo_classes);
-    ctx.insert("ur_value", &data.ur_value);
+    ctx.insert("ur_value", &ur_value_display);
     ctx.insert("mods", &mods_vec);
 
     // Stat bars
@@ -1022,5 +1024,47 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&lt;img onerror"));
         assert!(html.contains("&amp;"));
+    }
+
+    #[test]
+    fn test_ur_value_rounded_to_integer() {
+        let mut score = make_test_score();
+        let data = ScoreCardData {
+            score,
+            username: "TestPlayer".to_string(),
+            mode: osubot_types::GameMode::Osu,
+            user_pp: 9876.5,
+            user_global_rank: Some(999999),
+            user_country_rank: Some(999999),
+            country_code: "CN".to_string(),
+            avatar_data_uri: "data:image/jpeg;base64,avatar".to_string(),
+            bg_data_uri: "data:image/jpeg;base64,bg".to_string(),
+            thumb_data_uri: "data:image/jpeg;base64,thumb".to_string(),
+            play_time: "2025/05/27 14:30:22".to_string(),
+            hue: 200,
+            sat: 60,
+            fav_count: None,
+            play_count: None,
+            pp_change: None,
+            global_rank_change: None,
+            country_rank_change: None,
+            ranked_status: "Ranked".to_string(),
+            ur_value: Some(999.9),
+            ar_eff: None,
+            od_eff: None,
+            cs_eff: None,
+            hp_eff: None,
+        };
+        let html = wrap_score_html(&data);
+
+        // UR should be rounded to integer (999.9 → 1000)
+        assert!(
+            html.contains(">1000<"),
+            "UR value 999.9 should be rounded to 1000"
+        );
+        assert!(
+            !html.contains("999.9"),
+            "UR value should not contain decimal point"
+        );
     }
 }
