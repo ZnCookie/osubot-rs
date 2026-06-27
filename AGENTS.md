@@ -43,10 +43,11 @@ cargo test --locked --workspace       # 测试
 - ...
 
 ## 验证
-- cargo clippy -- -D warnings
+- cargo clippy --locked -- -D warnings
 - cargo fmt --check
-- cargo build --release
-- cargo test --workspace
+- cargo build --release --locked
+- cargo test --locked --workspace
+- CI 检查通过（cargo audit、cargo +nightly udeps）
 ```
 
 ### 注意事项
