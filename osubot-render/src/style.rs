@@ -28,10 +28,8 @@ pub fn wrap_osu_profile_html(
         );
     let mut ctx = tera::Context::new();
     ctx.insert("html", html);
-    ctx.insert("profile_hue", &profile_hue);
     ctx.insert("avatar_data_uri", avatar_data_uri);
     ctx.insert("username", username);
-    ctx.insert("viewport_width", &crate::PROFILE_VIEWPORT_WIDTH);
     ctx.insert("css", &css);
     crate::template::render("profile.html", &ctx)
 }

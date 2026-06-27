@@ -19,8 +19,12 @@
 </div>
 <span class="val">
 {% if has_eff %}
+{% if eff_gt or eff_lt %}
 <span class="{% if eff_gt %}val-eff-up{% elif eff_lt %}val-eff-down{% endif %}">{{ eff_val }}</span>
 <span>[{{ base_val }}]</span>
+{% else %}
+<span>{{ eff_val }}</span>
+{% endif %}
 {% else %}
 <span>{{ base_val }}</span>
 {% endif %}
