@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 use tera::{Context, Tera};
 
-#[allow(dead_code)]
 fn tera_instance() -> &'static Tera {
     static TERA: OnceLock<Tera> = OnceLock::new();
     TERA.get_or_init(|| {
@@ -18,7 +17,6 @@ fn tera_instance() -> &'static Tera {
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn render(name: &str, ctx: &Context) -> String {
     tera_instance()
         .render(name, ctx)

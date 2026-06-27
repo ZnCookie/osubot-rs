@@ -5,6 +5,13 @@
 <style>{{ css }}</style>
 </head>
 <body>
+{% if avatar_data_uri %}
+<div style="display:flex;justify-content:center;align-items:center;margin-bottom:20px">
+<img src="{{ avatar_data_uri }}" style="width:200px;height:200px;border-radius:50%">
+</div>
+{% endif %}
+<div class="user-name" style="text-align:center;margin-bottom:20px">{{ username }}</div>
+<hr style="border:0;height:1px;background:#ffffff;margin:20px 0">
 {{ html }}
 </body>
 </html>

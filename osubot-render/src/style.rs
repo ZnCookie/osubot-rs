@@ -8,12 +8,7 @@ pub(crate) fn escape_html(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
+
 
 /// Wrap osu! profile page HTML fragment with the necessary CSS.
 ///
@@ -27,40 +22,20 @@ pub fn wrap_osu_profile_html(
     avatar_data_uri: &str,
     username: &str,
 ) -> String {
-    let avatar_img = if avatar_data_uri.is_empty() {
-        String::new()
-    } else {
-        format!(
-            r#"<div style="display:flex;justify-content:center;align-items:center;margin-bottom:20px">
-<img src="{}" style="width:200px;height:200px;border-radius:50%">
-</div>"#,
-            escape_attr(avatar_data_uri)
-        )
-    };
     let css = PROFILE_CSS
         .replace("{{PROFILE_HUE}}", &profile_hue.to_string())
         .replace(
             "{{VIEWPORT_WIDTH}}",
             &crate::PROFILE_VIEWPORT_WIDTH.to_string(),
         );
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<style>
-{css}
-</style>
-</head>
-<body>
-{avatar_img}
-<div class="user-name" style="text-align:center;margin-bottom:20px">{}</div>
-<hr style="border:0;height:1px;background:#ffffff;margin:20px 0">
-{html}
-</body>
-</html>"#,
-        escape_html(username)
-    )
+    let mut ctx = tera::Context::new();
+    ctx.insert("html", html);
+    ctx.insert("profile_hue", &profile_hue);
+    ctx.insert("avatar_data_uri", avatar_data_uri);
+    ctx.insert("username", username);
+    ctx.insert("viewport_width", &crate::PROFILE_VIEWPORT_WIDTH);
+    ctx.insert("css", &css);
+    crate::template::render("profile", &ctx)
 }
 
 /// 构造 `render_profile_card` 喂给渲染器的最终 HTML 字符串：
