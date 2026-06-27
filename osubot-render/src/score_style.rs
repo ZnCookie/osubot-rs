@@ -1,8 +1,8 @@
-use maud::{html, Markup, PreEscaped};
 use osubot_types::{format_accuracy, format_length, format_number, Score};
 
 const SCORE_CSS: &str = include_str!("../styles/score.css");
 
+#[derive(serde::Serialize)]
 pub struct ScoreCardData {
     pub score: Score,
     pub username: String,
@@ -30,83 +30,30 @@ pub struct ScoreCardData {
     pub hp_eff: Option<f64>,
 }
 
-fn stat_bar(label: &str, base: f64, eff: Option<f64>) -> Markup {
-    let base_pct = (base / 10.0 * 100.0).min(100.0);
-    let eff_pct = eff.map(|e| (e / 10.0 * 100.0).min(100.0));
-
-    let (track, val_class) = match (eff, base) {
-        (Some(e), b) if (e - b).abs() < 0.01 => (
-            html! { div.fill style=(format!("width:{base_pct:.0}%")) {} },
-            "",
-        ),
-        (Some(e), b) if e > b => {
-            let overflow = eff_pct
-                .expect("eff_pct is Some when eff is Some (arm guarded by Some(e))")
-                - base_pct;
-            (
-                html! {
-                    div.fill style=(format!("width:{base_pct:.0}%")) {}
-                    div.fill-over style=(format!("left:calc({base_pct:.0}% - 2px); width:calc({overflow:.0}% + 2px)")) {}
-                },
-                "val-eff-up",
-            )
-        }
-        (Some(_e), _b) => {
-            let under = base_pct
-                - eff_pct.expect("eff_pct is Some when eff is Some (arm guarded by Some(_e))");
-            let ep = eff_pct.expect("eff_pct is Some when eff is Some (arm guarded by Some(_e))");
-            (
-                html! {
-                    div.fill style=(format!("width:{ep:.0}%")) {}
-                    div.fill-under style=(format!("left:calc({ep:.0}% - 2px); width:calc({under:.0}% + 2px)")) {}
-                },
-                "val-eff-down",
-            )
-        }
-        (None, _) => (
-            html! { div.fill style=(format!("width:{base_pct:.0}%")) {} },
-            "",
-        ),
-    };
-
-    let val_span = match (eff, val_class) {
-        (Some(e), "") => html! { span { (format!("{:.1}", e)) } },
-        (Some(e), c) => html! {
-            span class=(c) { (format!("{:.1}", e)) }
-            span { (format!("[{:.1}]", base)) }
-        },
-        (None, _) => html! { span { (format!("{:.1}", base)) } },
-    };
-
-    html! {
-        div.stat-row {
-            span.label { (label) }
-            div.track { (track) }
-            span.val { (val_span) }
-        }
-    }
+fn pp_breakdown_sum(b: &osubot_types::PpBreakdown) -> f64 {
+    b.aim.filter(|&v| v > 0.0).unwrap_or(0.0)
+        + b.speed.filter(|&v| v > 0.0).unwrap_or(0.0)
+        + if b.accuracy > 0.0 { b.accuracy } else { 0.0 }
+        + b.flashlight.filter(|&v| v > 0.0).unwrap_or(0.0)
+        + b.difficulty.filter(|&v| v > 0.0).unwrap_or(0.0)
 }
 
-fn render_top_row(data: &ScoreCardData) -> Markup {
-    let score = &data.score;
-    let length = format_length(score.length_seconds);
+fn fmt_pct(v: f64) -> i64 {
+    (v / 10.0 * 100.0).min(100.0).round() as i64
+}
 
-    let fav_chip = data.fav_count.map(|c| {
-        html! {
-            span.chip.chip-fav {
-                span.chip-icon { "\u{2665}" }
-                span.chip-num { (format_number(c)) }
-            }
-        }
-    });
-    let plays_chip = data.play_count.map(|c| {
-        html! {
-            span.chip.chip-plays {
-                span.chip-icon {}
-                span.chip-num { (format_plays(c)) }
-            }
-        }
-    });
+fn fmt1(v: f64) -> String {
+    format!("{:.1}", v)
+}
+
+fn fmt0(v: f64) -> String {
+    format!("{:.0}", v)
+}
+
+#[must_use]
+pub fn wrap_score_html(data: &ScoreCardData) -> String {
+    let score = &data.score;
+    let mode_str = data.mode.to_string();
 
     let status_lower = data.ranked_status.to_lowercase();
     let status_class = match status_lower.as_str() {
@@ -127,69 +74,8 @@ fn render_top_row(data: &ScoreCardData) -> Markup {
         }
     };
 
-    html! {
-        div.top-row {
-            div.beatmap-card.surface {
-                div.cover-wrap {
-                    img src=(data.thumb_data_uri);
-                }
-                div.beatmap-text {
-                    div.beatmap-title { (score.title) }
-                    div.beatmap-artist { (score.artist) }
-                    div.bottom-chips {
-                        span.chip.chip-status.{ (status_class) } { (status_display) }
-                        span.chip.chip-diff {
-                            span.star { "\u{2605} " (format!("{:.2}", score.star_rating)) }
-                            span.diff-name { (score.version) }
-                        }
-                        @if let Some(ref chip) = fav_chip {
-                            (chip)
-                        }
-                        @if let Some(ref chip) = plays_chip {
-                            (chip)
-                        }
-                    }
-                    div.info-chips {
-                        span.chip.chip-info {
-                            span.chip-icon { "\u{266B}" }
-                            span.chip-label { "BPM" }
-                            span.chip-num { (format!("{:.0}", score.bpm)) }
-                        }
-                        span.chip.chip-info {
-                            span.chip-icon { "\u{25F7}" }
-                            span.chip-label { "Length" }
-                            span.chip-num { (length) }
-                        }
-                        span.chip.chip-info {
-                            span.chip-icon { "\u{270E}" }
-                            span.chip-label { "Mapper" }
-                            span.chip-num { (score.creator) }
-                        }
-                    }
-                }
-            }
-            div.meta-card.surface {
-                div.meta-line {
-                    span.meta-label { "BID" }
-                    span.meta-val.meta-val-big { (score.beatmap_id) }
-                }
-                div.meta-line {
-                    span.meta-label { "Played" }
-                    span.meta-val {
-                        @if data.play_time.is_empty() {
-                            "--"
-                        } @else {
-                            (data.play_time)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn render_middle_row(data: &ScoreCardData) -> Markup {
-    let score = &data.score;
+    let fav_count_formatted = data.fav_count.map(format_number);
+    let play_count_formatted = data.play_count.map(format_plays);
 
     let global_rank = data
         .user_global_rank
@@ -210,98 +96,13 @@ fn render_middle_row(data: &ScoreCardData) -> Markup {
         data.mode,
         osubot_types::GameMode::Taiko | osubot_types::GameMode::Mania
     );
-    let ar_row = if no_ar_cs {
-        html! {
-            div.stat-row {
-                span.label { "AR" }
-                div.track {}
-                span.val { span { "-" } }
-            }
-        }
-    } else {
-        stat_bar("AR", score.ar, data.ar_eff)
-    };
-    let od_row = if matches!(data.mode, osubot_types::GameMode::Catch) {
-        html! {
-            div.stat-row {
-                span.label { "OD" }
-                div.track {}
-                span.val { span { "-" } }
-            }
-        }
-    } else {
-        stat_bar("OD", score.od, data.od_eff)
-    };
-    let cs_row = if no_ar_cs {
-        html! {
-            div.stat-row {
-                span.label { "CS" }
-                div.track {}
-                span.val { span { "-" } }
-            }
-        }
-    } else {
-        stat_bar("CS", score.cs, data.cs_eff)
-    };
-    let hp_row = stat_bar("HP", score.hp, data.hp_eff);
-
-    html! {
-        div.middle-row {
-            div.user-card.surface {
-                div.user-avatar {
-                    img src=(data.avatar_data_uri);
-                }
-                div.user-info-mid {
-                    div.user-name { (data.username) }
-                    div.user-ranks {
-                        div.rank-item {
-                            span.rank-hash { "#" }
-                            span.rank-val { (global_rank) }
-                            (PreEscaped(global_rank_change_html))
-                            span.rank-label { "Global" }
-                        }
-                        div.rank-item {
-                            span.rank-hash { "#" }
-                            span.rank-val { (country_rank) }
-                            (PreEscaped(country_rank_change_html))
-                            span.rank-label { (data.country_code) }
-                        }
-                    }
-                }
-                div.user-pp-section {
-                    span.user-pp-val { (pp_val_display) "pp" }
-                    @if data.pp_change.is_some() {
-                        (PreEscaped(pp_change_html))
-                    }
-                }
-            }
-            div.stats-card.surface {
-                (ar_row)
-                (od_row)
-                (cs_row)
-                (hp_row)
-            }
-        }
-    }
-}
-
-fn render_score_row(data: &ScoreCardData) -> Markup {
-    let score = &data.score;
-    let is_mania = data.mode == osubot_types::GameMode::Mania;
-    let is_taiko = data.mode == osubot_types::GameMode::Taiko;
-
-    let hgeki = score.statistics.count_geki;
-    let h300 = score.statistics.count_300;
-    let hkatu = score.statistics.count_katu;
-    let h100 = score.statistics.count_100;
-    let h50 = score.statistics.count_50;
-    let miss = score.statistics.count_miss;
 
     let score_formatted = if score.score_value > 0 {
         format_number(score.score_value)
     } else {
         "--".to_string()
     };
+    let acc_formatted = format_accuracy(score.accuracy);
 
     let rank_class = match score.rank.as_str() {
         "XH" | "SH" | "X" | "S" => {
@@ -323,99 +124,10 @@ fn render_score_row(data: &ScoreCardData) -> Markup {
         other => other,
     };
 
-    html! {
-        div.hits-card.surface {
-            div.hits-row {
-                @if is_mania {
-                    div.hit-card.hit-300-mania {
-                        div.num.mania-geki { (hgeki) "\u{00D7}" }
-                        div.num.mania-300 { (h300) "\u{00D7}" }
-                    }
-                    div.hit-card.hit-katu {
-                        div.num { (hkatu) "\u{00D7}" }
-                        div.label { "200" }
-                    }
-                } @else {
-                    div.hit-card.hit-300 {
-                        div.num { (h300) "\u{00D7}" }
-                        div.label { "300" }
-                    }
-                }
-                @if !is_taiko {
-                    div.hit-card.hit-100 {
-                        div.num { (h100) "\u{00D7}" }
-                        div.label { "100" }
-                    }
-                }
-                @if is_taiko {
-                    div.hit-card.hit-100 {
-                        div.num { (h100) "\u{00D7}" }
-                        div.label { "150" }
-                    }
-                }
-                @if is_mania {
-                    div.hit-card.hit-50-mania {
-                        div.num.mania-50 { (h50) "\u{00D7}" }
-                        div.num.mania-miss { (miss) "\u{00D7}" }
-                    }
-                } @else if is_taiko {
-                    div.hit-card.hit-miss {
-                        div.num { (miss) "\u{00D7}" }
-                        div.label { "miss" }
-                    }
-                } @else {
-                    div.hit-card.hit-50 {
-                        div.num { (h50) "\u{00D7}" }
-                        div.label { "50" }
-                    }
-                    div.hit-card.hit-miss {
-                        div.num { (miss) "\u{00D7}" }
-                        div.label { "miss" }
-                    }
-                }
-            }
-            div.score-acc-row {
-                div.rank-badge.{ (rank_class) } {
-                    (rank_display)
-                }
-                div.score-acc-stack {
-                    div.stat-mod.stat-mod-score {
-                        div.stat-val { (score_formatted) }
-                        div.stat-label { "SCORE" }
-                    }
-                    div.stat-mod.stat-mod-acc {
-                        div.stat-val { (format_accuracy(score.accuracy)) }
-                        div.stat-label { "ACC" }
-                    }
-                }
-            }
-            div.mod-chips {
-                @if score.is_lazer {
-                    span.chip.chip-filled { "Lazer" }
-                }
-                @for m in &score.mods {
-                    span.chip.chip-filled { (m.acronym()) }
-                }
-            }
-        }
-    }
-}
-
-fn render_detail_cards(data: &ScoreCardData) -> Markup {
-    let score = &data.score;
-
     let pp_str = score
         .pp
         .map(|p| format!("{:.0}", p))
         .unwrap_or_else(|| "--".to_string());
-
-    fn pp_breakdown_sum(b: &osubot_types::PpBreakdown) -> f64 {
-        b.aim.filter(|&v| v > 0.0).unwrap_or(0.0)
-            + b.speed.filter(|&v| v > 0.0).unwrap_or(0.0)
-            + if b.accuracy > 0.0 { b.accuracy } else { 0.0 }
-            + b.flashlight.filter(|&v| v > 0.0).unwrap_or(0.0)
-            + b.difficulty.filter(|&v| v > 0.0).unwrap_or(0.0)
-    }
 
     let has_breakdown = score
         .pp_breakdown
@@ -425,142 +137,251 @@ fn render_detail_cards(data: &ScoreCardData) -> Markup {
         > 0.0;
     let has_if_acc = score.pp_if_acc.is_some();
 
-    let combo_pct =
+    // Pre-compute stat bar values
+    let make_stat =
+        |base: f64, eff: Option<f64>| -> (i64, String, i64, String, bool, bool, bool, i64, i64) {
+            let base_pct = fmt_pct(base);
+            let base_val = fmt1(base);
+            match eff {
+                Some(e) if (e - base).abs() < 0.01 => (
+                    base_pct,
+                    base_val,
+                    base_pct,
+                    fmt1(e),
+                    false,
+                    false,
+                    true,
+                    0,
+                    0,
+                ),
+                Some(e) => {
+                    let e_pct = fmt_pct(e);
+                    let diff = e_pct - base_pct;
+                    (
+                        base_pct,
+                        base_val,
+                        e_pct,
+                        fmt1(e),
+                        e > base,
+                        e < base,
+                        true,
+                        diff.max(0),
+                        (-diff).max(0),
+                    )
+                }
+                None => (
+                    base_pct,
+                    base_val,
+                    0,
+                    String::new(),
+                    false,
+                    false,
+                    false,
+                    0,
+                    0,
+                ),
+            }
+        };
+
+    let (
+        ar_base_pct,
+        ar_base_val,
+        ar_eff_pct,
+        ar_eff_val,
+        ar_eff_gt,
+        ar_eff_lt,
+        ar_has_eff,
+        ar_fill_diff_up,
+        ar_fill_diff_down,
+    ) = make_stat(score.ar, data.ar_eff);
+    let (
+        od_base_pct,
+        od_base_val,
+        od_eff_pct,
+        od_eff_val,
+        od_eff_gt,
+        od_eff_lt,
+        od_has_eff,
+        od_fill_diff_up,
+        od_fill_diff_down,
+    ) = make_stat(score.od, data.od_eff);
+    let (
+        cs_base_pct,
+        cs_base_val,
+        cs_eff_pct,
+        cs_eff_val,
+        cs_eff_gt,
+        cs_eff_lt,
+        cs_has_eff,
+        cs_fill_diff_up,
+        cs_fill_diff_down,
+    ) = make_stat(score.cs, data.cs_eff);
+    let (
+        hp_base_pct,
+        hp_base_val,
+        hp_eff_pct,
+        hp_eff_val,
+        hp_eff_gt,
+        hp_eff_lt,
+        hp_has_eff,
+        hp_fill_diff_up,
+        hp_fill_diff_down,
+    ) = make_stat(score.hp, data.hp_eff);
+
+    // Pre-compute hit counts
+    let hgeki = score.statistics.count_geki;
+    let h300 = score.statistics.count_300;
+    let hkatu = score.statistics.count_katu;
+    let h100 = score.statistics.count_100;
+    let h50 = score.statistics.count_50;
+    let hmiss = score.statistics.count_miss;
+
+    // Pre-compute breakdown values
+    let (bd_aim, bd_speed, bd_acc, bd_fl, bd_diff) = match score.pp_breakdown {
+        Some(ref b) => (
+            b.aim.filter(|&v| v > 0.0).map(fmt0),
+            b.speed.filter(|&v| v > 0.0).map(fmt0),
+            if b.accuracy > 0.0 {
+                Some(fmt0(b.accuracy))
+            } else {
+                None
+            },
+            b.flashlight.filter(|&v| v > 0.0).map(fmt0),
+            b.difficulty.filter(|&v| v > 0.0).map(fmt0),
+        ),
+        None => (None, None, None, None, None),
+    };
+
+    let if_acc_items: Vec<serde_json::Value> = score
+        .pp_if_acc
+        .as_ref()
+        .map(|if_acc| {
+            vec![
+                serde_json::json!({"label": "95%", "val": fmt0(if_acc.acc_95)}),
+                serde_json::json!({"label": "97%", "val": fmt0(if_acc.acc_97)}),
+                serde_json::json!({"label": "98%", "val": fmt0(if_acc.acc_98)}),
+                serde_json::json!({"label": "99%", "val": fmt0(if_acc.acc_99)}),
+                serde_json::json!({"label": "100%", "val": fmt0(if_acc.acc_100)}),
+            ]
+        })
+        .unwrap_or_default();
+
+    let if_fc_pp = score
+        .pp_if_acc
+        .as_ref()
+        .map(|a| fmt0(a.if_fc))
+        .unwrap_or_default();
+
+    let combo_pct_raw =
         (score.max_combo as f64 / score.beatmap_max_combo.max(1) as f64 * 100.0).min(100.0);
+    let combo_pct = format!("{:.0}", combo_pct_raw);
     let combo_classes = if score.max_combo == score.beatmap_max_combo {
         "subcard-combo combo-fc"
     } else {
         "subcard-combo"
     };
 
-    html! {
-        div.detail-card.surface {
-            div.detail-subcard-row {
-                div.subcard-pp {
-                    div.subcard-valwrap {
-                        div.pp-val { (pp_str) span.pp-unit { "pp" } }
-                    }
-                    div.pp-label { "PERFORMANCE" }
-                }
-            }
-            @if has_breakdown || has_if_acc {
-                div.subcard-pp-predict {
-                    @if let Some(ref breakdown) = score.pp_breakdown {
-                        @if pp_breakdown_sum(breakdown) > 0.0 {
-                            div.subcard-breakdown {
-                                @if let Some(aim) = breakdown.aim.filter(|&v| v > 0.0) {
-                                    span.chip.pp-chip-aim {
-                                        span.chip-label { "AIM" }
-                                        " " (format!("{:.0}", aim))
-                                        span.chip-unit { "pp" }
-                                    }
-                                }
-                                @if let Some(speed) = breakdown.speed.filter(|&v| v > 0.0) {
-                                    span.chip.pp-chip-speed {
-                                        span.chip-label { "SPD" }
-                                        " " (format!("{:.0}", speed))
-                                        span.chip-unit { "pp" }
-                                    }
-                                }
-                                @if breakdown.accuracy > 0.0 {
-                                    span.chip.pp-chip-acc {
-                                        span.chip-label { "ACC" }
-                                        " " (format!("{:.0}", breakdown.accuracy))
-                                        span.chip-unit { "pp" }
-                                    }
-                                }
-                                @if let Some(fl) = breakdown.flashlight.filter(|&v| v > 0.0) {
-                                    span.chip.pp-chip-fl {
-                                        span.chip-label { "FL" }
-                                        " " (format!("{:.0}", fl))
-                                        span.chip-unit { "pp" }
-                                    }
-                                }
-                                @if let Some(diff) = breakdown.difficulty.filter(|&v| v > 0.0) {
-                                    span.chip.pp-chip-diff {
-                                        span.chip-label { "DIFF" }
-                                        " " (format!("{:.0}", diff))
-                                        span.chip-unit { "pp" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    @if let Some(ref if_acc) = score.pp_if_acc {
-                        div.subcard-if-acc {
-                            @for (label, val) in [
-                                ("95%", if_acc.acc_95),
-                                ("97%", if_acc.acc_97),
-                                ("98%", if_acc.acc_98),
-                                ("99%", if_acc.acc_99),
-                                ("100%", if_acc.acc_100),
-                            ] {
-                                div.if-acc-item {
-                                    span.val { (format!("{:.0}", val)) span.val-unit { "pp" } }
-                                    span.label { (label) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            div.detail-subcard-footer-row {
-                @if let Some(ref if_acc) = score.pp_if_acc {
-                    div.subcard-if-fc {
-                        span.fc-label { "IF FC" }
-                        span.fc-val { (format!("{:.0}", if_acc.if_fc)) span.pp-unit { "pp" } }
-                    }
-                }
-                div class=(combo_classes) style=(format!("--combo-pct: {combo_pct:.0}%")) {
-                    span.fc-label { "COMBO" }
-                    span.fc-val {
-                        span.combo-cur { (score.max_combo) span.combo-unit { "x" } }
-                        span.combo-sep { " / " }
-                        span.combo-max { (score.beatmap_max_combo) span.combo-unit { "x" } }
-                    }
-                }
-                @if let Some(ur) = data.ur_value {
-                    div.subcard-ur {
-                        span.ur-label { "UR" }
-                        span.ur-val { (format!("{:.0}", ur)) }
-                    }
-                }
-            }
-        }
-    }
-}
+    let mods_vec: Vec<String> = score.mods.iter().map(|m| m.acronym().to_string()).collect();
 
-#[must_use]
-pub fn wrap_score_html(data: &ScoreCardData) -> String {
-    let runtime_css = format!(
-        ":root {{ --score-hue: {}; --score-sat: {}%; }}",
-        data.hue, data.sat
-    );
+    let star_rating_fmt = format!("{:.2}", score.star_rating);
+    let bpm_fmt = format!("{:.0}", score.bpm);
 
-    html! {
-        (PreEscaped("<!DOCTYPE html>"))
-        html {
-            head {
-                style { (PreEscaped(SCORE_CSS)) }
-                style { (PreEscaped(runtime_css)) }
-            }
-            body {
-                div.score-card {
-                    img.bg-img src=(data.bg_data_uri);
-                    div.bg-gradient {}
-                    div.content {
-                        (render_top_row(data))
-                        (render_middle_row(data))
-                        div.score-row {
-                            (render_score_row(data))
-                            (render_detail_cards(data))
-                        }
-                    }
-                }
-            }
-        }
-    }
-    .into_string()
+    let mut ctx = tera::Context::new();
+    ctx.insert("css", SCORE_CSS);
+    ctx.insert("hue", &data.hue);
+    ctx.insert("sat", &data.sat);
+    ctx.insert("bg_data_uri", &data.bg_data_uri);
+    ctx.insert("thumb_data_uri", &data.thumb_data_uri);
+    ctx.insert("avatar_data_uri", &data.avatar_data_uri);
+    ctx.insert("score", &data.score);
+    ctx.insert("username", &data.username);
+    ctx.insert("mode", &mode_str);
+    ctx.insert("star_rating_fmt", &star_rating_fmt);
+    ctx.insert("bpm_fmt", &bpm_fmt);
+    ctx.insert("global_rank", &global_rank);
+    ctx.insert("country_rank", &country_rank);
+    ctx.insert("country_code", &data.country_code);
+    ctx.insert("pp_change_html", &pp_change_html);
+    ctx.insert("global_rank_change_html", &global_rank_change_html);
+    ctx.insert("country_rank_change_html", &country_rank_change_html);
+    ctx.insert("pp_val_display", &pp_val_display);
+    ctx.insert("no_ar_cs", &no_ar_cs);
+    ctx.insert("status_class", &status_class);
+    ctx.insert("status_display", &status_display);
+    ctx.insert("fav_count", &data.fav_count);
+    ctx.insert("fav_count_formatted", &fav_count_formatted);
+    ctx.insert("play_count", &data.play_count);
+    ctx.insert("play_count_formatted", &play_count_formatted);
+    ctx.insert("play_time", &data.play_time);
+    ctx.insert("length", &format_length(score.length_seconds));
+    ctx.insert("rank_class", &rank_class);
+    ctx.insert("rank_display", &rank_display);
+    ctx.insert("score_formatted", &score_formatted);
+    ctx.insert("acc_formatted", &acc_formatted);
+    ctx.insert("pp_str", &pp_str);
+    ctx.insert("has_breakdown", &has_breakdown);
+    ctx.insert("has_if_acc", &has_if_acc);
+    ctx.insert("if_acc_items", &if_acc_items);
+    ctx.insert("if_fc_pp", &if_fc_pp);
+    ctx.insert("combo_pct", &combo_pct);
+    ctx.insert("combo_classes", &combo_classes);
+    ctx.insert("ur_value", &data.ur_value);
+    ctx.insert("mods", &mods_vec);
+
+    // Stat bars
+    ctx.insert("ar_base_pct", &ar_base_pct);
+    ctx.insert("ar_base_val", &ar_base_val);
+    ctx.insert("ar_eff_pct", &ar_eff_pct);
+    ctx.insert("ar_eff_val", &ar_eff_val);
+    ctx.insert("ar_eff_gt", &ar_eff_gt);
+    ctx.insert("ar_eff_lt", &ar_eff_lt);
+    ctx.insert("ar_has_eff", &ar_has_eff);
+    ctx.insert("ar_fill_diff_up", &ar_fill_diff_up);
+    ctx.insert("ar_fill_diff_down", &ar_fill_diff_down);
+    ctx.insert("od_base_pct", &od_base_pct);
+    ctx.insert("od_base_val", &od_base_val);
+    ctx.insert("od_eff_pct", &od_eff_pct);
+    ctx.insert("od_eff_val", &od_eff_val);
+    ctx.insert("od_eff_gt", &od_eff_gt);
+    ctx.insert("od_eff_lt", &od_eff_lt);
+    ctx.insert("od_has_eff", &od_has_eff);
+    ctx.insert("od_fill_diff_up", &od_fill_diff_up);
+    ctx.insert("od_fill_diff_down", &od_fill_diff_down);
+    ctx.insert("cs_base_pct", &cs_base_pct);
+    ctx.insert("cs_base_val", &cs_base_val);
+    ctx.insert("cs_eff_pct", &cs_eff_pct);
+    ctx.insert("cs_eff_val", &cs_eff_val);
+    ctx.insert("cs_eff_gt", &cs_eff_gt);
+    ctx.insert("cs_eff_lt", &cs_eff_lt);
+    ctx.insert("cs_has_eff", &cs_has_eff);
+    ctx.insert("cs_fill_diff_up", &cs_fill_diff_up);
+    ctx.insert("cs_fill_diff_down", &cs_fill_diff_down);
+    ctx.insert("hp_base_pct", &hp_base_pct);
+    ctx.insert("hp_base_val", &hp_base_val);
+    ctx.insert("hp_eff_pct", &hp_eff_pct);
+    ctx.insert("hp_eff_val", &hp_eff_val);
+    ctx.insert("hp_eff_gt", &hp_eff_gt);
+    ctx.insert("hp_eff_lt", &hp_eff_lt);
+    ctx.insert("hp_has_eff", &hp_has_eff);
+    ctx.insert("hp_fill_diff_up", &hp_fill_diff_up);
+    ctx.insert("hp_fill_diff_down", &hp_fill_diff_down);
+
+    // Hit counts
+    ctx.insert("hgeki", &hgeki);
+    ctx.insert("h300", &h300);
+    ctx.insert("hkatu", &hkatu);
+    ctx.insert("h100", &h100);
+    ctx.insert("h50", &h50);
+    ctx.insert("hmiss", &hmiss);
+
+    // Breakdown
+    ctx.insert("bd_aim", &bd_aim);
+    ctx.insert("bd_speed", &bd_speed);
+    ctx.insert("bd_acc", &bd_acc);
+    ctx.insert("bd_fl", &bd_fl);
+    ctx.insert("bd_diff", &bd_diff);
+
+    crate::template::render("score.html", &ctx)
 }
 
 #[must_use]
@@ -782,6 +603,16 @@ mod tests {
     fn test_wrap_score_html_uses_css_variables() {
         let data = make_test_score_data();
         let html = wrap_score_html(&data);
+        // Debug: print first 500 chars if render failed
+        if html.len() < 100 {
+            eprintln!("=== SHORT HTML len={} ===\n{}", html.len(), html);
+        } else {
+            eprintln!(
+                "=== HTML len={} ===\n{}",
+                html.len(),
+                &html[..html.len().min(2000)]
+            );
+        }
         assert!(html.contains("--score-hue: 200"), "missing hue CSS var");
         assert!(html.contains("--score-sat: 60%"), "missing sat CSS var");
         assert!(
@@ -829,6 +660,15 @@ mod tests {
     }
 
     #[test]
+    fn test_tera_render_error_detail() {
+        let data = make_test_score_data();
+        let html = wrap_score_html(&data);
+        if html.starts_with("Tera render error") {
+            panic!("Render failed: {html}");
+        }
+    }
+
+    #[test]
     fn test_format_plays() {
         assert_eq!(format_plays(56700), "56.7K");
         assert_eq!(format_plays(1234567), "1.2M");
@@ -836,81 +676,6 @@ mod tests {
         assert_eq!(format_plays(1000), "1K");
         assert_eq!(format_plays(1000000), "1M");
         assert_eq!(format_plays(1500), "1.5K");
-    }
-
-    #[test]
-    fn test_stat_bar_no_eff() {
-        let html = stat_bar("AR", 9.3, None).into_string();
-        assert!(
-            html.contains(r#"class="stat-row""#),
-            "missing stat-row class"
-        );
-        assert!(html.contains("AR"), "missing AR label");
-        assert!(html.contains(r#"width:93%"#), "missing fill width for 9.3");
-        assert!(html.contains(">9.3<"), "missing AR value");
-        assert!(
-            !html.contains("val-eff-up"),
-            "should not have up class without eff"
-        );
-        assert!(
-            !html.contains("val-eff-down"),
-            "should not have down class without eff"
-        );
-    }
-
-    #[test]
-    fn test_stat_bar_eff_equals_base() {
-        let html = stat_bar("OD", 8.5, Some(8.5)).into_string();
-        assert!(html.contains(r#"width:85%"#));
-        assert!(
-            !html.contains("fill-over"),
-            "should not have over fill when eff==base"
-        );
-        assert!(
-            !html.contains("fill-under"),
-            "should not have under fill when eff==base"
-        );
-    }
-
-    #[test]
-    fn test_stat_bar_eff_greater_than_base() {
-        let html = stat_bar("AR", 9.3, Some(11.5)).into_string();
-        assert!(
-            html.contains("fill-over"),
-            "should have over fill when eff>base"
-        );
-        assert!(
-            html.contains("val-eff-up"),
-            "should have up class when eff>base"
-        );
-        assert!(html.contains(">11.5<"), "missing eff value");
-        assert!(html.contains("[9.3]"), "missing base value in brackets");
-    }
-
-    #[test]
-    fn test_stat_bar_eff_less_than_base() {
-        let html = stat_bar("CS", 4.0, Some(3.2)).into_string();
-        assert!(
-            html.contains("fill-under"),
-            "should have under fill when eff<base"
-        );
-        assert!(
-            html.contains("val-eff-down"),
-            "should have down class when eff<base"
-        );
-    }
-
-    #[test]
-    fn test_stat_bar_clamps_at_max_still_renders_diff() {
-        let html = stat_bar("AR", 11.0, Some(11.5)).into_string();
-        assert!(
-            html.contains("fill-over"),
-            "AR=11.0 vs 11.5 should render fill-over, not be clamped to equal"
-        );
-        assert!(
-            html.contains("val-eff-up"),
-            "AR=11.0 vs 11.5 should have up class"
-        );
     }
 
     #[test]

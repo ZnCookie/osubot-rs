@@ -8,6 +8,31 @@
 <span class="mod-tag">{{ acronym }}</span>
 {% endmacro macro %}
 
+{# stat_bar 宏 #}
+{% macro stat_bar(label, base_pct, base_val, eff_pct, eff_val, eff_gt, eff_lt, has_eff, fill_diff_up, fill_diff_down) %}
+<div class="stat-row">
+<span class="label">{{ label }}</span>
+<div class="track">
+<div class="fill" style="width:{{ base_pct }}%"></div>
+{% if has_eff %}
+{% if eff_gt %}
+<div class="fill-over" style="left:calc({{ base_pct }}% - 2px); width:calc({{ fill_diff_up }}% + 2px)"></div>
+{% elif eff_lt %}
+<div class="fill-under" style="left:calc({{ eff_pct }}% - 2px); width:calc({{ fill_diff_down }}% + 2px)"></div>
+{% endif %}
+{% endif %}
+</div>
+<span class="val">
+{% if has_eff %}
+<span class="{% if eff_gt %}val-eff-up{% elif eff_lt %}val-eff-down{% endif %}">{{ eff_val }}</span>
+<span>[{{ base_val }}]</span>
+{% else %}
+<span>{{ base_val }}</span>
+{% endif %}
+</span>
+</div>
+{% endmacro macro %}
+
 {# mini_card 宏 #}
 {% macro mini_card(idx, card) %}
 <div class="mini-card">
