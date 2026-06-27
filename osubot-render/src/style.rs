@@ -8,8 +8,6 @@ pub(crate) fn escape_html(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-
-
 /// Wrap osu! profile page HTML fragment with the necessary CSS.
 ///
 /// `avatar_data_uri` should be a `data:image/...;base64,...` URI produced by
@@ -35,7 +33,7 @@ pub fn wrap_osu_profile_html(
     ctx.insert("username", username);
     ctx.insert("viewport_width", &crate::PROFILE_VIEWPORT_WIDTH);
     ctx.insert("css", &css);
-    crate::template::render("profile", &ctx)
+    crate::template::render("profile.html", &ctx)
 }
 
 /// 构造 `render_profile_card` 喂给渲染器的最终 HTML 字符串：

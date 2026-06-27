@@ -1,1 +1,39 @@
-{# placeholder macros file #}
+{# rank_badge 宏 #}
+{% macro rank_badge(rank_class, rank_display) %}
+<div class="rank {{ rank_class }}">{{ rank_display }}</div>
+{% endmacro macro %}
+
+{# mod_tag 宏 #}
+{% macro mod_tag(acronym) %}
+<span class="mod-tag">{{ acronym }}</span>
+{% endmacro macro %}
+
+{# mini_card 宏 #}
+{% macro mini_card(idx, card) %}
+<div class="mini-card">
+{% if card.cover_data_uri %}
+<div class="cover-strip" style="background-image: url(&quot;{{ card.cover_data_uri | safe }}&quot;);">
+{% else %}
+<div class="cover-strip">
+{% endif %}
+{{ self::rank_badge(rank_class=card.rank_class, rank_display=card.rank_display) }}
+<span class="idx">#{{ idx + 1 }}</span>
+<span class="star-in-cover">★ {{ card.score.star_rating_formatted }}</span>
+<span class="time-in-cover">{{ card.relative_time }}</span>
+<span class="bid-in-cover">{{ card.score.beatmap_id }}</span>
+</div>
+<div class="body">
+<div class="title">{{ card.score.title }}</div>
+<div class="sub"><span>{{ card.score.artist }}</span></div>
+<div class="row"><div class="mods">{{ card.mods_html | safe }}</div></div>
+<div class="row2">
+<span class="acc">{{ card.acc_formatted }}</span>
+{% if card.passed %}
+<span class="pp">{{ card.pp_formatted }}<span class="pp-unit">pp</span></span>
+{% else %}
+<span class="pp pp-fail">{{ card.pp_formatted }}<span class="pp-unit">pp</span></span>
+{% endif %}
+</div>
+</div>
+</div>
+{% endmacro macro %}

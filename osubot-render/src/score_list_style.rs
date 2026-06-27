@@ -1,8 +1,9 @@
 use crate::style::escape_html;
-use osubot_types::{format_accuracy, format_number, Score};
+use osubot_types::{format_accuracy, Score};
 
 const SCORE_LIST_CSS: &str = include_str!("../styles/score_list.css");
 
+#[derive(serde::Serialize)]
 pub struct ScoreListCardData {
     pub score: Score,
     pub rank_class: String,
@@ -81,83 +82,6 @@ impl ScoreListCardData {
     }
 }
 
-fn render_mini_card(idx: usize, data: &ScoreListCardData) -> String {
-    let mut html = String::with_capacity(1024);
-    html.push_str(r#"<div class="mini-card">"#);
-
-    // Cover strip with background-image (more reliable in blitz than <img>)
-    if data.cover_data_uri.is_empty() {
-        html.push_str(r#"<div class="cover-strip">"#);
-    } else {
-        html.push_str(r#"<div class="cover-strip" style="background-image: url(&quot;"#);
-        html.push_str(&data.cover_data_uri);
-        html.push_str(r#"&quot;);">"#);
-    }
-
-    // Rank badge
-    html.push_str(&format!(
-        r#"<div class="rank {}">{}</div>"#,
-        data.rank_class,
-        escape_html(&data.rank_display)
-    ));
-
-    // Index number
-    html.push_str(&format!(r#"<span class="idx">#{}</span>"#, idx + 1));
-
-    // Star rating only (difficulty name removed to keep cover strip clean
-    // and avoid horizontal overlap with .time-in-cover on long version strings).
-    html.push_str(&format!(
-        r#"<span class="star-in-cover">★ {:.2}</span>"#,
-        data.score.star_rating
-    ));
-
-    // Relative time
-    html.push_str(&format!(
-        r#"<span class="time-in-cover">{}</span>"#,
-        escape_html(&data.relative_time)
-    ));
-
-    // Beatmap ID
-    html.push_str(&format!(
-        r#"<span class="bid-in-cover">{}</span>"#,
-        data.score.beatmap_id
-    ));
-
-    html.push_str(r#"</div>"#); // end cover-strip
-
-    // Body
-    html.push_str(r#"<div class="body">"#);
-
-    // Title
-    html.push_str(r#"<div class="title">"#);
-    html.push_str(&escape_html(&data.score.title));
-    html.push_str(r#"</div>"#);
-
-    // Subtitle (artist only; mapper-defined difficulty name is shown in the
-    // cover strip alongside the star rating, so it would be redundant here)
-    html.push_str(r#"<div class="sub"><span>"#);
-    html.push_str(&escape_html(&data.score.artist));
-    html.push_str(r#"</span></div>"#);
-
-    // Mods row
-    html.push_str(&format!(
-        r#"<div class="row"><div class="mods">{}</div></div>"#,
-        data.mods_html
-    ));
-
-    // Acc + PP row
-    let pp_class = if data.passed { "pp" } else { "pp pp-fail" };
-    html.push_str(&format!(
-        r#"<div class="row2"><span class="acc">{}</span><span class="{}">{}<span class="pp-unit">pp</span></span></div>"#,
-        data.acc_formatted,
-        pp_class,
-        data.pp_formatted
-    ));
-
-    html.push_str(r#"</div></div>"#); // end body, end mini-card
-    html
-}
-
 pub struct ScoreListHtmlParams<'a> {
     pub cards: &'a [ScoreListCardData],
     pub username: &'a str,
@@ -215,79 +139,74 @@ fn format_relative_time(created_at: &str) -> String {
 
 #[must_use]
 pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
-    let css = SCORE_LIST_CSS.to_string();
+    use crate::style::{format_pp_change_html, format_rank_change_html};
+    use osubot_types::format_number;
 
-    let label = params.label;
-    let mode_name = params.mode.name();
-    let count = params.cards.len();
+    let cards_data: Vec<serde_json::Value> = params
+        .cards
+        .iter()
+        .map(|card| {
+            serde_json::json!({
+                "rank_class": card.rank_class,
+                "rank_display": card.rank_display,
+                "cover_data_uri": card.cover_data_uri,
+                "relative_time": card.relative_time,
+                "score": {
+                    "title": card.score.title,
+                    "artist": card.score.artist,
+                    "star_rating": card.score.star_rating,
+                    "star_rating_formatted": format!("{:.2}", card.score.star_rating),
+                    "beatmap_id": card.score.beatmap_id,
+                },
+                "acc_formatted": card.acc_formatted,
+                "pp_formatted": card.pp_formatted,
+                "mods_html": card.mods_html,
+                "passed": card.passed,
+            })
+        })
+        .collect();
 
-    let mut html = String::with_capacity(32768);
-    html.push_str(r#"<!DOCTYPE html><html><head><style>"#);
-    html.push_str(&css);
-    html.push_str(r#"</style></head><body><div class="score-list-card">"#);
+    let user_global_rank_formatted = params
+        .user_global_rank
+        .map(format_number)
+        .unwrap_or_default();
+    let user_country_rank_formatted = params
+        .user_country_rank
+        .map(format_number)
+        .unwrap_or_default();
 
-    // Hero section with background-image (more reliable in blitz than <img>)
-    if params.hero_bg_data_uri.is_empty() {
-        html.push_str(r#"<div class="hero hero--empty">"#);
-    } else {
-        html.push_str(r#"<div class="hero" style="background-image: url(&quot;"#);
-        html.push_str(params.hero_bg_data_uri);
-        html.push_str(r#"&quot;);">"#);
-    }
-    html.push_str(r#"<div class="hero-overlay"></div><div class="hero-content">"#);
+    let rank_change_html_global = format_rank_change_html(params.global_rank_change);
+    let rank_change_html_country = format_rank_change_html(params.country_rank_change);
+    let pp_change_html = format_pp_change_html(params.pp_change);
 
-    html.push_str(r#"<div class="hero-avatar"><img src=""#);
-    html.push_str(params.avatar_data_uri);
-    html.push_str(r#"" /></div>"#);
+    let count_text = params
+        .count_text
+        .replacen("{}", &params.cards.len().to_string(), 1);
 
-    html.push_str(r#"<div class="hero-info"><div class="hero-name">"#);
-    html.push_str(&escape_html(params.username));
-    html.push_str(r#"</div>"#);
+    let user_pp_formatted = format!("{:.0}", params.user_pp);
 
-    // Rank + PP row
-    html.push_str(r#"<div class="hero-rank-pp">"#);
-    if let Some(rank) = params.user_global_rank {
-        let change_html = crate::style::format_rank_change_html(params.global_rank_change);
-        html.push_str(&format!(
-            r#"<div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">{}</span>{}<span class="rank-label">Global</span></div>"#,
-            format_number(rank),
-            change_html
-        ));
-    }
-    if let Some(rank) = params.user_country_rank {
-        let change_html = crate::style::format_rank_change_html(params.country_rank_change);
-        html.push_str(&format!(
-            r#"<div class="rank-item"><span class="rank-hash">#</span><span class="rank-val">{}</span>{}<span class="rank-label">{}</span></div>"#,
-            format_number(rank),
-            change_html,
-            escape_html(params.country_code)
-        ));
-    }
-    let pp_change_html = crate::style::format_pp_change_html(params.pp_change);
-    html.push_str(&format!(
-        r#"<div class="user-pp-section"><span class="user-pp-val">{:.0}pp</span>{}</div>"#,
-        params.user_pp, pp_change_html
-    ));
-    html.push_str(r#"</div>"#);
+    let mut ctx = tera::Context::new();
+    ctx.insert("css", SCORE_LIST_CSS);
+    ctx.insert("hero_bg_data_uri", params.hero_bg_data_uri);
+    ctx.insert("avatar_data_uri", params.avatar_data_uri);
+    ctx.insert("username", params.username);
+    ctx.insert("user_global_rank", &params.user_global_rank);
+    ctx.insert("user_country_rank", &params.user_country_rank);
+    ctx.insert("user_global_rank_formatted", &user_global_rank_formatted);
+    ctx.insert("user_country_rank_formatted", &user_country_rank_formatted);
+    ctx.insert("country_code", params.country_code);
+    ctx.insert("user_pp", &params.user_pp);
+    ctx.insert("user_pp_formatted", &user_pp_formatted);
+    ctx.insert("rank_change_html_global", &rank_change_html_global);
+    ctx.insert("rank_change_html_country", &rank_change_html_country);
+    ctx.insert("pp_change_html", &pp_change_html);
+    ctx.insert("label", params.label);
+    ctx.insert("mode_name", params.mode.name());
+    ctx.insert("count_text", &count_text);
+    ctx.insert("cards", &cards_data);
+    ctx.insert("original_indices", &params.original_indices);
 
-    // Meta row
-    html.push_str(r#"<div class="hero-meta"><span>"#);
-    html.push_str(label);
-    html.push_str(r#"</span><span class="dot">·</span><span>"#);
-    html.push_str(mode_name);
-    html.push_str(r#"</span><span class="dot">·</span><span>"#);
-    html.push_str(&params.count_text.replacen("{}", &count.to_string(), 1));
-    html.push_str(r#"</span></div></div></div></div>"#);
-
-    // Score list
-    html.push_str(r#"<div class="score-list">"#);
-    for (i, card) in params.cards.iter().enumerate() {
-        let idx = params.original_indices.get(i).copied().unwrap_or(i);
-        html.push_str(&render_mini_card(idx, card));
-    }
-    html.push_str(r#"</div></div></body></html>"#);
-
-    html
+    crate::template::render("score_list.html", &ctx)
 }
 
 #[cfg(test)]
@@ -426,7 +345,9 @@ mod tests {
         assert!(!html.contains("<img onerror"));
         assert!(!html.contains("<b>Bad</b>"));
         assert!(html.contains("&lt;script&gt;"));
-        assert!(html.contains("&lt;b&gt;Bad&lt;/b&gt;"));
+        assert!(html.contains("&lt;b&gt;Bad&lt;"));
+        assert!(html.contains("&lt;&#x2F;script&gt;"));
+        assert!(html.contains("&lt;&#x2F;b&gt;"));
     }
 
     #[test]
