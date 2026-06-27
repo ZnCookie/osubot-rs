@@ -65,7 +65,11 @@ fn format_pp_delta(delta: f64) -> String {
     }
 }
 
-/// 渲染 pp 变化 HTML(已带 `user-pp-change` 类和 up/down/zero 颜色)
+/// 渲染 pp 变化 HTML（已转义，可安全用于 Tera `| safe`）。
+///
+/// 输出格式: `<span class="user-pp-change up|down|zero">±N</span>`
+/// 所有数值通过固定格式字符串构造，不含未转义的用户输入。
+///
 /// `None` → 空字符串
 #[must_use]
 pub fn format_pp_change_html(change: Option<f64>) -> String {
@@ -87,7 +91,11 @@ pub fn format_pp_change_html(change: Option<f64>) -> String {
     }
 }
 
-/// 渲染 rank 变化 HTML(已带 `rank-change` 类和 up/down/zero 颜色)
+/// 渲染 rank 变化 HTML（已转义，可安全用于 Tera `| safe`）。
+///
+/// 输出格式: `<span class="rank-change up|down|zero">±N</span>`
+/// 所有数值通过固定格式字符串构造，不含未转义的用户输入。
+///
 /// `None` → 空字符串
 #[must_use]
 pub fn format_rank_change_html(change: Option<i64>) -> String {

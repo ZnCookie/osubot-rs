@@ -137,32 +137,50 @@ fn format_relative_time(created_at: &str) -> String {
     format!("~{}y", years)
 }
 
+#[derive(serde::Serialize)]
+struct MiniScore {
+    title: String,
+    artist: String,
+    star_rating_formatted: String,
+    beatmap_id: i64,
+}
+
+#[derive(serde::Serialize)]
+struct MiniCard {
+    rank_class: String,
+    rank_display: String,
+    cover_data_uri: String,
+    relative_time: String,
+    score: MiniScore,
+    acc_formatted: String,
+    pp_formatted: String,
+    mods_html: String,
+    passed: bool,
+}
+
 #[must_use]
 pub fn wrap_score_list_html(params: &ScoreListHtmlParams<'_>) -> String {
     use crate::style::{format_pp_change_html, format_rank_change_html};
     use osubot_types::format_number;
 
-    let cards_data: Vec<serde_json::Value> = params
+    let cards_data: Vec<MiniCard> = params
         .cards
         .iter()
-        .map(|card| {
-            serde_json::json!({
-                "rank_class": card.rank_class,
-                "rank_display": card.rank_display,
-                "cover_data_uri": card.cover_data_uri,
-                "relative_time": card.relative_time,
-                "score": {
-                    "title": card.score.title,
-                    "artist": card.score.artist,
-                    "star_rating": card.score.star_rating,
-                    "star_rating_formatted": format!("{:.2}", card.score.star_rating),
-                    "beatmap_id": card.score.beatmap_id,
-                },
-                "acc_formatted": card.acc_formatted,
-                "pp_formatted": card.pp_formatted,
-                "mods_html": card.mods_html,
-                "passed": card.passed,
-            })
+        .map(|card| MiniCard {
+            rank_class: card.rank_class.clone(),
+            rank_display: card.rank_display.clone(),
+            cover_data_uri: card.cover_data_uri.clone(),
+            relative_time: card.relative_time.clone(),
+            score: MiniScore {
+                title: card.score.title.clone(),
+                artist: card.score.artist.clone(),
+                star_rating_formatted: format!("{:.2}", card.score.star_rating),
+                beatmap_id: card.score.beatmap_id,
+            },
+            acc_formatted: card.acc_formatted.clone(),
+            pp_formatted: card.pp_formatted.clone(),
+            mods_html: card.mods_html.clone(),
+            passed: card.passed,
         })
         .collect();
 
