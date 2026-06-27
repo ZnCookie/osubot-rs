@@ -54,7 +54,7 @@ sudo pacman -S noto-fonts noto-fonts-cjk noto-fonts-emoji
 除了安装字体，你还需要安装依赖：
 
 ```bash
-sudo pacman -S librsvg cairo glib2 pango pkgconf  # Arch Linux 编译依赖
+sudo pacman -S fontconfig liblzma zstd  # Arch Linux 编译依赖
 cargo run --release
 ```
 
