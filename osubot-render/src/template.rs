@@ -28,7 +28,7 @@ pub(crate) fn render(name: &str, ctx: &Context) -> String {
             tracing::error!(template = name, error = %e, "tera render failed");
             e
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|e| format!("Tera render error: {e}"))
 }
 
 #[cfg(test)]
