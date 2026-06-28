@@ -1,5 +1,7 @@
 pub use osubot_game_mode::GameMode;
-pub use osubot_types::{format_length, format_mods, format_play_datetime, Score, ScoreStatistics, ScoreUser};
+pub use osubot_types::{
+    format_length, format_mods, format_play_datetime, Score, ScoreStatistics, ScoreUser,
+};
 
 /// Actions for the `!ml` (Match Listen) command.
 #[derive(Debug, Clone, PartialEq)]

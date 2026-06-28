@@ -1,6 +1,6 @@
 use super::*;
-use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use futures_util::stream::{self, StreamExt};
+use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use std::borrow::Cow;
 
 /// 并发补全 PP 的最大请求数。osu! API 对单 IP 的并发有限制，
@@ -299,8 +299,10 @@ pub(super) async fn render_and_send_score_list(
                 }
             }
         });
-        let enriched: Vec<(usize, Option<f64>)> =
-            stream::iter(futs).buffer_unordered(ENRICH_CONCURRENCY).collect().await;
+        let enriched: Vec<(usize, Option<f64>)> = stream::iter(futs)
+            .buffer_unordered(ENRICH_CONCURRENCY)
+            .collect()
+            .await;
         for (i, sr) in enriched {
             if let Some(adjusted) = sr {
                 owned[i].star_rating = adjusted;

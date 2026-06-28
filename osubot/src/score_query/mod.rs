@@ -7,9 +7,9 @@
 use crate::score_filter::score_matches_filters;
 use crate::BotContext;
 use futures_util::future::join_all;
+use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
-use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use osubot_core::{
     api, log_fmt,
     response::{format_score, format_scores},
