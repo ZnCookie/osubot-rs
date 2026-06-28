@@ -32,17 +32,26 @@
 
 ```
 !ml <比赛ID|mp链接|比赛URL>
+!ml <比赛ID|mp链接|比赛URL> start
+!li <比赛ID|mp链接|比赛URL>
 !ml stop <比赛ID|mp链接|比赛URL>
+!ml <比赛ID|mp链接|比赛URL> stop
 !ml stop all
 !ml list
+!ml info <比赛ID|mp链接|比赛URL>
+!ml <比赛ID|mp链接|比赛URL> info
 !ml status <比赛ID|mp链接|比赛URL>
+!ml <比赛ID|mp链接|比赛URL> #<N>
 ```
 
 - `!ml 12345678` — 开始监听比赛（支持纯数字 ID、`mp12345678`、完整 URL）
+- `!ml 12345678 start` / `!li 12345678` — 等价开始监听写法
 - `!ml stop 12345678` — 停止监听指定比赛
+- `!ml 12345678 stop` / `!ml 12345678 p` / `!ml off 12345678` — 等价停止监听写法
 - `!ml stop all` — 停止监听本群所有比赛
 - `!ml list` — 查看本群正在监听的比赛列表
-- `!ml status 12345678` — 查询指定比赛的当前状态
+- `!ml status 12345678` / `!ml info 12345678` / `!ml 12345678 info` — 查询指定比赛的当前状态
+- `!ml 12345678 #2` — 开始监听时跳过前 2 局历史对局
 
 **比赛 ID 格式：** 以下三种等价
 - 纯数字：`12345678`

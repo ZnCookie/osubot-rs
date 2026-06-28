@@ -236,6 +236,8 @@ fn parse_ml_subcommand(rest: &str) -> Option<Command> {
 }
 
 fn parse_ml_skip_suffix(rest: &str) -> Option<(&str, u32)> {
+    // parse_command() 会先尝试成绩查询 grammar，再尝试 `!ml`。因此这里接受
+    // trailing `#N` 只会影响 `!ml` 自己的 skip 语法，不会抢走 `!p #3` 等 scoring 命令。
     let rest = rest.trim();
     let Some((command, skip)) = rest.rsplit_once('#') else {
         return Some((rest, 0));
