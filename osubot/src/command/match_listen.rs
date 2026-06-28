@@ -1,7 +1,7 @@
 use super::*;
 use osubot_core::api::{fetch_match, LegacyMatchResponse};
 use osubot_core::log_fmt;
-use osubot_core::storage::MatchListener;
+use osubot_core::storage::{MatchListener, MatchListenerStartParams};
 use osubot_core::strings::{log_str, user_str};
 use osubot_core::types::{Command, MatchListenAction};
 use tokio::sync::mpsc;
@@ -61,7 +61,7 @@ pub(crate) fn format_ml_response(action: &MatchListenAction, result: &MlActionRe
                 match_name,
                 status,
                 players,
-                progress,
+                games_played,
                 ..
             },
         ) => {
@@ -70,10 +70,9 @@ pub(crate) fn format_ml_response(action: &MatchListenAction, result: &MlActionRe
             let status_line = user_str("ml.status_status").replace("{status}", status);
             let players_line =
                 user_str("ml.status_players").replace("{count}", &players.to_string());
-            let progress_line = user_str("ml.status_progress")
-                .replace("{current}", &progress.0.to_string())
-                .replace("{total}", &progress.1.to_string());
-            format!("{header}{name}{status_line}{players_line}{progress_line}")
+            let games_line =
+                user_str("ml.status_games").replace("{count}", &games_played.to_string());
+            format!("{header}{name}{status_line}{players_line}{games_line}")
         }
         (MatchListenAction::Status { match_id }, MlActionResult::NotFound { .. }) => {
             user_str("ml.not_found")
@@ -107,7 +106,7 @@ pub(crate) enum MlActionResult {
         match_name: String,
         status: String,
         players: usize,
-        progress: (u64, u64),
+        games_played: u64,
     },
     NotFound {
         qq: i64,
@@ -132,16 +131,19 @@ impl MlActionResult {
     }
 }
 
-fn format_match_name(_l: &MatchListener) -> String {
-    // We don't store match_name in DB; fetch lazily in handler.
-    "未知".to_string()
+fn format_match_name(l: &MatchListener) -> String {
+    if l.match_name.trim().is_empty() {
+        user_str("ml.unknown").to_string()
+    } else {
+        l.match_name.clone()
+    }
 }
 
 fn format_listener_status(l: &MatchListener) -> &'static str {
     if l.active {
-        "监听中"
+        user_str("ml.listener_active_status")
     } else {
-        "已停止"
+        user_str("ml.listener_stopped_status")
     }
 }
 
@@ -277,7 +279,15 @@ async fn execute_start(
     // Persist listener
     if let Err(e) = ctx
         .storage
-        .start_match_listener(match_id as i64, group_id, user_id, expires_at)
+        .start_match_listener(MatchListenerStartParams {
+            match_id: match_id as i64,
+            group_id,
+            creator_qq: user_id,
+            match_name: match_name.clone(),
+            expires_at,
+            initial_last_event_id: initial_cursor.last_event_id,
+            initial_last_notified_event_id: initial_cursor.last_notified_event_id,
+        })
         .await
     {
         error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
@@ -286,22 +296,6 @@ async fn execute_start(
             message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
         };
     }
-
-    // Set initial cursor so we don't replay old lobby events, but still emit
-    // current in-progress game info once (YumuBot onGameStart behavior).
-    if let Some(last_event_id) = initial_cursor.last_event_id {
-        let _ = ctx
-            .storage
-            .advance_match_cursor(match_id as i64, group_id, last_event_id)
-            .await;
-    }
-    if let Some(last_notified_event_id) = initial_cursor.last_notified_event_id {
-        let _ = ctx
-            .storage
-            .advance_match_notified_event(match_id as i64, group_id, last_notified_event_id)
-            .await;
-    }
-
     MlActionResult::Started {
         qq: user_id,
         match_name,
@@ -466,19 +460,23 @@ async fn execute_status(
 
     let match_name = response.match_info.name.clone();
     let status = if response.match_info.end_time.is_some() {
-        "已结束"
+        user_str("ml.match_status_finished")
     } else {
-        "进行中"
+        user_str("ml.match_status_in_progress")
     };
     let players = response.users.len();
-    let progress = (response.events.len() as u64, response.latest_event_id);
+    let games_played = response
+        .events
+        .iter()
+        .filter(|event| event.game.is_some())
+        .count() as u64;
 
     MlActionResult::Status {
         qq: user_id,
         match_name,
         status: status.to_string(),
         players,
-        progress,
+        games_played,
     }
 }
 
@@ -579,6 +577,7 @@ mod tests {
             match_id: 1,
             group_id: 2,
             creator_qq: 3,
+            match_name: "Test Match".to_string(),
             last_event_id: None,
             last_notified_event_id: None,
             pending_game_event_id: None,
@@ -679,7 +678,7 @@ mod tests {
             match_name: "Test Match".to_string(),
             status: "进行中".to_string(),
             players: 4,
-            progress: (5, 100),
+            games_played: 5,
         };
         let resp = format_ml_response(&action, &result);
         assert!(resp.contains("Test Match"));

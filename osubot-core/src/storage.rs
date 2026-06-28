@@ -67,7 +67,7 @@ async fn has_column(
     table: &str,
     column: &str,
 ) -> DbResult<bool> {
-    const ALLOWED_TABLES: &[&str] = &["user_bindings"];
+    const ALLOWED_TABLES: &[&str] = &["user_bindings", "match_listeners"];
     if !ALLOWED_TABLES.contains(&table) {
         return Err(turso::Error::Error(format!(
             "has_column: table '{table}' is not in the allowlist"
@@ -142,6 +142,7 @@ pub struct MatchListener {
     pub match_id: i64,
     pub group_id: i64,
     pub creator_qq: i64,
+    pub match_name: String,
     pub last_event_id: Option<i64>,
     pub last_notified_event_id: Option<i64>,
     pub pending_game_event_id: Option<i64>,
@@ -149,6 +150,17 @@ pub struct MatchListener {
     pub expires_at: i64,
     pub active: bool,
     pub last_notified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchListenerStartParams {
+    pub match_id: i64,
+    pub group_id: i64,
+    pub creator_qq: i64,
+    pub match_name: String,
+    pub expires_at: i64,
+    pub initial_last_event_id: Option<i64>,
+    pub initial_last_notified_event_id: Option<i64>,
 }
 
 fn parse_db_datetime(value: &str, field_name: &str) -> DateTime<Utc> {
@@ -161,19 +173,20 @@ fn parse_db_datetime(value: &str, field_name: &str) -> DateTime<Utc> {
 }
 
 fn row_to_match_listener(row: &Row) -> DbResult<MatchListener> {
-    let created_at: String = row.get(6)?;
-    let last_notified_at: Option<String> = row.get(9)?;
-    let active: i64 = row.get(8)?;
+    let created_at: String = row.get(7)?;
+    let last_notified_at: Option<String> = row.get(10)?;
+    let active: i64 = row.get(9)?;
 
     Ok(MatchListener {
         match_id: row.get(0)?,
         group_id: row.get(1)?,
         creator_qq: row.get(2)?,
-        last_event_id: row.get(3)?,
-        last_notified_event_id: row.get(4)?,
-        pending_game_event_id: row.get(5)?,
+        match_name: row.get(3)?,
+        last_event_id: row.get(4)?,
+        last_notified_event_id: row.get(5)?,
+        pending_game_event_id: row.get(6)?,
         created_at: parse_db_datetime(&created_at, "match_listeners.created_at"),
-        expires_at: row.get(7)?,
+        expires_at: row.get(8)?,
         active: active != 0,
         last_notified_at: last_notified_at
             .as_deref()
@@ -254,6 +267,7 @@ impl Storage {
                 match_id INTEGER NOT NULL,
                 group_id INTEGER NOT NULL,
                 creator_qq INTEGER NOT NULL,
+                match_name TEXT NOT NULL DEFAULT '',
                 last_event_id INTEGER,
                 last_notified_event_id INTEGER,
                 pending_game_event_id INTEGER,
@@ -283,6 +297,16 @@ impl Storage {
                 .await
                 .execute(
                     "ALTER TABLE user_bindings ADD COLUMN default_mode INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        if !has_column(&pool, "match_listeners", "match_name").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE match_listeners ADD COLUMN match_name TEXT NOT NULL DEFAULT ''",
                     (),
                 )
                 .await?;
@@ -1103,13 +1127,16 @@ impl Storage {
         Ok((deleted_stats, deleted_plays, deleted_next))
     }
 
-    pub async fn start_match_listener(
-        &self,
-        match_id: i64,
-        group_id: i64,
-        creator_qq: i64,
-        expires_at: i64,
-    ) -> DbResult<()> {
+    pub async fn start_match_listener(&self, params: MatchListenerStartParams) -> DbResult<()> {
+        let MatchListenerStartParams {
+            match_id,
+            group_id,
+            creator_qq,
+            match_name,
+            expires_at,
+            initial_last_event_id,
+            initial_last_notified_event_id,
+        } = params;
         let created_at = Utc::now().to_rfc3339();
         let now = Utc::now().timestamp();
         self.conn()
@@ -1119,6 +1146,7 @@ impl Storage {
                     match_id,
                     group_id,
                     creator_qq,
+                    match_name,
                     last_event_id,
                     last_notified_event_id,
                     pending_game_event_id,
@@ -1126,32 +1154,33 @@ impl Storage {
                     expires_at,
                     active,
                     last_notified_at
-                ) VALUES (?1, ?2, ?3, NULL, NULL, NULL, ?4, ?5, 1, NULL)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, 1, NULL)
                 ON CONFLICT(match_id, group_id) DO UPDATE SET
                     creator_qq = excluded.creator_qq,
+                    match_name = excluded.match_name,
                     created_at = CASE
-                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?6 THEN match_listeners.created_at
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.created_at
                         ELSE excluded.created_at
                     END,
                     expires_at = excluded.expires_at,
                     active = 1,
                     last_event_id = CASE
-                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?6 THEN match_listeners.last_event_id
-                        ELSE NULL
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_event_id
+                        ELSE excluded.last_event_id
                     END,
                     last_notified_event_id = CASE
-                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?6 THEN match_listeners.last_notified_event_id
-                        ELSE NULL
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_notified_event_id
+                        ELSE excluded.last_notified_event_id
                     END,
                     pending_game_event_id = CASE
-                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?6 THEN match_listeners.pending_game_event_id
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.pending_game_event_id
                         ELSE NULL
                     END,
                     last_notified_at = CASE
-                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?6 THEN match_listeners.last_notified_at
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_notified_at
                         ELSE NULL
                     END",
-                params![match_id, group_id, creator_qq, created_at, expires_at, now],
+                params![match_id, group_id, creator_qq, match_name, initial_last_event_id, initial_last_notified_event_id, created_at, expires_at, now],
             )
             .await?;
         Ok(())
@@ -1191,7 +1220,7 @@ impl Storage {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT match_id, group_id, creator_qq, last_event_id, last_notified_event_id,
+                "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
                         pending_game_event_id, created_at, expires_at, active, last_notified_at
                  FROM match_listeners
                  WHERE match_id = ?1 AND group_id = ?2",
@@ -1214,7 +1243,7 @@ impl Storage {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT match_id, group_id, creator_qq, last_event_id, last_notified_event_id,
+                "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
                         pending_game_event_id, created_at, expires_at, active, last_notified_at
                  FROM match_listeners
                  WHERE group_id = ?1 AND active = 1 AND expires_at >= ?2
@@ -1237,7 +1266,7 @@ impl Storage {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT match_id, group_id, creator_qq, last_event_id, last_notified_event_id,
+                "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
                         pending_game_event_id, created_at, expires_at, active, last_notified_at
                  FROM match_listeners
                  WHERE active = 1 AND expires_at >= ?1
@@ -1331,6 +1360,43 @@ impl Storage {
                  SET pending_game_event_id = NULL
                  WHERE match_id = ?1 AND group_id = ?2",
                 params![match_id, group_id],
+            )
+            .await?;
+        Ok(rows > 0)
+    }
+
+    pub async fn update_match_listener_progress(
+        &self,
+        match_id: i64,
+        group_id: i64,
+        last_event_id: Option<i64>,
+        last_notified_event_id: Option<i64>,
+        pending_game_event_id: Option<i64>,
+        touch_last_notified_at: bool,
+    ) -> DbResult<bool> {
+        let last_notified_at = touch_last_notified_at.then(|| Utc::now().to_rfc3339());
+        let rows = self
+            .conn()
+            .await
+            .execute(
+                "UPDATE match_listeners
+                 SET last_event_id = ?3,
+                     last_notified_event_id = ?4,
+                     pending_game_event_id = ?5,
+                     last_notified_at = CASE
+                         WHEN ?6 = 1 THEN ?7
+                         ELSE last_notified_at
+                     END
+                 WHERE match_id = ?1 AND group_id = ?2",
+                params![
+                    match_id,
+                    group_id,
+                    last_event_id,
+                    last_notified_event_id,
+                    pending_game_event_id,
+                    if touch_last_notified_at { 1 } else { 0 },
+                    last_notified_at,
+                ],
             )
             .await?;
         Ok(rows > 0)
@@ -1852,7 +1918,15 @@ mod match_listener {
         expires_at: i64,
     ) {
         storage
-            .start_match_listener(match_id, group_id, creator_qq, expires_at)
+            .start_match_listener(MatchListenerStartParams {
+                match_id,
+                group_id,
+                creator_qq,
+                match_name: format!("MP #{match_id}"),
+                expires_at,
+                initial_last_event_id: None,
+                initial_last_notified_event_id: None,
+            })
             .await
             .expect("start match listener");
     }
@@ -1886,6 +1960,7 @@ mod match_listener {
         assert_eq!(listeners.len(), 1);
         assert_eq!(listeners[0].match_id, MATCH_ID);
         assert_eq!(listeners[0].group_id, GROUP_ID);
+        assert_eq!(listeners[0].match_name, format!("MP #{MATCH_ID}"));
 
         std::fs::remove_file(&db_path).expect("cleanup reopened db path");
     }
@@ -2194,5 +2269,35 @@ mod match_listener {
         assert_eq!(listener.last_notified_event_id, None);
         assert_eq!(listener.pending_game_event_id, None);
         assert_eq!(listener.last_notified_at, None);
+    }
+
+    #[tokio::test]
+    async fn update_match_listener_progress_updates_all_cursor_fields_atomically() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+
+        assert!(storage
+            .update_match_listener_progress(
+                MATCH_ID,
+                GROUP_ID,
+                Some(100),
+                Some(99),
+                Some(101),
+                true
+            )
+            .await
+            .expect("atomic cursor update"));
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get listener after atomic update")
+            .expect("listener exists after atomic update");
+
+        assert_eq!(listener.last_event_id, Some(100));
+        assert_eq!(listener.last_notified_event_id, Some(99));
+        assert_eq!(listener.pending_game_event_id, Some(101));
+        assert!(listener.last_notified_at.is_some());
     }
 }
