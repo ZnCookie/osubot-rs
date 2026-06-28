@@ -1,3 +1,4 @@
+use osubot_core::strings::user_str;
 use osubot_core::types::CommandGroup;
 use osubot_plugin::config::PluginConfig;
 use serde::Deserialize;
@@ -563,10 +564,12 @@ impl Config {
             }
         }
         if self.match_listen.poll_interval_secs < 5 {
-            return Err(ConfigError::Validation(format!(
-                "match_listen.poll_interval_secs 过小（{} < 5 秒）",
-                self.match_listen.poll_interval_secs
-            )));
+            return Err(ConfigError::Validation(
+                user_str("config.ml_poll_interval_too_small").replace(
+                    "{current}",
+                    &self.match_listen.poll_interval_secs.to_string(),
+                ),
+            ));
         }
         Ok(())
     }

@@ -180,6 +180,9 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "bridge.tick_interval_too_short" => "tick 间隔不能小于 {secs} 秒",
     "bridge.tick_interval_too_long" => "tick 间隔不能大于 {secs} 秒",
     "bridge.tick_limit_exceeded" => "每个插件最多注册 {limit} 个 tick",
+
+    // ── 配置校验 ──
+    "config.ml_poll_interval_too_small" => "match_listen.poll_interval_secs 过小（{current} < 5 秒）",
 };
 
 /// 开发者可见文本（log 消息），统一中文
