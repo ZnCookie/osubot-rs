@@ -1282,89 +1282,6 @@ impl Storage {
         Ok(listeners)
     }
 
-    pub async fn advance_match_cursor(
-        &self,
-        match_id: i64,
-        group_id: i64,
-        event_id: i64,
-    ) -> DbResult<bool> {
-        let rows = self
-            .conn()
-            .await
-            .execute(
-                "UPDATE match_listeners
-                 SET last_event_id = CASE
-                     WHEN last_event_id IS NULL OR last_event_id < ?3 THEN ?3
-                     ELSE last_event_id
-                 END
-                 WHERE match_id = ?1 AND group_id = ?2",
-                params![match_id, group_id, event_id],
-            )
-            .await?;
-        Ok(rows > 0)
-    }
-
-    pub async fn advance_match_notified_event(
-        &self,
-        match_id: i64,
-        group_id: i64,
-        event_id: i64,
-    ) -> DbResult<bool> {
-        let last_notified_at = Utc::now().to_rfc3339();
-        let rows = self
-            .conn()
-            .await
-            .execute(
-                "UPDATE match_listeners
-                 SET last_notified_event_id = CASE
-                         WHEN last_notified_event_id IS NULL OR last_notified_event_id < ?3 THEN ?3
-                         ELSE last_notified_event_id
-                     END,
-                     last_notified_at = ?4
-                 WHERE match_id = ?1 AND group_id = ?2",
-                params![match_id, group_id, event_id, last_notified_at],
-            )
-            .await?;
-        Ok(rows > 0)
-    }
-
-    pub async fn set_pending_match_game_event(
-        &self,
-        match_id: i64,
-        group_id: i64,
-        event_id: i64,
-    ) -> DbResult<bool> {
-        let rows = self
-            .conn()
-            .await
-            .execute(
-                "UPDATE match_listeners
-                 SET pending_game_event_id = ?3
-                 WHERE match_id = ?1 AND group_id = ?2",
-                params![match_id, group_id, event_id],
-            )
-            .await?;
-        Ok(rows > 0)
-    }
-
-    pub async fn clear_pending_match_game_event(
-        &self,
-        match_id: i64,
-        group_id: i64,
-    ) -> DbResult<bool> {
-        let rows = self
-            .conn()
-            .await
-            .execute(
-                "UPDATE match_listeners
-                 SET pending_game_event_id = NULL
-                 WHERE match_id = ?1 AND group_id = ?2",
-                params![match_id, group_id],
-            )
-            .await?;
-        Ok(rows > 0)
-    }
-
     pub async fn update_match_listener_progress(
         &self,
         match_id: i64,
@@ -1972,7 +1889,7 @@ mod match_listener {
         create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
 
         assert!(storage
-            .advance_match_cursor(MATCH_ID, GROUP_ID, 100)
+            .update_match_listener_progress(MATCH_ID, GROUP_ID, Some(100), None, None, false)
             .await
             .expect("advance cursor"));
 
@@ -2152,13 +2069,9 @@ mod match_listener {
         create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
 
         assert!(storage
-            .advance_match_notified_event(MATCH_ID, GROUP_ID, 88)
+            .update_match_listener_progress(MATCH_ID, GROUP_ID, None, Some(88), Some(99), true)
             .await
-            .expect("advance notified event"));
-        assert!(storage
-            .set_pending_match_game_event(MATCH_ID, GROUP_ID, 99)
-            .await
-            .expect("set pending event"));
+            .expect("update listener progress"));
 
         let listener = storage
             .get_match_listener(MATCH_ID, GROUP_ID)
@@ -2171,7 +2084,7 @@ mod match_listener {
         assert!(listener.last_notified_at.is_some());
 
         assert!(storage
-            .clear_pending_match_game_event(MATCH_ID, GROUP_ID)
+            .update_match_listener_progress(MATCH_ID, GROUP_ID, None, None, None, false)
             .await
             .expect("clear pending event"));
 
@@ -2190,17 +2103,16 @@ mod match_listener {
         create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
 
         assert!(storage
-            .advance_match_cursor(MATCH_ID, GROUP_ID, 100)
+            .update_match_listener_progress(
+                MATCH_ID,
+                GROUP_ID,
+                Some(100),
+                Some(99),
+                Some(101),
+                true,
+            )
             .await
-            .expect("advance cursor"));
-        assert!(storage
-            .advance_match_notified_event(MATCH_ID, GROUP_ID, 99)
-            .await
-            .expect("advance notified event"));
-        assert!(storage
-            .set_pending_match_game_event(MATCH_ID, GROUP_ID, 101)
-            .await
-            .expect("set pending event"));
+            .expect("set listener progress"));
         assert!(storage
             .stop_match_listener(MATCH_ID, GROUP_ID)
             .await
@@ -2236,17 +2148,16 @@ mod match_listener {
         create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
 
         assert!(storage
-            .advance_match_cursor(MATCH_ID, GROUP_ID, 100)
+            .update_match_listener_progress(
+                MATCH_ID,
+                GROUP_ID,
+                Some(100),
+                Some(99),
+                Some(101),
+                true,
+            )
             .await
-            .expect("advance cursor"));
-        assert!(storage
-            .advance_match_notified_event(MATCH_ID, GROUP_ID, 99)
-            .await
-            .expect("advance notified event"));
-        assert!(storage
-            .set_pending_match_game_event(MATCH_ID, GROUP_ID, 101)
-            .await
-            .expect("set pending event"));
+            .expect("set listener progress"));
 
         create_listener(
             &storage,
