@@ -61,6 +61,8 @@ pub struct Config {
     pub upstream: UpstreamConfig,
     #[serde(default)]
     pub plugin: PluginConfig,
+    #[serde(default)]
+    pub match_listen: MatchListenConfig,
 }
 
 #[derive(Deserialize, Clone)]
@@ -281,6 +283,7 @@ pub struct GroupConfig {
     pub bind: Option<bool>,
     pub mode: Option<bool>,
     pub help: Option<bool>,
+    pub match_listen: Option<bool>,
 }
 
 impl GroupConfig {
@@ -296,6 +299,7 @@ impl GroupConfig {
             CommandGroup::Bind => self.bind.unwrap_or(default),
             CommandGroup::Mode => self.mode.unwrap_or(default),
             CommandGroup::Help => self.help.unwrap_or(default),
+            CommandGroup::MatchListen => self.match_listen.unwrap_or(default),
         }
     }
 }
@@ -325,6 +329,7 @@ impl GroupsConfig {
                 bind: override_cfg.bind.or(self.default.bind),
                 mode: override_cfg.mode.or(self.default.mode),
                 help: override_cfg.help.or(self.default.help),
+                match_listen: override_cfg.match_listen.or(self.default.match_listen),
             }
         } else {
             self.default.clone()
@@ -388,6 +393,44 @@ pub struct UpstreamConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
+/// 比赛监听（!ml）功能配置
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Clone)]
+pub struct MatchListenConfig {
+    #[serde(default = "default_ml_max_per_group")]
+    pub max_per_group: u32,
+    #[serde(default = "default_ml_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default = "default_ml_notify_on_new_game")]
+    pub notify_on_new_game: bool,
+    #[serde(default = "default_ml_notify_on_complete")]
+    pub notify_on_complete: bool,
+}
+
+fn default_ml_max_per_group() -> u32 {
+    3
+}
+fn default_ml_poll_interval_secs() -> u64 {
+    8
+}
+fn default_ml_notify_on_new_game() -> bool {
+    true
+}
+fn default_ml_notify_on_complete() -> bool {
+    true
+}
+
+impl Default for MatchListenConfig {
+    fn default() -> Self {
+        Self {
+            max_per_group: default_ml_max_per_group(),
+            poll_interval_secs: default_ml_poll_interval_secs(),
+            notify_on_new_game: default_ml_notify_on_new_game(),
+            notify_on_complete: default_ml_notify_on_complete(),
+        }
+    }
+}
+
 /// 热重载时会从新 TOML 解析的部分，遗留字段（database）保持旧值不变。
 /// osu/irc/bot 用 Option 区分"未写 section"（None，继承旧值）和"写了 section"（Some，使用新值）。
 /// scheduler 也用 Option 避免无 section 时用默认值覆盖用户配置。
@@ -410,6 +453,8 @@ pub struct MutableConfig {
     pub bot: Option<BotConfig>,
     #[serde(default)]
     pub irc: Option<IrcConfig>,
+    #[serde(default)]
+    pub match_listen: Option<MatchListenConfig>,
 }
 
 impl Config {
@@ -545,6 +590,7 @@ impl Default for Config {
             groups: GroupsConfig::default(),
             upstream: UpstreamConfig::default(),
             plugin: PluginConfig::default(),
+            match_listen: MatchListenConfig::default(),
         }
     }
 }
@@ -595,6 +641,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Bind));
         assert!(cfg.is_enabled(CommandGroup::Mode));
         assert!(cfg.is_enabled(CommandGroup::Help));
+        assert!(cfg.is_enabled(CommandGroup::MatchListen));
     }
 
     #[test]
@@ -609,6 +656,7 @@ mod tests {
             bind: None,
             mode: None,
             help: None,
+            match_listen: Some(false),
         };
         assert!(cfg.is_enabled(CommandGroup::Query));
         assert!(!cfg.is_enabled(CommandGroup::Score));
@@ -617,6 +665,7 @@ mod tests {
         assert!(cfg.is_enabled(CommandGroup::Bind));
         assert!(cfg.is_enabled(CommandGroup::Mode));
         assert!(cfg.is_enabled(CommandGroup::Help));
+        assert!(!cfg.is_enabled(CommandGroup::MatchListen));
     }
 
     #[test]
@@ -635,6 +684,7 @@ mod tests {
             GroupConfig {
                 highlight: Some(false),
                 bind: Some(false),
+                match_listen: Some(false),
                 ..Default::default()
             },
         );
@@ -654,12 +704,14 @@ mod tests {
         assert!(!g123.is_enabled(CommandGroup::Highlight));
         assert!(!g123.is_enabled(CommandGroup::Bind));
         assert!(g123.is_enabled(CommandGroup::Mode));
+        assert!(!g123.is_enabled(CommandGroup::MatchListen));
 
         let g999 = cfg.get_group_config(999);
         assert!(g999.is_enabled(CommandGroup::Query));
         assert!(!g999.is_enabled(CommandGroup::Score));
         assert!(g999.is_enabled(CommandGroup::Highlight));
         assert!(g999.is_enabled(CommandGroup::Mode));
+        assert!(g999.is_enabled(CommandGroup::MatchListen));
     }
 
     #[test]

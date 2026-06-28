@@ -60,6 +60,7 @@ path = "osubot.db"
 # bind = true               # 绑定、解绑
 # mode = true               # !mode（设置/查询默认模式）
 # help = true               # !help
+# match_listen = true       # !ml（比赛监听）
 
 # [groups.123456789]
 # 特定群的覆盖配置（可选，节名 = 群号）
@@ -87,6 +88,13 @@ path = "osubot.db"
 # burst = 20
 # yumu 默认不鉴权（无需 access_token），但支持配置——设了就会按 OneBot 11 协议发 Authorization 头
 # self_id 无关，yumu 直接用目标 QQ 号作为身份标识
+
+# [match_listen]
+# 比赛监听功能（!ml 命令），可选，不配置则使用默认值
+# max_per_group = 3          # 每群最多同时监听的比赛数
+# poll_interval_secs = 8     # 后台轮询间隔（秒），启动后会立即执行首轮检查
+# notify_on_new_game = true  # 新场次开始时是否推送通知
+# notify_on_complete = true  # 比赛结束时是否推送最终结果
 
 [plugin]
 # .wasm 插件文件存放目录
