@@ -332,7 +332,7 @@ impl MatchListenerPoller {
             need_users && response.users.is_empty() && incremental_roster.is_empty();
 
         let fallback_users = if should_fetch_user_context {
-            match fetch_match(&self.rate_limiter, &self.oauth, match_id, None, Some(1)).await {
+            match fetch_match(&self.rate_limiter, &self.oauth, match_id, None, None).await {
                 Ok(full_response) => {
                     let roster = reconstruct_match_roster(&full_response);
                     if roster.is_empty() {
