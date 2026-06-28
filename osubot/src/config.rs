@@ -395,7 +395,6 @@ pub struct UpstreamConfig {
 }
 
 /// 比赛监听（!ml）功能配置
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct MatchListenConfig {
     #[serde(default = "default_ml_max_per_group")]

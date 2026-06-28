@@ -222,12 +222,6 @@ impl MatchListenerPoller {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Release);
-        crate::shutdown::SHUTDOWN_NOTIFY.notify_waiters();
-    }
-
     /// Background task entry point.
     pub async fn run(&self) {
         info!("{}", log_str("ml.poller_started"));
