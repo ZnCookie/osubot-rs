@@ -76,8 +76,24 @@ async fn fetch_match_avatar_image(avatar_url: Option<&str>) -> Option<image::Dyn
 }
 
 async fn fetch_match_avatar_images(players: &mut [osubot_render::MatchResultPlayerParams]) {
-    for player in players {
-        player.avatar_image = fetch_match_avatar_image(player.avatar_url.as_deref()).await;
+    use futures_util::StreamExt;
+
+    let avatar_jobs: Vec<_> = players
+        .iter()
+        .enumerate()
+        .map(|(idx, player)| (idx, player.avatar_url.clone()))
+        .collect();
+
+    let avatars: Vec<_> = futures_util::stream::iter(avatar_jobs)
+        .map(|(idx, avatar_url)| async move {
+            (idx, fetch_match_avatar_image(avatar_url.as_deref()).await)
+        })
+        .buffer_unordered(6)
+        .collect()
+        .await;
+
+    for (idx, avatar) in avatars {
+        players[idx].avatar_image = avatar;
     }
 }
 
@@ -310,12 +326,10 @@ impl MatchListenerPoller {
 
         let output = process_events(&cursor, &response);
 
-        let should_fetch_user_context = output
-            .notifications
-            .iter()
-            .any(notification_is_started_game)
-            || (response.users.is_empty()
-                && output.notifications.iter().any(notification_needs_users));
+        let incremental_roster = reconstruct_match_roster(&response);
+        let need_users = output.notifications.iter().any(notification_needs_users);
+        let should_fetch_user_context =
+            need_users && response.users.is_empty() && incremental_roster.is_empty();
 
         let fallback_users = if should_fetch_user_context {
             match fetch_match(&self.rate_limiter, &self.oauth, match_id, None, None).await {
@@ -333,7 +347,7 @@ impl MatchListenerPoller {
                 }
             }
         } else {
-            None
+            (!incremental_roster.is_empty()).then_some(incremental_roster)
         };
 
         let notify_cfg = {
@@ -377,35 +391,19 @@ impl MatchListenerPoller {
             acknowledged_cursor
         };
 
-        // Update storage cursors
-        if let Some(new_last) = final_cursor.last_event_id {
-            let _ = self
-                .storage
-                .advance_match_cursor(match_id as i64, group_id, new_last as i64)
-                .await;
-        }
-        if let Some(new_notified) = final_cursor.last_notified_event_id {
-            let _ = self
-                .storage
-                .advance_match_notified_event(match_id as i64, group_id, new_notified as i64)
-                .await;
-        }
-
-        // Update pending game marker
-        match final_cursor.pending_game_event_id {
-            Some(pending) => {
-                let _ = self
-                    .storage
-                    .set_pending_match_game_event(match_id as i64, group_id, pending as i64)
-                    .await;
-            }
-            None => {
-                let _ = self
-                    .storage
-                    .clear_pending_match_game_event(match_id as i64, group_id)
-                    .await;
-            }
-        }
+        let touch_last_notified_at =
+            final_cursor.last_notified_event_id != cursor.last_notified_event_id;
+        let _ = self
+            .storage
+            .update_match_listener_progress(
+                match_id as i64,
+                group_id,
+                final_cursor.last_event_id.map(|v| v as i64),
+                final_cursor.last_notified_event_id.map(|v| v as i64),
+                final_cursor.pending_game_event_id.map(|v| v as i64),
+                touch_last_notified_at,
+            )
+            .await;
 
         // Handle stop reason
         if notifications_fully_handled && output.stop_reason == Some(StopReason::MatchDisbanded) {

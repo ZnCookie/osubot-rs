@@ -104,16 +104,17 @@ pub fn process_events(
                 output.new_last_notified_event_id = Some(event.id);
             }
             EventKind::CompletedGame => {
-                let game = event.game.clone().unwrap();
-                output.notifications.push(NotificationAction::Image {
-                    event_id: event.id,
-                    event_label: "场次结束".to_string(),
-                    played_at: game
-                        .end_time
-                        .clone()
-                        .unwrap_or_else(|| event.timestamp.clone()),
-                    game: Box::new(game),
-                });
+                if let Some(game) = event.game.clone() {
+                    output.notifications.push(NotificationAction::Image {
+                        event_id: event.id,
+                        event_label: "场次结束".to_string(),
+                        played_at: game
+                            .end_time
+                            .clone()
+                            .unwrap_or_else(|| event.timestamp.clone()),
+                        game: Box::new(game),
+                    });
+                }
                 output.new_last_event_id = Some(event.id);
                 output.new_last_notified_event_id = Some(event.id);
                 // Clear pending marker if this was the pending game.
@@ -122,15 +123,16 @@ pub fn process_events(
                 }
             }
             EventKind::InProgressGame => {
-                let game = event.game.clone().unwrap();
-                if output.new_pending_game_event_id != Some(event.id) {
-                    output.notifications.push(NotificationAction::Image {
-                        event_id: event.id,
-                        event_label: "场次开始".to_string(),
-                        played_at: event.timestamp.clone(),
-                        game: Box::new(game),
-                    });
-                    output.new_last_notified_event_id = Some(event.id);
+                if let Some(game) = event.game.clone() {
+                    if output.new_pending_game_event_id != Some(event.id) {
+                        output.notifications.push(NotificationAction::Image {
+                            event_id: event.id,
+                            event_label: "场次开始".to_string(),
+                            played_at: event.timestamp.clone(),
+                            game: Box::new(game),
+                        });
+                        output.new_last_notified_event_id = Some(event.id);
+                    }
                 }
                 // Hold cursor: set pending marker but do NOT advance last_event_id.
                 output.new_pending_game_event_id = Some(event.id);
