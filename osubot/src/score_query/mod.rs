@@ -9,6 +9,7 @@ use crate::BotContext;
 use futures_util::future::join_all;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
+use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use osubot_core::{
     api, log_fmt,
     response::{format_score, format_scores},
@@ -1028,6 +1029,48 @@ async fn run_score_query_pipeline(
                     let mut s = indexed[i].1.clone();
                     async move {
                         enrich_score_with_pp(&mut s, mode, true).await;
+                        s
+                    }
+                })
+                .collect();
+            for (&i, s) in enrich.iter().zip(join_all(futs).await) {
+                indexed[i].1 = s;
+            }
+        }
+    }
+
+    // Star 预补全：过滤器含 star 条件时，对带 mod 的成绩通过 API 补全 mod 调整后的星数。
+    // 与 PP 不同：star 只需要一次轻量 HTTP 请求（/beatmaps/{id}/attributes），
+    // 无需下载 .osu 文件。
+    if filters.is_some_and(|f| f.iter().any(|s| s.starts_with("star"))) {
+        let enrich: Vec<usize> = indexed
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, s))| !s.mods.is_empty() && s.beatmap_id > 0)
+            .map(|(i, _)| i)
+            .collect();
+        if !enrich.is_empty() {
+            let rl = ctx.rate_limiter.clone();
+            let oauth = ctx.oauth.clone();
+            let futs: Vec<_> = enrich
+                .iter()
+                .map(|&i| {
+                    let mut s = indexed[i].1.clone();
+                    let mods_acronym = osubot_core::types::format_mods(&s.mods);
+                    let rl = rl.clone();
+                    let oauth = oauth.clone();
+                    async move {
+                        if let Ok(adjusted_sr) = fetch_beatmap_difficulty_attributes(
+                            &rl,
+                            &oauth,
+                            s.beatmap_id,
+                            &mods_acronym,
+                            mode,
+                        )
+                        .await
+                        {
+                            s.star_rating = adjusted_sr;
+                        }
                         s
                     }
                 })
