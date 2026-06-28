@@ -596,4 +596,46 @@ mod match_api_tests {
         assert_eq!(roster[0].username, "Alpha");
         assert_eq!(roster[1].username, "Bravo");
     }
+
+    #[test]
+    fn reconstruct_match_roster_seeds_then_applies_left_events() {
+        let response = LegacyMatchResponse {
+            match_info: LegacyMatchInfo {
+                id: 1,
+                name: "Test".to_string(),
+                start_time: None,
+                end_time: None,
+            },
+            users: vec![
+                LegacyMatchUser {
+                    id: 11,
+                    username: "Alpha".to_string(),
+                    avatar_url: None,
+                },
+                LegacyMatchUser {
+                    id: 22,
+                    username: "Bravo".to_string(),
+                    avatar_url: None,
+                },
+            ],
+            first_event_id: Some(1),
+            latest_event_id: 3,
+            cursor_string: None,
+            events: vec![LegacyMatchEvent {
+                id: 3,
+                timestamp: String::new(),
+                user_id: Some(22),
+                detail: LegacyMatchEventDetail {
+                    event_type: "player-left".to_string(),
+                    text: "Bravo left the game".to_string(),
+                },
+                game: None,
+            }],
+        };
+
+        let roster = reconstruct_match_roster(&response);
+
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].username, "Alpha");
+    }
 }

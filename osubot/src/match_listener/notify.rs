@@ -7,6 +7,7 @@
 //! concise Chinese text.
 
 use osubot_core::api::{BeatmapMetadata, LegacyMatchGame, LegacyMatchGameScore, LegacyMatchUser};
+use osubot_core::strings::user_str;
 use osubot_render::{MatchResultParams, MatchTeamResultParams};
 
 pub(crate) struct MatchResultBuildOutput {
@@ -93,7 +94,8 @@ pub(crate) fn format_game_fallback_text(
     users: &[LegacyMatchUser],
     match_name: &str,
 ) -> String {
-    let mut lines = vec![format!("【{}】场次结束", match_name)];
+    let mut lines =
+        vec![user_str("ml.fallback_finished_header").replace("{match_name}", match_name)];
 
     // Sort scores descending by score value
     let mut sorted_scores: Vec<&LegacyMatchGameScore> = game.scores.iter().collect();
@@ -104,7 +106,7 @@ pub(crate) fn format_game_fallback_text(
             .iter()
             .find(|u| u.id == score.user_id)
             .map(|u| u.username.as_str())
-            .unwrap_or("未知玩家");
+            .unwrap_or(user_str("ml.unknown_player"));
         let acc_pct = score.accuracy * 100.0;
         let rank_mark = score.display_rank();
         lines.push(format!(
@@ -129,15 +131,15 @@ pub(crate) fn format_game_start_fallback_text(
     let beatmap_id = game
         .beatmap_id
         .map(|id| id.to_string())
-        .unwrap_or_else(|| "未知".to_string());
+        .unwrap_or_else(|| user_str("ml.unknown").to_string());
     let mut lines = vec![
-        format!("【{}】场次开始", match_name),
-        format!("选图：Beatmap #{}", beatmap_id),
-        "参加玩家：".to_string(),
+        user_str("ml.fallback_started_header").replace("{match_name}", match_name),
+        user_str("ml.fallback_selected_beatmap").replace("{beatmap_id}", &beatmap_id),
+        user_str("ml.fallback_players_header").to_string(),
     ];
 
     if users.is_empty() {
-        lines.push("- 暂无玩家信息".to_string());
+        lines.push(user_str("ml.fallback_no_players").to_string());
     } else {
         lines.extend(users.iter().map(|user| format!("- {}", user.username)));
     }
@@ -198,7 +200,7 @@ pub(crate) fn build_match_result_params(
                     .iter()
                     .find(|u| u.id == score.user_id)
                     .map(|u| u.username.clone())
-                    .unwrap_or_else(|| "未知玩家".to_string());
+                    .unwrap_or_else(|| user_str("ml.unknown_player").to_string());
                 let avatar_url = users
                     .iter()
                     .find(|u| u.id == score.user_id)
@@ -321,16 +323,16 @@ fn avatar_url_for_user(user: &LegacyMatchUser) -> Option<String> {
 /// Human-readable Chinese label for an event type.
 fn event_label(event_type: &str) -> &'static str {
     match event_type {
-        "match-created" => "比赛创建",
-        "match-disbanded" => "比赛解散",
-        "player-joined" => "玩家加入",
-        "player-left" => "玩家离开",
-        "player-kicked" => "玩家被踢出",
-        "host-changed" => "房主变更",
-        "beatmap-changed" => "选图变更",
-        "match-started" => "比赛开始",
-        "other" => "场次结束",
-        _ => "事件",
+        "match-created" => user_str("ml.event_match_created"),
+        "match-disbanded" => user_str("ml.event_match_disbanded"),
+        "player-joined" => user_str("ml.event_player_joined"),
+        "player-left" => user_str("ml.event_player_left"),
+        "player-kicked" => user_str("ml.event_player_kicked"),
+        "host-changed" => user_str("ml.event_host_changed"),
+        "beatmap-changed" => user_str("ml.event_beatmap_changed"),
+        "match-started" => user_str("ml.event_match_started"),
+        "other" => user_str("ml.event_match_completed"),
+        _ => user_str("ml.event_generic"),
     }
 }
 
