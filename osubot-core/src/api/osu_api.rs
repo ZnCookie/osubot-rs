@@ -400,6 +400,67 @@ async fn fetch_beatmap(
     http::json_body(resp).await
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BeatmapMetadata {
+    pub beatmap_id: u64,
+    pub beatmapset_id: u64,
+    pub artist: String,
+    pub title: String,
+    pub version: String,
+    pub creator: String,
+    pub mode: String,
+    pub difficulty_rating: Option<f64>,
+    pub cover_url: Option<String>,
+    pub bpm: Option<f64>,
+    pub total_length: Option<u32>,
+    pub max_combo: Option<u32>,
+    pub ar: Option<f64>,
+    pub od: Option<f64>,
+    pub cs: Option<f64>,
+    pub hp: Option<f64>,
+}
+
+fn beatmap_metadata_from_parts(
+    beatmap_id: u64,
+    beatmap: OsuApiBeatmap,
+    beatmapset: OsuApiBeatmapset,
+) -> BeatmapMetadata {
+    BeatmapMetadata {
+        beatmap_id,
+        beatmapset_id: beatmap.beatmapset_id.max(0) as u64,
+        artist: beatmapset.artist,
+        title: beatmapset.title,
+        version: beatmap.version,
+        creator: beatmapset.creator,
+        mode: if beatmap.mode.is_empty() {
+            "osu".to_string()
+        } else {
+            beatmap.mode
+        },
+        difficulty_rating: (beatmap.difficulty_rating > 0.0).then_some(beatmap.difficulty_rating),
+        cover_url: fullsize_cover_url(beatmapset.covers.as_ref()),
+        bpm: (beatmap.bpm > 0.0).then_some(beatmap.bpm),
+        total_length: (beatmap.total_length > 0).then_some(beatmap.total_length as u32),
+        max_combo: (beatmap.max_combo > 0).then_some(beatmap.max_combo as u32),
+        ar: (beatmap.ar > 0.0).then_some(beatmap.ar),
+        od: (beatmap.od > 0.0).then_some(beatmap.od),
+        cs: (beatmap.cs > 0.0).then_some(beatmap.cs),
+        hp: (beatmap.hp > 0.0).then_some(beatmap.hp),
+    }
+}
+
+/// Fetch beatmap + beatmapset metadata for callers that only have a beatmap_id.
+pub async fn fetch_beatmap_metadata(
+    rate_limiter: &RateLimiter,
+    oauth: &super::oauth::OauthTokenCache,
+    beatmap_id: u64,
+) -> Result<BeatmapMetadata, ApiError> {
+    let beatmap = fetch_beatmap(rate_limiter, oauth, beatmap_id as i64).await?;
+    let beatmapset = fetch_beatmapset(rate_limiter, oauth, beatmap.beatmapset_id).await?;
+
+    Ok(beatmap_metadata_from_parts(beatmap_id, beatmap, beatmapset))
+}
+
 /// 根据 beatmap_id 获取其所属 beatmapset_id（用于构造预览音频 URL）。
 pub async fn get_beatmapset_id(
     rate_limiter: &RateLimiter,
@@ -465,4 +526,45 @@ pub async fn fetch_user_profile(
         avatar_url: data.avatar_url,
         cover_url,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beatmap_metadata_from_parts_extracts_title_and_fullsize_cover() {
+        let beatmap: OsuApiBeatmap = serde_json::from_value(serde_json::json!({
+            "id": 796622,
+            "beatmapset_id": 1234,
+            "version": "Normal",
+            "mode": "osu",
+            "difficulty_rating": 2.55
+        }))
+        .expect("beatmap deserialize");
+        let beatmapset: OsuApiBeatmapset = serde_json::from_value(serde_json::json!({
+            "artist": "Rhapsody",
+            "title": "Power of the Dragonflame",
+            "creator": "nebuyuwa",
+            "covers": {
+                "list": "https://assets.ppy.sh/beatmaps/1234/covers/list@2x.jpg"
+            }
+        }))
+        .expect("beatmapset deserialize");
+
+        let metadata = beatmap_metadata_from_parts(796622, beatmap, beatmapset);
+
+        assert_eq!(metadata.beatmap_id, 796622);
+        assert_eq!(metadata.beatmapset_id, 1234);
+        assert_eq!(metadata.artist, "Rhapsody");
+        assert_eq!(metadata.title, "Power of the Dragonflame");
+        assert_eq!(metadata.version, "Normal");
+        assert_eq!(metadata.creator, "nebuyuwa");
+        assert_eq!(metadata.mode, "osu");
+        assert_eq!(metadata.difficulty_rating, Some(2.55));
+        assert_eq!(
+            metadata.cover_url.as_deref(),
+            Some("https://assets.ppy.sh/beatmaps/1234/covers/fullsize.jpg")
+        );
+    }
 }

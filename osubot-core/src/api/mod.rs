@@ -1,5 +1,6 @@
 mod beatmap_attrs;
 mod http;
+mod match_api;
 mod oauth;
 mod osu_api;
 mod pp;
@@ -11,12 +12,18 @@ pub use http::download_beatmap_osu;
 pub use http::download_beatmap_preview_mp3;
 pub(crate) use http::{classify_http_error, retry_on_transient, API_VERSION};
 pub use http::{retry_with_backoff, RetryAction, RetryConfig};
+pub use match_api::{
+    fetch_match, reconstruct_match_roster, LegacyMatchBeatmap, LegacyMatchBeatmapset,
+    LegacyMatchEvent, LegacyMatchEventDetail, LegacyMatchGame, LegacyMatchGameScore,
+    LegacyMatchInfo, LegacyMatchMod, LegacyMatchResponse, LegacyMatchUser,
+};
 pub(crate) use oauth::retry_on_401;
 pub use oauth::OauthTokenCache;
 pub use osu_api::{
-    backfill_score_details, fetch_user_profile, fetch_user_stats_by_user_id,
-    fetch_user_stats_by_username, get_beatmapset_id, get_score_by_id, get_user_beatmap_scores_all,
-    get_user_best, get_user_info, get_user_recent, OsuUserInfo,
+    backfill_score_details, fetch_beatmap_metadata, fetch_user_profile,
+    fetch_user_stats_by_user_id, fetch_user_stats_by_username, get_beatmapset_id, get_score_by_id,
+    get_user_beatmap_scores_all, get_user_best, get_user_info, get_user_recent, BeatmapMetadata,
+    OsuUserInfo,
 };
 pub use pp::{calculate_pp_breakdown, calculate_pp_if_acc, enrich_score_with_pp, PpCalcParams};
 
@@ -65,6 +72,8 @@ struct OsuApiBeatmap {
     beatmapset_id: i64,
     #[serde(default)]
     version: String,
+    #[serde(default)]
+    mode: String,
     #[serde(default)]
     ar: f64,
     #[serde(default, alias = "accuracy")]
