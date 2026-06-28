@@ -26,7 +26,36 @@
 - `今日高光[,模式]` — 当日高光
 - `!profile [<用户名>|@<QQ用户>|qq=<QQ号>]` — 个人主页卡片
 
-## 成绩相关命令
+## 比赛监听
+
+监听 osu! 多人比赛（mp）的进度与结果，自动在群内推送通知。
+
+```
+!ml <比赛ID|mp链接|比赛URL>
+!ml stop <比赛ID|mp链接|比赛URL>
+!ml stop all
+!ml list
+!ml status <比赛ID|mp链接|比赛URL>
+```
+
+- `!ml 12345678` — 开始监听比赛（支持纯数字 ID、`mp12345678`、完整 URL）
+- `!ml stop 12345678` — 停止监听指定比赛
+- `!ml stop all` — 停止监听本群所有比赛
+- `!ml list` — 查看本群正在监听的比赛列表
+- `!ml status 12345678` — 查询指定比赛的当前状态
+
+**比赛 ID 格式：** 以下三种等价
+- 纯数字：`12345678`
+- `mp` 前缀：`mp12345678`
+- 完整 URL：`https://osu.ppy.sh/community/matches/12345678`
+
+**注意：**
+- 每群最多同时监听 3 个比赛（可在配置中调整 `match_listen.max_per_group`）
+- 默认每 8 秒轮询一次，并在启动监听后立即执行首轮检查（可在 `match_listen.poll_interval_secs` 调整）
+- 比赛结束后自动推送最终结果卡片并停止监听
+- 不支持 lazer 房间 URL（`/multiplayer/rooms/...`），仅支持旧版 mp 链接
+
+## 成绩查询
 
 ### 通用语法
 
