@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn test_ur_value_rounded_to_integer() {
-        let mut score = make_test_score();
+        let score = make_test_score();
         let data = ScoreCardData {
             score,
             username: "TestPlayer".to_string(),

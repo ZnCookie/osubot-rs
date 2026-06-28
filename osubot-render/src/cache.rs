@@ -1098,6 +1098,13 @@ mod detect_sans_serif_tests {
     /// 用具体字体。
     #[test]
     fn rasterize_svg_text_is_painted_when_system_font_available() {
+        let mut fontdb = fontdb::Database::new();
+        fontdb.load_system_fonts();
+        if !detect_sans_serif_family(&mut fontdb) {
+            eprintln!("skipping SVG text rasterize test: no detectable system sans-serif font");
+            return;
+        }
+
         const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="20">
   <rect width="80" height="20" fill="white"/>
   <text x="2" y="14" font-family="sans-serif" font-size="14" fill="black">Hello</text>
@@ -1111,14 +1118,14 @@ mod detect_sans_serif_tests {
         };
         let img = image::load_from_memory(&png_bytes).expect("PNG should decode");
         let rgba = img.to_rgba8();
-        // 统计非白像素（黑色字形）
-        let black_count = rgba
+        // 统计非白像素（抗锯齿后的字形不保证存在纯黑像素）。
+        let text_pixel_count = rgba
             .pixels()
-            .filter(|p| p[0] < 50 && p[1] < 50 && p[2] < 50 && p[3] == 255)
+            .filter(|p| p[0] < 245 || p[1] < 245 || p[2] < 245)
             .count();
         assert!(
-            black_count > 20,
-            "expected >20 black pixels from text glyphs, got {black_count} \
+            text_pixel_count > 20,
+            "expected >20 non-white pixels from text glyphs, got {text_pixel_count} \
              (system font loading or sans-serif detection failed)"
         );
     }
