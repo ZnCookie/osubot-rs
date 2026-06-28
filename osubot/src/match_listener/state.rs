@@ -9,8 +9,6 @@
 //! at that event until a later poll observes completion. It still emits a
 //! game-start image once, matching YumuBot's onGameStart behavior.
 
-#![allow(dead_code)]
-
 use osubot_core::api::{LegacyMatchEvent, LegacyMatchGame, LegacyMatchResponse};
 
 /// Previous listener cursor state read from storage.

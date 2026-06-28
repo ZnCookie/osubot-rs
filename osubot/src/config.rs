@@ -562,6 +562,12 @@ impl Config {
                 }
             }
         }
+        if self.match_listen.poll_interval_secs < 5 {
+            return Err(ConfigError::Validation(format!(
+                "match_listen.poll_interval_secs 过小（{} < 5 秒）",
+                self.match_listen.poll_interval_secs
+            )));
+        }
         Ok(())
     }
 }

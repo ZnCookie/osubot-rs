@@ -1339,43 +1339,12 @@ impl Storage {
         }
     }
 
-    pub async fn count_active_match_listeners_by_creator(&self, creator_qq: i64) -> DbResult<u64> {
-        let now_ts = Utc::now().timestamp();
-        let conn = self.conn().await;
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*)
-                 FROM match_listeners
-                 WHERE creator_qq = ?1 AND active = 1 AND expires_at >= ?2",
-                params![creator_qq, now_ts],
-            )
-            .await?;
-
-        if let Some(row) = rows.next().await? {
-            let count: i64 = row.get(0)?;
-            Ok(count as u64)
-        } else {
-            Ok(0)
-        }
-    }
-
     pub async fn is_match_listener_group_limit_reached(
         &self,
         group_id: i64,
         limit: u64,
     ) -> DbResult<bool> {
         Ok(self.count_active_match_listeners_in_group(group_id).await? >= limit)
-    }
-
-    pub async fn is_match_listener_creator_limit_reached(
-        &self,
-        creator_qq: i64,
-        limit: u64,
-    ) -> DbResult<bool> {
-        Ok(self
-            .count_active_match_listeners_by_creator(creator_qq)
-            .await?
-            >= limit)
     }
 
     pub async fn expire_old_match_listeners(&self) -> DbResult<u64> {
@@ -1936,39 +1905,6 @@ mod match_listener {
                 .expect("check fourth listener detectability")
                 == false
         );
-    }
-
-    #[tokio::test]
-    async fn detects_creator_limit() {
-        let storage = Storage::connect_for_testing().await.unwrap();
-        let expires_at = Utc::now().timestamp() + 3600;
-
-        for offset in 0..3 {
-            create_listener(
-                &storage,
-                MATCH_ID + offset,
-                GROUP_ID + offset,
-                CREATOR_QQ,
-                expires_at,
-            )
-            .await;
-        }
-
-        assert_eq!(
-            storage
-                .count_active_match_listeners_by_creator(CREATOR_QQ)
-                .await
-                .expect("count creator listeners"),
-            3
-        );
-        assert!(storage
-            .is_match_listener_creator_limit_reached(CREATOR_QQ, 3)
-            .await
-            .expect("check creator limit"));
-        assert!(!storage
-            .is_match_listener_creator_limit_reached(CREATOR_QQ, 4)
-            .await
-            .expect("check creator fourth listener detectability"));
     }
 
     #[tokio::test]
