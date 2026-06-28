@@ -219,7 +219,8 @@ pub(super) async fn render_beatmap_preview_by_id(
     };
 
     let write = ctx.write.clone();
-    if let Err(e) = send_group_msg_with_image(&write, group_id, &image_bytes).await {
+    if let Err(e) = send_group_msg_with_image(&write, &ctx.onebot_api, group_id, &image_bytes).await
+    {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
         let _ = resp_tx
             .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))

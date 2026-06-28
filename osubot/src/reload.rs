@@ -283,6 +283,9 @@ impl ReloadCoordinator {
             groups: mutable.groups,
             upstream: mutable.upstream,
             plugin: mutable.plugin,
+            match_listen: mutable
+                .match_listen
+                .unwrap_or(old_config.match_listen.clone()),
         };
 
         new_config.validate()?;

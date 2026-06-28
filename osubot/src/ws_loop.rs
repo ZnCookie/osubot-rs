@@ -301,12 +301,15 @@ async fn run_message_loop(
                 }
                 if let Ok(resp) = serde_json::from_str::<OneBotResponse>(&text) {
                     if resp.status.is_some() {
-                        if let Some(echo) = resp.echo {
+                        if let Some(echo) = resp.echo.clone() {
                             let mut pending = state.onebot_api.pending.lock().await;
                             if let Some(entry) = pending.remove(&echo) {
-                                let _ = entry
-                                    .sender
-                                    .send(resp.data.unwrap_or(serde_json::Value::Null));
+                                let result = if resp.status.as_deref() == Some("ok") {
+                                    Ok(resp.data.unwrap_or(serde_json::Value::Null))
+                                } else {
+                                    Err(crate::onebot::onebot_response_error_message(&resp))
+                                };
+                                let _ = entry.sender.send(result);
                             }
                             continue;
                         }
@@ -348,12 +351,17 @@ async fn run_message_loop(
                     }
 
                     let write_clone = write.clone();
+                    let onebot_api = state.onebot_api.clone();
                     let group_id = qq_msg.group_id;
                     let in_flight1 = in_flight.clone();
                     tokio::spawn(async move {
                         let _guard = InFlightGuard(in_flight1);
                         if let Some(response) = resp_rx.recv().await {
-                            send_group_msg(&write_clone, group_id, &response).await;
+                            if let Err(e) =
+                                send_group_msg(&write_clone, &onebot_api, group_id, &response).await
+                            {
+                                tracing::warn!(group_id, error = %e, "{}", log_fmt!("main.send_command_response_failed"));
+                            }
                         }
                     });
 
