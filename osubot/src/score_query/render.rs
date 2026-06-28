@@ -1,4 +1,5 @@
 use super::*;
+use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use futures_util::stream::{self, StreamExt};
 use std::borrow::Cow;
 
@@ -261,6 +262,51 @@ pub(super) async fn render_and_send_score_list(
             slots[i] = Some(s);
         }
         Cow::Owned(slots.into_iter().flatten().collect())
+    };
+
+    // 补全带 mod 成绩的 star_rating：通过轻量 /beatmaps/{id}/attributes API 获取 mod 调整后的星数。
+    // 仅对非空 mods 且 beatmap_id > 0 且 star_rating 尚未被 enrich_score_with_pp 覆盖（即
+    // 上述 PP 补全未覆盖该成绩且 base star ≠ 0）的成绩执行。
+    let star_enrich_indices: Vec<usize> = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.mods.is_empty() && s.beatmap_id > 0 && s.star_rating > 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    let scores: Cow<'_, [Score]> = if star_enrich_indices.is_empty() {
+        scores
+    } else {
+        let mut owned: Vec<Score> = scores.to_vec();
+        let rl = ctx.rate_limiter.clone();
+        let oauth = ctx.oauth.clone();
+        let futs = star_enrich_indices.into_iter().map(|i| {
+            let mods_acronym = osubot_core::types::format_mods(&owned[i].mods);
+            let beatmap_id = owned[i].beatmap_id;
+            let rl = rl.clone();
+            let oauth = oauth.clone();
+            async move {
+                match fetch_beatmap_difficulty_attributes(
+                    &rl,
+                    &oauth,
+                    beatmap_id,
+                    &mods_acronym,
+                    mode,
+                )
+                .await
+                {
+                    Ok(adjusted_sr) => (i, Some(adjusted_sr)),
+                    Err(_) => (i, None),
+                }
+            }
+        });
+        let enriched: Vec<(usize, Option<f64>)> =
+            stream::iter(futs).buffer_unordered(ENRICH_CONCURRENCY).collect().await;
+        for (i, sr) in enriched {
+            if let Some(adjusted) = sr {
+                owned[i].star_rating = adjusted;
+            }
+        }
+        Cow::Owned(owned)
     };
 
     let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
