@@ -1,6 +1,9 @@
 pub mod cache;
 mod encode;
 mod error;
+// ponytail: Task 4 adds the internal match template skeleton; Task 6 wires it
+// into the public JPEG renderer.
+pub mod match_style;
 mod render;
 pub mod score_list_style;
 pub mod score_style;
@@ -11,7 +14,8 @@ pub mod template;
 use base64::Engine;
 use image::{imageops, GenericImageView};
 use osubot_core::log_fmt;
-use parley::FontContext;
+use parley::{fontique::Blob, FontContext};
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex as StdMutex, OnceLock,
@@ -28,8 +32,154 @@ pub const SCORE_LIST_RENDER_TIMEOUT_SECS: u64 = 120;
 
 static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
 
+const RENDER_FONT_DIRS_ENV: &str = "OSUBOT_RENDER_FONT_DIRS";
+const MAX_FALLBACK_FONT_FILES: usize = 128;
+
 fn get_font_context() -> &'static FontContext {
-    FONT_CTX.get_or_init(FontContext::new)
+    FONT_CTX.get_or_init(|| {
+        let mut font_ctx = FontContext::new();
+        load_fallback_fonts_if_needed(&mut font_ctx);
+        font_ctx
+    })
+}
+
+fn load_fallback_fonts_if_needed(font_ctx: &mut FontContext) {
+    let mut registered = 0;
+    for dir in fallback_font_dirs() {
+        register_fonts_from_dir(font_ctx, &dir, &mut registered);
+        if registered >= MAX_FALLBACK_FONT_FILES {
+            return;
+        }
+    }
+}
+
+fn fallback_font_dirs() -> Vec<PathBuf> {
+    let mut dirs = std::env::var_os(RENDER_FONT_DIRS_ENV)
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    dirs.extend([
+        PathBuf::from("/usr/share/fonts"),
+        PathBuf::from("/usr/local/share/fonts"),
+        PathBuf::from("/run/current-system/sw/share/fonts"),
+    ]);
+
+    dirs.extend(fontconfig_font_dirs());
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".fonts"));
+        dirs.push(home.join(".local/share/fonts"));
+    }
+
+    dirs
+}
+
+/// Parse fontconfig configuration files for configured font directories.
+///
+/// This lets the renderer discover fonts on systems (such as NixOS) where
+/// fonts live in store paths referenced by `/etc/fonts/conf.d/*.conf` instead
+/// of the traditional `/usr/share/fonts` hierarchy.
+fn fontconfig_font_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut conf_paths = vec![PathBuf::from("/etc/fonts/fonts.conf")];
+    if let Ok(entries) = std::fs::read_dir("/etc/fonts/conf.d") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("conf") {
+                conf_paths.push(path);
+            }
+        }
+    }
+
+    for conf_path in conf_paths {
+        let Ok(content) = std::fs::read_to_string(&conf_path) else {
+            continue;
+        };
+        for dir in parse_fontconfig_dir_tags(&content) {
+            if dir.is_absolute() && dir.exists() && seen.insert(dir.clone()) {
+                dirs.push(dir);
+            }
+        }
+    }
+
+    dirs
+}
+
+/// Extract text content of `<dir>` elements from a fontconfig XML file.
+///
+/// This is intentionally a minimal string scan rather than a full XML parse:
+/// fontconfig configuration files only use `<dir>` to list font directories,
+/// and we only keep absolute, existing paths.
+fn parse_fontconfig_dir_tags(content: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut rest = content;
+
+    while let Some(open_start) = rest.find("<dir") {
+        rest = &rest[open_start + 4..];
+        let Some(tag_end) = rest.find('>') else {
+            break;
+        };
+        let after_open = &rest[tag_end + 1..];
+        let Some(close_start) = after_open.find("</dir>") else {
+            break;
+        };
+        let text = after_open[..close_start].trim();
+        if !text.is_empty() {
+            dirs.push(PathBuf::from(text));
+        }
+        rest = &after_open[close_start + 6..];
+    }
+
+    dirs
+}
+
+fn register_fonts_from_dir(font_ctx: &mut FontContext, dir: &Path, registered: &mut usize) {
+    if *registered >= MAX_FALLBACK_FONT_FILES {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if *registered >= MAX_FALLBACK_FONT_FILES {
+            return;
+        }
+
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            register_fonts_from_dir(font_ctx, &path, registered);
+        } else if file_type.is_file() && is_font_file(&path) {
+            register_font_file(font_ctx, &path, registered);
+        }
+    }
+}
+
+fn register_font_file(font_ctx: &mut FontContext, path: &Path, registered: &mut usize) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    if !font_ctx
+        .collection
+        .register_fonts(Blob::from(bytes), None)
+        .is_empty()
+    {
+        *registered += 1;
+    }
+}
+
+fn is_font_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"))
+        .unwrap_or(false)
 }
 
 /// Global render mutex ensures only one render runs at a time.
@@ -579,9 +729,232 @@ pub async fn render_score_list_card(
     Ok(jpeg)
 }
 
+pub struct MatchResultPlayerParams {
+    pub placement: usize,
+    pub username: String,
+    pub avatar_url: Option<String>,
+    pub avatar_image: Option<image::DynamicImage>,
+    pub team: Option<String>,
+    pub score: u64,
+    pub accuracy: f64,
+    pub max_combo: u32,
+    pub mods: Vec<String>,
+    pub rank: String,
+    pub passed: bool,
+}
+
+pub struct MatchResultParams {
+    pub match_id: u64,
+    pub match_name: String,
+    pub event_label: String,
+    pub played_at: String,
+    pub beatmap_id: u64,
+    pub beatmap_artist: String,
+    pub beatmap_title: String,
+    pub beatmap_version: String,
+    pub beatmap_mapper: String,
+    pub beatmap_mode: String,
+    pub star_rating: Option<f64>,
+    pub beatmap_bpm: Option<f64>,
+    pub beatmap_length_seconds: Option<u32>,
+    pub beatmap_max_combo: Option<u32>,
+    pub beatmap_ar: Option<f64>,
+    pub beatmap_od: Option<f64>,
+    pub beatmap_cs: Option<f64>,
+    pub beatmap_hp: Option<f64>,
+    pub cover_image: Option<image::DynamicImage>,
+    pub is_started: bool,
+    pub selected_mods: Vec<String>,
+    pub team_type: Option<String>,
+    pub scoring_type: Option<String>,
+    pub team_results: Vec<MatchTeamResultParams>,
+    pub players: Vec<MatchResultPlayerParams>,
+}
+
+pub struct MatchTeamResultParams {
+    pub team: String,
+    pub score: u64,
+    pub is_winner: bool,
+}
+
+pub async fn render_match_result_card(params: MatchResultParams) -> Result<Vec<u8>, RenderError> {
+    let MatchResultParams {
+        match_id,
+        match_name,
+        event_label,
+        played_at,
+        beatmap_id,
+        beatmap_artist,
+        beatmap_title,
+        beatmap_version,
+        beatmap_mapper,
+        beatmap_mode,
+        star_rating,
+        beatmap_bpm,
+        beatmap_length_seconds,
+        beatmap_max_combo,
+        beatmap_ar,
+        beatmap_od,
+        beatmap_cs,
+        beatmap_hp,
+        cover_image,
+        is_started,
+        selected_mods,
+        team_type,
+        scoring_type,
+        team_results,
+        players,
+    } = params;
+
+    let cover_data_uri = if let Some(img) = cover_image {
+        let uri = tokio::task::spawn_blocking(move || -> Result<String, RenderError> {
+            let bg = crop_and_resize(&img, 1920, 1080);
+            image_to_data_uri(&bg, 85)
+        })
+        .await
+        .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))?;
+        uri?
+    } else {
+        String::new()
+    };
+
+    let players: Vec<match_style::MatchPlayerRowData> = tokio::task::spawn_blocking(
+        move || -> Result<Vec<match_style::MatchPlayerRowData>, RenderError> {
+            players
+                .into_iter()
+                .map(|p| {
+                    let avatar_data_uri = p
+                        .avatar_image
+                        .map(|img| {
+                            let avatar = img.resize_exact(96, 96, imageops::FilterType::Lanczos3);
+                            image_to_data_uri(&avatar, 85)
+                        })
+                        .transpose()?;
+                    Ok(match_style::MatchPlayerRowData {
+                        placement: p.placement,
+                        username: p.username,
+                        avatar_data_uri: avatar_data_uri.unwrap_or_default(),
+                        team: p.team,
+                        score: p.score,
+                        accuracy: p.accuracy,
+                        max_combo: p.max_combo,
+                        mods: p.mods,
+                        rank: p.rank,
+                        passed: p.passed,
+                    })
+                })
+                .collect()
+        },
+    )
+    .await
+    .map_err(|e| RenderError::Render(format!("spawn_blocking failed: {e}")))??;
+
+    let data = match_style::MatchResultCardData {
+        match_id,
+        match_name,
+        event_label,
+        played_at,
+        beatmap_id,
+        beatmap_artist,
+        beatmap_title,
+        beatmap_version,
+        beatmap_mapper,
+        beatmap_mode,
+        star_rating,
+        beatmap_bpm,
+        beatmap_length_seconds,
+        beatmap_max_combo,
+        beatmap_ar,
+        beatmap_od,
+        beatmap_cs,
+        beatmap_hp,
+        cover_data_uri,
+        is_started,
+        selected_mods,
+        team_type,
+        scoring_type,
+        team_results: team_results
+            .into_iter()
+            .map(|team| match_style::MatchTeamResultData {
+                team: team.team,
+                score: team.score,
+                is_winner: team.is_winner,
+            })
+            .collect(),
+        players,
+    };
+
+    let html = match_style::wrap_match_result_html(&data);
+    let (pixels, w, h) = run_render(html, 1920, 1080, 60, None).await?;
+    encode::encode_jpeg(pixels, w, h, 90).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn render_match_result_card_produces_jpeg() {
+        let params = MatchResultParams {
+            match_id: 12345678,
+            match_name: "Test Match".to_string(),
+            event_label: "Game finished".to_string(),
+            played_at: "2026/06/26 20:00:00".to_string(),
+            beatmap_id: 987654,
+            beatmap_artist: "xi".to_string(),
+            beatmap_title: "Blue Zenith".to_string(),
+            beatmap_version: "FOUR DIMENSIONS".to_string(),
+            beatmap_mapper: "Asphyxia".to_string(),
+            beatmap_mode: "osu!".to_string(),
+            star_rating: Some(7.85),
+            beatmap_bpm: Some(190.0),
+            beatmap_length_seconds: Some(260),
+            beatmap_max_combo: Some(2429),
+            beatmap_ar: Some(9.7),
+            beatmap_od: Some(9.8),
+            beatmap_cs: Some(4.0),
+            beatmap_hp: Some(6.0),
+            cover_image: None,
+            is_started: false,
+            selected_mods: vec!["HD".to_string()],
+            team_type: Some("team-vs".to_string()),
+            scoring_type: Some("score".to_string()),
+            team_results: Vec::new(),
+            players: vec![
+                MatchResultPlayerParams {
+                    placement: 1,
+                    username: "Alice".to_string(),
+                    avatar_url: None,
+                    avatar_image: None,
+                    team: Some("Red".to_string()),
+                    score: 1_234_567,
+                    accuracy: 0.9876,
+                    max_combo: 1234,
+                    mods: vec!["HD".to_string(), "HR".to_string()],
+                    rank: "A".to_string(),
+                    passed: true,
+                },
+                MatchResultPlayerParams {
+                    placement: 2,
+                    username: "Bob".to_string(),
+                    avatar_url: None,
+                    avatar_image: None,
+                    team: Some("Blue".to_string()),
+                    score: 987_654,
+                    accuracy: 0.9654,
+                    max_combo: 876,
+                    mods: Vec::new(),
+                    rank: "F".to_string(),
+                    passed: false,
+                },
+            ],
+        };
+
+        let jpeg = render_match_result_card(params).await.expect("render ok");
+        assert!(!jpeg.is_empty());
+        assert!(jpeg.len() > 1024);
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
+    }
 
     #[test]
     fn test_score_list_estimated_height_matches_1920_css() {

@@ -1,6 +1,16 @@
 pub use osubot_game_mode::GameMode;
 pub use osubot_types::{format_length, format_play_datetime, Score, ScoreStatistics, ScoreUser};
 
+/// Actions for the `!ml` (Match Listen) command.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchListenAction {
+    Start { match_id: u64, skip_rounds: u32 },
+    Stop { match_id: u64 },
+    StopAll,
+    List,
+    Status { match_id: u64 },
+}
+
 /// Snapshot of a user's osu! profile statistics.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UserStats {
@@ -32,6 +42,7 @@ pub enum CommandGroup {
     Bind,
     Mode,
     Help,
+    MatchListen,
 }
 
 /// Parsed command from user input, with all extracted parameters.
@@ -141,6 +152,7 @@ pub enum Command {
         explicit_position: bool,
     },
     Help,
+    MatchListen(MatchListenAction),
 }
 
 impl Command {
@@ -162,6 +174,7 @@ impl Command {
             Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
             Command::SetDefaultMode { .. } => CommandGroup::Mode,
             Command::Help => CommandGroup::Help,
+            Command::MatchListen(..) => CommandGroup::MatchListen,
         }
     }
 
@@ -184,6 +197,7 @@ impl Command {
             Command::BeatmapPreview { .. } => "!rv",
             Command::BeatmapAudio { .. } => "!a",
             Command::Help => "!help",
+            Command::MatchListen(..) => "!ml",
         }
     }
 }

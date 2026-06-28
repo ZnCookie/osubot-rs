@@ -9,9 +9,9 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use serde::Deserialize;
 use tokio::sync::{oneshot, Mutex};
-use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMsg};
+use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use osubot_core::{log_fmt, strings::user_str};
+use osubot_core::strings::user_str;
 
 /// Type alias for the WebSocket write half used per-connection.
 pub(crate) type WriteSink = futures_util::stream::SplitSink<
@@ -32,10 +32,13 @@ pub(crate) struct OneBotResponse {
     pub status: Option<String>,
     pub data: Option<serde_json::Value>,
     pub echo: Option<String>,
+    pub message: Option<String>,
+    pub wording: Option<String>,
+    pub retcode: Option<i64>,
 }
 
 pub(crate) struct PendingEntry {
-    pub(crate) sender: oneshot::Sender<serde_json::Value>,
+    pub(crate) sender: oneshot::Sender<Result<serde_json::Value, String>>,
     pub(crate) created_at: std::time::Instant,
 }
 
@@ -90,12 +93,74 @@ mod tests {
         let api = api_with_timeout(300);
         assert_eq!(api.cleanup_retention_secs(), 305);
     }
+
+    #[test]
+    fn response_error_prefers_wording_then_message_then_retcode() {
+        let resp = OneBotResponse {
+            status: Some("failed".to_string()),
+            data: None,
+            echo: None,
+            message: Some("message".to_string()),
+            wording: Some("wording".to_string()),
+            retcode: Some(100),
+        };
+        assert_eq!(onebot_response_error_message(&resp), "wording");
+
+        let resp = OneBotResponse {
+            status: Some("failed".to_string()),
+            data: None,
+            echo: None,
+            message: Some("message".to_string()),
+            wording: None,
+            retcode: Some(100),
+        };
+        assert_eq!(onebot_response_error_message(&resp), "message");
+
+        let resp = OneBotResponse {
+            status: Some("failed".to_string()),
+            data: None,
+            echo: None,
+            message: None,
+            wording: None,
+            retcode: Some(100),
+        };
+        assert_eq!(onebot_response_error_message(&resp), "retcode=100");
+    }
+
+    #[tokio::test]
+    async fn call_onebot_api_cleans_pending_on_send_failure() {
+        let api = api_with_timeout(5);
+
+        let err = call_onebot_api_impl(&api, "send_group_msg", serde_json::json!({}), |_| async {
+            Err("send failed".to_string())
+        })
+        .await
+        .expect_err("send should fail");
+
+        assert_eq!(err, "send failed");
+        assert!(api.pending.lock().await.is_empty());
+    }
 }
 
 static NEXT_ECHO: AtomicU64 = AtomicU64::new(0);
 
 fn next_echo() -> String {
     NEXT_ECHO.fetch_add(1, Ordering::Relaxed).to_string()
+}
+
+pub(crate) fn onebot_response_error_message(resp: &OneBotResponse) -> String {
+    resp.wording
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            resp.message
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+        })
+        .or_else(|| resp.retcode.map(|code| format!("retcode={code}")))
+        .unwrap_or_else(|| user_str("error.invalid_response").to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +254,25 @@ pub(crate) async fn call_onebot_api(
     action: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    call_onebot_api_impl(api, action, params, |payload| async move {
+        let mut sink = write.lock().await;
+        sink.send(WsMsg::Text(payload.into()))
+            .await
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+async fn call_onebot_api_impl<F, Fut>(
+    api: &OneBotApi,
+    action: &str,
+    params: serde_json::Value,
+    send_payload: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let echo = next_echo();
     let (tx, rx) = oneshot::channel();
 
@@ -206,11 +290,9 @@ pub(crate) async fn call_onebot_api(
         "echo": echo,
     });
 
-    {
-        let mut sink = write.lock().await;
-        sink.send(WsMsg::Text(json.to_string().into()))
-            .await
-            .map_err(|e| e.to_string())?;
+    if let Err(e) = send_payload(json.to_string()).await {
+        api.pending.lock().await.remove(&echo);
+        return Err(e);
     }
 
     let timeout_dur = Duration::from_secs(api.timeout.load(Ordering::Relaxed));
@@ -218,7 +300,8 @@ pub(crate) async fn call_onebot_api(
     api.pending.lock().await.remove(&echo);
 
     match result {
-        Ok(Ok(data)) => Ok(data),
+        Ok(Ok(Ok(data))) => Ok(data),
+        Ok(Ok(Err(msg))) => Err(msg),
         Ok(Err(_)) => Err(user_str("error.request_cancelled").to_string()),
         Err(_) => Err(user_str("error.request_timeout").to_string()),
     }
@@ -249,26 +332,32 @@ pub(crate) async fn get_group_member_list(
 }
 
 /// Send a text message to a QQ group via the OneBot WebSocket connection.
-pub(crate) async fn send_group_msg(write: &Arc<Mutex<WriteSink>>, group_id: i64, message: &str) {
-    let json = serde_json::json!({
-        "action": "send_group_msg",
-        "params": {
+pub(crate) async fn send_group_msg(
+    write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
+    group_id: i64,
+    message: &str,
+) -> Result<(), String> {
+    call_onebot_api(
+        write,
+        api,
+        "send_group_msg",
+        serde_json::json!({
             "group_id": group_id,
             "message": message
-        }
-    });
-    let mut sink = write.lock().await;
-    if let Err(e) = sink.send(WsMsg::Text(json.to_string().into())).await {
-        tracing::error!("{}", log_fmt!("main.send_group_msg_failed", error = &e));
-    }
+        }),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Send a message with a base64-encoded image to a QQ group via the OneBot WebSocket connection.
 pub(crate) async fn send_group_msg_with_image(
     write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
     group_id: i64,
     image_data: &[u8],
-) -> Result<(), WsError> {
+) -> Result<(), String> {
     use base64::prelude::*;
     let b64 = BASE64_STANDARD.encode(image_data);
     let segments = serde_json::json!([
@@ -279,24 +368,27 @@ pub(crate) async fn send_group_msg_with_image(
             }
         }
     ]);
-    let json = serde_json::json!({
-        "action": "send_group_msg",
-        "params": {
+    call_onebot_api(
+        write,
+        api,
+        "send_group_msg",
+        serde_json::json!({
             "group_id": group_id,
             "message": segments
-        }
-    });
-    let mut sink = write.lock().await;
-    sink.send(WsMsg::Text(json.to_string().into())).await
+        }),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Send a message with a voice record (base64-encoded MP3 bytes) to a QQ group
 /// via the OneBot WebSocket connection. Mirrors `send_group_msg_with_image`.
 pub(crate) async fn send_group_msg_with_record(
     write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
     group_id: i64,
     mp3: &[u8],
-) -> Result<(), WsError> {
+) -> Result<(), String> {
     use base64::prelude::*;
     let b64 = BASE64_STANDARD.encode(mp3);
     let segments = serde_json::json!([
@@ -307,13 +399,15 @@ pub(crate) async fn send_group_msg_with_record(
             }
         }
     ]);
-    let json = serde_json::json!({
-        "action": "send_group_msg",
-        "params": {
+    call_onebot_api(
+        write,
+        api,
+        "send_group_msg",
+        serde_json::json!({
             "group_id": group_id,
             "message": segments
-        }
-    });
-    let mut sink = write.lock().await;
-    sink.send(WsMsg::Text(json.to_string().into())).await
+        }),
+    )
+    .await
+    .map(|_| ())
 }

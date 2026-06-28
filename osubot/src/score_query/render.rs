@@ -179,11 +179,12 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
     match render_result {
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
+            let onebot_api = ctx.onebot_api.clone();
             let group_id = msg.group_id;
             let resp_tx_img = resp_tx.clone();
 
             tokio::spawn(async move {
-                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                if send_group_msg_with_image(&write, &onebot_api, group_id, &jpeg_bytes)
                     .await
                     .is_err()
                 {
@@ -326,11 +327,12 @@ pub(super) async fn render_and_send_score_list(
     match render_result {
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
+            let onebot_api = ctx.onebot_api.clone();
             let group_id = msg.group_id;
             let resp_tx_img = resp_tx.clone();
 
             tokio::spawn(async move {
-                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                if send_group_msg_with_image(&write, &onebot_api, group_id, &jpeg_bytes)
                     .await
                     .is_err()
                 {

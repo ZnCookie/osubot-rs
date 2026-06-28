@@ -4,7 +4,7 @@ mod scoring;
 #[cfg(test)]
 mod tests;
 
-use crate::types::{Command, GameMode};
+use crate::types::{Command, GameMode, MatchListenAction};
 use scoring::parse_scoring_command;
 
 /// 解析用户消息为命令
@@ -158,6 +158,144 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
 
     if let Some(cmd) = parse_scoring_command(&msg, mentioned_user_id) {
         return cmd;
+    }
+
+    for prefix in ["!ml", "!li"] {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                return None;
+            }
+            return parse_ml_subcommand(rest);
+        }
+    }
+
+    None
+}
+
+/// Parse the subcommand part of `!ml` after the prefix is stripped.
+fn parse_ml_subcommand(rest: &str) -> Option<Command> {
+    let (rest, skip_rounds) = parse_ml_skip_suffix(rest)?;
+    let rest = rest.trim();
+
+    // Subcommand: stop <match_id|url|mpid> or stop all
+    if let Some(arg) = strip_ml_operation_prefix(rest, &["stop", "p", "end", "e", "off", "f"]) {
+        let arg = arg.trim();
+        if arg == "all" {
+            return Some(Command::MatchListen(MatchListenAction::StopAll));
+        }
+        return parse_ml_match_id(arg)
+            .map(|match_id| Command::MatchListen(MatchListenAction::Stop { match_id }));
+    }
+    if is_ml_operation(rest, &["stop", "p", "end", "e", "off", "f"]) {
+        return None;
+    }
+
+    // Subcommand: status <match_id|url|mpid>
+    if let Some(arg) = strip_ml_operation_prefix(rest, &["status"]) {
+        let arg = arg.trim();
+        return parse_ml_match_id(arg)
+            .map(|match_id| Command::MatchListen(MatchListenAction::Status { match_id }));
+    }
+    if rest == "status" {
+        return None;
+    }
+
+    // Subcommand: list
+    if is_ml_operation(rest, &["list", "l", "info", "i"]) {
+        return Some(Command::MatchListen(MatchListenAction::List));
+    }
+
+    if let Some(arg) = strip_ml_operation_suffix(rest, &["start", "s", "on", "o"]) {
+        return parse_ml_match_id(arg).map(|match_id| {
+            Command::MatchListen(MatchListenAction::Start {
+                match_id,
+                skip_rounds,
+            })
+        });
+    }
+
+    if let Some(arg) = strip_ml_operation_suffix(rest, &["stop", "p", "end", "e", "off", "f"]) {
+        return parse_ml_match_id(arg)
+            .map(|match_id| Command::MatchListen(MatchListenAction::Stop { match_id }));
+    }
+
+    if let Some(arg) = strip_ml_operation_suffix(rest, &["list", "l", "info", "i"]) {
+        if parse_ml_match_id(arg).is_some() {
+            return Some(Command::MatchListen(MatchListenAction::List));
+        }
+    }
+
+    // Default to Start action with a parsed match ID
+    parse_ml_match_id(rest).map(|match_id| {
+        Command::MatchListen(MatchListenAction::Start {
+            match_id,
+            skip_rounds,
+        })
+    })
+}
+
+fn parse_ml_skip_suffix(rest: &str) -> Option<(&str, u32)> {
+    // parse_command() 会先尝试成绩查询 grammar，再尝试 `!ml`。因此这里接受
+    // trailing `#N` 只会影响 `!ml` 自己的 skip 语法，不会抢走 `!p #3` 等 scoring 命令。
+    let rest = rest.trim();
+    let Some((command, skip)) = rest.rsplit_once('#') else {
+        return Some((rest, 0));
+    };
+
+    let skip_rounds = skip.trim().parse::<u32>().ok()?;
+    if !(1..=100).contains(&skip_rounds) {
+        return None;
+    }
+    Some((command.trim(), skip_rounds))
+}
+
+fn is_ml_operation(input: &str, operations: &[&str]) -> bool {
+    operations.contains(&input)
+}
+
+fn strip_ml_operation_prefix<'a>(input: &'a str, operations: &[&str]) -> Option<&'a str> {
+    operations
+        .iter()
+        .find_map(|operation| input.strip_prefix(&format!("{operation} ")))
+}
+
+fn strip_ml_operation_suffix<'a>(input: &'a str, operations: &[&str]) -> Option<&'a str> {
+    let (arg, operation) = input.rsplit_once(' ')?;
+    is_ml_operation(operation.trim(), operations).then_some(arg.trim())
+}
+
+/// Parse a match identifier: raw numeric, mp{id}, or community match URL.
+///
+/// # ponytail
+/// v1 rejects lazer room URLs (`/multiplayer/rooms/`) intentionally.
+/// Lazer rooms use a different API endpoint and are out of scope for legacy match listening.
+fn parse_ml_match_id(input: &str) -> Option<u64> {
+    let input = input.trim();
+
+    // Raw numeric ID
+    if let Ok(id) = input.parse::<u64>() {
+        return Some(id);
+    }
+
+    // mp{id}
+    if let Some(id_str) = input.strip_prefix("mp") {
+        if let Ok(id) = id_str.parse::<u64>() {
+            return Some(id);
+        }
+    }
+
+    // https://osu.ppy.sh/community/matches/{id}
+    if let Some(path) = input.strip_prefix("https://osu.ppy.sh/community/matches/") {
+        if let Ok(id) = path.trim_end_matches('/').parse::<u64>() {
+            return Some(id);
+        }
+    }
+
+    // ponytail: v1 rejects lazer room URLs intentionally; they use a different API
+    // and are out of scope for legacy match listening.
+    if input.contains("osu.ppy.sh/multiplayer/rooms/") {
+        return None;
     }
 
     None

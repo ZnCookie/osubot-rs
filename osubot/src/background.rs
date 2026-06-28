@@ -78,6 +78,23 @@ pub(super) fn spawn_scheduler(handles: &RuntimeHandles) -> JoinHandle<()> {
     })
 }
 
+/// 启动比赛监听后台轮询任务（!ml 功能）。
+/// 单个 poller loop 处理所有活跃监听，shutdown 时优雅退出。
+pub(super) fn spawn_match_listener(handles: &RuntimeHandles) -> JoinHandle<()> {
+    let poller = crate::match_listener::poller::MatchListenerPoller::new(
+        handles.app_state.storage.clone(),
+        handles.app_state.oauth.clone(),
+        handles.app_state.rate_limiter.clone(),
+        handles.app_state.onebot_api.clone(),
+        handles.app_state.config.clone(),
+        handles.app_state.current_write.clone(),
+        handles.app_state.shutdown.clone(),
+    );
+    tokio::spawn(async move {
+        poller.run().await;
+    })
+}
+
 /// 启动 IRC 客户端（提取自 main.rs:3895-3910）。
 /// 凭据校验已在 runtime.rs::build_runtime_handles 中完成。
 /// 返回外层 setup 任务的 JoinHandle；内部 IRC 客户端 JoinHandle 存入 `RuntimeHandles::irc_handle`。
@@ -209,6 +226,7 @@ pub(super) fn spawn_irc_bridge(handles: RuntimeHandles) -> JoinHandle<()> {
     let mut irc_rx = handles.irc_rx;
     let cw_for_irc = handles.app_state.current_write.clone();
     let storage = handles.app_state.storage.clone();
+    let onebot_api = handles.app_state.onebot_api.clone();
     let rate_limiter = handles.app_state.rate_limiter.clone();
     let oauth = handles.app_state.oauth.clone();
     let shutdown = handles.app_state.shutdown.clone();
@@ -225,10 +243,19 @@ pub(super) fn spawn_irc_bridge(handles: RuntimeHandles) -> JoinHandle<()> {
             let write_opt = { cw_for_irc.lock().await.clone() };
             if let Some(write) = write_opt {
                 let storage = storage.clone();
+                let onebot_api = onebot_api.clone();
                 let rate_limiter = rate_limiter.clone();
                 let oauth = oauth.clone();
                 tokio::spawn(async move {
-                    crate::handle_irc_message(storage, irc_msg, write, rate_limiter, oauth).await;
+                    crate::handle_irc_message(
+                        storage,
+                        irc_msg,
+                        write,
+                        onebot_api,
+                        rate_limiter,
+                        oauth,
+                    )
+                    .await;
                 });
             } else {
                 warn!("{}", log_fmt!("main.no_ws_dropping_irc"));

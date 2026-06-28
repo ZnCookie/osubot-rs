@@ -4,6 +4,7 @@ mod command;
 mod config;
 mod constants;
 mod last_beatmap_cache;
+mod match_listener;
 mod onebot;
 mod plugin_runtime;
 mod reload;
@@ -316,9 +317,26 @@ pub(crate) async fn handle_irc_message(
     storage: Arc<Storage>,
     irc_msg: osubot_core::irc::IrcPrivateMessage,
     write: Arc<Mutex<WriteSink>>,
+    onebot_api: Arc<OneBotApi>,
     rate_limiter: Arc<RateLimiter>,
     oauth: Arc<OauthTokenCache>,
 ) {
+    async fn send_bind_reply(
+        write: &Arc<Mutex<WriteSink>>,
+        onebot_api: &Arc<OneBotApi>,
+        group_id: i64,
+        msg: &str,
+        code: &str,
+    ) -> bool {
+        match send_group_msg(write, onebot_api, group_id, msg).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.send_bind_reply_failed"));
+                false
+            }
+        }
+    }
+
     let code = irc_msg.message.trim();
 
     let pending = match storage.get_pending_bind(code).await {
@@ -334,11 +352,12 @@ pub(crate) async fn handle_irc_message(
     };
 
     if irc_msg.sender.to_lowercase() != pending.target_username.replace(' ', "_").to_lowercase() {
-        if let Err(e) = storage.remove_pending_bind(code).await {
-            tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.irc_pending_bind_username_mismatch"));
-        }
         let msg = user_str("bind.wrong_person").replace("{qq}", &pending.qq_user_id.to_string());
-        send_group_msg(&write, pending.group_id, &msg).await;
+        if send_bind_reply(&write, &onebot_api, pending.group_id, &msg, code).await {
+            if let Err(e) = storage.remove_pending_bind(code).await {
+                tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.irc_pending_bind_username_mismatch"));
+            }
+        }
         return;
     }
 
@@ -352,37 +371,37 @@ pub(crate) async fn handle_irc_message(
                 .await
             {
                 Ok(Ok(())) => {
-                    if let Err(e) = storage.remove_pending_bind(code).await {
-                        tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
-                    }
                     info!(qq = pending.qq_user_id, username = %info.username, "{}", log_fmt!("main.irc_bind_verified"));
                     let msg = user_str("bind.success")
                         .replace("{qq}", &pending.qq_user_id.to_string())
                         .replace("{name}", &info.username);
-                    send_group_msg(&write, pending.group_id, &msg).await;
+                    if send_bind_reply(&write, &onebot_api, pending.group_id, &msg, code).await {
+                        if let Err(e) = storage.remove_pending_bind(code).await {
+                            tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
+                        }
+                    }
                 }
                 Ok(Err(_)) => {
-                    if let Err(e) = storage.remove_pending_bind(code).await {
-                        tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
-                    }
                     let msg = user_str("bind.irc_already_bound_other")
                         .replace("{qq}", &pending.qq_user_id.to_string());
-                    send_group_msg(&write, pending.group_id, &msg).await;
+                    if send_bind_reply(&write, &onebot_api, pending.group_id, &msg, code).await {
+                        if let Err(e) = storage.remove_pending_bind(code).await {
+                            tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
+                        }
+                    }
                 }
                 Err(_) => {
-                    if let Err(e) = storage.remove_pending_bind(code).await {
-                        tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
-                    }
                     let msg = user_str("bind.failed_retry")
                         .replace("{qq}", &pending.qq_user_id.to_string());
-                    send_group_msg(&write, pending.group_id, &msg).await;
+                    if send_bind_reply(&write, &onebot_api, pending.group_id, &msg, code).await {
+                        if let Err(e) = storage.remove_pending_bind(code).await {
+                            tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
+                        }
+                    }
                 }
             }
         }
         Ok(None) => {
-            if let Err(e) = storage.remove_pending_bind(code).await {
-                tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
-            }
             warn!(
                 "{}",
                 log_fmt!(
@@ -392,12 +411,13 @@ pub(crate) async fn handle_irc_message(
             );
             let msg = user_str("bind.irc_user_not_found")
                 .replace("{qq}", &pending.qq_user_id.to_string());
-            send_group_msg(&write, pending.group_id, &msg).await;
+            if send_bind_reply(&write, &onebot_api, pending.group_id, &msg, code).await {
+                if let Err(e) = storage.remove_pending_bind(code).await {
+                    tracing::warn!(code = %code, error = %e, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e));
+                }
+            }
         }
         Err(e) => {
-            if let Err(e2) = storage.remove_pending_bind(code).await {
-                tracing::warn!(code = %code, error = %e2, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e2));
-            }
             warn!(
                 "{}",
                 log_fmt!(
@@ -408,7 +428,11 @@ pub(crate) async fn handle_irc_message(
             );
             let msg =
                 user_str("bind.failed_retry").replace("{qq}", &pending.qq_user_id.to_string());
-            send_group_msg(&write, pending.group_id, &msg).await;
+            if send_bind_reply(&write, &onebot_api, pending.group_id, &msg, code).await {
+                if let Err(e2) = storage.remove_pending_bind(code).await {
+                    tracing::warn!(code = %code, error = %e2, "{}", log_fmt!("main.remove_pending_bind_failed", error = &e2));
+                }
+            }
         }
     }
 }
@@ -423,6 +447,7 @@ async fn main() {
 
     background::backfill_user_ids(&handles).await;
     let scheduler_h = background::spawn_scheduler(&handles);
+    let match_listener_h = background::spawn_match_listener(&handles);
     let irc_h = background::spawn_irc(&handles);
     let cleanup_h = background::spawn_onebot_cleanup(&handles);
     let watcher_h = background::spawn_watcher(&handles);
@@ -443,7 +468,14 @@ async fn main() {
 
     let drain_timeout = std::time::Duration::from_secs(10);
     let _ = tokio::time::timeout(drain_timeout, async {
-        let _ = tokio::join!(scheduler_h, irc_h, cleanup_h, watcher_h, irc_bridge_h);
+        let _ = tokio::join!(
+            scheduler_h,
+            match_listener_h,
+            irc_h,
+            cleanup_h,
+            watcher_h,
+            irc_bridge_h
+        );
     })
     .await;
 }

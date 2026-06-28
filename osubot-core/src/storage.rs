@@ -67,7 +67,7 @@ async fn has_column(
     table: &str,
     column: &str,
 ) -> DbResult<bool> {
-    const ALLOWED_TABLES: &[&str] = &["user_bindings"];
+    const ALLOWED_TABLES: &[&str] = &["user_bindings", "match_listeners"];
     if !ALLOWED_TABLES.contains(&table) {
         return Err(turso::Error::Error(format!(
             "has_column: table '{table}' is not in the allowlist"
@@ -137,6 +137,63 @@ fn row_to_snapshot(row: &Row, col_offset: usize) -> DbResult<UserStatsSnapshot> 
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchListener {
+    pub match_id: i64,
+    pub group_id: i64,
+    pub creator_qq: i64,
+    pub match_name: String,
+    pub last_event_id: Option<i64>,
+    pub last_notified_event_id: Option<i64>,
+    pub pending_game_event_id: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: i64,
+    pub active: bool,
+    pub last_notified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchListenerStartParams {
+    pub match_id: i64,
+    pub group_id: i64,
+    pub creator_qq: i64,
+    pub match_name: String,
+    pub expires_at: i64,
+    pub initial_last_event_id: Option<i64>,
+    pub initial_last_notified_event_id: Option<i64>,
+}
+
+fn parse_db_datetime(value: &str, field_name: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|error| {
+            tracing::warn!(field_name, value, error = %error, "failed to parse datetime from storage");
+            Utc::now()
+        })
+}
+
+fn row_to_match_listener(row: &Row) -> DbResult<MatchListener> {
+    let created_at: String = row.get(7)?;
+    let last_notified_at: Option<String> = row.get(10)?;
+    let active: i64 = row.get(9)?;
+
+    Ok(MatchListener {
+        match_id: row.get(0)?,
+        group_id: row.get(1)?,
+        creator_qq: row.get(2)?,
+        match_name: row.get(3)?,
+        last_event_id: row.get(4)?,
+        last_notified_event_id: row.get(5)?,
+        pending_game_event_id: row.get(6)?,
+        created_at: parse_db_datetime(&created_at, "match_listeners.created_at"),
+        expires_at: row.get(8)?,
+        active: active != 0,
+        last_notified_at: last_notified_at
+            .as_deref()
+            .map(|value| parse_db_datetime(value, "match_listeners.last_notified_at")),
+    })
+}
+
 impl Storage {
     pub async fn new(path: &str) -> DbResult<Self> {
         let db = turso::Builder::new_local(path).build().await?;
@@ -148,6 +205,7 @@ impl Storage {
             pool.push(tokio::sync::Mutex::new(conn));
         }
 
+        // ponytail: v1 follows existing CREATE TABLE IF NOT EXISTS style; schema_version can wait until the project has migrations.
         pool[0]
             .lock()
             .await
@@ -205,6 +263,20 @@ impl Storage {
                 created_at TEXT NOT NULL,
                 expires_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS match_listeners (
+                match_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                creator_qq INTEGER NOT NULL,
+                match_name TEXT NOT NULL DEFAULT '',
+                last_event_id INTEGER,
+                last_notified_event_id INTEGER,
+                pending_game_event_id INTEGER,
+                created_at TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_notified_at TEXT,
+                PRIMARY KEY (match_id, group_id)
+            );
             CREATE TABLE IF NOT EXISTS osu_user_ids (
                 username TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL
@@ -212,6 +284,9 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode);
             CREATE INDEX IF NOT EXISTS idx_history_recorded ON user_stats_history(recorded_at);
             CREATE INDEX IF NOT EXISTS idx_play_records_user ON user_play_records(user_id, mode);
+            CREATE INDEX IF NOT EXISTS idx_match_listeners_group_active ON match_listeners(group_id, active, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_match_listeners_creator_active ON match_listeners(creator_qq, active, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_match_listeners_polling ON match_listeners(active, expires_at, last_notified_at);
             ",
             )
             .await?;
@@ -222,6 +297,16 @@ impl Storage {
                 .await
                 .execute(
                     "ALTER TABLE user_bindings ADD COLUMN default_mode INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await?;
+        }
+        if !has_column(&pool, "match_listeners", "match_name").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE match_listeners ADD COLUMN match_name TEXT NOT NULL DEFAULT ''",
                     (),
                 )
                 .await?;
@@ -1041,6 +1126,239 @@ impl Storage {
 
         Ok((deleted_stats, deleted_plays, deleted_next))
     }
+
+    pub async fn start_match_listener(&self, params: MatchListenerStartParams) -> DbResult<()> {
+        let MatchListenerStartParams {
+            match_id,
+            group_id,
+            creator_qq,
+            match_name,
+            expires_at,
+            initial_last_event_id,
+            initial_last_notified_event_id,
+        } = params;
+        let created_at = Utc::now().to_rfc3339();
+        let now = Utc::now().timestamp();
+        self.conn()
+            .await
+            .execute(
+                "INSERT INTO match_listeners (
+                    match_id,
+                    group_id,
+                    creator_qq,
+                    match_name,
+                    last_event_id,
+                    last_notified_event_id,
+                    pending_game_event_id,
+                    created_at,
+                    expires_at,
+                    active,
+                    last_notified_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, 1, NULL)
+                ON CONFLICT(match_id, group_id) DO UPDATE SET
+                    creator_qq = excluded.creator_qq,
+                    match_name = excluded.match_name,
+                    created_at = CASE
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.created_at
+                        ELSE excluded.created_at
+                    END,
+                    expires_at = excluded.expires_at,
+                    active = 1,
+                    last_event_id = CASE
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_event_id
+                        ELSE excluded.last_event_id
+                    END,
+                    last_notified_event_id = CASE
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_notified_event_id
+                        ELSE excluded.last_notified_event_id
+                    END,
+                    pending_game_event_id = CASE
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.pending_game_event_id
+                        ELSE NULL
+                    END,
+                    last_notified_at = CASE
+                        WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_notified_at
+                        ELSE NULL
+                    END",
+                params![match_id, group_id, creator_qq, match_name, initial_last_event_id, initial_last_notified_event_id, created_at, expires_at, now],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn stop_match_listener(&self, match_id: i64, group_id: i64) -> DbResult<bool> {
+        let rows = self
+            .conn()
+            .await
+            .execute(
+                "UPDATE match_listeners
+                 SET active = 0
+                 WHERE match_id = ?1 AND group_id = ?2 AND active = 1",
+                params![match_id, group_id],
+            )
+            .await?;
+        Ok(rows > 0)
+    }
+
+    pub async fn stop_all_match_listeners_in_group(&self, group_id: i64) -> DbResult<u64> {
+        self.conn()
+            .await
+            .execute(
+                "UPDATE match_listeners
+                 SET active = 0
+                 WHERE group_id = ?1 AND active = 1",
+                params![group_id],
+            )
+            .await
+    }
+
+    pub async fn get_match_listener(
+        &self,
+        match_id: i64,
+        group_id: i64,
+    ) -> DbResult<Option<MatchListener>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
+                        pending_game_event_id, created_at, expires_at, active, last_notified_at
+                 FROM match_listeners
+                 WHERE match_id = ?1 AND group_id = ?2",
+                params![match_id, group_id],
+            )
+            .await?;
+
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row_to_match_listener(&row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn list_active_match_listeners_by_group(
+        &self,
+        group_id: i64,
+    ) -> DbResult<Vec<MatchListener>> {
+        let now_ts = Utc::now().timestamp();
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
+                        pending_game_event_id, created_at, expires_at, active, last_notified_at
+                 FROM match_listeners
+                 WHERE group_id = ?1 AND active = 1 AND expires_at >= ?2
+                 ORDER BY created_at ASC, match_id ASC",
+                params![group_id, now_ts],
+            )
+            .await?;
+
+        let mut listeners = Vec::new();
+        while let Some(row) = rows.next().await? {
+            listeners.push(row_to_match_listener(&row)?);
+        }
+        Ok(listeners)
+    }
+
+    pub async fn list_active_match_listeners_due_for_polling(
+        &self,
+    ) -> DbResult<Vec<MatchListener>> {
+        let now_ts = Utc::now().timestamp();
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
+                        pending_game_event_id, created_at, expires_at, active, last_notified_at
+                 FROM match_listeners
+                 WHERE active = 1 AND expires_at >= ?1
+                 ORDER BY COALESCE(last_notified_at, created_at) ASC, group_id ASC, match_id ASC",
+                params![now_ts],
+            )
+            .await?;
+
+        let mut listeners = Vec::new();
+        while let Some(row) = rows.next().await? {
+            listeners.push(row_to_match_listener(&row)?);
+        }
+        Ok(listeners)
+    }
+
+    pub async fn update_match_listener_progress(
+        &self,
+        match_id: i64,
+        group_id: i64,
+        last_event_id: Option<i64>,
+        last_notified_event_id: Option<i64>,
+        pending_game_event_id: Option<i64>,
+        touch_last_notified_at: bool,
+    ) -> DbResult<bool> {
+        let last_notified_at = touch_last_notified_at.then(|| Utc::now().to_rfc3339());
+        let rows = self
+            .conn()
+            .await
+            .execute(
+                "UPDATE match_listeners
+                 SET last_event_id = ?3,
+                     last_notified_event_id = ?4,
+                     pending_game_event_id = ?5,
+                     last_notified_at = CASE
+                         WHEN ?6 = 1 THEN ?7
+                         ELSE last_notified_at
+                     END
+                 WHERE match_id = ?1 AND group_id = ?2",
+                params![
+                    match_id,
+                    group_id,
+                    last_event_id,
+                    last_notified_event_id,
+                    pending_game_event_id,
+                    if touch_last_notified_at { 1 } else { 0 },
+                    last_notified_at,
+                ],
+            )
+            .await?;
+        Ok(rows > 0)
+    }
+
+    pub async fn count_active_match_listeners_in_group(&self, group_id: i64) -> DbResult<u64> {
+        let now_ts = Utc::now().timestamp();
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*)
+                 FROM match_listeners
+                 WHERE group_id = ?1 AND active = 1 AND expires_at >= ?2",
+                params![group_id, now_ts],
+            )
+            .await?;
+
+        if let Some(row) = rows.next().await? {
+            let count: i64 = row.get(0)?;
+            Ok(count as u64)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub async fn is_match_listener_group_limit_reached(
+        &self,
+        group_id: i64,
+        limit: u64,
+    ) -> DbResult<bool> {
+        Ok(self.count_active_match_listeners_in_group(group_id).await? >= limit)
+    }
+
+    pub async fn expire_old_match_listeners(&self) -> DbResult<u64> {
+        let now_ts = Utc::now().timestamp();
+        self.conn()
+            .await
+            .execute(
+                "UPDATE match_listeners
+                 SET active = 0
+                 WHERE active = 1 AND expires_at < ?1",
+                params![now_ts],
+            )
+            .await
+    }
 }
 
 // ==================== Pending Bind Operations ====================
@@ -1465,5 +1783,368 @@ mod tests {
             storage.find_qq_by_username("NewName").await.unwrap(),
             Some(10001)
         );
+    }
+}
+
+#[cfg(test)]
+mod match_listener {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const GROUP_ID: i64 = 123_456_789;
+    const CREATOR_QQ: i64 = 987_654_321;
+    const MATCH_ID: i64 = 12_345_678;
+    static MATCH_LISTENER_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    async fn create_listener(
+        storage: &Storage,
+        match_id: i64,
+        group_id: i64,
+        creator_qq: i64,
+        expires_at: i64,
+    ) {
+        storage
+            .start_match_listener(MatchListenerStartParams {
+                match_id,
+                group_id,
+                creator_qq,
+                match_name: format!("MP #{match_id}"),
+                expires_at,
+                initial_last_event_id: None,
+                initial_last_notified_event_id: None,
+            })
+            .await
+            .expect("start match listener");
+    }
+
+    #[tokio::test]
+    async fn persists_listener_across_storage_reopen() {
+        let id = MATCH_LISTENER_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let db_path = std::env::temp_dir().join(format!(
+            "osubot-storage-match-listener-{}-{id}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+
+        let storage = Storage::new(db_path.to_str().expect("temp db path is valid UTF-8"))
+            .await
+            .expect("create storage");
+        let expires_at = Utc::now().timestamp() + 3600;
+
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+        drop(storage);
+
+        let reopened = Storage::new(db_path.to_str().expect("valid UTF-8 path"))
+            .await
+            .expect("reopen storage");
+
+        let listeners = reopened
+            .list_active_match_listeners_by_group(GROUP_ID)
+            .await
+            .expect("list active listeners");
+
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0].match_id, MATCH_ID);
+        assert_eq!(listeners[0].group_id, GROUP_ID);
+        assert_eq!(listeners[0].match_name, format!("MP #{MATCH_ID}"));
+
+        std::fs::remove_file(&db_path).expect("cleanup reopened db path");
+    }
+
+    #[tokio::test]
+    async fn advance_cursor_round_trips_last_event_id() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+
+        assert!(storage
+            .update_match_listener_progress(MATCH_ID, GROUP_ID, Some(100), None, None, false)
+            .await
+            .expect("advance cursor"));
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get listener")
+            .expect("listener exists");
+
+        assert_eq!(listener.last_event_id, Some(100));
+    }
+
+    #[tokio::test]
+    async fn detects_group_limit() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+
+        for offset in 0..3 {
+            create_listener(
+                &storage,
+                MATCH_ID + offset,
+                GROUP_ID,
+                CREATOR_QQ + offset,
+                expires_at,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            storage
+                .count_active_match_listeners_in_group(GROUP_ID)
+                .await
+                .expect("count group listeners"),
+            3
+        );
+        assert!(storage
+            .is_match_listener_group_limit_reached(GROUP_ID, 3)
+            .await
+            .expect("check group limit"));
+        assert!(
+            storage
+                .is_match_listener_group_limit_reached(GROUP_ID, 4)
+                .await
+                .expect("check fourth listener detectability")
+                == false
+        );
+    }
+
+    #[tokio::test]
+    async fn excludes_expired_listener_from_polling() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+
+        create_listener(
+            &storage,
+            MATCH_ID,
+            GROUP_ID,
+            CREATOR_QQ,
+            Utc::now().timestamp() - 60,
+        )
+        .await;
+        create_listener(
+            &storage,
+            MATCH_ID + 1,
+            GROUP_ID,
+            CREATOR_QQ + 1,
+            Utc::now().timestamp() + 3600,
+        )
+        .await;
+
+        let expired_rows = storage
+            .expire_old_match_listeners()
+            .await
+            .expect("expire old listeners");
+        assert_eq!(expired_rows, 1);
+
+        let polling_list = storage
+            .list_active_match_listeners_due_for_polling()
+            .await
+            .expect("list due listeners");
+
+        assert_eq!(polling_list.len(), 1);
+        assert_eq!(polling_list[0].match_id, MATCH_ID + 1);
+        assert!(polling_list[0].active);
+        assert!(polling_list
+            .iter()
+            .all(|listener| listener.expires_at >= Utc::now().timestamp()));
+    }
+
+    #[tokio::test]
+    async fn stops_single_and_group_listeners() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+        create_listener(&storage, MATCH_ID + 1, GROUP_ID, CREATOR_QQ + 1, expires_at).await;
+        create_listener(
+            &storage,
+            MATCH_ID + 2,
+            GROUP_ID + 1,
+            CREATOR_QQ + 2,
+            expires_at,
+        )
+        .await;
+
+        assert!(storage
+            .stop_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("stop single listener"));
+        assert_eq!(
+            storage
+                .list_active_match_listeners_by_group(GROUP_ID)
+                .await
+                .expect("list group after stop")
+                .len(),
+            1
+        );
+
+        assert_eq!(
+            storage
+                .stop_all_match_listeners_in_group(GROUP_ID)
+                .await
+                .expect("stop group listeners"),
+            1
+        );
+        assert!(storage
+            .list_active_match_listeners_by_group(GROUP_ID)
+            .await
+            .expect("list after stop all")
+            .is_empty());
+        assert_eq!(
+            storage
+                .list_active_match_listeners_by_group(GROUP_ID + 1)
+                .await
+                .expect("other group untouched")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn advances_notified_event_and_pending_game_marker() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+
+        assert!(storage
+            .update_match_listener_progress(MATCH_ID, GROUP_ID, None, Some(88), Some(99), true)
+            .await
+            .expect("update listener progress"));
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get listener after updates")
+            .expect("listener exists after updates");
+
+        assert_eq!(listener.last_notified_event_id, Some(88));
+        assert_eq!(listener.pending_game_event_id, Some(99));
+        assert!(listener.last_notified_at.is_some());
+
+        assert!(storage
+            .update_match_listener_progress(MATCH_ID, GROUP_ID, None, None, None, false)
+            .await
+            .expect("clear pending event"));
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get listener after clear")
+            .expect("listener exists after clear");
+        assert_eq!(listener.pending_game_event_id, None);
+    }
+
+    #[tokio::test]
+    async fn restarting_inactive_listener_resets_cursor_and_pending_state() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+
+        assert!(storage
+            .update_match_listener_progress(
+                MATCH_ID,
+                GROUP_ID,
+                Some(100),
+                Some(99),
+                Some(101),
+                true,
+            )
+            .await
+            .expect("set listener progress"));
+        assert!(storage
+            .stop_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("stop listener"));
+
+        create_listener(
+            &storage,
+            MATCH_ID,
+            GROUP_ID,
+            CREATOR_QQ + 1,
+            expires_at + 3600,
+        )
+        .await;
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get restarted listener")
+            .expect("listener exists after restart");
+
+        assert!(listener.active);
+        assert_eq!(listener.creator_qq, CREATOR_QQ + 1);
+        assert_eq!(listener.last_event_id, None);
+        assert_eq!(listener.last_notified_event_id, None);
+        assert_eq!(listener.pending_game_event_id, None);
+        assert_eq!(listener.last_notified_at, None);
+    }
+
+    #[tokio::test]
+    async fn restarting_expired_active_listener_resets_cursor_and_pending_state() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() - 60;
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+
+        assert!(storage
+            .update_match_listener_progress(
+                MATCH_ID,
+                GROUP_ID,
+                Some(100),
+                Some(99),
+                Some(101),
+                true,
+            )
+            .await
+            .expect("set listener progress"));
+
+        create_listener(
+            &storage,
+            MATCH_ID,
+            GROUP_ID,
+            CREATOR_QQ + 1,
+            Utc::now().timestamp() + 3600,
+        )
+        .await;
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get restarted listener")
+            .expect("listener exists after restart");
+
+        assert!(listener.active);
+        assert_eq!(listener.creator_qq, CREATOR_QQ + 1);
+        assert_eq!(listener.last_event_id, None);
+        assert_eq!(listener.last_notified_event_id, None);
+        assert_eq!(listener.pending_game_event_id, None);
+        assert_eq!(listener.last_notified_at, None);
+    }
+
+    #[tokio::test]
+    async fn update_match_listener_progress_updates_all_cursor_fields_atomically() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let expires_at = Utc::now().timestamp() + 3600;
+        create_listener(&storage, MATCH_ID, GROUP_ID, CREATOR_QQ, expires_at).await;
+
+        assert!(storage
+            .update_match_listener_progress(
+                MATCH_ID,
+                GROUP_ID,
+                Some(100),
+                Some(99),
+                Some(101),
+                true
+            )
+            .await
+            .expect("atomic cursor update"));
+
+        let listener = storage
+            .get_match_listener(MATCH_ID, GROUP_ID)
+            .await
+            .expect("get listener after atomic update")
+            .expect("listener exists after atomic update");
+
+        assert_eq!(listener.last_event_id, Some(100));
+        assert_eq!(listener.last_notified_event_id, Some(99));
+        assert_eq!(listener.pending_game_event_id, Some(101));
+        assert!(listener.last_notified_at.is_some());
     }
 }

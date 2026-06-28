@@ -35,7 +35,7 @@ pub(super) async fn render_audio_by_beatmapset_id(
     };
 
     let write = ctx.write.clone();
-    if let Err(e) = send_group_msg_with_record(&write, group_id, &mp3).await {
+    if let Err(e) = send_group_msg_with_record(&write, &ctx.onebot_api, group_id, &mp3).await {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_audio_send_failed", error = &e.to_string()));
         let _ = resp_tx
             .send(user_str("error.audio_send_failed").replace("{qq}", &qq.to_string()))

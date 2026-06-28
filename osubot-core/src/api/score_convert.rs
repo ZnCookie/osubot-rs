@@ -286,6 +286,7 @@ mod tests {
                 id: 2001,
                 beatmapset_id: 3001,
                 version: "Insane".to_string(),
+                mode: "osu".to_string(),
                 difficulty_rating: 5.5,
                 bpm: 180.0,
                 ar: 9.0,

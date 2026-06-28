@@ -130,8 +130,49 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "mode.get_success" => "[CQ:at,qq={qq}] 你的默认模式是 {mode}",
     "mode.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 osu! 账号，无法设置默认模式",
 
+    // ── 比赛监听 (!ml) ──
+    "ml.start_success" => "[CQ:at,qq={qq}] 已开始监听比赛 {match_id}（{match_name}）",
+    "ml.stop_success" => "[CQ:at,qq={qq}] 已停止监听比赛 {match_id}",
+    "ml.stop_all_success" => "[CQ:at,qq={qq}] 已停止监听本群所有比赛（{count} 个）",
+    "ml.list_header" => "本群正在监听的比赛（{count} 个）：\n",
+    "ml.list_empty" => "[CQ:at,qq={qq}] 本群当前没有监听任何比赛",
+    "ml.list_item" => "#{idx} 比赛 {match_id}（{match_name}）— 由 {username} 发起，状态：{status}",
+    "ml.not_found" => "[CQ:at,qq={qq}] 未找到比赛 {match_id}，或本群未监听该比赛",
+    "ml.already_listening" => "[CQ:at,qq={qq}] 本群已在监听比赛 {match_id}",
+    "ml.limit_exceeded" => "[CQ:at,qq={qq}] 监听数量已达上限（{limit} 个），请先停止其他比赛",
+    "ml.status_header" => "比赛 {match_id} 状态：\n",
+    "ml.status_name" => "名称：{name}\n",
+    "ml.status_status" => "状态：{status}\n",
+    "ml.status_players" => "参赛人数：{count}\n",
+    "ml.status_games" => "已记录谱面：{count} 场\n",
+    "ml.fetch_failed" => "[CQ:at,qq={qq}] 获取比赛信息失败，请稍后重试",
+    "ml.match_ended" => "[CQ:at,qq={qq}] 比赛 {match_id} 已结束",
+    "ml.new_game_notification" => "比赛 {match_name} 新场次开始：\n{game_info}",
+    "ml.match_completed_notification" => "比赛 {match_name} 已结束！\n最终结果：\n{result_summary}",
+    "ml.unknown" => "未知",
+    "ml.unknown_player" => "未知玩家",
+    "ml.listener_active_status" => "监听中",
+    "ml.listener_stopped_status" => "已停止",
+    "ml.match_status_finished" => "已结束",
+    "ml.match_status_in_progress" => "进行中",
+    "ml.fallback_finished_header" => "【{match_name}】场次结束",
+    "ml.fallback_started_header" => "【{match_name}】场次开始",
+    "ml.fallback_selected_beatmap" => "选图：Beatmap #{beatmap_id}",
+    "ml.fallback_players_header" => "参加玩家：",
+    "ml.fallback_no_players" => "- 暂无玩家信息",
+    "ml.event_match_created" => "比赛创建",
+    "ml.event_match_disbanded" => "比赛解散",
+    "ml.event_player_joined" => "玩家加入",
+    "ml.event_player_left" => "玩家离开",
+    "ml.event_player_kicked" => "玩家被踢出",
+    "ml.event_host_changed" => "房主变更",
+    "ml.event_beatmap_changed" => "选图变更",
+    "ml.event_match_started" => "比赛开始",
+    "ml.event_match_completed" => "场次结束",
+    "ml.event_generic" => "事件",
+
     // ── 系统 ──
-    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",
@@ -139,6 +180,9 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "bridge.tick_interval_too_short" => "tick 间隔不能小于 {secs} 秒",
     "bridge.tick_interval_too_long" => "tick 间隔不能大于 {secs} 秒",
     "bridge.tick_limit_exceeded" => "每个插件最多注册 {limit} 个 tick",
+
+    // ── 配置校验 ──
+    "config.ml_poll_interval_too_small" => "match_listen.poll_interval_secs 过小（{current} < 5 秒）",
 };
 
 /// 开发者可见文本（log 消息），统一中文
@@ -603,6 +647,29 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
 
     // ===== osubot/src/score_query/mod.rs =====
     "pipeline.unexpected_score_list_card_in_single_path" => "run_score_query_pipeline: 单成绩分支遇到 ScoreListCard，请检查 is_summary 配置",
+
+    // ===== osubot/src/match_listener/ (ml 命令与后台轮询) =====
+    "ml.command_received" => "!ml 命令: {action}",
+    "ml.start_success_log" => "群 {group_id} 开始监听比赛 {match_id}",
+    "ml.stop_success_log" => "群 {group_id} 停止监听比赛 {match_id}",
+    "ml.stop_all_log" => "群 {group_id} 停止监听所有比赛（{count} 个）",
+    "ml.list_log" => "群 {group_id} 查询监听列表（{count} 个）",
+    "ml.status_log" => "群 {group_id} 查询比赛 {match_id} 状态",
+    "ml.not_found_log" => "群 {group_id} 未找到比赛 {match_id}",
+    "ml.already_listening_log" => "群 {group_id} 已在监听比赛 {match_id}，跳过",
+    "ml.limit_exceeded_log" => "群 {group_id} 监听数量达上限（{limit}），拒绝新增比赛 {match_id}",
+    "ml.fetch_match_failed_log" => "获取比赛 {match_id} 信息失败: {error}",
+    "ml.poller_started" => "比赛监听轮询任务已启动",
+    "ml.poller_stopped" => "比赛监听轮询任务已停止",
+    "ml.poller_tick" => "比赛监听轮询心跳，活跃监听数: {count}",
+    "ml.poller_match_fetch_failed" => "轮询: 获取比赛 {match_id} 失败: {error}",
+    "ml.poller_new_game" => "轮询: 比赛 {match_id} 检测到新场次 {game_id}",
+    "ml.poller_match_completed" => "轮询: 比赛 {match_id} 已结束",
+    "ml.poller_notify_failed" => "轮询: 发送比赛 {match_id} 通知失败",
+    "ml.poller_render_failed" => "轮询: 渲染比赛 {match_id} 结果卡片失败，回退到文本",
+    "ml.notify_sent" => "已向群 {group_id} 发送比赛 {match_id} 的通知",
+    "ml.notify_image_sent" => "已向群 {group_id} 发送比赛 {match_id} 的结果图片（{bytes} 字节）",
+    "ml.notify_text_fallback" => "图片发送失败，回退到文本通知",
 };
 
 pub fn log_str(key: &str) -> &'static str {

@@ -279,11 +279,12 @@ async fn handle_profile_card(
                 log_fmt!("main.profile_card_rendered")
             );
             let write = ctx.write.clone();
+            let onebot_api = ctx.onebot_api.clone();
             let group_id = msg.group_id;
             let resp_tx = resp_tx.clone();
 
             tokio::spawn(async move {
-                if send_group_msg_with_image(&write, group_id, &jpeg_bytes)
+                if send_group_msg_with_image(&write, &onebot_api, group_id, &jpeg_bytes)
                     .await
                     .is_err()
                 {

@@ -1,7 +1,9 @@
+use osubot_render::match_style::{wrap_match_result_html, MatchPlayerRowData, MatchResultCardData};
 use osubot_render::score_list_style::{
     wrap_score_list_html, ScoreListCardData, ScoreListHtmlParams,
 };
 use osubot_render::score_style::{wrap_score_html, ScoreCardData};
+use osubot_render::{render_match_result_card, MatchResultParams, MatchResultPlayerParams};
 use osubot_types::{GameMode, PpBreakdown, PpIfAcc, Score, ScoreStatistics, ScoreUser};
 use rosu_mods::GameMod;
 use std::path::Path;
@@ -413,4 +415,164 @@ fn test_wrap_score_list_html_basic() {
 
     // 验证移除的元素
     assert!(!html.contains("mini-score"));
+}
+
+fn make_match_card_data() -> MatchResultCardData {
+    let cover_data_uri = {
+        let cover = make_match_cover_image();
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        cover
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        format!(
+            "data:image/jpeg;base64,{}",
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                cursor.into_inner()
+            )
+        )
+    };
+
+    MatchResultCardData {
+        match_id: 12_345_678,
+        match_name: "Dump Match".to_string(),
+        event_label: "Game finished".to_string(),
+        played_at: "2026/06/26 20:00:00".to_string(),
+        beatmap_id: 987_654,
+        beatmap_artist: "xi".to_string(),
+        beatmap_title: "Blue Zenith".to_string(),
+        beatmap_version: "FOUR DIMENSIONS".to_string(),
+        beatmap_mapper: "Asphyxia".to_string(),
+        beatmap_mode: "osu!".to_string(),
+        star_rating: Some(7.85),
+        beatmap_bpm: Some(190.0),
+        beatmap_length_seconds: Some(260),
+        beatmap_max_combo: Some(2429),
+        beatmap_ar: Some(9.7),
+        beatmap_od: Some(9.8),
+        beatmap_cs: Some(4.0),
+        beatmap_hp: Some(6.0),
+        cover_data_uri,
+        is_started: false,
+        selected_mods: vec!["HD".to_string(), "HR".to_string()],
+        team_type: Some("team-vs".to_string()),
+        scoring_type: Some("score".to_string()),
+        team_results: Vec::new(),
+        players: vec![
+            MatchPlayerRowData {
+                placement: 1,
+                username: "Alice".to_string(),
+                avatar_data_uri: String::new(),
+                team: Some("Red".to_string()),
+                score: 1_234_567,
+                accuracy: 0.9876,
+                max_combo: 1234,
+                mods: vec!["HD".to_string(), "HR".to_string()],
+                rank: "A".to_string(),
+                passed: true,
+            },
+            MatchPlayerRowData {
+                placement: 2,
+                username: "Bob".to_string(),
+                avatar_data_uri: String::new(),
+                team: Some("Blue".to_string()),
+                score: 987_654,
+                accuracy: 0.9654,
+                max_combo: 876,
+                mods: Vec::new(),
+                rank: "F".to_string(),
+                passed: false,
+            },
+        ],
+    }
+}
+
+fn make_match_cover_image() -> image::DynamicImage {
+    let mut img = image::RgbImage::new(640, 360);
+    for (x, y, pixel) in img.enumerate_pixels_mut() {
+        let r = ((x * 255) / 639) as u8;
+        let g = ((y * 180) / 359) as u8;
+        let b = (120 + ((x + y) % 120)) as u8;
+        *pixel = image::Rgb([r, g, b]);
+    }
+    image::DynamicImage::ImageRgb8(img)
+}
+
+fn make_match_params() -> MatchResultParams {
+    MatchResultParams {
+        match_id: 12_345_678,
+        match_name: "Dump Match".to_string(),
+        event_label: "Game finished".to_string(),
+        played_at: "2026/06/26 20:00:00".to_string(),
+        beatmap_id: 987_654,
+        beatmap_artist: "xi".to_string(),
+        beatmap_title: "Blue Zenith".to_string(),
+        beatmap_version: "FOUR DIMENSIONS".to_string(),
+        beatmap_mapper: "Asphyxia".to_string(),
+        beatmap_mode: "osu!".to_string(),
+        star_rating: Some(7.85),
+        beatmap_bpm: Some(190.0),
+        beatmap_length_seconds: Some(260),
+        beatmap_max_combo: Some(2429),
+        beatmap_ar: Some(9.7),
+        beatmap_od: Some(9.8),
+        beatmap_cs: Some(4.0),
+        beatmap_hp: Some(6.0),
+        cover_image: Some(make_match_cover_image()),
+        is_started: false,
+        selected_mods: vec!["HD".to_string(), "HR".to_string()],
+        team_type: Some("team-vs".to_string()),
+        scoring_type: Some("score".to_string()),
+        team_results: Vec::new(),
+        players: vec![
+            MatchResultPlayerParams {
+                placement: 1,
+                username: "Alice".to_string(),
+                avatar_url: None,
+                avatar_image: None,
+                team: Some("Red".to_string()),
+                score: 1_234_567,
+                accuracy: 0.9876,
+                max_combo: 1234,
+                mods: vec!["HD".to_string(), "HR".to_string()],
+                rank: "A".to_string(),
+                passed: true,
+            },
+            MatchResultPlayerParams {
+                placement: 2,
+                username: "Bob".to_string(),
+                avatar_url: None,
+                avatar_image: None,
+                team: Some("Blue".to_string()),
+                score: 987_654,
+                accuracy: 0.9654,
+                max_combo: 876,
+                mods: Vec::new(),
+                rank: "F".to_string(),
+                passed: false,
+            },
+        ],
+    }
+}
+
+#[test]
+#[ignore = "run with --ignored to dump match HTML/JPEG for visual inspection"]
+fn dump_match_html() {
+    let data = make_match_card_data();
+    let html = wrap_match_result_html(&data);
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dump");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("match-result.html"), &html).unwrap();
+    assert!(!html.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "run with --ignored to dump match HTML/JPEG for visual inspection"]
+async fn dump_match_jpeg() {
+    let params = make_match_params();
+    let jpeg = render_match_result_card(params).await.expect("render ok");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dump");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("match-result.jpeg"), &jpeg).unwrap();
+    assert!(!jpeg.is_empty());
 }

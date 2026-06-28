@@ -22,14 +22,15 @@ use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage}
 use crate::score_query::handle_score_query;
 use crate::{api_error_msg, profile_dedup, BotContext, UserRateLimit};
 
+mod match_listen;
 mod query;
 mod settings;
 mod utility;
 
+use match_listen::handle_match_listen_command;
 use query::handle_query_commands;
 use settings::handle_settings_commands;
 use utility::handle_utility_commands;
-
 /// 解析本次命令的"目标 QQ"，用于在命令未显式指定模式时回退到该用户的 `default_mode`。
 ///
 /// 设计语义：`default_mode` 是**被查询目标用户**的偏好（"我喜欢用 taiko 模式展示成绩"），
@@ -431,6 +432,9 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         }
         Command::Help | Command::Highlight { .. } | Command::ProfileCard { .. } => {
             handle_utility_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
+        }
+        Command::MatchListen(..) => {
+            handle_match_listen_command(&ctx, &msg, &resp_tx, &cmd).await;
         }
     }
 }
