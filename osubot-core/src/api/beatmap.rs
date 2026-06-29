@@ -8,9 +8,11 @@ pub async fn calc_star_rating_local(
     is_lazer: bool,
 ) -> Option<f64> {
     let osu_path = super::download_beatmap_osu(beatmap_id, status).await.ok()?;
+    let is_temp = osu_path.parent() == Some(&std::env::temp_dir());
     let mods = mods.clone();
+    let cleanup_path = osu_path.clone();
 
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let map = rosu_pp::Beatmap::from_path(&osu_path).ok()?;
         let pp_mods = rosu_pp::GameMods::from(mods);
         let target_mode: rosu_pp::model::mode::GameMode = mode.into();
@@ -32,7 +34,13 @@ pub async fn calc_star_rating_local(
     })
     .await
     .ok()
-    .flatten()
+    .flatten();
+
+    if is_temp {
+        let _ = tokio::fs::remove_file(&cleanup_path).await;
+    }
+
+    result
 }
 
 /// Get mod-adjusted star rating with a local-first, API-fallback strategy.

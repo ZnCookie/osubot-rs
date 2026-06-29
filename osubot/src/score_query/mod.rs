@@ -1044,14 +1044,17 @@ async fn run_score_query_pipeline(
         }
     }
 
-    // Star 预补全：过滤器含 star 条件时，对带 mod 的成绩通过 API 补全 mod 调整后的星数。
-    // 与 PP 不同：star 只需要一次轻量 HTTP 请求（/beatmaps/{id}/attributes），
-    // 无需下载 .osu 文件。
-    if filters.is_some_and(|f| f.iter().any(|s| s.starts_with("star"))) {
+    // Star 预补全：对带 mod 的成绩通过 API 补全 mod 调整后的星数。
+    // 跳过 pp_breakdown 已包含 mod-adjusted star_rating 的成绩。
+    {
         let enrich: Vec<usize> = indexed
             .iter()
             .enumerate()
-            .filter(|(_, (_, s))| !s.mods.is_empty() && s.beatmap_id > 0)
+            .filter(|(_, (_, s))| {
+                !s.mods.is_empty()
+                    && s.beatmap_id > 0
+                    && !(s.pp_breakdown.is_some() && s.star_rating > 0.0)
+            })
             .map(|(i, _)| i)
             .collect();
         if !enrich.is_empty() {

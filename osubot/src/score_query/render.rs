@@ -1,8 +1,6 @@
 use super::*;
 use futures_util::stream::{self, StreamExt};
-use osubot_core::api::get_star_rating;
 use std::borrow::Cow;
-use std::collections::HashSet;
 
 pub(super) struct SingleScoreRenderParams<'a> {
     pub(super) ctx: &'a BotContext,
@@ -238,7 +236,6 @@ pub(super) async fn render_and_send_score_list(
         .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
         .map(|(i, _)| i)
         .collect();
-    let pp_enriched: HashSet<usize> = pp_enrich_indices.iter().copied().collect();
     let scores: Cow<'_, [Score]> = if pp_enrich_indices.is_empty() {
         Cow::Borrowed(scores)
     } else {
@@ -260,50 +257,6 @@ pub(super) async fn render_and_send_score_list(
             slots[i] = Some(s);
         }
         Cow::Owned(slots.into_iter().flatten().collect())
-    };
-
-    // 补全带 mod 成绩的 star_rating：通过轻量 /beatmaps/{id}/attributes API 获取 mod 调整后的星数。
-    // 跳过已被 PP 补全的成绩（enrich_score_with_pp 已从 pp_breakdown 设了 mod 调整后的 star_rating），
-    // 以及无 mod、无 beatmap_id 的成绩。
-    let star_enrich_indices: Vec<usize> = scores
-        .iter()
-        .enumerate()
-        .filter(|(i, s)| !s.mods.is_empty() && s.beatmap_id > 0 && !pp_enriched.contains(i))
-        .map(|(i, _)| i)
-        .collect();
-    let scores: Cow<'_, [Score]> = if star_enrich_indices.is_empty() {
-        scores
-    } else {
-        let mut owned: Vec<Score> = scores.to_vec();
-        let rl = ctx.rate_limiter.clone();
-        let oauth = ctx.oauth.clone();
-        let futs = star_enrich_indices.into_iter().map(|i| {
-            let mods = owned[i].mods.clone();
-            let beatmap_id = owned[i].beatmap_id;
-            let status = owned[i].status.clone();
-            let is_lazer = owned[i].is_lazer;
-            let rl = rl.clone();
-            let oauth = oauth.clone();
-            async move {
-                let sr =
-                    get_star_rating(&rl, &oauth, beatmap_id, &status, &mods, mode, is_lazer).await;
-                if sr > 0.0 {
-                    (i, Some(sr))
-                } else {
-                    (i, None)
-                }
-            }
-        });
-        let enriched: Vec<(usize, Option<f64>)> = stream::iter(futs)
-            .buffer_unordered(ENRICH_CONCURRENCY)
-            .collect()
-            .await;
-        for (i, sr) in enriched {
-            if let Some(adjusted) = sr {
-                owned[i].star_rating = adjusted;
-            }
-        }
-        Cow::Owned(owned)
     };
 
     let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
