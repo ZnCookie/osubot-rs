@@ -1080,8 +1080,10 @@ async fn run_score_query_pipeline(
                     }
                 })
                 .collect();
-            let enriched_scores: Vec<_> =
-                stream::iter(futs).buffer_unordered(ENRICH_CONCURRENCY).collect().await;
+            let enriched_scores: Vec<_> = stream::iter(futs)
+                .buffer_unordered(ENRICH_CONCURRENCY)
+                .collect()
+                .await;
             for (i, s) in enrich.into_iter().zip(enriched_scores) {
                 indexed[i].1 = s;
             }

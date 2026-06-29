@@ -268,11 +268,7 @@ pub(super) async fn render_and_send_score_list(
     let star_enrich_indices: Vec<usize> = scores
         .iter()
         .enumerate()
-        .filter(|(i, s)| {
-            !s.mods.is_empty()
-                && s.beatmap_id > 0
-                && !pp_enriched.contains(i)
-        })
+        .filter(|(i, s)| !s.mods.is_empty() && s.beatmap_id > 0 && !pp_enriched.contains(i))
         .map(|(i, _)| i)
         .collect();
     let scores: Cow<'_, [Score]> = if star_enrich_indices.is_empty() {
@@ -287,14 +283,8 @@ pub(super) async fn render_and_send_score_list(
             let rl = rl.clone();
             let oauth = oauth.clone();
             async move {
-                match fetch_beatmap_difficulty_attributes(
-                    &rl,
-                    &oauth,
-                    beatmap_id,
-                    &mods,
-                    mode,
-                )
-                .await
+                match fetch_beatmap_difficulty_attributes(&rl, &oauth, beatmap_id, &mods, mode)
+                    .await
                 {
                     Ok(adjusted_sr) => (i, Some(adjusted_sr)),
                     Err(_) => (i, None),
