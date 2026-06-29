@@ -113,8 +113,6 @@ pub async fn download_beatmap_osu(beatmap_id: i64, status: &str) -> Result<PathB
     let cache_path =
         crate::cache::beatmap_cache_dir().join(format!("{}_{}.osu", beatmap_id, status));
 
-    cleanup_old_status_cache(beatmap_id, status).await;
-
     let cache_valid = tokio::task::spawn_blocking({
         let cache_path = cache_path.clone();
         move || -> bool {
@@ -140,6 +138,8 @@ pub async fn download_beatmap_osu(beatmap_id: i64, status: &str) -> Result<PathB
     if cache_valid {
         return Ok(cache_path);
     }
+
+    cleanup_old_status_cache(beatmap_id, status).await;
 
     let client = http_client();
     let url = format!("https://osu.ppy.sh/osu/{}", beatmap_id);
