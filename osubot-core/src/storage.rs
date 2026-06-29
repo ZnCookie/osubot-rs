@@ -137,6 +137,14 @@ fn row_to_snapshot(row: &Row, col_offset: usize) -> DbResult<UserStatsSnapshot> 
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct SbBinding {
+    pub qq: i64,
+    pub sb_user_id: i64,
+    pub sb_username: String,
+    pub default_mode: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchListener {
     pub match_id: i64,
@@ -287,6 +295,21 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_match_listeners_group_active ON match_listeners(group_id, active, expires_at);
             CREATE INDEX IF NOT EXISTS idx_match_listeners_creator_active ON match_listeners(creator_qq, active, expires_at);
             CREATE INDEX IF NOT EXISTS idx_match_listeners_polling ON match_listeners(active, expires_at, last_notified_at);
+            CREATE TABLE IF NOT EXISTS sb_user_bindings (
+                qq INTEGER PRIMARY KEY,
+                sb_user_id INTEGER NOT NULL UNIQUE,
+                sb_username TEXT NOT NULL,
+                default_mode INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS sb_user_snapshots (
+                qq INTEGER NOT NULL,
+                mode INTEGER NOT NULL DEFAULT 0,
+                pp REAL DEFAULT NULL,
+                global_rank INTEGER DEFAULT NULL,
+                country_rank INTEGER DEFAULT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (qq, mode)
+            );
             ",
             )
             .await?;
@@ -589,6 +612,204 @@ impl Storage {
             )
             .await?;
         Ok(count)
+    }
+
+    // ==================== SB Binding Query ====================
+
+    pub async fn sb_bind(
+        &self,
+        qq: i64,
+        sb_user_id: i64,
+        sb_username: &str,
+    ) -> DbResult<std::result::Result<(), i64>> {
+        let conn = self.conn().await;
+        conn.execute("BEGIN IMMEDIATE", ()).await?;
+        let result =
+            async {
+                let mut rows = conn
+                    .query(
+                        "SELECT qq FROM sb_user_bindings WHERE sb_user_id = ?1",
+                        params![sb_user_id],
+                    )
+                    .await?;
+                if let Some(row) = rows.next().await? {
+                    let existing_qq: i64 = row.get(0)?;
+                    if existing_qq != qq {
+                        return Ok(Err(existing_qq));
+                    }
+                }
+                drop(rows);
+                conn.execute(
+                    "INSERT OR REPLACE INTO sb_user_bindings (qq, sb_user_id, sb_username) VALUES (?1, ?2, ?3)",
+                    params![qq, sb_user_id, sb_username],
+                )
+                .await?;
+                Ok(Ok(()))
+            }
+            .await;
+        match &result {
+            Ok(Ok(())) | Ok(Err(_)) => {
+                conn.execute("COMMIT", ()).await?;
+            }
+            _ => {
+                conn.execute("ROLLBACK", ()).await?;
+            }
+        }
+        result
+    }
+
+    pub async fn sb_unbind(&self, qq: i64) -> DbResult<()> {
+        let conn = self.conn().await;
+        conn.execute("DELETE FROM sb_user_bindings WHERE qq = ?1", params![qq])
+            .await?;
+        conn.execute("DELETE FROM sb_user_snapshots WHERE qq = ?1", params![qq])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn sb_get_binding(&self, qq: i64) -> DbResult<Option<SbBinding>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq, sb_user_id, sb_username, default_mode FROM sb_user_bindings WHERE qq = ?1",
+                params![qq],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(SbBinding {
+                qq: row.get(0)?,
+                sb_user_id: row.get(1)?,
+                sb_username: row.get(2)?,
+                default_mode: row.get::<i32>(3)? as u8,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn sb_find_qq_by_user_id(&self, sb_user_id: i64) -> DbResult<Option<i64>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq FROM sb_user_bindings WHERE sb_user_id = ?1",
+                params![sb_user_id],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn sb_set_default_mode(&self, qq: i64, mode: u8) -> DbResult<bool> {
+        let rows = self
+            .conn()
+            .await
+            .execute(
+                "UPDATE sb_user_bindings SET default_mode = ?1 WHERE qq = ?2",
+                params![mode as i32, qq],
+            )
+            .await?;
+        Ok(rows > 0)
+    }
+
+    pub async fn sb_get_default_mode(&self, qq: i64) -> DbResult<Option<u8>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT default_mode FROM sb_user_bindings WHERE qq = ?1",
+                params![qq],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let mode: i32 = row.get(0)?;
+            Ok(Some(mode as u8))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // ==================== SB Snapshot Operations ====================
+
+    pub async fn sb_save_snapshot(
+        &self,
+        qq: i64,
+        mode: u8,
+        pp: Option<f64>,
+        global_rank: Option<i64>,
+        country_rank: Option<i64>,
+    ) -> DbResult<()> {
+        self.conn().await
+            .execute(
+                "INSERT OR REPLACE INTO sb_user_snapshots (qq, mode, pp, global_rank, country_rank, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                params![qq, mode as i32, pp, global_rank, country_rank],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn sb_get_snapshot(
+        &self,
+        qq: i64,
+        mode: u8,
+    ) -> DbResult<Option<(f64, Option<i64>, Option<i64>)>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT pp, global_rank, country_rank FROM sb_user_snapshots WHERE qq = ?1 AND mode = ?2",
+                params![qq, mode as i32],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn sb_get_all_snapshots(
+        &self,
+    ) -> DbResult<Vec<(i64, u8, f64, Option<i64>, Option<i64>)>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq, mode, pp, global_rank, country_rank FROM sb_user_snapshots",
+                (),
+            )
+            .await?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push((
+                row.get(0)?,
+                row.get::<i32>(1)? as u8,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ));
+        }
+        Ok(results)
+    }
+
+    pub async fn sb_get_all_bindings(&self) -> DbResult<Vec<SbBinding>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq, sb_user_id, sb_username, default_mode FROM sb_user_bindings",
+                (),
+            )
+            .await?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push(SbBinding {
+                qq: row.get(0)?,
+                sb_user_id: row.get(1)?,
+                sb_username: row.get(2)?,
+                default_mode: row.get::<i32>(3)? as u8,
+            });
+        }
+        Ok(results)
     }
 
     // ==================== Snapshot Operations ====================

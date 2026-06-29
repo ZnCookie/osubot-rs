@@ -25,9 +25,7 @@ dashmap = "6"
 async-trait = "0.1"
 rand = "0.10"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+rosu-mods = { version = "0.4", features = ["serde"] }
 
 [features]
 integration-tests = []
-
-[dev-dependencies]
-rosu-mods = { version = "0.4", features = ["serde"] }

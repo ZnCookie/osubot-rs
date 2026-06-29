@@ -412,12 +412,7 @@ pub async fn fetch_beatmap_difficulty_attributes(
     mods: &rosu_mods::GameMods,
     mode: GameMode,
 ) -> Result<f64, ApiError> {
-    let ruleset = match mode {
-        GameMode::Osu => "osu",
-        GameMode::Taiko => "taiko",
-        GameMode::Catch => "fruits",
-        GameMode::Mania => "mania",
-    };
+    let ruleset = mode.api_value();
     let url = format!(
         "https://osu.ppy.sh/api/v2/beatmaps/{}/attributes",
         beatmap_id

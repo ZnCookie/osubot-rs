@@ -4,13 +4,18 @@ mod scoring;
 #[cfg(test)]
 mod tests;
 
-use crate::types::{Command, GameMode, MatchListenAction};
-use scoring::parse_scoring_command;
+use crate::types::{Command, GameMode, MatchListenAction, Server};
+use scoring::{parse_scoring_command, parse_scoring_command_with_server};
 
 /// 解析用户消息为命令
 pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Command> {
     let msg = msg.trim();
     let msg = msg.replace('～', "~").replace('，', ",").replace('！', "!");
+
+    // SB server: detect '?' prefix
+    if let Some(rest) = msg.strip_prefix('?') {
+        return parse_sb_command(rest.trim(), mentioned_user_id);
+    }
 
     if msg.starts_with('~') {
         let rest = msg
@@ -19,10 +24,16 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             .trim_start_matches(' ')
             .trim_start_matches(',');
         if rest.is_empty() {
-            return Some(Command::QuerySelf { mode: None });
+            return Some(Command::QuerySelf {
+                mode: None,
+                server: Server::Official,
+            });
         }
         let mode = GameMode::from_digit_str(rest)?;
-        return Some(Command::QuerySelf { mode: Some(mode) });
+        return Some(Command::QuerySelf {
+            mode: Some(mode),
+            server: Server::Official,
+        });
     }
 
     if let Some(rest) = msg.strip_prefix("where qq=") {
@@ -33,7 +44,11 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         } else {
             None
         };
-        return Some(Command::QueryMentionedUser { qq, mode });
+        return Some(Command::QueryMentionedUser {
+            qq,
+            mode,
+            server: Server::Official,
+        });
     }
 
     if let Some(rest) = msg.strip_prefix("where ") {
@@ -46,7 +61,11 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 } else {
                     None
                 };
-                return Some(Command::QueryMentionedUser { qq, mode });
+                return Some(Command::QueryMentionedUser {
+                    qq,
+                    mode,
+                    server: Server::Official,
+                });
             }
             return None;
         }
@@ -56,7 +75,11 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         } else {
             None
         };
-        return Some(Command::QueryUser { username, mode });
+        return Some(Command::QueryUser {
+            username,
+            mode,
+            server: Server::Official,
+        });
     }
 
     if msg.starts_with('查') {
@@ -68,7 +91,11 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             } else {
                 Some(GameMode::from_digit_str(rest)?)
             };
-            return Some(Command::QueryMentionedUser { qq, mode });
+            return Some(Command::QueryMentionedUser {
+                qq,
+                mode,
+                server: Server::Official,
+            });
         }
         return None;
     }
@@ -80,11 +107,14 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         }
         return Some(Command::Bind {
             username: username.to_string(),
+            server: Server::Official,
         });
     }
 
     if msg == "解绑" {
-        return Some(Command::Unbind);
+        return Some(Command::Unbind {
+            server: Server::Official,
+        });
     }
 
     if let Some(rest) = msg.strip_prefix("今日高光") {
@@ -99,7 +129,10 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         } else {
             GameMode::from_digit_str(rest)
         };
-        return Some(Command::Highlight { mode });
+        return Some(Command::Highlight {
+            mode,
+            server: Server::Official,
+        });
     }
 
     if msg == "!help" {
@@ -114,7 +147,10 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
             } else {
                 GameMode::from_digit_str(rest)
             };
-            return Some(Command::SetDefaultMode { mode });
+            return Some(Command::SetDefaultMode {
+                mode,
+                server: Server::Official,
+            });
         }
     }
 
@@ -125,11 +161,13 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 return Some(Command::ProfileCard {
                     username: None,
                     qq: Some(qq),
+                    server: Server::Official,
                 });
             }
             return Some(Command::ProfileCard {
                 username: None,
                 qq: None,
+                server: Server::Official,
             });
         }
         if let Some(at) = rest.strip_prefix('@') {
@@ -137,6 +175,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 return Some(Command::ProfileCard {
                     username: None,
                     qq: Some(parsed),
+                    server: Server::Official,
                 });
             }
             return None;
@@ -146,6 +185,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
                 return Some(Command::ProfileCard {
                     username: None,
                     qq: Some(parsed),
+                    server: Server::Official,
                 });
             }
             return None;
@@ -153,6 +193,7 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
         return Some(Command::ProfileCard {
             username: Some(rest.to_string()),
             qq: None,
+            server: Server::Official,
         });
     }
 
@@ -171,6 +212,98 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     }
 
     None
+}
+
+fn parse_sb_command(rest: &str, mentioned_user_id: Option<i64>) -> Option<Command> {
+    if rest.is_empty() {
+        return Some(Command::QuerySelf {
+            mode: None,
+            server: Server::PpsySb,
+        });
+    }
+
+    if let Some(username) = rest.strip_prefix("where ") {
+        let username = username.trim().to_string();
+        if !username.is_empty() {
+            return Some(Command::QueryUser {
+                username,
+                mode: None,
+                server: Server::PpsySb,
+            });
+        }
+    }
+
+    if let Some(mode_str) = rest.strip_prefix('~') {
+        let mode_str = mode_str.trim();
+        let mode = if mode_str.is_empty() {
+            None
+        } else {
+            GameMode::from_digit_str(mode_str)
+        };
+        return Some(Command::QuerySelf {
+            mode,
+            server: Server::PpsySb,
+        });
+    }
+
+    if let Some(username) = rest.strip_prefix("bind ") {
+        let username = username.trim().to_string();
+        if !username.is_empty() {
+            return Some(Command::Bind {
+                username,
+                server: Server::PpsySb,
+            });
+        }
+    }
+
+    if rest == "unbind" {
+        return Some(Command::Unbind {
+            server: Server::PpsySb,
+        });
+    }
+
+    if let Some(mode_str) = rest.strip_prefix("今日高光") {
+        let mode_str = mode_str.trim().trim_start_matches(',').trim();
+        let mode = if mode_str.is_empty() {
+            None
+        } else {
+            GameMode::from_digit_str(mode_str)
+        };
+        return Some(Command::Highlight {
+            mode,
+            server: Server::PpsySb,
+        });
+    }
+
+    if rest == "help" || rest == "帮助" {
+        return Some(Command::Help);
+    }
+
+    if let Some(mode_str) = rest.strip_prefix("mode") {
+        let mode_str = mode_str.trim();
+        let mode = if mode_str.is_empty() {
+            None
+        } else {
+            GameMode::from_digit_str(mode_str)
+        };
+        return Some(Command::SetDefaultMode {
+            mode,
+            server: Server::PpsySb,
+        });
+    }
+
+    // Handle ?<digit> directly (matching official ~<digit> shorthand)
+    if let Some(mode) = GameMode::from_digit_str(rest) {
+        return Some(Command::QuerySelf {
+            mode: Some(mode),
+            server: Server::PpsySb,
+        });
+    }
+
+    // Scoring commands: prepend '!' and parse via existing logic with server override
+    let prefixed = format!("!{}", rest);
+    parse_scoring_command_with_server(&prefixed, mentioned_user_id, Server::PpsySb)
+        .and_then(|opt| opt)
 }
 
 /// Parse the subcommand part of `!ml` after the prefix is stripped.

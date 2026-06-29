@@ -286,6 +286,7 @@ impl ReloadCoordinator {
             match_listen: mutable
                 .match_listen
                 .unwrap_or(old_config.match_listen.clone()),
+            sb: mutable.sb.unwrap_or(old_config.sb.clone()),
         };
 
         new_config.validate()?;

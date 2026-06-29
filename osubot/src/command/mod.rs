@@ -11,7 +11,7 @@ use osubot_core::{
     response::format_stats_with_change,
     storage::Storage,
     strings::user_str,
-    types::{Command, GameMode},
+    types::{Command, GameMode, Server},
 };
 use osubot_plugin::{PluginActionResult, PluginManager};
 use osubot_render::{render_profile_card, PROFILE_VIEWPORT_WIDTH};
@@ -19,7 +19,7 @@ use osubot_render::{render_profile_card, PROFILE_VIEWPORT_WIDTH};
 use tracing::{debug, error, info, warn};
 
 use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage};
-use crate::score_query::handle_score_query;
+use crate::score_query::{handle_sb_score_query, handle_score_query};
 use crate::{api_error_msg, profile_dedup, BotContext, UserRateLimit};
 
 mod match_listen;
@@ -28,9 +28,9 @@ mod settings;
 mod utility;
 
 use match_listen::handle_match_listen_command;
-use query::handle_query_commands;
+use query::{handle_query_commands, handle_sb_query};
 use settings::handle_settings_commands;
-use utility::handle_utility_commands;
+use utility::{handle_sb_highlight, handle_utility_commands};
 /// 解析本次命令的"目标 QQ"，用于在命令未显式指定模式时回退到该用户的 `default_mode`。
 ///
 /// 设计语义：`default_mode` 是**被查询目标用户**的偏好（"我喜欢用 taiko 模式展示成绩"），
@@ -165,7 +165,7 @@ pub(crate) fn mode_sensitive(cmd: &Command) -> bool {
 /// 从命令中提取显式指定的 mode（未指定返回 None）。
 pub(crate) fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
     match cmd {
-        Command::QuerySelf { mode }
+        Command::QuerySelf { mode, .. }
         | Command::QueryUser { mode, .. }
         | Command::QueryMentionedUser { mode, .. }
         | Command::Pass { mode, .. }
@@ -305,6 +305,51 @@ fn record_command_invocation(ctx: &BotContext, user_id: i64) {
     }
 }
 
+/// 分发 ppy.sb 命令到对应的处理函数。
+async fn handle_sb_command(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    cmd: &Command,
+) {
+    match cmd {
+        Command::QuerySelf { .. }
+        | Command::QueryUser { .. }
+        | Command::QueryMentionedUser { .. } => {
+            handle_sb_query(ctx, msg, resp_tx, cmd).await;
+        }
+        Command::ScoreOnBeatmap { .. }
+        | Command::Pass { .. }
+        | Command::Recent { .. }
+        | Command::Best { .. }
+        | Command::TodayBest { .. }
+        | Command::BeatmapPreview { .. } => {
+            handle_sb_score_query(ctx, msg, resp_tx, cmd).await;
+        }
+        Command::BeatmapAudio { .. } => {
+            let _ = resp_tx
+                .send(
+                    user_str("sb.score.beatmap_audio_not_supported")
+                        .replace("{qq}", &msg.user_id.to_string()),
+                )
+                .await;
+        }
+        Command::Bind { .. } | Command::Unbind { .. } => {
+            handle_settings_commands(ctx, msg, resp_tx, cmd).await;
+        }
+        Command::SetDefaultMode { .. } => {
+            handle_settings_commands(ctx, msg, resp_tx, cmd).await;
+        }
+        Command::Highlight { .. } => {
+            handle_sb_highlight(ctx, msg, resp_tx).await;
+        }
+        Command::Help => {
+            handle_utility_commands(ctx, msg, resp_tx, cmd, GameMode::Osu).await;
+        }
+        _ => {}
+    }
+}
+
 pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
     // ==== 用户命令频率限制（滑动窗口：3秒内最多5次） ====
     // 限流检查放在最前面，防止插件命令绕过限流。
@@ -423,6 +468,13 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         return;
     }
 
+    // 早期分流：ppy.sb 命令走独立处理
+    if cmd.server() == Server::PpsySb {
+        record_command_invocation(&ctx, msg.user_id);
+        handle_sb_command(&ctx, &msg, &resp_tx, &cmd).await;
+        return;
+    }
+
     // Handle command and send response
     record_command_invocation(&ctx, msg.user_id);
     let mode = resolved_mode.unwrap_or(GameMode::Osu);
@@ -439,7 +491,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         | Command::BeatmapPreview { .. } => {
             handle_query_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
-        Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind => {
+        Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind { .. } => {
             handle_settings_commands(&ctx, &msg, &resp_tx, &cmd).await;
         }
         Command::Help | Command::Highlight { .. } | Command::ProfileCard { .. } => {
