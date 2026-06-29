@@ -100,7 +100,9 @@ pub async fn backfill_score_details(
             score.od = bm.od;
             score.cs = bm.cs;
             score.hp = bm.hp;
-            score.star_rating = bm.difficulty_rating;
+            if score.star_rating <= 0.0 {
+                score.star_rating = bm.difficulty_rating;
+            }
             score.bpm = bm.bpm;
             score.length_seconds = bm.total_length;
             score.beatmap_max_combo = bm.max_combo;
