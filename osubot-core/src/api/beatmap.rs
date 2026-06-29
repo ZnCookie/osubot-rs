@@ -1,34 +1,38 @@
-//! Beatmap analysis pipeline: download → parse → compute star rating.
-//!
-//! Consolidates the shared "download .osu + parse with rosu_pp" logic that was
-//! previously duplicated between `pp.rs` and `osu_api.rs`.
-
 use crate::types::GameMode;
 
-/// Download the .osu file and compute mod-adjusted star rating locally via rosu_pp.
-/// Returns `None` if the download or parse fails.
 pub async fn calc_star_rating_local(
     beatmap_id: i64,
     status: &str,
     mods: &rosu_mods::GameMods,
     mode: GameMode,
+    is_lazer: bool,
 ) -> Option<f64> {
     let osu_path = super::download_beatmap_osu(beatmap_id, status).await.ok()?;
-    let map = rosu_pp::Beatmap::from_path(&osu_path).ok()?;
+    let mods = mods.clone();
 
-    let pp_mods = rosu_pp::GameMods::from(mods.clone());
-    let mode_convert = match mode {
-        GameMode::Osu => rosu_pp::model::mode::GameMode::Osu,
-        GameMode::Taiko => rosu_pp::model::mode::GameMode::Taiko,
-        GameMode::Catch => rosu_pp::model::mode::GameMode::Catch,
-        GameMode::Mania => rosu_pp::model::mode::GameMode::Mania,
-    };
+    tokio::task::spawn_blocking(move || {
+        let map = rosu_pp::Beatmap::from_path(&osu_path).ok()?;
+        let pp_mods = rosu_pp::GameMods::from(mods);
+        let target_mode: rosu_pp::model::mode::GameMode = mode.into();
 
-    let perf = rosu_pp::Performance::new(&map)
-        .mods(pp_mods)
-        .try_mode(mode_convert)
-        .ok()?;
-    Some(perf.calculate().stars())
+        if map.mode != target_mode {
+            let perf = rosu_pp::Performance::new(&map)
+                .mods(pp_mods)
+                .lazer(is_lazer)
+                .try_mode(target_mode)
+                .ok()?;
+            Some(perf.calculate().stars())
+        } else {
+            let attrs = rosu_pp::Difficulty::new()
+                .mods(pp_mods)
+                .lazer(is_lazer)
+                .calculate(&map);
+            Some(attrs.stars())
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Get mod-adjusted star rating with a local-first, API-fallback strategy.
@@ -43,8 +47,9 @@ pub async fn get_star_rating(
     status: &str,
     mods: &rosu_mods::GameMods,
     mode: GameMode,
+    is_lazer: bool,
 ) -> f64 {
-    if let Some(sr) = calc_star_rating_local(beatmap_id, status, mods, mode).await {
+    if let Some(sr) = calc_star_rating_local(beatmap_id, status, mods, mode, is_lazer).await {
         return sr;
     }
 

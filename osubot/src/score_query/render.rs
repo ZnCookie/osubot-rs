@@ -281,10 +281,12 @@ pub(super) async fn render_and_send_score_list(
             let mods = owned[i].mods.clone();
             let beatmap_id = owned[i].beatmap_id;
             let status = owned[i].status.clone();
+            let is_lazer = owned[i].is_lazer;
             let rl = rl.clone();
             let oauth = oauth.clone();
             async move {
-                let sr = get_star_rating(&rl, &oauth, beatmap_id, &status, &mods, mode).await;
+                let sr =
+                    get_star_rating(&rl, &oauth, beatmap_id, &status, &mods, mode, is_lazer).await;
                 if sr > 0.0 {
                     (i, Some(sr))
                 } else {

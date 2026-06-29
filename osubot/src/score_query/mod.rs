@@ -1065,8 +1065,16 @@ async fn run_score_query_pipeline(
                     let rl = rl.clone();
                     let oauth = oauth.clone();
                     async move {
-                        let sr = get_star_rating(&rl, &oauth, s.beatmap_id, &s.status, &mods, mode)
-                            .await;
+                        let sr = get_star_rating(
+                            &rl,
+                            &oauth,
+                            s.beatmap_id,
+                            &s.status,
+                            &mods,
+                            mode,
+                            s.is_lazer,
+                        )
+                        .await;
                         if sr > 0.0 {
                             s.star_rating = sr;
                         }
