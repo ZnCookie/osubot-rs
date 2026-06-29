@@ -379,6 +379,17 @@ mod tests {
     }
 
     #[test]
+    fn test_io_error_display() {
+        let e = ApiError::Io("disk full".into());
+        assert_eq!(format!("{}", e), "I/O error: disk full");
+    }
+
+    #[test]
+    fn test_io_error_is_not_transient() {
+        assert!(!ApiError::Io("whatever".into()).is_transient());
+    }
+
+    #[test]
     fn test_deserialization_display() {
         let e = ApiError::Deserialization("missing field `id`".into());
         assert!(format!("{}", e).contains("missing field `id`"));

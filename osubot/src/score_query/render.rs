@@ -39,6 +39,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
             beatmap_id: score.beatmap_id,
             mode,
             mods: score.mods.clone(),
+            status: score.status.clone(),
         };
         let ur_timeout = Duration::from_secs(ctx.config.read().await.bot.ur_timeout_secs);
         match tokio::time::timeout(

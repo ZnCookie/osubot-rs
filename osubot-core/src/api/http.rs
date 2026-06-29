@@ -647,6 +647,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cacheable_statuses_contains_expected() {
+        let expected: &[&str] = &["graveyard", "ranked", "loved", "approved", "qualified"];
+        for s in expected {
+            assert!(CACHEABLE_STATUSES.contains(s), "{s} should be cacheable");
+        }
+        assert!(!CACHEABLE_STATUSES.contains(&"wip"));
+        assert!(!CACHEABLE_STATUSES.contains(&"pending"));
+    }
+
     #[tokio::test]
     async fn retry_with_backoff_aborts_on_non_transient() {
         let config = RetryConfig {
