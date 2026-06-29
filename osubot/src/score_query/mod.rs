@@ -1234,13 +1234,13 @@ async fn fetch_beatmapset_id_dedup(
 }
 
 /// 将 ppy.sb 的 legacy mod 位掩码转换为 rosu_mods::GameMods。
-fn sb_mods_to_rosu(mods_bitmask: i64) -> rosu_mods::GameMods {
+fn sb_mods_to_rosu(mods_bitmask: i64, mode: GameMode) -> rosu_mods::GameMods {
     let intermode = rosu_mods::GameModsIntermode::from_bits(mods_bitmask as u32);
-    rosu_mods::GameMods::from_intermode(&intermode, rosu_mods::GameMode::Osu)
+    rosu_mods::GameMods::from_intermode(&intermode, mode.into())
 }
 
 /// 将 ppy.sb 成绩转换为内部 Score 类型。
-fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize) -> Vec<Score> {
+fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize, mode: GameMode) -> Vec<Score> {
     sb_scores
         .into_iter()
         .take(limit)
@@ -1271,7 +1271,7 @@ fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize) -> Vec<Score> {
                 perfect_pp: None,
                 rank: s.rank.clone(),
                 passed: s.rank != "F",
-                mods: sb_mods_to_rosu(s.mods),
+                mods: sb_mods_to_rosu(s.mods, mode),
                 is_perfect: s.perfect,
                 created_at: s.play_time,
                 is_lazer: false,
@@ -1366,7 +1366,7 @@ pub(crate) async fn handle_sb_score_query(
                 binding.sb_user_id,
                 mode_i32,
                 (limit * 2).max(50) as i32,
-                &ctx.rate_limiter,
+                &ctx.sb_rate_limiter,
             )
             .await
             {
@@ -1379,7 +1379,7 @@ pub(crate) async fn handle_sb_score_query(
             if matches!(cmd, Command::Pass { .. }) {
                 sb_scores.retain(|s| s.rank != "F");
             }
-            convert_sb_scores(sb_scores, limit as usize)
+            convert_sb_scores(sb_scores, limit as usize, sb_mode)
         }
         Command::Best { .. } | Command::TodayBest { .. } => {
             let sb_scores = match sb_api::get_player_scores(
@@ -1387,7 +1387,7 @@ pub(crate) async fn handle_sb_score_query(
                 binding.sb_user_id,
                 mode_i32,
                 limit as i32,
-                &ctx.rate_limiter,
+                &ctx.sb_rate_limiter,
             )
             .await
             {
@@ -1397,13 +1397,13 @@ pub(crate) async fn handle_sb_score_query(
                     return;
                 }
             };
-            convert_sb_scores(sb_scores, limit as usize)
+            convert_sb_scores(sb_scores, limit as usize, sb_mode)
         }
         Command::ScoreOnBeatmap {
             beatmap_id: Some(bid),
             ..
         } => {
-            let beatmap = match sb_api::get_map_info(*bid as i64, &ctx.rate_limiter).await {
+            let beatmap = match sb_api::get_map_info(*bid as i64, &ctx.sb_rate_limiter).await {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
@@ -1421,7 +1421,7 @@ pub(crate) async fn handle_sb_score_query(
                 &beatmap.md5,
                 mode_i32,
                 limit as i32,
-                &ctx.rate_limiter,
+                &ctx.sb_rate_limiter,
             )
             .await
             {
@@ -1431,7 +1431,7 @@ pub(crate) async fn handle_sb_score_query(
                     return;
                 }
             };
-            convert_sb_scores(sb_scores, limit as usize)
+            convert_sb_scores(sb_scores, limit as usize, sb_mode)
         }
         Command::ScoreOnBeatmap { .. } => {
             let _ = resp_tx
@@ -1443,7 +1443,7 @@ pub(crate) async fn handle_sb_score_query(
             beatmap_id: Some(bid),
             ..
         } => {
-            let beatmap = match sb_api::get_map_info(*bid as i64, &ctx.rate_limiter).await {
+            let beatmap = match sb_api::get_map_info(*bid as i64, &ctx.sb_rate_limiter).await {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;

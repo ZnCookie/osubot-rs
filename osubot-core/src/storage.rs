@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use tracing::{debug, warn};
 use turso::{params, Connection, Database, Result as DbResult, Row};
 
 use crate::types::{GameMode, UserChange, UserStats};
@@ -662,8 +663,15 @@ impl Storage {
         let conn = self.conn().await;
         conn.execute("DELETE FROM sb_user_bindings WHERE qq = ?1", params![qq])
             .await?;
-        conn.execute("DELETE FROM sb_user_snapshots WHERE qq = ?1", params![qq])
+        let deleted = conn
+            .execute("DELETE FROM sb_user_snapshots WHERE qq = ?1", params![qq])
             .await?;
+        debug!(
+            user_id = qq,
+            snapshots_deleted = deleted,
+            "{}",
+            log_fmt!("storage.sb_unbind_snapshots_deleted")
+        );
         Ok(())
     }
 
@@ -703,6 +711,15 @@ impl Storage {
     }
 
     pub async fn sb_set_default_mode(&self, qq: i64, mode: u8) -> DbResult<bool> {
+        if GameMode::try_from(mode).is_err() {
+            warn!(
+                user_id = qq,
+                invalid_mode = mode,
+                "{}",
+                log_fmt!("storage.sb_set_default_mode_invalid")
+            );
+            return Ok(false);
+        }
         let rows = self
             .conn()
             .await

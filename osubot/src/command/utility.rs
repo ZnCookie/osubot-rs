@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use futures_util::stream::{self, StreamExt};
+
 use super::*;
 
 /// Handle utility commands: Help, Highlight, ProfileCard, BeatmapPreview.
@@ -346,11 +348,29 @@ pub(super) async fn handle_sb_highlight(
         ),
     > = HashMap::new();
 
-    for binding in &bindings {
-        if let Ok(result) =
-            api::sb_api::get_player_info(binding.sb_user_id, &ctx.rate_limiter).await
-        {
-            let mode_key = binding.default_mode.to_string();
+    let fetch_targets: Vec<_> = bindings
+        .iter()
+        .map(|b| (b.sb_user_id, b.qq, b.sb_username.clone(), b.default_mode))
+        .collect();
+
+    let rate_limiter = ctx.sb_rate_limiter.clone();
+    let results: Vec<_> = stream::iter(fetch_targets.into_iter().map(
+        |(sb_user_id, qq, username, default_mode)| {
+            let rate_limiter = rate_limiter.clone();
+            let snapshots = snapshots.clone();
+            async move {
+                let result = api::sb_api::get_player_info(sb_user_id, &rate_limiter).await;
+                (sb_user_id, qq, username, default_mode, result, snapshots)
+            }
+        },
+    ))
+    .buffer_unordered(10)
+    .collect()
+    .await;
+
+    for (sb_user_id, qq, username, default_mode, result, snapshots) in results {
+        if let Ok(result) = result {
+            let mode_key = default_mode.to_string();
             let current_pp = result
                 .1
                 .get(&mode_key)
@@ -360,16 +380,16 @@ pub(super) async fn handle_sb_highlight(
 
             let snapshot_pp = snapshots
                 .iter()
-                .find(|(qq, mode, _, _, _)| *qq == binding.qq && *mode == binding.default_mode)
+                .find(|(sqq, mode, _, _, _)| *sqq == qq && *mode == default_mode)
                 .map(|(_, _, pp, _, _)| *pp)
                 .unwrap_or(0.0);
 
             let delta = current_pp - snapshot_pp;
             if delta > 0.0 {
-                entries.push((binding.qq, binding.sb_username.clone(), delta));
+                entries.push((qq, username, delta));
             }
 
-            fetched.insert(binding.sb_user_id, result);
+            fetched.insert(sb_user_id, result);
         }
     }
 

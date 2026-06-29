@@ -520,6 +520,8 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ===== osubot-core/src/storage.rs =====
     "storage.parse_next_update_failed" => "无法解析 next_update 时间戳，回退到当前时间",
     "storage.parse_pending_bind_created_failed" => "无法解析 pending_bind created_at，回退到当前时间",
+    "storage.sb_unbind_snapshots_deleted" => "SB 解绑删除快照: qq={user_id}, count={snapshots_deleted}",
+    "storage.sb_set_default_mode_invalid" => "SB 设置默认模式: 无效 mode={invalid_mode}, qq={user_id}",
 
     // ===== osubot-core/src/commands.rs =====
 

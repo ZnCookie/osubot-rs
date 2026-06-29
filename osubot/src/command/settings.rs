@@ -409,7 +409,7 @@ async fn handle_sb_bind(
     );
 
     let config = ctx.config.read().await;
-    if config.irc.enabled && config.sb.sb_bind_require_official_bind {
+    if config.sb.sb_bind_require_official_bind {
         match ctx.storage.get_binding(msg.user_id).await {
             Ok(Some(_)) => {}
             Ok(None) => {
@@ -441,7 +441,7 @@ async fn handle_sb_bind(
     }
     drop(config);
 
-    match api::sb_api::search_player(username, &ctx.rate_limiter).await {
+    match api::sb_api::search_player(username, &ctx.sb_rate_limiter).await {
         Ok(players) => match players.into_iter().next() {
             Some(player) => {
                 match ctx

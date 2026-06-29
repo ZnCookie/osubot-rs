@@ -222,7 +222,7 @@ pub(super) async fn handle_sb_query(
     let mode = resolve_sb_mode_to_u8(&ctx.storage, qq, explicit_mode).await;
 
     let (info, stats) =
-        match api::sb_api::get_player_info(binding.sb_user_id, &ctx.rate_limiter).await {
+        match api::sb_api::get_player_info(binding.sb_user_id, &ctx.sb_rate_limiter).await {
             Ok(result) => result,
             Err(e) => {
                 warn!(user_id = qq, error = ?e, "{}", log_fmt!("main.sb_api_fetch_failed"));
