@@ -95,6 +95,14 @@ async fn cleanup_old_status_cache(beatmap_id: i64, current_status: &str) {
             }
         }
     }
+
+    let old_format = format!("{}.osu", beatmap_id);
+    let old_path = cache_dir.join(&old_format);
+    if tokio::fs::try_exists(&old_path).await.unwrap_or(false) {
+        if let Err(e) = tokio::fs::remove_file(&old_path).await {
+            tracing::warn!(error = ?e, path = %old_path.display(), "failed to remove old-format cache");
+        }
+    }
 }
 
 pub async fn download_beatmap_osu(beatmap_id: i64, status: &str) -> Result<PathBuf, ApiError> {
@@ -196,8 +204,7 @@ async fn download_beatmap_osu_fresh(beatmap_id: i64) -> Result<PathBuf, ApiError
             .map_err(|e| ApiError::Io(format!("failed to write temp osu file: {e}")))
     })
     .await;
-    write_result
-        .map_err(|e| ApiError::Deserialization(format!("spawn_blocking failed: {e}")))??;
+    write_result.map_err(|e| ApiError::Io(format!("spawn_blocking failed: {e}")))??;
 
     Ok(temp_path)
 }

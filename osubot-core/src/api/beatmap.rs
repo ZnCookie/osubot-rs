@@ -40,6 +40,12 @@ pub async fn calc_star_rating_local(
 /// 1. Try local rosu_pp calculation (most accurate, zero API cost if cached)
 /// 2. Fall back to the lightweight `/beatmaps/{id}/attributes` API
 /// 3. Return 0.0 if both fail
+///
+/// **Note:** `is_lazer` is respected in the local path (step 1) but
+/// currently NOT passed to the API fallback (step 2) — the osu! API
+/// `/beatmaps/{id}/attributes` endpoint does not yet support a lazer
+/// parameter. This means that on the API fallback path, lazer-specific
+/// score multiplier differences are not reflected.
 pub async fn get_star_rating(
     rate_limiter: &crate::rate_limiter::RateLimiter,
     oauth: &super::oauth::OauthTokenCache,

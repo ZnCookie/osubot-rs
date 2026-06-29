@@ -1078,15 +1078,15 @@ async fn run_score_query_pipeline(
                         if sr > 0.0 {
                             s.star_rating = sr;
                         }
-                        s
+                        (i, s)
                     }
                 })
                 .collect();
-            let enriched_scores: Vec<_> = stream::iter(futs)
+            let enriched_scores: Vec<(usize, Score)> = stream::iter(futs)
                 .buffer_unordered(ENRICH_CONCURRENCY)
                 .collect()
                 .await;
-            for (i, s) in enrich.into_iter().zip(enriched_scores) {
+            for (i, s) in enriched_scores {
                 indexed[i].1 = s;
             }
         }
