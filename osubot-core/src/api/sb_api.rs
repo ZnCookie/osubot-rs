@@ -223,6 +223,9 @@ where
     if status.is_server_error() {
         return Err(ApiError::ServerError(status.as_u16()));
     }
+    if status.is_client_error() {
+        return Err(ApiError::ClientError(status.as_u16()));
+    }
     if !status.is_success() {
         return Err(ApiError::InvalidResponse);
     }

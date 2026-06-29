@@ -324,6 +324,8 @@ pub enum ApiError {
     InvalidResponse,
     #[error("Server error ({0})")]
     ServerError(u16),
+    #[error("Client error ({0})")]
+    ClientError(u16),
     #[error("Response deserialization failed: {0}")]
     Deserialization(String),
     #[error("API key missing")]
@@ -346,6 +348,7 @@ impl ApiError {
             | ApiError::RateLimitedWithRetryAfter(_) => true,
             ApiError::NotFound
             | ApiError::InvalidResponse
+            | ApiError::ClientError(_)
             | ApiError::Deserialization(_)
             | ApiError::MissingApiKey
             | ApiError::OAuthError

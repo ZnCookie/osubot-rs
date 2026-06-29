@@ -380,8 +380,8 @@ pub(super) async fn handle_sb_highlight(
 
             let snapshot_pp = snapshots
                 .iter()
-                .find(|(sqq, mode, _, _, _)| *sqq == qq && *mode == default_mode)
-                .map(|(_, _, pp, _, _)| *pp)
+                .find(|s| s.qq == qq && s.mode == default_mode)
+                .map(|s| s.pp)
                 .unwrap_or(0.0);
 
             let delta = current_pp - snapshot_pp;

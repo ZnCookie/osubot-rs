@@ -146,6 +146,15 @@ pub struct SbBinding {
     pub default_mode: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct SbSnapshotEntry {
+    pub qq: i64,
+    pub mode: u8,
+    pub pp: f64,
+    pub global_rank: Option<i64>,
+    pub country_rank: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchListener {
     pub match_id: i64,
@@ -767,9 +776,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn sb_get_all_snapshots(
-        &self,
-    ) -> DbResult<Vec<(i64, u8, f64, Option<i64>, Option<i64>)>> {
+    pub async fn sb_get_all_snapshots(&self) -> DbResult<Vec<SbSnapshotEntry>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
@@ -779,13 +786,13 @@ impl Storage {
             .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            results.push((
-                row.get(0)?,
-                row.get::<i32>(1)? as u8,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ));
+            results.push(SbSnapshotEntry {
+                qq: row.get(0)?,
+                mode: row.get::<i32>(1)? as u8,
+                pp: row.get(2)?,
+                global_rank: row.get(3)?,
+                country_rank: row.get(4)?,
+            });
         }
         Ok(results)
     }
@@ -2108,12 +2115,11 @@ mod tests {
 
         let snapshots = storage.sb_get_all_snapshots().await.unwrap();
         assert_eq!(snapshots.len(), 1);
-        let (s_qq, s_mode, s_pp, s_gr, s_cr) = &snapshots[0];
-        assert_eq!(*s_qq, qq);
-        assert_eq!(*s_mode, 0);
-        assert_eq!(*s_pp, 5000.0);
-        assert_eq!(*s_gr, Some(100));
-        assert_eq!(*s_cr, Some(10));
+        assert_eq!(snapshots[0].qq, qq);
+        assert_eq!(snapshots[0].mode, 0);
+        assert_eq!(snapshots[0].pp, 5000.0);
+        assert_eq!(snapshots[0].global_rank, Some(100));
+        assert_eq!(snapshots[0].country_rank, Some(10));
 
         // save another snapshot for the same qq / mode (upsert)
         storage
@@ -2123,7 +2129,7 @@ mod tests {
 
         let snapshots = storage.sb_get_all_snapshots().await.unwrap();
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].2, 6000.0);
+        assert_eq!(snapshots[0].pp, 6000.0);
     }
 
     #[tokio::test]
