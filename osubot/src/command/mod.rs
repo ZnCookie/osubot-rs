@@ -474,9 +474,6 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
             let cfg = ctx.config.read().await;
             if !cfg.sb.enabled {
                 debug!(user_id = msg.user_id, "{}", log_fmt!("main.sb_disabled"));
-                let _ = resp_tx
-                    .send(user_str("sb.disabled").replace("{qq}", &msg.user_id.to_string()))
-                    .await;
                 return;
             }
         }
