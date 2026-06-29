@@ -364,6 +364,37 @@ pub(crate) async fn authenticated_get(
     .await
 }
 
+pub(crate) async fn authenticated_post_json(
+    url: &str,
+    body: &serde_json::Value,
+    rate_limiter: &RateLimiter,
+    oauth: &super::oauth::OauthTokenCache,
+) -> Result<reqwest::Response, ApiError> {
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(4, || {
+        super::oauth::retry_on_401(oauth, 5, || async {
+            let token = oauth.get_token().await?;
+            let resp = http_client()
+                .post(url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("x-api-version", API_VERSION)
+                .header("Content-Type", "application/json")
+                .json(body)
+                .send()
+                .await?;
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+            Ok(resp)
+        })
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

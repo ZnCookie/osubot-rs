@@ -7,7 +7,12 @@
 use crate::score_filter::score_matches_filters;
 use crate::BotContext;
 use futures_util::future::join_all;
+use futures_util::stream::{self, StreamExt};
 use osubot_core::api::fetch_beatmap_difficulty_attributes;
+
+/// 并发补全的最大请求数。osu! API 对单 IP 的并发有限制，
+/// 3 是经验值，在响应速度和稳定性之间取得平衡。
+const ENRICH_CONCURRENCY: usize = 3;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
 use osubot_core::{
@@ -1056,7 +1061,7 @@ async fn run_score_query_pipeline(
                 .iter()
                 .map(|&i| {
                     let mut s = indexed[i].1.clone();
-                    let mods_acronym = osubot_core::types::format_mods(&s.mods);
+                    let mods = s.mods.clone();
                     let rl = rl.clone();
                     let oauth = oauth.clone();
                     async move {
@@ -1064,7 +1069,7 @@ async fn run_score_query_pipeline(
                             &rl,
                             &oauth,
                             s.beatmap_id,
-                            &mods_acronym,
+                            &mods,
                             mode,
                         )
                         .await
@@ -1075,7 +1080,9 @@ async fn run_score_query_pipeline(
                     }
                 })
                 .collect();
-            for (&i, s) in enrich.iter().zip(join_all(futs).await) {
+            let enriched_scores: Vec<_> =
+                stream::iter(futs).buffer_unordered(ENRICH_CONCURRENCY).collect().await;
+            for (i, s) in enrich.into_iter().zip(enriched_scores) {
                 indexed[i].1 = s;
             }
         }

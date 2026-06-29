@@ -401,13 +401,13 @@ async fn fetch_beatmap(
 }
 
 /// Fetch difficulty attributes for a beatmap with optional mods.
-/// Calls GET /api/v2/beatmaps/{id}/attributes?mods={mods}&ruleset={ruleset}
+/// Calls POST /api/v2/beatmaps/{id}/attributes with JSON body
 /// and returns the mod-adjusted star_rating.
 pub async fn fetch_beatmap_difficulty_attributes(
     rate_limiter: &RateLimiter,
     oauth: &super::oauth::OauthTokenCache,
     beatmap_id: i64,
-    mods_acronym: &str,
+    mods: &rosu_mods::GameMods,
     mode: GameMode,
 ) -> Result<f64, ApiError> {
     let ruleset = match mode {
@@ -416,19 +416,21 @@ pub async fn fetch_beatmap_difficulty_attributes(
         GameMode::Catch => "fruits",
         GameMode::Mania => "mania",
     };
-    let url = if mods_acronym.is_empty() {
-        format!(
-            "https://osu.ppy.sh/api/v2/beatmaps/{}/attributes?ruleset={}",
-            beatmap_id, ruleset
-        )
+    let url = format!(
+        "https://osu.ppy.sh/api/v2/beatmaps/{}/attributes",
+        beatmap_id
+    );
+
+    let body = if mods.is_empty() {
+        serde_json::json!({ "ruleset": ruleset })
     } else {
-        format!(
-            "https://osu.ppy.sh/api/v2/beatmaps/{}/attributes?mods={}&ruleset={}",
-            beatmap_id, mods_acronym, ruleset
-        )
+        serde_json::json!({
+            "mods": mods.bits(),
+            "ruleset": ruleset,
+        })
     };
 
-    let resp = http::authenticated_get(&url, rate_limiter, oauth).await?;
+    let resp = http::authenticated_post_json(&url, &body, rate_limiter, oauth).await?;
     let json: serde_json::Value = http::json_body(resp).await?;
 
     json["attributes"]["star_rating"]

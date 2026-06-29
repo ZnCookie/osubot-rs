@@ -2,10 +2,7 @@ use super::*;
 use futures_util::stream::{self, StreamExt};
 use osubot_core::api::fetch_beatmap_difficulty_attributes;
 use std::borrow::Cow;
-
-/// 并发补全 PP 的最大请求数。osu! API 对单 IP 的并发有限制，
-/// 3 是经验值，在响应速度和稳定性之间取得平衡。
-const ENRICH_CONCURRENCY: usize = 3;
+use std::collections::HashSet;
 
 pub(super) struct SingleScoreRenderParams<'a> {
     pub(super) ctx: &'a BotContext,
@@ -235,18 +232,19 @@ pub(super) async fn render_and_send_score_list(
     }))
     .await;
 
-    let enrich_indices: Vec<usize> = scores
+    let pp_enrich_indices: Vec<usize> = scores
         .iter()
         .enumerate()
         .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
         .map(|(i, _)| i)
         .collect();
-    let scores: Cow<'_, [Score]> = if enrich_indices.is_empty() {
+    let pp_enriched: HashSet<usize> = pp_enrich_indices.iter().copied().collect();
+    let scores: Cow<'_, [Score]> = if pp_enrich_indices.is_empty() {
         Cow::Borrowed(scores)
     } else {
         let mut owned: Vec<Score> = scores.to_vec();
         let mut slots: Vec<Option<Score>> = owned.drain(..).map(Some).collect();
-        let futs = enrich_indices.into_iter().filter_map(|i| {
+        let futs = pp_enrich_indices.into_iter().filter_map(|i| {
             let score = slots[i].take()?;
             Some(async move {
                 let mut s = score;
@@ -265,12 +263,16 @@ pub(super) async fn render_and_send_score_list(
     };
 
     // 补全带 mod 成绩的 star_rating：通过轻量 /beatmaps/{id}/attributes API 获取 mod 调整后的星数。
-    // 仅对非空 mods 且 beatmap_id > 0 且 star_rating 尚未被 enrich_score_with_pp 覆盖（即
-    // 上述 PP 补全未覆盖该成绩且 base star ≠ 0）的成绩执行。
+    // 跳过已被 PP 补全的成绩（enrich_score_with_pp 已从 pp_breakdown 设了 mod 调整后的 star_rating），
+    // 以及无 mod、无 beatmap_id 的成绩。
     let star_enrich_indices: Vec<usize> = scores
         .iter()
         .enumerate()
-        .filter(|(_, s)| !s.mods.is_empty() && s.beatmap_id > 0 && s.star_rating > 0.0)
+        .filter(|(i, s)| {
+            !s.mods.is_empty()
+                && s.beatmap_id > 0
+                && !pp_enriched.contains(i)
+        })
         .map(|(i, _)| i)
         .collect();
     let scores: Cow<'_, [Score]> = if star_enrich_indices.is_empty() {
@@ -280,7 +282,7 @@ pub(super) async fn render_and_send_score_list(
         let rl = ctx.rate_limiter.clone();
         let oauth = ctx.oauth.clone();
         let futs = star_enrich_indices.into_iter().map(|i| {
-            let mods_acronym = osubot_core::types::format_mods(&owned[i].mods);
+            let mods = owned[i].mods.clone();
             let beatmap_id = owned[i].beatmap_id;
             let rl = rl.clone();
             let oauth = oauth.clone();
@@ -289,7 +291,7 @@ pub(super) async fn render_and_send_score_list(
                     &rl,
                     &oauth,
                     beatmap_id,
-                    &mods_acronym,
+                    &mods,
                     mode,
                 )
                 .await
