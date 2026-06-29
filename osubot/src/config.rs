@@ -435,9 +435,16 @@ impl Default for MatchListenConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SbConfig {
-    /// When IRC is enabled, require official binding before SB binding (default: true)
+    /// 是否启用 ppy.sb 相关功能（默认 true）
+    #[serde(default = "default_sb_enabled")]
+    pub enabled: bool,
+    /// 是否要求绑定 SB 前先绑定官服账号（默认 true）
     #[serde(default = "default_sb_bind_require_official")]
     pub sb_bind_require_official_bind: bool,
+}
+
+fn default_sb_enabled() -> bool {
+    true
 }
 
 fn default_sb_bind_require_official() -> bool {
@@ -447,6 +454,7 @@ fn default_sb_bind_require_official() -> bool {
 impl Default for SbConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             sb_bind_require_official_bind: true,
         }
     }

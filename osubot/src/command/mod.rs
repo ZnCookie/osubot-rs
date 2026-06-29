@@ -470,6 +470,16 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
 
     // 早期分流：ppy.sb 命令走独立处理
     if cmd.server() == Server::PpsySb {
+        {
+            let cfg = ctx.config.read().await;
+            if !cfg.sb.enabled {
+                debug!(user_id = msg.user_id, "{}", log_fmt!("main.sb_disabled"));
+                let _ = resp_tx
+                    .send(user_str("sb.disabled").replace("{qq}", &msg.user_id.to_string()))
+                    .await;
+                return;
+            }
+        }
         record_command_invocation(&ctx, msg.user_id);
         handle_sb_command(&ctx, &msg, &resp_tx, &cmd).await;
         return;
