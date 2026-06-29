@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::cache::{beatmap_audio_cache_dir, beatmap_cache_dir};
+use crate::cache::beatmap_audio_cache_dir;
 use crate::log_fmt;
 use crate::rate_limiter::RateLimiter;
 
@@ -70,8 +70,48 @@ fn truncate_for_log(body: &str, max: usize) -> String {
     }
 }
 
-pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> {
-    let cache_path = beatmap_cache_dir().join(format!("{}.osu", beatmap_id));
+const CACHEABLE_STATUSES: &[&str] = &["graveyard", "ranked", "loved", "approved", "qualified"];
+
+async fn cleanup_old_status_cache(beatmap_id: i64, current_status: &str) {
+    let cache_dir = crate::cache::beatmap_cache_dir();
+    let prefix = format!("{}_", beatmap_id);
+
+    if let Ok(mut entries) = tokio::fs::read_dir(&cache_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Some(name) = entry.file_name().to_str() {
+                if !name.starts_with(&prefix) || !name.ends_with(".osu") {
+                    continue;
+                }
+                let status_part = name
+                    .strip_prefix(&prefix)
+                    .unwrap_or("")
+                    .strip_suffix(".osu")
+                    .unwrap_or("");
+                if status_part != current_status {
+                    if let Err(e) = tokio::fs::remove_file(entry.path()).await {
+                        tracing::warn!(error = ?e, path = %entry.path().display(), "failed to remove old status cache");
+                    }
+                }
+            }
+        }
+    }
+
+    let old_format = format!("{}.osu", beatmap_id);
+    let old_path = cache_dir.join(&old_format);
+    if tokio::fs::try_exists(&old_path).await.unwrap_or(false) {
+        if let Err(e) = tokio::fs::remove_file(&old_path).await {
+            tracing::warn!(error = ?e, path = %old_path.display(), "failed to remove old-format cache");
+        }
+    }
+}
+
+pub async fn download_beatmap_osu(beatmap_id: i64, status: &str) -> Result<PathBuf, ApiError> {
+    if !CACHEABLE_STATUSES.contains(&status) {
+        return download_beatmap_osu_fresh(beatmap_id).await;
+    }
+
+    let cache_path =
+        crate::cache::beatmap_cache_dir().join(format!("{}_{}.osu", beatmap_id, status));
 
     let cache_valid = tokio::task::spawn_blocking({
         let cache_path = cache_path.clone();
@@ -98,6 +138,8 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     if cache_valid {
         return Ok(cache_path);
     }
+
+    cleanup_old_status_cache(beatmap_id, status).await;
 
     let client = http_client();
     let url = format!("https://osu.ppy.sh/osu/{}", beatmap_id);
@@ -135,6 +177,36 @@ pub async fn download_beatmap_osu(beatmap_id: i64) -> Result<PathBuf, ApiError> 
     .ok();
 
     Ok(cache_path)
+}
+
+/// 直接下载 .osu 文件，不使用缓存（用于非常驻状态）
+async fn download_beatmap_osu_fresh(beatmap_id: i64) -> Result<PathBuf, ApiError> {
+    let client = http_client();
+    let url = format!("https://osu.ppy.sh/osu/{}", beatmap_id);
+
+    let bytes = retry_on_transient(4, || async {
+        let resp = client.get(&url).send().await?;
+
+        classify_http_error(&resp)?;
+
+        resp.bytes().await.map_err(ApiError::Http)
+    })
+    .await?;
+
+    let temp_path = std::env::temp_dir().join(format!(
+        "osubot_{}_{}.osu",
+        beatmap_id,
+        rand::random::<u32>()
+    ));
+    let write_path = temp_path.clone();
+    let write_result = tokio::task::spawn_blocking(move || {
+        std::fs::write(&write_path, &bytes)
+            .map_err(|e| ApiError::Io(format!("failed to write temp osu file: {e}")))
+    })
+    .await;
+    write_result.map_err(|e| ApiError::Io(format!("spawn_blocking failed: {e}")))??;
+
+    Ok(temp_path)
 }
 
 /// Download the 30s preview MP3 for a beatmapset, with on-disk caching (~7 day TTL,
@@ -364,6 +436,37 @@ pub(crate) async fn authenticated_get(
     .await
 }
 
+pub(crate) async fn authenticated_post_json(
+    url: &str,
+    body: &serde_json::Value,
+    rate_limiter: &RateLimiter,
+    oauth: &super::oauth::OauthTokenCache,
+) -> Result<reqwest::Response, ApiError> {
+    rate_limiter
+        .acquire()
+        .await
+        .map_err(|_| ApiError::ClientRateLimited)?;
+    retry_on_transient(4, || {
+        super::oauth::retry_on_401(oauth, 5, || async {
+            let token = oauth.get_token().await?;
+            let resp = http_client()
+                .post(url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("x-api-version", API_VERSION)
+                .header("Content-Type", "application/json")
+                .json(body)
+                .send()
+                .await?;
+            if resp.status() == 404 {
+                return Err(ApiError::NotFound);
+            }
+            classify_http_error(&resp)?;
+            Ok(resp)
+        })
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +645,16 @@ mod tests {
             start.elapsed() >= Duration::from_millis(900),
             "Wait action should sleep ~1s"
         );
+    }
+
+    #[test]
+    fn cacheable_statuses_contains_expected() {
+        let expected: &[&str] = &["graveyard", "ranked", "loved", "approved", "qualified"];
+        for s in expected {
+            assert!(CACHEABLE_STATUSES.contains(s), "{s} should be cacheable");
+        }
+        assert!(!CACHEABLE_STATUSES.contains(&"wip"));
+        assert!(!CACHEABLE_STATUSES.contains(&"pending"));
     }
 
     #[tokio::test]

@@ -7,6 +7,12 @@
 use crate::score_filter::score_matches_filters;
 use crate::BotContext;
 use futures_util::future::join_all;
+use futures_util::stream::{self, StreamExt};
+use osubot_core::api::get_star_rating;
+
+/// 并发补全的最大请求数。osu! API 对单 IP 的并发有限制，
+/// 3 是经验值，在响应速度和稳定性之间取得平衡。
+const ENRICH_CONCURRENCY: usize = 3;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
 use osubot_core::{
@@ -1033,6 +1039,57 @@ async fn run_score_query_pipeline(
                 })
                 .collect();
             for (&i, s) in enrich.iter().zip(join_all(futs).await) {
+                indexed[i].1 = s;
+            }
+        }
+    }
+
+    // Star 预补全：对带 mod 的成绩通过 API 补全 mod 调整后的星数。
+    // 跳过 pp_breakdown 已包含 mod-adjusted star_rating 的成绩。
+    {
+        let enrich: Vec<usize> = indexed
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, s))| {
+                !s.mods.is_empty()
+                    && s.beatmap_id > 0
+                    && !(s.pp_breakdown.is_some() && s.star_rating > 0.0)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !enrich.is_empty() {
+            let rl = ctx.rate_limiter.clone();
+            let oauth = ctx.oauth.clone();
+            let futs: Vec<_> = enrich
+                .iter()
+                .map(|&i| {
+                    let mut s = indexed[i].1.clone();
+                    let mods = s.mods.clone();
+                    let rl = rl.clone();
+                    let oauth = oauth.clone();
+                    async move {
+                        let sr = get_star_rating(
+                            &rl,
+                            &oauth,
+                            s.beatmap_id,
+                            &s.status,
+                            &mods,
+                            mode,
+                            s.is_lazer,
+                        )
+                        .await;
+                        if sr > 0.0 {
+                            s.star_rating = sr;
+                        }
+                        (i, s)
+                    }
+                })
+                .collect();
+            let enriched_scores: Vec<(usize, Score)> = stream::iter(futs)
+                .buffer_unordered(ENRICH_CONCURRENCY)
+                .collect()
+                .await;
+            for (i, s) in enriched_scores {
                 indexed[i].1 = s;
             }
         }

@@ -37,7 +37,7 @@ pub(super) async fn render_beatmap_preview_by_id(
 
     let mods = mods.clone();
 
-    let beatmap_path = match api::download_beatmap_osu(resolved_bid as i64).await {
+    let beatmap_path = match api::download_beatmap_osu(resolved_bid as i64, "ranked").await {
         Ok(p) => p,
         Err(e) => {
             let _ = resp_tx.send(api_error_msg(qq, &e)).await;

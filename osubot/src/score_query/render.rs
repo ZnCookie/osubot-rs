@@ -2,10 +2,6 @@ use super::*;
 use futures_util::stream::{self, StreamExt};
 use std::borrow::Cow;
 
-/// 并发补全 PP 的最大请求数。osu! API 对单 IP 的并发有限制，
-/// 3 是经验值，在响应速度和稳定性之间取得平衡。
-const ENRICH_CONCURRENCY: usize = 3;
-
 pub(super) struct SingleScoreRenderParams<'a> {
     pub(super) ctx: &'a BotContext,
     pub(super) msg: &'a QQMessage,
@@ -43,6 +39,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
             beatmap_id: score.beatmap_id,
             mode,
             mods: score.mods.clone(),
+            status: score.status.clone(),
         };
         let ur_timeout = Duration::from_secs(ctx.config.read().await.bot.ur_timeout_secs);
         match tokio::time::timeout(
@@ -234,18 +231,18 @@ pub(super) async fn render_and_send_score_list(
     }))
     .await;
 
-    let enrich_indices: Vec<usize> = scores
+    let pp_enrich_indices: Vec<usize> = scores
         .iter()
         .enumerate()
         .filter(|(_, s)| s.pp.is_none() && s.beatmap_id > 0)
         .map(|(i, _)| i)
         .collect();
-    let scores: Cow<'_, [Score]> = if enrich_indices.is_empty() {
+    let scores: Cow<'_, [Score]> = if pp_enrich_indices.is_empty() {
         Cow::Borrowed(scores)
     } else {
         let mut owned: Vec<Score> = scores.to_vec();
         let mut slots: Vec<Option<Score>> = owned.drain(..).map(Some).collect();
-        let futs = enrich_indices.into_iter().filter_map(|i| {
+        let futs = pp_enrich_indices.into_iter().filter_map(|i| {
             let score = slots[i].take()?;
             Some(async move {
                 let mut s = score;

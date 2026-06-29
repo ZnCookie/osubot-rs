@@ -252,7 +252,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
         return;
     }
 
-    let osu_path = match download_beatmap_osu(score.beatmap_id).await {
+    let osu_path = match download_beatmap_osu(score.beatmap_id, &score.status).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = ?e, beatmap_id = score.beatmap_id, "{}", log_fmt!("api.pp_download_failed"));

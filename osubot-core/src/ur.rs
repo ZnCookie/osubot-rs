@@ -490,6 +490,7 @@ pub struct ScoreUrParams {
     pub beatmap_id: i64,
     pub mode: GameMode,
     pub mods: GameMods,
+    pub status: String,
 }
 
 pub async fn calculate_score_ur(
@@ -503,6 +504,7 @@ pub async fn calculate_score_ur(
         beatmap_id,
         mode,
         mods,
+        status,
     } = params;
     if mode != GameMode::Osu {
         tracing::trace!(mode = ?mode, "{}", log_fmt!("ur.skip_non_osu"));
@@ -519,7 +521,7 @@ pub async fn calculate_score_ur(
     // 并行下载 replay 和谱面
     let (osr_result, osu_path_result) = tokio::join!(
         download_replay(rate_limiter, oauth, score_id, legacy_score_id, mode),
-        crate::api::download_beatmap_osu(beatmap_id)
+        crate::api::download_beatmap_osu(beatmap_id, &status)
     );
 
     let osr_bytes = match osr_result {
