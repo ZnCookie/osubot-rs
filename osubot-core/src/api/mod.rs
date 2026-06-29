@@ -22,8 +22,8 @@ pub use oauth::OauthTokenCache;
 pub use osu_api::{
     backfill_score_details, fetch_beatmap_difficulty_attributes, fetch_beatmap_metadata,
     fetch_user_profile, fetch_user_stats_by_user_id, fetch_user_stats_by_username,
-    get_beatmapset_id, get_score_by_id, get_user_beatmap_scores_all, get_user_best, get_user_info,
-    get_user_recent, BeatmapMetadata, OsuUserInfo,
+    get_beatmapset_id, get_score_by_id, get_star_rating, get_user_beatmap_scores_all,
+    get_user_best, get_user_info, get_user_recent, BeatmapMetadata, OsuUserInfo,
 };
 pub use pp::{calculate_pp_breakdown, calculate_pp_if_acc, enrich_score_with_pp, PpCalcParams};
 
@@ -331,6 +331,8 @@ pub enum ApiError {
     RateLimitedWithRetryAfter(Option<u64>),
     #[error("Client rate limited - local token bucket exhausted")]
     ClientRateLimited,
+    #[error("I/O error: {0}")]
+    Io(String),
 }
 
 impl ApiError {
@@ -344,7 +346,8 @@ impl ApiError {
             | ApiError::Deserialization(_)
             | ApiError::MissingApiKey
             | ApiError::OAuthError
-            | ApiError::ClientRateLimited => false,
+            | ApiError::ClientRateLimited
+            | ApiError::Io(_) => false,
         }
     }
 }

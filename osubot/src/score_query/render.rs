@@ -1,6 +1,6 @@
 use super::*;
 use futures_util::stream::{self, StreamExt};
-use osubot_core::api::fetch_beatmap_difficulty_attributes;
+use osubot_core::api::get_star_rating;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -280,14 +280,15 @@ pub(super) async fn render_and_send_score_list(
         let futs = star_enrich_indices.into_iter().map(|i| {
             let mods = owned[i].mods.clone();
             let beatmap_id = owned[i].beatmap_id;
+            let status = owned[i].status.clone();
             let rl = rl.clone();
             let oauth = oauth.clone();
             async move {
-                match fetch_beatmap_difficulty_attributes(&rl, &oauth, beatmap_id, &mods, mode)
-                    .await
-                {
-                    Ok(adjusted_sr) => (i, Some(adjusted_sr)),
-                    Err(_) => (i, None),
+                let sr = get_star_rating(&rl, &oauth, beatmap_id, &status, &mods, mode).await;
+                if sr > 0.0 {
+                    (i, Some(sr))
+                } else {
+                    (i, None)
                 }
             }
         });

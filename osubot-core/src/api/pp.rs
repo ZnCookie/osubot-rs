@@ -252,7 +252,7 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
         return;
     }
 
-    let osu_path = match download_beatmap_osu(score.beatmap_id).await {
+    let osu_path = match download_beatmap_osu(score.beatmap_id, &score.status).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = ?e, beatmap_id = score.beatmap_id, "{}", log_fmt!("api.pp_download_failed"));
@@ -328,4 +328,29 @@ pub async fn enrich_score_with_pp(score: &mut Score, mode: GameMode, compute_if_
             }
         }
     }
+}
+
+/// 本地计算 star rating，失败时返回 None
+pub async fn calc_local_star_rating(
+    beatmap_id: i64,
+    status: &str,
+    mods: &rosu_mods::GameMods,
+    mode: GameMode,
+) -> Option<f64> {
+    let osu_path = super::download_beatmap_osu(beatmap_id, status).await.ok()?;
+    let map = rosu_pp::Beatmap::from_path(&osu_path).ok()?;
+
+    let pp_mods = rosu_pp::GameMods::from(mods.clone());
+    let mode_convert = match mode {
+        GameMode::Osu => rosu_pp::model::mode::GameMode::Osu,
+        GameMode::Taiko => rosu_pp::model::mode::GameMode::Taiko,
+        GameMode::Catch => rosu_pp::model::mode::GameMode::Catch,
+        GameMode::Mania => rosu_pp::model::mode::GameMode::Mania,
+    };
+
+    let perf = rosu_pp::Performance::new(&map)
+        .mods(pp_mods)
+        .try_mode(mode_convert)
+        .ok()?;
+    Some(perf.calculate().stars())
 }

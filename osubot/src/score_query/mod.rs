@@ -8,7 +8,7 @@ use crate::score_filter::score_matches_filters;
 use crate::BotContext;
 use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
-use osubot_core::api::fetch_beatmap_difficulty_attributes;
+use osubot_core::api::get_star_rating;
 
 /// 并发补全的最大请求数。osu! API 对单 IP 的并发有限制，
 /// 3 是经验值，在响应速度和稳定性之间取得平衡。
@@ -1065,16 +1065,10 @@ async fn run_score_query_pipeline(
                     let rl = rl.clone();
                     let oauth = oauth.clone();
                     async move {
-                        if let Ok(adjusted_sr) = fetch_beatmap_difficulty_attributes(
-                            &rl,
-                            &oauth,
-                            s.beatmap_id,
-                            &mods,
-                            mode,
-                        )
-                        .await
-                        {
-                            s.star_rating = adjusted_sr;
+                        let sr = get_star_rating(&rl, &oauth, s.beatmap_id, &s.status, &mods, mode)
+                            .await;
+                        if sr > 0.0 {
+                            s.star_rating = sr;
                         }
                         s
                     }
