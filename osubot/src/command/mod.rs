@@ -298,9 +298,18 @@ pub(crate) fn build_cmd_payload(
     })
 }
 
+fn record_command_invocation(ctx: &BotContext, user_id: i64) {
+    if let Some(mut entry) = ctx.command_rate_limits.get_mut(&user_id) {
+        entry.command_timestamps.push(std::time::Instant::now());
+        entry.last_command = std::time::Instant::now();
+    }
+}
+
 pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mpsc::Sender<String>) {
     // ==== 用户命令频率限制（滑动窗口：3秒内最多5次） ====
-    // 限流检查放在最前面，防止插件命令绕过限流
+    // 限流检查放在最前面，防止插件命令绕过限流。
+    // 注意：仅在确认消息会触发命令处理后才计入滑动窗口，
+    // 普通闲聊消息不计入限流计数。
     {
         let rate_limited = {
             let mut entry = ctx
@@ -311,12 +320,9 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
                     command_timestamps: Vec::new(),
                 });
 
-            let now = std::time::Instant::now();
             entry
                 .command_timestamps
-                .retain(|t| now.duration_since(*t) < Duration::from_secs(3));
-            entry.command_timestamps.push(now);
-            entry.last_command = now;
+                .retain(|t| t.elapsed() < Duration::from_secs(3));
 
             entry.command_timestamps.len() > 5
         };
@@ -356,6 +362,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         let action = PluginManager::dispatch_message(&ctx.plugin_manager, &msg_payload_str).await;
         match action {
             PluginActionResult::Handled(response) => {
+                record_command_invocation(&ctx, msg.user_id);
                 let _ = resp_tx.send(response).await;
                 return;
             }
@@ -387,10 +394,14 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
             PluginManager::dispatch_command(&ctx.plugin_manager, cmd_name, &cmd_payload_str).await;
         match action {
             PluginActionResult::Handled(response) => {
+                record_command_invocation(&ctx, msg.user_id);
                 let _ = resp_tx.send(response).await;
                 return;
             }
-            PluginActionResult::Intercepted => return,
+            PluginActionResult::Intercepted => {
+                record_command_invocation(&ctx, msg.user_id);
+                return;
+            }
             PluginActionResult::Next => {}
         }
     }
@@ -413,6 +424,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     }
 
     // Handle command and send response
+    record_command_invocation(&ctx, msg.user_id);
     let mode = resolved_mode.unwrap_or(GameMode::Osu);
     match &cmd {
         Command::QuerySelf { .. }
