@@ -183,14 +183,12 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "sb.not_bound" => "[CQ:at,qq={qq}] 请先使用 ?bind 绑定 ppy.sb 账号",
     "sb.mode.set" => "[CQ:at,qq={qq}] ppy.sb 默认模式已设置为：{mode_name}",
     "sb.mode.get" => "[CQ:at,qq={qq}] ppy.sb 默认模式：{mode}（{mode_name}）",
-    "sb.mode.invalid" => "[CQ:at,qq={qq}] 模式无效，请输入 0(OSU)/1(Taiko)/2(Catch)/3(Mania)/4(OSU Relax)/5(Taiko Relax)/6(Catch Relax)/8(AutoPilot)",
     "sb.no_audio" => "[CQ:at,qq={qq}] ppy.sb 不支持音频预览",
     "sb.no_scores" => "[CQ:at,qq={qq}] 暂无 ppy.sb 成绩记录",
     "sb.highlight.empty" => "[CQ:at,qq={qq}] 暂无 ppy.sb 今日高光数据",
     "sb.unbind.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 ppy.sb 账号",
     "sb.score.beatmap_audio_not_supported" => "[CQ:at,qq={qq}] ppy.sb 暂不支持音频查询",
     "sb.mode.not_bound" => "[CQ:at,qq={qq}] 请先绑定 ppy.sb 账号后再设置默认模式",
-    "sb.disabled" => "[CQ:at,qq={qq}] ppy.sb 功能已关闭",
 
     // ── 系统 ──
     "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",

@@ -1431,6 +1431,12 @@ pub(crate) async fn handle_sb_score_query(
                     return;
                 }
             };
+            if sb_scores.is_empty() {
+                let _ = resp_tx
+                    .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))
+                    .await;
+                return;
+            }
             convert_sb_scores(sb_scores, limit as usize, sb_mode)
         }
         Command::ScoreOnBeatmap { .. } => {
@@ -1498,6 +1504,7 @@ pub(crate) async fn handle_sb_score_query(
                 .await;
             return;
         }
+        // beatmap_id is None — already handled by Some(bid) above
         Command::BeatmapPreview { .. } => {
             let _ = resp_tx
                 .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))

@@ -767,25 +767,6 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn sb_get_snapshot(
-        &self,
-        qq: i64,
-        mode: u8,
-    ) -> DbResult<Option<(f64, Option<i64>, Option<i64>)>> {
-        let conn = self.conn().await;
-        let mut rows = conn
-            .query(
-                "SELECT pp, global_rank, country_rank FROM sb_user_snapshots WHERE qq = ?1 AND mode = ?2",
-                params![qq, mode as i32],
-            )
-            .await?;
-        if let Some(row) = rows.next().await? {
-            Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?)))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub async fn sb_get_all_snapshots(
         &self,
     ) -> DbResult<Vec<(i64, u8, f64, Option<i64>, Option<i64>)>> {
@@ -2020,6 +2001,152 @@ mod tests {
         assert_eq!(
             storage.find_qq_by_username("NewName").await.unwrap(),
             Some(10001)
+        );
+    }
+
+    // ==================== SB Storage Tests ====================
+
+    #[tokio::test]
+    async fn sb_bind_get_binding_unbind() {
+        let storage = test_storage().await;
+        let qq = 20001;
+        let sb_user_id = 30001;
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_01")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let binding = storage
+            .sb_get_binding(qq)
+            .await
+            .unwrap()
+            .expect("binding should exist");
+        assert_eq!(binding.qq, qq);
+        assert_eq!(binding.sb_user_id, sb_user_id);
+        assert_eq!(binding.sb_username, "sb_user_01");
+
+        storage.sb_unbind(qq).await.unwrap();
+
+        assert!(storage.sb_get_binding(qq).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn sb_bind_already_bound() {
+        let storage = test_storage().await;
+        let other_qq = 20002;
+        let user_qq = 20003;
+        let sb_user_id = 30002;
+
+        storage
+            .sb_bind(other_qq, sb_user_id, "sb_user_02")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = storage
+            .sb_bind(user_qq, sb_user_id, "sb_user_02")
+            .await
+            .unwrap();
+        assert_eq!(result, Err(other_qq));
+    }
+
+    #[tokio::test]
+    async fn sb_bind_same_qq_same_account() {
+        let storage = test_storage().await;
+        let qq = 20004;
+        let sb_user_id = 30003;
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_03")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = storage.sb_bind(qq, sb_user_id, "sb_user_03").await.unwrap();
+        assert_eq!(result, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn sb_set_and_get_default_mode() {
+        let storage = test_storage().await;
+        let qq = 20005;
+        let sb_user_id = 30004;
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_04")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(storage.sb_get_default_mode(qq).await.unwrap(), Some(0));
+
+        assert!(storage.sb_set_default_mode(qq, 1).await.unwrap());
+        assert_eq!(storage.sb_get_default_mode(qq).await.unwrap(), Some(1));
+
+        assert!(storage.sb_set_default_mode(qq, 3).await.unwrap());
+        assert_eq!(storage.sb_get_default_mode(qq).await.unwrap(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn sb_save_and_get_all_snapshots() {
+        let storage = test_storage().await;
+        let qq = 20006;
+
+        // must be bound to satisfy FK constraint
+        storage
+            .sb_bind(qq, 30005, "sb_user_05")
+            .await
+            .unwrap()
+            .unwrap();
+
+        storage
+            .sb_save_snapshot(qq, 0, Some(5000.0), Some(100), Some(10))
+            .await
+            .unwrap();
+
+        let snapshots = storage.sb_get_all_snapshots().await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        let (s_qq, s_mode, s_pp, s_gr, s_cr) = &snapshots[0];
+        assert_eq!(*s_qq, qq);
+        assert_eq!(*s_mode, 0);
+        assert_eq!(*s_pp, 5000.0);
+        assert_eq!(*s_gr, Some(100));
+        assert_eq!(*s_cr, Some(10));
+
+        // save another snapshot for the same qq / mode (upsert)
+        storage
+            .sb_save_snapshot(qq, 0, Some(6000.0), Some(50), Some(5))
+            .await
+            .unwrap();
+
+        let snapshots = storage.sb_get_all_snapshots().await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].2, 6000.0);
+    }
+
+    #[tokio::test]
+    async fn sb_find_qq_by_user_id() {
+        let storage = test_storage().await;
+        let qq = 20007;
+        let sb_user_id = 30006;
+
+        assert!(storage
+            .sb_find_qq_by_user_id(sb_user_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_06")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            storage.sb_find_qq_by_user_id(sb_user_id).await.unwrap(),
+            Some(qq)
         );
     }
 }

@@ -1,6 +1,5 @@
 use crate::api::{http_client, ApiError};
 use crate::rate_limiter::RateLimiter;
-use osubot_game_mode::GameMode;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -148,18 +147,6 @@ pub struct SbScore {
     pub perfect: bool,
     #[serde(default)]
     pub beatmap: Option<SbScoreBeatmap>,
-}
-
-impl SbScore {
-    /// Normalize SB API accuracy (percentage, e.g. 98.5) to osu! API v2 format (0..=1).
-    pub fn accuracy_normalized(&self) -> f64 {
-        self.accuracy / 100.0
-    }
-
-    /// Convert the SB API mode integer to a GameMode.
-    pub fn ruleset(&self) -> GameMode {
-        GameMode::try_from(self.mode).unwrap_or(GameMode::Osu)
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -311,15 +298,6 @@ pub async fn get_map_scores(
 
 pub async fn get_map_info(id: i64, rate_limiter: &RateLimiter) -> Result<SbMapInfo, ApiError> {
     let url = format!("{}/v1/get_map_info?id={}", SB_API_BASE, id);
-    let data: SbMapInfoData = sb_get(&url, rate_limiter).await?;
-    Ok(data.map)
-}
-
-pub async fn get_map_info_by_md5(
-    md5: &str,
-    rate_limiter: &RateLimiter,
-) -> Result<SbMapInfo, ApiError> {
-    let url = format!("{}/v1/get_map_info?md5={}", SB_API_BASE, md5);
     let data: SbMapInfoData = sb_get(&url, rate_limiter).await?;
     Ok(data.map)
 }
