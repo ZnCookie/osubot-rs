@@ -1,3 +1,4 @@
+mod beatmap;
 mod beatmap_attrs;
 mod http;
 mod match_api;
@@ -7,6 +8,7 @@ mod pp;
 mod score_convert;
 mod stable_grade;
 
+pub use beatmap::get_star_rating;
 pub use beatmap_attrs::apply_mod_adjustment_to_stats;
 pub use http::download_beatmap_osu;
 pub use http::download_beatmap_preview_mp3;
@@ -22,8 +24,8 @@ pub use oauth::OauthTokenCache;
 pub use osu_api::{
     backfill_score_details, fetch_beatmap_difficulty_attributes, fetch_beatmap_metadata,
     fetch_user_profile, fetch_user_stats_by_user_id, fetch_user_stats_by_username,
-    get_beatmapset_id, get_score_by_id, get_star_rating, get_user_beatmap_scores_all,
-    get_user_best, get_user_info, get_user_recent, BeatmapMetadata, OsuUserInfo,
+    get_beatmapset_id, get_score_by_id, get_user_beatmap_scores_all, get_user_best, get_user_info,
+    get_user_recent, BeatmapMetadata, OsuUserInfo,
 };
 pub use pp::{calculate_pp_breakdown, calculate_pp_if_acc, enrich_score_with_pp, PpCalcParams};
 

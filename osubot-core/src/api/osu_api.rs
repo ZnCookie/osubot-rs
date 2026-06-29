@@ -539,28 +539,6 @@ pub async fn get_user_info(
     }
 }
 
-/// 获取 star rating：优先本地计算，fallback API
-pub async fn get_star_rating(
-    rate_limiter: &crate::rate_limiter::RateLimiter,
-    oauth: &super::oauth::OauthTokenCache,
-    beatmap_id: i64,
-    status: &str,
-    mods: &rosu_mods::GameMods,
-    mode: crate::types::GameMode,
-) -> f64 {
-    if let Some(sr) = super::pp::calc_local_star_rating(beatmap_id, status, mods, mode).await {
-        return sr;
-    }
-
-    if let Ok(sr) =
-        fetch_beatmap_difficulty_attributes(rate_limiter, oauth, beatmap_id, mods, mode).await
-    {
-        return sr;
-    }
-
-    0.0
-}
-
 pub async fn fetch_user_profile(
     rate_limiter: &RateLimiter,
     oauth: &super::oauth::OauthTokenCache,
