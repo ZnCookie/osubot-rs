@@ -45,6 +45,7 @@ async fn fetch_user_stats_internal(
         rank_change: None,
         country_rank_change: None,
         cover_url: data.cover.and_then(|c| c.custom_url.or(c.url)),
+        avatar_url: Some(format!("https://a.ppy.sh/{}", data.id)),
     })
 }
 
@@ -412,12 +413,7 @@ pub async fn fetch_beatmap_difficulty_attributes(
     mods: &rosu_mods::GameMods,
     mode: GameMode,
 ) -> Result<f64, ApiError> {
-    let ruleset = match mode {
-        GameMode::Osu => "osu",
-        GameMode::Taiko => "taiko",
-        GameMode::Catch => "fruits",
-        GameMode::Mania => "mania",
-    };
+    let ruleset = mode.api_value();
     let url = format!(
         "https://osu.ppy.sh/api/v2/beatmaps/{}/attributes",
         beatmap_id

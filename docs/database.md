@@ -119,6 +119,32 @@ QQ 号与 osu! 账号的绑定关系。
 
 过期的请求由调度器每 24 小时清理。
 
+### `sb_user_bindings`
+
+QQ 号与 ppy.sb 账号的绑定关系。
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| `qq` | `INTEGER PRIMARY KEY` | QQ 号 |
+| `sb_user_id` | `INTEGER NOT NULL UNIQUE` | ppy.sb 用户 ID |
+| `sb_username` | `TEXT NOT NULL` | ppy.sb 用户名 |
+| `default_mode` | `INTEGER NOT NULL DEFAULT 0` | 默认游戏模式（0=osu! 1=taiko 2=catch 3=mania） |
+
+### `sb_user_snapshots`
+
+ppy.sb 用户统计数据快照，用于今日高光计算。
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| `qq` | `INTEGER NOT NULL` | QQ 号 |
+| `mode` | `INTEGER NOT NULL DEFAULT 0` | 游戏模式 |
+| `pp` | `REAL DEFAULT NULL` | PP 值 |
+| `global_rank` | `INTEGER DEFAULT NULL` | 全球排名 |
+| `country_rank` | `INTEGER DEFAULT NULL` | 国家排名 |
+| `updated_at` | `TEXT NOT NULL DEFAULT (datetime('now'))` | 更新时间 |
+
+主键：`(qq, mode)`
+
 ## 迁移
 
 数据库使用内联迁移（在 `storage.rs` 中通过 `CREATE TABLE IF NOT EXISTS` 和 `ALTER TABLE` 实现），无需单独的迁移文件。启动时会自动创建表和索引，对已有数据库执行必要的列添加。

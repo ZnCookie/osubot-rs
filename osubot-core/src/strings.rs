@@ -129,6 +129,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "mode.set_success" => "[CQ:at,qq={qq}] 已设置默认模式为 {mode}",
     "mode.get_success" => "[CQ:at,qq={qq}] 你的默认模式是 {mode}",
     "mode.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 osu! 账号，无法设置默认模式",
+    "mode.sb_mode_on_official" => "[CQ:at,qq={qq}] 官服不支持 Relax/AutoPilot 模式",
 
     // ── 比赛监听 (!ml) ──
     "ml.start_success" => "[CQ:at,qq={qq}] 已开始监听比赛 {match_id}（{match_name}）",
@@ -171,11 +172,29 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "ml.event_match_completed" => "场次结束",
     "ml.event_generic" => "事件",
 
+    // ── ppy.sb 相关 ──
+    "sb.bind.success" => "[CQ:at,qq={qq}] 成功绑定 ppy.sb 账号：{username}（ID: {id}）",
+    "sb.bind.not_found" => "[CQ:at,qq={qq}] 未在 ppy.sb 找到该用户：{username}",
+    "sb.bind.already_self" => "[CQ:at,qq={qq}] 你已绑定该 ppy.sb 账号",
+    "sb.bind.already_other" => "[CQ:at,qq={qq}] 该 ppy.sb 账号已被其他 QQ 绑定",
+    "sb.bind.require_official" => "[CQ:at,qq={qq}] 请先使用 绑定 <osu用户名> 绑定官服账号后，再绑定 ppy.sb",
+    "sb.unbind.success" => "[CQ:at,qq={qq}] 已解绑 ppy.sb 账号",
+    "sb.unbind.prompt" => "[CQ:at,qq={qq}] 再发送一次以确认解绑 ppy.sb",
+    "sb.not_bound" => "[CQ:at,qq={qq}] 请先使用 ?bind 绑定 ppy.sb 账号",
+    "sb.mode.set" => "[CQ:at,qq={qq}] ppy.sb 默认模式已设置为：{mode_name}",
+    "sb.mode.get" => "[CQ:at,qq={qq}] ppy.sb 默认模式：{mode}（{mode_name}）",
+    "sb.no_audio" => "[CQ:at,qq={qq}] ppy.sb 不支持音频预览",
+    "sb.no_scores" => "[CQ:at,qq={qq}] 暂无 ppy.sb 成绩记录",
+    "sb.highlight.empty" => "[CQ:at,qq={qq}] 暂无 ppy.sb 今日高光数据",
+    "sb.unbind.not_bound" => "[CQ:at,qq={qq}] 你还没有绑定 ppy.sb 账号",
+    "sb.score.beatmap_audio_not_supported" => "[CQ:at,qq={qq}] ppy.sb 暂不支持音频查询",
+    "sb.mode.not_bound" => "[CQ:at,qq={qq}] 请先绑定 ppy.sb 账号后再设置默认模式",
+
     // ── 系统 ──
-    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\nppy.sb: ?/where/bind/unbind/mode/今日高光 (用 ? 替代 ~ 前缀)\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
-    "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",
+    "bridge.rate_limit_send_msg" => "请求过于频繁，请稍后再试",
     "bridge.rate_limit_http" => "请求过于频繁，请稍后再试",
     "bridge.tick_interval_too_short" => "tick 间隔不能小于 {secs} 秒",
     "bridge.tick_interval_too_long" => "tick 间隔不能大于 {secs} 秒",
@@ -500,8 +519,15 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     // ===== osubot-core/src/storage.rs =====
     "storage.parse_next_update_failed" => "无法解析 next_update 时间戳，回退到当前时间",
     "storage.parse_pending_bind_created_failed" => "无法解析 pending_bind created_at，回退到当前时间",
+    "storage.sb_unbind_snapshots_deleted" => "SB 解绑删除快照: qq={user_id}, count={snapshots_deleted}",
+    "storage.sb_set_default_mode_invalid" => "SB 设置默认模式: 无效 mode={invalid_mode}, qq={user_id}",
 
     // ===== osubot-core/src/commands.rs =====
+
+    // ===== osubot-core/src/sb_api.rs =====
+    "sb_api.search_player" => "sb_api.search_player: query={query}",
+    "sb_api.get_player_info" => "sb_api.get_player_info: user_id={user_id}",
+    "sb_api.get_player_scores" => "sb_api.get_player_scores: user_id={user_id} mode={mode} scope={scope}",
 
     // ===== osubot-core/src/highlight.rs =====
     "highlight.baseline_query_failed" => "批量基准快照查询失败，回退到逐用户查询",
@@ -633,12 +659,45 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "render.resource_channel_disconnected" => "资源 channel 已断开，使用部分资源继续",
     "render.err_cancelled" => "渲染已取消",
 
+    // ===== osubot/src/command/query.rs =====
+    "main.sb_query_command" => "SB Query 命令",
+    "main.sb_get_binding_error" => "SB 获取绑定数据库错误，qq={user_id}",
+    "main.sb_api_fetch_failed" => "SB API 获取玩家信息失败",
+    "main.sb_get_default_mode_error" => "SB 获取默认模式数据库错误，qq={user_id}",
+
+    // ===== osubot/src/command/utility.rs =====
+    "main.sb_highlight_command" => "SB Highlight 命令",
+    "main.sb_get_all_bindings_error" => "SB 获取所有绑定数据库错误",
+    "main.sb_get_all_snapshots_error" => "SB 获取所有快照数据库错误",
+    "main.sb_bind_command" => "SB Bind 命令",
+    "main.sb_bind_check_binding_error" => "SB 绑定检查绑定状态数据库错误，user_id={user_id}，error={error}",
+    "main.sb_bind_success" => "SB 绑定成功，user_id={user_id}，sb_user_id={sb_user_id}，sb_username={sb_username}",
+    "main.sb_bind_already_self" => "SB 绑定但已是自己的账号，user_id={user_id}",
+    "main.sb_bind_already_other" => "SB 绑定但已被其他 QQ 绑定，user_id={user_id}，existing_qq={existing_qq}",
+    "main.sb_bind_db_error" => "SB 绑定数据库错误，user_id={user_id}，error={error}",
+    "main.sb_bind_not_found" => "SB 绑定未找到用户，username={username}",
+    "main.sb_bind_search_error" => "SB 绑定搜索用户失败，user_id={user_id}",
+    "main.sb_unbind_command" => "SB Unbind 命令",
+    "main.sb_unbind_remove_pending_failed" => "SB 解绑无法移除待定状态，user_id={user_id}，error={error}",
+    "main.sb_unbind_success" => "SB 解绑成功",
+    "main.sb_unbind_error" => "SB 解绑数据库错误，user_id={user_id}，error={error}",
+    "main.sb_unbind_set_pending_failed" => "SB 解绑无法设置待定状态，user_id={user_id}，error={error}",
+    "main.sb_unbind_confirmation" => "SB 解绑已请求确认，user_id={user_id}，sb_username={sb_username}",
+    "main.sb_unbind_not_bound" => "SB 解绑但未绑定，user_id={user_id}",
+    "main.sb_unbind_check_error" => "SB 解绑检查绑定数据库错误，user_id={user_id}，error={error}",
+    "main.sb_unbind_pending_check_error" => "SB 解绑检查待定状态数据库错误，user_id={user_id}，error={error}",
+    "main.sb_set_mode" => "SB 设置默认模式，user_id={user_id}，mode={mode}",
+    "main.sb_set_mode_error" => "SB 设置默认模式数据库错误，user_id={user_id}，error={error}",
+    "main.sb_get_mode" => "SB 查询默认模式，user_id={user_id}",
+    "main.sb_get_mode_error" => "SB 查询默认模式数据库错误，user_id={user_id}，error={error}",
+
     // ===== osubot/src/main.rs (!rv) =====
     "main.beatmap_preview_parse_failed" => "!rv 参数解析失败: {error}",
     "main.beatmap_preview_mods_parse_failed" => "!rv mod 解析失败: {error}",
     "main.beatmap_preview_mods_invalid" => "!rv mod 校验失败: {error}",
     "main.beatmap_preview_convert_unsupported" => "!rv 非 osu! 谱面不支持模式转换 (source_mode={source_mode}, target_mode={target_mode})",
     "main.beatmap_preview_convert_failed" => "!rv 谱面转换失败: {error}",
+    "main.sb_disabled" => "ppy.sb 功能已关闭, user_id={user_id}",
     "main.beatmap_preview_render_failed" => "!rv 预览渲染失败: {error}",
     "main.beatmap_preview_render_timeout" => "!rv 预览渲染超时",
     "main.beatmap_preview_read_failed" => "!rv 读取渲染结果失败: {error}",

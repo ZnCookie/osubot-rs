@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use tracing::{debug, warn};
 use turso::{params, Connection, Database, Result as DbResult, Row};
 
 use crate::types::{GameMode, UserChange, UserStats};
@@ -120,6 +121,7 @@ impl UserStatsSnapshot {
             rank_change: None,
             country_rank_change: None,
             cover_url: None,
+            avatar_url: None,
         }
     }
 }
@@ -135,6 +137,23 @@ fn row_to_snapshot(row: &Row, col_offset: usize) -> DbResult<UserStatsSnapshot> 
         hits: row.get(col_offset + 6)?,
         playtime: row.get(col_offset + 7)?,
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct SbBinding {
+    pub qq: i64,
+    pub sb_user_id: i64,
+    pub sb_username: String,
+    pub default_mode: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct SbSnapshotEntry {
+    pub qq: i64,
+    pub mode: u8,
+    pub pp: f64,
+    pub global_rank: Option<i64>,
+    pub country_rank: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +306,21 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_match_listeners_group_active ON match_listeners(group_id, active, expires_at);
             CREATE INDEX IF NOT EXISTS idx_match_listeners_creator_active ON match_listeners(creator_qq, active, expires_at);
             CREATE INDEX IF NOT EXISTS idx_match_listeners_polling ON match_listeners(active, expires_at, last_notified_at);
+            CREATE TABLE IF NOT EXISTS sb_user_bindings (
+                qq INTEGER PRIMARY KEY,
+                sb_user_id INTEGER NOT NULL UNIQUE,
+                sb_username TEXT NOT NULL,
+                default_mode INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS sb_user_snapshots (
+                qq INTEGER NOT NULL,
+                mode INTEGER NOT NULL DEFAULT 0,
+                pp REAL DEFAULT NULL,
+                global_rank INTEGER DEFAULT NULL,
+                country_rank INTEGER DEFAULT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (qq, mode)
+            );
             ",
             )
             .await?;
@@ -589,6 +623,199 @@ impl Storage {
             )
             .await?;
         Ok(count)
+    }
+
+    // ==================== SB Binding Query ====================
+
+    pub async fn sb_bind(
+        &self,
+        qq: i64,
+        sb_user_id: i64,
+        sb_username: &str,
+    ) -> DbResult<std::result::Result<(), i64>> {
+        let conn = self.conn().await;
+        conn.execute("BEGIN IMMEDIATE", ()).await?;
+        let result =
+            async {
+                let mut rows = conn
+                    .query(
+                        "SELECT qq FROM sb_user_bindings WHERE sb_user_id = ?1",
+                        params![sb_user_id],
+                    )
+                    .await?;
+                if let Some(row) = rows.next().await? {
+                    let existing_qq: i64 = row.get(0)?;
+                    if existing_qq != qq {
+                        return Ok(Err(existing_qq));
+                    }
+                }
+                drop(rows);
+                conn.execute(
+                    "INSERT OR REPLACE INTO sb_user_bindings (qq, sb_user_id, sb_username) VALUES (?1, ?2, ?3)",
+                    params![qq, sb_user_id, sb_username],
+                )
+                .await?;
+                Ok(Ok(()))
+            }
+            .await;
+        match &result {
+            Ok(Ok(())) | Ok(Err(_)) => {
+                conn.execute("COMMIT", ()).await?;
+            }
+            _ => {
+                conn.execute("ROLLBACK", ()).await?;
+            }
+        }
+        result
+    }
+
+    pub async fn sb_unbind(&self, qq: i64) -> DbResult<()> {
+        let conn = self.conn().await;
+        conn.execute("DELETE FROM sb_user_bindings WHERE qq = ?1", params![qq])
+            .await?;
+        let deleted = conn
+            .execute("DELETE FROM sb_user_snapshots WHERE qq = ?1", params![qq])
+            .await?;
+        debug!(
+            user_id = qq,
+            snapshots_deleted = deleted,
+            "{}",
+            log_fmt!("storage.sb_unbind_snapshots_deleted")
+        );
+        Ok(())
+    }
+
+    pub async fn sb_get_binding(&self, qq: i64) -> DbResult<Option<SbBinding>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq, sb_user_id, sb_username, default_mode FROM sb_user_bindings WHERE qq = ?1",
+                params![qq],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(SbBinding {
+                qq: row.get(0)?,
+                sb_user_id: row.get(1)?,
+                sb_username: row.get(2)?,
+                default_mode: row.get::<i32>(3)? as u8,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn sb_find_qq_by_user_id(&self, sb_user_id: i64) -> DbResult<Option<i64>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq FROM sb_user_bindings WHERE sb_user_id = ?1",
+                params![sb_user_id],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn sb_set_default_mode(&self, qq: i64, mode: u8) -> DbResult<bool> {
+        if GameMode::try_from(mode).is_err() {
+            warn!(
+                user_id = qq,
+                invalid_mode = mode,
+                "{}",
+                log_fmt!("storage.sb_set_default_mode_invalid")
+            );
+            return Ok(false);
+        }
+        let rows = self
+            .conn()
+            .await
+            .execute(
+                "UPDATE sb_user_bindings SET default_mode = ?1 WHERE qq = ?2",
+                params![mode as i32, qq],
+            )
+            .await?;
+        Ok(rows > 0)
+    }
+
+    pub async fn sb_get_default_mode(&self, qq: i64) -> DbResult<Option<u8>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT default_mode FROM sb_user_bindings WHERE qq = ?1",
+                params![qq],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let mode: i32 = row.get(0)?;
+            Ok(Some(mode as u8))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // ==================== SB Snapshot Operations ====================
+
+    pub async fn sb_save_snapshot(
+        &self,
+        qq: i64,
+        mode: u8,
+        pp: Option<f64>,
+        global_rank: Option<i64>,
+        country_rank: Option<i64>,
+    ) -> DbResult<()> {
+        self.conn().await
+            .execute(
+                "INSERT OR REPLACE INTO sb_user_snapshots (qq, mode, pp, global_rank, country_rank, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                params![qq, mode as i32, pp, global_rank, country_rank],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn sb_get_all_snapshots(&self) -> DbResult<Vec<SbSnapshotEntry>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq, mode, pp, global_rank, country_rank FROM sb_user_snapshots",
+                (),
+            )
+            .await?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push(SbSnapshotEntry {
+                qq: row.get(0)?,
+                mode: row.get::<i32>(1)? as u8,
+                pp: row.get(2)?,
+                global_rank: row.get(3)?,
+                country_rank: row.get(4)?,
+            });
+        }
+        Ok(results)
+    }
+
+    pub async fn sb_get_all_bindings(&self) -> DbResult<Vec<SbBinding>> {
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT qq, sb_user_id, sb_username, default_mode FROM sb_user_bindings",
+                (),
+            )
+            .await?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push(SbBinding {
+                qq: row.get(0)?,
+                sb_user_id: row.get(1)?,
+                sb_username: row.get(2)?,
+                default_mode: row.get::<i32>(3)? as u8,
+            });
+        }
+        Ok(results)
     }
 
     // ==================== Snapshot Operations ====================
@@ -1497,6 +1724,7 @@ mod tests {
             rank_change: None,
             country_rank_change: None,
             cover_url: None,
+            avatar_url: None,
         }
     }
 
@@ -1782,6 +2010,151 @@ mod tests {
         assert_eq!(
             storage.find_qq_by_username("NewName").await.unwrap(),
             Some(10001)
+        );
+    }
+
+    // ==================== SB Storage Tests ====================
+
+    #[tokio::test]
+    async fn sb_bind_get_binding_unbind() {
+        let storage = test_storage().await;
+        let qq = 20001;
+        let sb_user_id = 30001;
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_01")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let binding = storage
+            .sb_get_binding(qq)
+            .await
+            .unwrap()
+            .expect("binding should exist");
+        assert_eq!(binding.qq, qq);
+        assert_eq!(binding.sb_user_id, sb_user_id);
+        assert_eq!(binding.sb_username, "sb_user_01");
+
+        storage.sb_unbind(qq).await.unwrap();
+
+        assert!(storage.sb_get_binding(qq).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn sb_bind_already_bound() {
+        let storage = test_storage().await;
+        let other_qq = 20002;
+        let user_qq = 20003;
+        let sb_user_id = 30002;
+
+        storage
+            .sb_bind(other_qq, sb_user_id, "sb_user_02")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = storage
+            .sb_bind(user_qq, sb_user_id, "sb_user_02")
+            .await
+            .unwrap();
+        assert_eq!(result, Err(other_qq));
+    }
+
+    #[tokio::test]
+    async fn sb_bind_same_qq_same_account() {
+        let storage = test_storage().await;
+        let qq = 20004;
+        let sb_user_id = 30003;
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_03")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = storage.sb_bind(qq, sb_user_id, "sb_user_03").await.unwrap();
+        assert_eq!(result, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn sb_set_and_get_default_mode() {
+        let storage = test_storage().await;
+        let qq = 20005;
+        let sb_user_id = 30004;
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_04")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(storage.sb_get_default_mode(qq).await.unwrap(), Some(0));
+
+        assert!(storage.sb_set_default_mode(qq, 1).await.unwrap());
+        assert_eq!(storage.sb_get_default_mode(qq).await.unwrap(), Some(1));
+
+        assert!(storage.sb_set_default_mode(qq, 3).await.unwrap());
+        assert_eq!(storage.sb_get_default_mode(qq).await.unwrap(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn sb_save_and_get_all_snapshots() {
+        let storage = test_storage().await;
+        let qq = 20006;
+
+        // must be bound to satisfy FK constraint
+        storage
+            .sb_bind(qq, 30005, "sb_user_05")
+            .await
+            .unwrap()
+            .unwrap();
+
+        storage
+            .sb_save_snapshot(qq, 0, Some(5000.0), Some(100), Some(10))
+            .await
+            .unwrap();
+
+        let snapshots = storage.sb_get_all_snapshots().await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].qq, qq);
+        assert_eq!(snapshots[0].mode, 0);
+        assert_eq!(snapshots[0].pp, 5000.0);
+        assert_eq!(snapshots[0].global_rank, Some(100));
+        assert_eq!(snapshots[0].country_rank, Some(10));
+
+        // save another snapshot for the same qq / mode (upsert)
+        storage
+            .sb_save_snapshot(qq, 0, Some(6000.0), Some(50), Some(5))
+            .await
+            .unwrap();
+
+        let snapshots = storage.sb_get_all_snapshots().await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].pp, 6000.0);
+    }
+
+    #[tokio::test]
+    async fn sb_find_qq_by_user_id() {
+        let storage = test_storage().await;
+        let qq = 20007;
+        let sb_user_id = 30006;
+
+        assert!(storage
+            .sb_find_qq_by_user_id(sb_user_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        storage
+            .sb_bind(qq, sb_user_id, "sb_user_06")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            storage.sb_find_qq_by_user_id(sb_user_id).await.unwrap(),
+            Some(qq)
         );
     }
 }

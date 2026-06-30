@@ -116,3 +116,9 @@ priority = 50
 # 可选：插件自定义配置（通过 get_plugin_config() 访问）
 # [plugin.instances.config]
 # endpoint = "https://api.example.com"
+
+[sb]
+# 是否启用 ppy.sb 功能（默认 true）
+# enabled = true
+# 是否要求绑定 SB 前先绑定官服账号（默认 true）
+# sb_bind_require_official_bind = true

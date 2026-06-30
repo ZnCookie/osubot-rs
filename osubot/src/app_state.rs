@@ -25,6 +25,7 @@ pub struct AppState {
     pub storage: Arc<Storage>,
     pub oauth: Arc<OauthTokenCache>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub sb_rate_limiter: Arc<RateLimiter>,
     pub upstream_chain: Arc<RwLock<UpstreamChain>>,
     pub onebot_api: Arc<crate::OneBotApi>,
     pub scheduler: Scheduler,

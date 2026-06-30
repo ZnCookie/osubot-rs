@@ -1,5 +1,5 @@
 use crate::commands::parse_command;
-use crate::types::{Command, CommandGroup, GameMode};
+use crate::types::{Command, CommandGroup, GameMode, Server};
 
 #[test]
 fn test_rv_bare() {
@@ -18,6 +18,7 @@ fn test_rv_bare() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -39,6 +40,7 @@ fn test_rv_with_beatmap_id() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -60,6 +62,7 @@ fn test_rv_with_score_id() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -81,6 +84,7 @@ fn test_rv_with_mods() {
             limit: 1,
             filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -102,6 +106,7 @@ fn test_rv_with_mods_and_beatmap() {
             limit: 1,
             filters: Some(vec!["mod=HDDT".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -123,6 +128,7 @@ fn test_rv_with_mode() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -144,6 +150,7 @@ fn test_rv_with_mods_and_mode() {
             limit: 1,
             filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -180,6 +187,7 @@ fn test_rv_with_username() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -201,6 +209,7 @@ fn test_rv_with_gif() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -222,6 +231,7 @@ fn test_rv_with_gif_short() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -243,6 +253,7 @@ fn test_rv_with_beatmap_id_and_gif() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -264,6 +275,7 @@ fn test_rv_with_mods_and_gif() {
             limit: 1,
             filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -285,6 +297,7 @@ fn test_rv_with_mode_and_gif() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -306,6 +319,7 @@ fn test_rv_with_all_args_and_gif() {
             limit: 1,
             filters: Some(vec!["mod=DT".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -327,6 +341,7 @@ fn test_rv_username_dash_prefix() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -354,6 +369,7 @@ fn test_rv_single_time() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -375,6 +391,7 @@ fn test_rv_two_times() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -396,6 +413,7 @@ fn test_rv_beatmap_id_with_time() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -417,6 +435,7 @@ fn test_rv_time_with_mods_and_mode() {
             limit: 1,
             filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -438,6 +457,7 @@ fn test_rv_two_times_invalid_order() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -464,6 +484,7 @@ fn test_rv_username_with_time() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -485,6 +506,7 @@ fn test_rv_time_with_gif() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -506,6 +528,7 @@ fn test_rv_with_qq_equals() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -527,6 +550,7 @@ fn test_rv_with_mention() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -548,6 +572,7 @@ fn test_rv_with_explicit_position() {
             limit: 5,
             filters: None,
             explicit_position: true,
+            server: Server::Official,
         }
     );
 }

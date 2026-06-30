@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use futures_util::stream::{self, StreamExt};
+
 use super::*;
 
 /// Handle utility commands: Help, Highlight, ProfileCard, BeatmapPreview.
@@ -15,7 +19,7 @@ pub(super) async fn handle_utility_commands(
         Command::Highlight { .. } => {
             handle_highlight_command(ctx, msg, resp_tx, mode).await;
         }
-        Command::ProfileCard { username, qq } => {
+        Command::ProfileCard { username, qq, .. } => {
             handle_profile_card(ctx, msg, resp_tx, username, qq, mode).await;
         }
         _ => unreachable!("handle_utility_commands called with non-utility command"),
@@ -297,6 +301,132 @@ async fn handle_profile_card(
         Err(msg) => {
             warn!(user_id = target_user_id, msg = %msg, "{}", log_fmt!("main.profile_card_failed"));
             let _ = resp_tx.send(msg).await;
+        }
+    }
+}
+
+pub(super) async fn handle_sb_highlight(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+) {
+    info!(
+        user_id = msg.user_id,
+        group_id = msg.group_id,
+        "{}",
+        log_fmt!("main.sb_highlight_command")
+    );
+
+    let bindings = match ctx.storage.sb_get_all_bindings().await {
+        Ok(b) => b,
+        Err(e) => {
+            error!(error = %e, "{}", log_fmt!("main.sb_get_all_bindings_error"));
+            let _ = resp_tx
+                .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
+                .await;
+            return;
+        }
+    };
+
+    let snapshots = match ctx.storage.sb_get_all_snapshots().await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "{}", log_fmt!("main.sb_get_all_snapshots_error"));
+            let _ = resp_tx
+                .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
+                .await;
+            return;
+        }
+    };
+
+    let mut entries: Vec<(i64, String, f64)> = Vec::new();
+    let mut fetched: HashMap<
+        i64,
+        (
+            api::sb_api::SbPlayerInfo,
+            HashMap<String, api::sb_api::SbPlayerStats>,
+        ),
+    > = HashMap::new();
+
+    let fetch_targets: Vec<_> = bindings
+        .iter()
+        .map(|b| (b.sb_user_id, b.qq, b.sb_username.clone(), b.default_mode))
+        .collect();
+
+    let rate_limiter = ctx.sb_rate_limiter.clone();
+    let results: Vec<_> = stream::iter(fetch_targets.into_iter().map(
+        |(sb_user_id, qq, username, default_mode)| {
+            let rate_limiter = rate_limiter.clone();
+            let snapshots = snapshots.clone();
+            async move {
+                let result = api::sb_api::get_player_info(sb_user_id, &rate_limiter).await;
+                (sb_user_id, qq, username, default_mode, result, snapshots)
+            }
+        },
+    ))
+    .buffer_unordered(10)
+    .collect()
+    .await;
+
+    for (sb_user_id, qq, username, default_mode, result, snapshots) in results {
+        if let Ok(result) = result {
+            let mode_key = default_mode.to_string();
+            let current_pp = result
+                .1
+                .get(&mode_key)
+                .or_else(|| result.1.get("0"))
+                .map(|s| s.pp)
+                .unwrap_or(0.0);
+
+            let snapshot_pp = snapshots
+                .iter()
+                .find(|s| s.qq == qq && s.mode == default_mode)
+                .map(|s| s.pp)
+                .unwrap_or(0.0);
+
+            let delta = current_pp - snapshot_pp;
+            if delta > 0.0 {
+                entries.push((qq, username, delta));
+            }
+
+            fetched.insert(sb_user_id, result);
+        }
+    }
+
+    entries.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    if entries.is_empty() {
+        let _ = resp_tx
+            .send(user_str("sb.highlight.empty").replace("{qq}", &msg.user_id.to_string()))
+            .await;
+        return;
+    }
+
+    let mut reply = format!(
+        "[CQ:at,qq={qq}] ═══ ppy.sb 今日高光 ═══\n",
+        qq = msg.user_id,
+    );
+    for (i, (_, name, delta)) in entries.iter().take(10).enumerate() {
+        reply.push_str(&format!("\n{}. {}  +{:.0} PP", i + 1, name, delta));
+    }
+
+    let _ = resp_tx.send(reply).await;
+
+    for (sb_user_id, (_, stats)) in &fetched {
+        if let Some(binding) = bindings.iter().find(|b| b.sb_user_id == *sb_user_id) {
+            let mode_key = binding.default_mode.to_string();
+            if let Some(s) = stats.get(&mode_key).or_else(|| stats.get("0")) {
+                let _ = ctx
+                    .storage
+                    .sb_save_snapshot(
+                        binding.qq,
+                        binding.default_mode,
+                        Some(s.pp),
+                        Some(s.global_rank),
+                        Some(s.country_rank),
+                    )
+                    .await;
+            }
         }
     }
 }

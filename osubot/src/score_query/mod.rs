@@ -9,6 +9,7 @@ use crate::BotContext;
 use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 use osubot_core::api::get_star_rating;
+use osubot_core::api::sb_api::{self as sb_api, SbScore};
 
 /// 并发补全的最大请求数。osu! API 对单 IP 的并发有限制，
 /// 3 是经验值，在响应速度和稳定性之间取得平衡。
@@ -19,7 +20,9 @@ use osubot_core::{
     api, log_fmt,
     response::{format_score, format_scores},
     strings::user_str,
-    types::{format_play_datetime, Command, GameMode, Score, UserStats},
+    types::{
+        format_play_datetime, Command, GameMode, Score, ScoreStatistics, ScoreUser, UserStats,
+    },
 };
 use osubot_render::cache as render_cache;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
@@ -36,6 +39,7 @@ use osubot_core::OauthTokenCache;
 use osubot_core::RateLimiter;
 
 use crate::api_error_msg;
+use crate::command::{extract_explicit_mode, resolve_cmd_target_qq};
 use crate::onebot::{send_group_msg_with_image, QQMessage};
 use crate::{
     audio_score_dedup, beatmap_scores_dedup, beatmapset_dedup, best_scores_dedup,
@@ -1227,4 +1231,465 @@ async fn fetch_beatmapset_id_dedup(
             }
         })
         .await
+}
+
+/// 将 ppy.sb 的 legacy mod 位掩码转换为 rosu_mods::GameMods。
+fn sb_mods_to_rosu(mods_bitmask: i64, mode: GameMode) -> rosu_mods::GameMods {
+    let intermode = rosu_mods::GameModsIntermode::from_bits(mods_bitmask as u32);
+    rosu_mods::GameMods::from_intermode(&intermode, mode.into())
+}
+
+/// 将 ppy.sb 成绩转换为内部 Score 类型。
+fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize, mode: GameMode) -> Vec<Score> {
+    sb_scores
+        .into_iter()
+        .take(limit)
+        .map(|s| {
+            let bmap = s.beatmap.as_ref();
+            Score {
+                score_id: s.id,
+                beatmap_id: bmap.map(|b| b.id).unwrap_or(0),
+                beatmapset_id: bmap.map(|b| b.set_id).unwrap_or(0),
+                artist: bmap.map(|b| b.artist.clone()).unwrap_or_default(),
+                title: bmap.map(|b| b.title.clone()).unwrap_or_default(),
+                version: bmap.map(|b| b.version.clone()).unwrap_or_default(),
+                creator: bmap.map(|b| b.creator.clone()).unwrap_or_default(),
+                star_rating: bmap.map(|b| b.star_rating).unwrap_or(0.0),
+                bpm: bmap.map(|b| b.bpm).unwrap_or(0.0),
+                ar: bmap.map(|b| b.ar).unwrap_or(0.0),
+                od: bmap.map(|b| b.od).unwrap_or(0.0),
+                cs: bmap.map(|b| b.cs).unwrap_or(0.0),
+                hp: bmap.map(|b| b.hp).unwrap_or(0.0),
+                length_seconds: bmap.map(|b| b.total_length).unwrap_or(0),
+                score_value: s.score,
+                accuracy: s.accuracy / 100.0,
+                max_combo: s.max_combo,
+                beatmap_max_combo: bmap.map(|b| b.max_combo).unwrap_or(0),
+                pp: Some(s.pp),
+                pp_breakdown: None,
+                pp_if_acc: None,
+                perfect_pp: None,
+                rank: s.rank.clone(),
+                passed: s.rank != "F",
+                mods: sb_mods_to_rosu(s.mods, mode),
+                is_perfect: s.perfect,
+                created_at: if s.play_time.ends_with('Z') || s.play_time.contains('+') {
+                    s.play_time
+                } else {
+                    format!("{}Z", s.play_time)
+                },
+                is_lazer: false,
+                has_replay: false,
+                legacy_score_id: None,
+                statistics: ScoreStatistics {
+                    count_geki: s.ngeki,
+                    count_300: s.n300,
+                    count_katu: s.nkatu,
+                    count_100: s.n100,
+                    count_50: s.n50,
+                    count_miss: s.nmiss,
+                    osu_large_tick_hits: 0,
+                    osu_small_tick_hits: 0,
+                    osu_slider_tail_hits: 0,
+                    osu_large_tick_misses: 0,
+                    osu_small_tick_misses: 0,
+                },
+                cover_url: bmap
+                    .filter(|b| b.set_id > 0)
+                    .map(|b| {
+                        format!(
+                            "https://assets.ppy.sh/beatmaps/{}/covers/fullsize.jpg",
+                            b.set_id
+                        )
+                    })
+                    .unwrap_or_default(),
+                user: ScoreUser {
+                    avatar_url: String::new(),
+                    country_code: String::new(),
+                    user_id: None,
+                    username: None,
+                    global_rank: None,
+                    country_rank: None,
+                    pp: 0.0,
+                },
+                fav_count: None,
+                play_count: bmap
+                    .map(|b| Some(b.plays))
+                    .unwrap_or(None)
+                    .filter(|&v| v > 0),
+                status: match bmap.map(|b| b.status) {
+                    Some(0) => "graveyard",
+                    Some(1) => "pending",
+                    Some(2) => "ranked",
+                    Some(3) => "approved",
+                    Some(4) => "loved",
+                    _ => "ranked",
+                }
+                .to_string(),
+            }
+        })
+        .collect()
+}
+
+/// 处理 ppy.sb 成绩查询。
+pub(crate) async fn handle_sb_score_query(
+    ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    cmd: &Command,
+) {
+    let target_qq = resolve_cmd_target_qq(cmd, msg, &ctx.storage).await;
+    let qq = target_qq.unwrap_or(msg.user_id);
+    let binding = match ctx.storage.sb_get_binding(qq).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            let _ = resp_tx
+                .send(user_str("sb.not_bound").replace("{qq}", &qq.to_string()))
+                .await;
+            return;
+        }
+        Err(e) => {
+            warn!(error = %e, "sb_get_binding failed");
+            let _ = resp_tx
+                .send(user_str("error.db_error").replace("{qq}", &msg.user_id.to_string()))
+                .await;
+            return;
+        }
+    };
+
+    let explicit_mode = extract_explicit_mode(cmd);
+    let sb_mode: GameMode = if let Some(m) = explicit_mode {
+        m
+    } else {
+        match ctx.storage.sb_get_default_mode(qq).await {
+            Ok(Some(mode)) => GameMode::try_from(mode).unwrap_or(GameMode::Osu),
+            Ok(None) => GameMode::Osu,
+            Err(e) => {
+                warn!(error = %e, "sb_get_default_mode failed");
+                GameMode::Osu
+            }
+        }
+    };
+
+    let mode_i32: i32 = sb_mode.into();
+    let limit = match cmd {
+        Command::Pass { limit, .. }
+        | Command::Recent { limit, .. }
+        | Command::Best { limit, .. }
+        | Command::TodayBest { limit, .. }
+        | Command::ScoreOnBeatmap { limit, .. }
+        | Command::BeatmapPreview { limit, .. } => *limit,
+        _ => 1,
+    };
+
+    let scores = match cmd {
+        Command::Pass { .. } | Command::Recent { .. } => {
+            let mut sb_scores = match sb_api::get_player_scores(
+                "recent",
+                binding.sb_user_id,
+                mode_i32,
+                (limit * 2).max(50) as i32,
+                &ctx.sb_rate_limiter,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                    return;
+                }
+            };
+            if matches!(cmd, Command::Pass { .. }) {
+                sb_scores.retain(|s| s.rank != "F");
+            }
+            convert_sb_scores(sb_scores, limit as usize, sb_mode)
+        }
+        Command::Best { .. } | Command::TodayBest { .. } => {
+            let sb_scores = match sb_api::get_player_scores(
+                "best",
+                binding.sb_user_id,
+                mode_i32,
+                limit as i32,
+                &ctx.sb_rate_limiter,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                    return;
+                }
+            };
+            convert_sb_scores(sb_scores, limit as usize, sb_mode)
+        }
+        Command::ScoreOnBeatmap {
+            beatmap_id: Some(bid),
+            ..
+        } => {
+            let beatmap = match sb_api::get_map_info(*bid as i64, &ctx.sb_rate_limiter).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                    return;
+                }
+            };
+            if beatmap.md5.is_empty() {
+                let _ = resp_tx
+                    .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))
+                    .await;
+                return;
+            }
+            let sb_scores = match sb_api::get_map_scores(
+                "best",
+                &beatmap.md5,
+                mode_i32,
+                limit as i32,
+                &ctx.sb_rate_limiter,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                    return;
+                }
+            };
+            if sb_scores.is_empty() {
+                let _ = resp_tx
+                    .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))
+                    .await;
+                return;
+            }
+            convert_sb_scores(sb_scores, limit as usize, sb_mode)
+        }
+        Command::ScoreOnBeatmap { .. } => {
+            let _ = resp_tx
+                .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))
+                .await;
+            return;
+        }
+        Command::BeatmapPreview {
+            beatmap_id: Some(bid),
+            ..
+        } => {
+            let beatmap = match sb_api::get_map_info(*bid as i64, &ctx.sb_rate_limiter).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                    return;
+                }
+            };
+            let artist = if beatmap.artist.is_empty() {
+                "?"
+            } else {
+                &beatmap.artist
+            };
+            let title = if beatmap.title.is_empty() {
+                "?"
+            } else {
+                &beatmap.title
+            };
+            let version = if beatmap.version.is_empty() {
+                "?"
+            } else {
+                &beatmap.version
+            };
+            let bpm_str = if beatmap.bpm > 0.0 {
+                format!("{:.0}", beatmap.bpm)
+            } else {
+                "?".to_string()
+            };
+            let reply = format!(
+                "[CQ:at,qq={qq}] ═══ ppy.sb Beatmap ═══\n\
+                 ▸ {artist} - {title} [{version}]\n\
+                 ▸ BPM: {bpm} | CS: {cs} | AR: {ar} | OD: {od}\n\
+                 ▸ Star: {star:.2} | Max Combo: {max_combo}\n\
+                 ▸ Plays: {plays} | Passes: {passes}",
+                qq = msg.user_id,
+                artist = artist,
+                title = title,
+                version = version,
+                bpm = bpm_str,
+                cs = beatmap.cs,
+                ar = beatmap.ar,
+                od = beatmap.od,
+                star = beatmap.star_rating,
+                max_combo = beatmap.max_combo,
+                plays = beatmap.plays,
+                passes = beatmap.passes,
+            );
+            let _ = resp_tx.send(reply).await;
+            return;
+        }
+        Command::BeatmapAudio { .. } => {
+            let _ = resp_tx
+                .send(user_str("sb.no_audio").replace("{qq}", &msg.user_id.to_string()))
+                .await;
+            return;
+        }
+        // beatmap_id is None — already handled by Some(bid) above
+        Command::BeatmapPreview { .. } => {
+            let _ = resp_tx
+                .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))
+                .await;
+            return;
+        }
+        _ => Vec::new(),
+    };
+
+    if scores.is_empty() {
+        let _ = resp_tx
+            .send(user_str("sb.no_scores").replace("{qq}", &msg.user_id.to_string()))
+            .await;
+        return;
+    }
+
+    let mut indexed: Vec<(usize, Score)> = scores.into_iter().enumerate().collect();
+    let filters = match cmd {
+        Command::Pass { filters, .. }
+        | Command::Recent { filters, .. }
+        | Command::Best { filters, .. }
+        | Command::TodayBest { filters, .. }
+        | Command::ScoreOnBeatmap { filters, .. } => filters.as_deref(),
+        _ => None,
+    };
+    if let Some(filters) = filters {
+        indexed.retain(|(_, s)| score_matches_filters(s, filters, sb_mode));
+        if indexed.is_empty() {
+            let _ = resp_tx
+                .send(
+                    user_str("query.no_match")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{name}", user_str("query.noun_score")),
+                )
+                .await;
+            return;
+        }
+    }
+
+    let limit = match cmd {
+        Command::Pass { limit, .. }
+        | Command::Recent { limit, .. }
+        | Command::Best { limit, .. }
+        | Command::TodayBest { limit, .. }
+        | Command::ScoreOnBeatmap { limit, .. } => *limit,
+        _ => 1,
+    };
+
+    // 获取 SB 玩家信息，用于渲染图片卡片
+    let user_stats = match sb_api::get_player_info(binding.sb_user_id, &ctx.sb_rate_limiter).await {
+        Ok((info, stats_map)) => {
+            let mode_key = (sb_mode as i32).to_string();
+            let mode_stats = stats_map.get(mode_key.as_str());
+            UserStats {
+                user_id: info.id,
+                username: info.name,
+                pp: mode_stats.map(|s| s.pp).unwrap_or(0.0),
+                rank: mode_stats.map(|s| s.global_rank).unwrap_or(0),
+                country_rank: mode_stats.map(|s| s.country_rank).unwrap_or(0),
+                country_code: info.country,
+                ranked_score: mode_stats.map(|s| s.total_score).unwrap_or(0),
+                accuracy: mode_stats.map(|s| s.accuracy).unwrap_or(0.0),
+                playcount: mode_stats.map(|s| s.play_count).unwrap_or(0),
+                hits: mode_stats
+                    .map(|s| s.count_ssh + s.count_ss + s.count_sh + s.count_s + s.count_a)
+                    .unwrap_or(0),
+                playtime: mode_stats.map(|s| s.play_time).unwrap_or(0),
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+                avatar_url: Some(format!("https://a.ppy.sb/{}", info.id)),
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "SB get_player_info failed, falling back to text");
+            let is_summary = match cmd {
+                Command::Pass { is_summary, .. }
+                | Command::Recent { is_summary, .. }
+                | Command::Best { is_summary, .. }
+                | Command::TodayBest { is_summary, .. } => *is_summary,
+                _ => false,
+            };
+            if is_summary {
+                let original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+                let scores: Vec<Score> = indexed.into_iter().map(|(_, s)| s).collect();
+                let text = format_scores(
+                    &scores,
+                    &binding.sb_username,
+                    sb_mode,
+                    user_str("fmt.best_score"),
+                    &original_indices,
+                );
+                let _ = resp_tx.send(text).await;
+            } else {
+                let idx = (limit - 1) as usize;
+                if idx < indexed.len() {
+                    let score = &indexed[idx].1;
+                    let text = format_score(
+                        score,
+                        &binding.sb_username,
+                        sb_mode,
+                        Some(idx),
+                        user_str("fmt.best_score"),
+                    );
+                    let _ = resp_tx.send(text).await;
+                }
+            }
+            return;
+        }
+    };
+
+    let is_summary = match cmd {
+        Command::Pass { is_summary, .. }
+        | Command::Recent { is_summary, .. }
+        | Command::Best { is_summary, .. }
+        | Command::TodayBest { is_summary, .. } => *is_summary,
+        Command::ScoreOnBeatmap {
+            is_all, limit_end, ..
+        } => *is_all || limit_end.is_some(),
+        _ => false,
+    };
+
+    if is_summary {
+        let original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+        let scores: Vec<Score> = indexed.into_iter().map(|(_, s)| s).collect();
+        render_and_send_score_list(
+            ctx,
+            msg,
+            resp_tx,
+            &scores,
+            &user_stats,
+            &binding.sb_username,
+            sb_mode,
+            "fmt.best_score",
+            &original_indices,
+        )
+        .await;
+    } else {
+        let idx = (limit - 1) as usize;
+        if idx >= indexed.len() {
+            let _ = resp_tx
+                .send(
+                    user_str("query.index_out_of_range")
+                        .replace("{qq}", &msg.user_id.to_string())
+                        .replace("{pos}", &limit.to_string())
+                        .replace("{name}", user_str("query.noun_score"))
+                        .replace("{total}", &indexed.len().to_string()),
+                )
+                .await;
+            return;
+        }
+        let score = &indexed[idx].1;
+        render_and_send_single_score(SingleScoreRenderParams {
+            ctx,
+            msg,
+            resp_tx,
+            score,
+            mode: sb_mode,
+            user_stats: &user_stats,
+            position: Some(idx),
+            label: user_str("fmt.best_score"),
+        })
+        .await;
+    }
 }

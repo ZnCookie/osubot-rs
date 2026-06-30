@@ -64,6 +64,8 @@ pub struct Config {
     pub plugin: PluginConfig,
     #[serde(default)]
     pub match_listen: MatchListenConfig,
+    #[serde(default)]
+    pub sb: SbConfig,
 }
 
 #[derive(Deserialize, Clone)]
@@ -431,6 +433,33 @@ impl Default for MatchListenConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct SbConfig {
+    /// 是否启用 ppy.sb 相关功能（默认 true）
+    #[serde(default = "default_sb_enabled")]
+    pub enabled: bool,
+    /// 是否要求绑定 SB 前先绑定官服账号（默认 true）
+    #[serde(default = "default_sb_bind_require_official")]
+    pub sb_bind_require_official_bind: bool,
+}
+
+fn default_sb_enabled() -> bool {
+    true
+}
+
+fn default_sb_bind_require_official() -> bool {
+    true
+}
+
+impl Default for SbConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sb_bind_require_official_bind: true,
+        }
+    }
+}
+
 /// 热重载时会从新 TOML 解析的部分，遗留字段（database）保持旧值不变。
 /// osu/irc/bot 用 Option 区分"未写 section"（None，继承旧值）和"写了 section"（Some，使用新值）。
 /// scheduler 也用 Option 避免无 section 时用默认值覆盖用户配置。
@@ -455,6 +484,8 @@ pub struct MutableConfig {
     pub irc: Option<IrcConfig>,
     #[serde(default)]
     pub match_listen: Option<MatchListenConfig>,
+    #[serde(default)]
+    pub sb: Option<SbConfig>,
 }
 
 impl Config {
@@ -599,6 +630,7 @@ impl Default for Config {
             upstream: UpstreamConfig::default(),
             plugin: PluginConfig::default(),
             match_listen: MatchListenConfig::default(),
+            sb: SbConfig::default(),
         }
     }
 }

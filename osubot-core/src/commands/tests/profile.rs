@@ -1,5 +1,5 @@
 use crate::commands::parse_command;
-use crate::types::Command;
+use crate::types::{Command, Server};
 
 #[test]
 fn test_profile_self() {
@@ -9,6 +9,7 @@ fn test_profile_self() {
         Command::ProfileCard {
             username: None,
             qq: None,
+            server: Server::Official,
         }
     );
 }
@@ -21,6 +22,7 @@ fn test_profile_mention() {
         Command::ProfileCard {
             username: None,
             qq: Some(123456),
+            server: Server::Official,
         }
     );
 }
@@ -33,6 +35,7 @@ fn test_profile_with_username() {
         Command::ProfileCard {
             username: Some("ZnCookie".to_string()),
             qq: None,
+            server: Server::Official,
         }
     );
 }
@@ -45,6 +48,7 @@ fn test_profile_username_with_mention() {
         Command::ProfileCard {
             username: Some("ZnCookie".to_string()),
             qq: None,
+            server: Server::Official,
         }
     );
 }
@@ -57,6 +61,7 @@ fn test_profile_with_spaces_around_username() {
         Command::ProfileCard {
             username: Some("ZnCookie".to_string()),
             qq: None,
+            server: Server::Official,
         }
     );
 }
@@ -69,6 +74,7 @@ fn test_profile_qq_in_text() {
         Command::ProfileCard {
             username: None,
             qq: Some(123456),
+            server: Server::Official,
         }
     );
 }
@@ -86,6 +92,7 @@ fn test_profile_qq_equals() {
         Command::ProfileCard {
             username: None,
             qq: Some(123456),
+            server: Server::Official,
         }
     );
 }
@@ -98,6 +105,7 @@ fn test_profile_qq_equals_with_mention_fallback() {
         Command::ProfileCard {
             username: None,
             qq: Some(123456),
+            server: Server::Official,
         }
     );
 }

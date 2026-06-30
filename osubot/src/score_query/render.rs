@@ -150,7 +150,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
                     None
                 },
                 country_code: &user_stats.country_code,
-                avatar_url: &format!("https://a.ppy.sh/{}", user_stats.user_id),
+                avatar_url: user_stats.avatar_url.as_deref().unwrap_or(""),
                 pp_change,
                 global_rank_change,
                 country_rank_change,
@@ -260,7 +260,7 @@ pub(super) async fn render_and_send_score_list(
         Cow::Owned(slots.into_iter().flatten().collect())
     };
 
-    let avatar_url = format!("https://a.ppy.sh/{}", user_stats.user_id);
+    let avatar_url = user_stats.avatar_url.clone().unwrap_or_default();
     let hero_cover_url = user_stats.cover_url.clone().unwrap_or_default();
     let user_global_rank = if user_stats.rank > 0 {
         Some(user_stats.rank)
