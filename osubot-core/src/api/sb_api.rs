@@ -246,7 +246,8 @@ pub async fn search_player(
     username: &str,
     rate_limiter: &RateLimiter,
 ) -> Result<Vec<SbSearchPlayer>, ApiError> {
-    let url = format!("{}/v1/search_players?q={}", SB_API_BASE, username);
+    let encoded_username = urlencoding::encode(username);
+    let url = format!("{}/v1/search_players?q={}", SB_API_BASE, encoded_username);
     let data: SbSearchPlayersData = sb_get(&url, rate_limiter).await?;
     Ok(data.players)
 }

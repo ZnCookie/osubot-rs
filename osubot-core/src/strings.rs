@@ -191,7 +191,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "sb.mode.not_bound" => "[CQ:at,qq={qq}] 请先绑定 ppy.sb 账号后再设置默认模式",
 
     // ── 系统 ──
-    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\nppy.sb: ?/where/bind/unbind/mode/今日高光 (用 ? 替代 ~ 前缀)\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "请求过于频繁，请稍后再试",

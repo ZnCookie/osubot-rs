@@ -150,7 +150,7 @@ osubot/                  # 主程序入口、消息循环、命令调度
 └── src/yumu_upstream.rs # Yumu 上游绑定查询
 
 osubot-core/             # 核心业务逻辑
-├── src/api/             # osu! API v2 调用（OAuth/PP/谱面/成绩）
+├── src/api/             # osu! API v2 调用（OAuth/PP/谱面/成绩）、ppy.sb API
 ├── src/commands/        # 命令解析（parse_command），子模块：mod.rs/common.rs/scoring.rs
 ├── src/storage.rs       # 数据库操作
 ├── src/ssrf.rs          # SSRF 防护
