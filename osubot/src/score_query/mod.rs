@@ -1253,7 +1253,7 @@ fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize, mode: GameMode) -> V
                 artist: bmap.map(|b| b.artist.clone()).unwrap_or_default(),
                 title: bmap.map(|b| b.title.clone()).unwrap_or_default(),
                 version: bmap.map(|b| b.version.clone()).unwrap_or_default(),
-                creator: String::new(),
+                creator: bmap.map(|b| b.creator.clone()).unwrap_or_default(),
                 star_rating: bmap.map(|b| b.star_rating).unwrap_or(0.0),
                 bpm: bmap.map(|b| b.bpm).unwrap_or(0.0),
                 ar: bmap.map(|b| b.ar).unwrap_or(0.0),
@@ -1273,7 +1273,11 @@ fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize, mode: GameMode) -> V
                 passed: s.rank != "F",
                 mods: sb_mods_to_rosu(s.mods, mode),
                 is_perfect: s.perfect,
-                created_at: s.play_time,
+                created_at: if s.play_time.ends_with('Z') || s.play_time.contains('+') {
+                    s.play_time
+                } else {
+                    format!("{}Z", s.play_time)
+                },
                 is_lazer: false,
                 has_replay: false,
                 legacy_score_id: None,
@@ -1290,7 +1294,15 @@ fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize, mode: GameMode) -> V
                     osu_large_tick_misses: 0,
                     osu_small_tick_misses: 0,
                 },
-                cover_url: String::new(),
+                cover_url: bmap
+                    .filter(|b| b.set_id > 0)
+                    .map(|b| {
+                        format!(
+                            "https://assets.ppy.sh/beatmaps/{}/covers/fullsize.jpg",
+                            b.set_id
+                        )
+                    })
+                    .unwrap_or_default(),
                 user: ScoreUser {
                     avatar_url: String::new(),
                     country_code: String::new(),
@@ -1301,8 +1313,19 @@ fn convert_sb_scores(sb_scores: Vec<SbScore>, limit: usize, mode: GameMode) -> V
                     pp: 0.0,
                 },
                 fav_count: None,
-                play_count: None,
-                status: String::new(),
+                play_count: bmap
+                    .map(|b| Some(b.plays))
+                    .unwrap_or(None)
+                    .filter(|&v| v > 0),
+                status: match bmap.map(|b| b.status) {
+                    Some(0) => "graveyard",
+                    Some(1) => "pending",
+                    Some(2) => "ranked",
+                    Some(3) => "approved",
+                    Some(4) => "loved",
+                    _ => "ranked",
+                }
+                .to_string(),
             }
         })
         .collect()
@@ -1553,6 +1576,69 @@ pub(crate) async fn handle_sb_score_query(
         _ => 1,
     };
 
+    // 获取 SB 玩家信息，用于渲染图片卡片
+    let user_stats = match sb_api::get_player_info(binding.sb_user_id, &ctx.sb_rate_limiter).await {
+        Ok((info, stats_map)) => {
+            let mode_key = (sb_mode as i32).to_string();
+            let mode_stats = stats_map.get(mode_key.as_str());
+            UserStats {
+                user_id: info.id,
+                username: info.name,
+                pp: mode_stats.map(|s| s.pp).unwrap_or(0.0),
+                rank: mode_stats.map(|s| s.global_rank).unwrap_or(0),
+                country_rank: mode_stats.map(|s| s.country_rank).unwrap_or(0),
+                country_code: info.country,
+                ranked_score: mode_stats.map(|s| s.total_score).unwrap_or(0),
+                accuracy: mode_stats.map(|s| s.accuracy).unwrap_or(0.0),
+                playcount: mode_stats.map(|s| s.play_count).unwrap_or(0),
+                hits: mode_stats
+                    .map(|s| s.count_ssh + s.count_ss + s.count_sh + s.count_s + s.count_a)
+                    .unwrap_or(0),
+                playtime: mode_stats.map(|s| s.play_time).unwrap_or(0),
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+                avatar_url: Some(format!("https://a.ppy.sb/{}", info.id)),
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "SB get_player_info failed, falling back to text");
+            let is_summary = match cmd {
+                Command::Pass { is_summary, .. }
+                | Command::Recent { is_summary, .. }
+                | Command::Best { is_summary, .. }
+                | Command::TodayBest { is_summary, .. } => *is_summary,
+                _ => false,
+            };
+            if is_summary {
+                let original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+                let scores: Vec<Score> = indexed.into_iter().map(|(_, s)| s).collect();
+                let text = format_scores(
+                    &scores,
+                    &binding.sb_username,
+                    sb_mode,
+                    user_str("fmt.best_score"),
+                    &original_indices,
+                );
+                let _ = resp_tx.send(text).await;
+            } else {
+                let idx = (limit - 1) as usize;
+                if idx < indexed.len() {
+                    let score = &indexed[idx].1;
+                    let text = format_score(
+                        score,
+                        &binding.sb_username,
+                        sb_mode,
+                        Some(idx),
+                        user_str("fmt.best_score"),
+                    );
+                    let _ = resp_tx.send(text).await;
+                }
+            }
+            return;
+        }
+    };
+
     let is_summary = match cmd {
         Command::Pass { is_summary, .. }
         | Command::Recent { is_summary, .. }
@@ -1567,14 +1653,18 @@ pub(crate) async fn handle_sb_score_query(
     if is_summary {
         let original_indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
         let scores: Vec<Score> = indexed.into_iter().map(|(_, s)| s).collect();
-        let text = format_scores(
+        render_and_send_score_list(
+            ctx,
+            msg,
+            resp_tx,
             &scores,
+            &user_stats,
             &binding.sb_username,
             sb_mode,
-            user_str("fmt.best_score"),
+            "fmt.best_score",
             &original_indices,
-        );
-        let _ = resp_tx.send(text).await;
+        )
+        .await;
     } else {
         let idx = (limit - 1) as usize;
         if idx >= indexed.len() {
@@ -1590,13 +1680,16 @@ pub(crate) async fn handle_sb_score_query(
             return;
         }
         let score = &indexed[idx].1;
-        let text = format_score(
+        render_and_send_single_score(SingleScoreRenderParams {
+            ctx,
+            msg,
+            resp_tx,
             score,
-            &binding.sb_username,
-            sb_mode,
-            Some(idx),
-            user_str("fmt.best_score"),
-        );
-        let _ = resp_tx.send(text).await;
+            mode: sb_mode,
+            user_stats: &user_stats,
+            position: Some(idx),
+            label: user_str("fmt.best_score"),
+        })
+        .await;
     }
 }

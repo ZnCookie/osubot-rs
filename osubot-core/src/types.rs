@@ -28,6 +28,7 @@ pub struct UserStats {
     pub rank_change: Option<i64>,
     pub country_rank_change: Option<i64>,
     pub cover_url: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 /// Group category of a command, used for per-group enable/disable in config.

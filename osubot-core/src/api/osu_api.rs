@@ -45,6 +45,7 @@ async fn fetch_user_stats_internal(
         rank_change: None,
         country_rank_change: None,
         cover_url: data.cover.and_then(|c| c.custom_url.or(c.url)),
+        avatar_url: Some(format!("https://a.ppy.sh/{}", data.id)),
     })
 }
 

@@ -121,6 +121,7 @@ impl UserStatsSnapshot {
             rank_change: None,
             country_rank_change: None,
             cover_url: None,
+            avatar_url: None,
         }
     }
 }
@@ -1723,6 +1724,7 @@ mod tests {
             rank_change: None,
             country_rank_change: None,
             cover_url: None,
+            avatar_url: None,
         }
     }
 
