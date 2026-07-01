@@ -178,21 +178,31 @@ struct OneBotMessage {
 }
 
 /// Parse a OneBot JSON message into a `QQMessage`.
-/// Returns `None` if the message is not a group message or lacks required fields.
+/// Returns `None` if the message is not a group/private message or lacks required fields.
 pub(crate) fn parse_onebot_message(json: &str) -> Option<QQMessage> {
     let msg: OneBotMessage = serde_json::from_str(json).ok()?;
 
-    if msg.post_type != "message" || msg.message_type.as_deref() != Some("group") {
+    if msg.post_type != "message" {
         return None;
     }
 
-    let group_id = msg.group_id?;
     let user_id = msg.user_id?;
 
-    let (message_text, mentioned_user_id) = extract_message_and_mention(&msg.message?);
+    let (group_id, message_text, mentioned_user_id) = match msg.message_type.as_deref() {
+        Some("group") => {
+            let group_id = msg.group_id?;
+            let (text, mention) = extract_message_and_mention(&msg.message?);
+            (Some(group_id), text, mention)
+        }
+        Some("private") => {
+            let (text, _) = extract_message_and_mention(&msg.message?);
+            (None, text, None)
+        }
+        _ => return None,
+    };
 
     Some(QQMessage {
-        group_id: Some(group_id),
+        group_id,
         user_id,
         message: message_text,
         mentioned_user_id,
