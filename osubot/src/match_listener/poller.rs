@@ -366,7 +366,7 @@ impl MatchListenerPoller {
             );
             let delivered = self
                 .send_notification(
-                    group_id.unwrap_or(0),
+                    &listener,
                     match_id,
                     match_name,
                     users,
@@ -422,14 +422,14 @@ impl MatchListenerPoller {
         Ok(())
     }
 
-    /// Send a single notification to the group.
+    /// Send a single notification to the appropriate target (group or private).
     ///
     /// Reads `current_write` fresh each call. If no sink is available or send
     /// fails, returns false so the caller can leave cursors unacknowledged and
     /// retry after reconnect.
     async fn send_notification(
         &self,
-        group_id: i64,
+        listener: &osubot_core::storage::MatchListener,
         match_id: u64,
         match_name: &str,
         users: &[osubot_core::api::LegacyMatchUser],
@@ -440,8 +440,7 @@ impl MatchListenerPoller {
         drop(cw_guard);
 
         let Some(write) = write_opt else {
-            // No active sink — drop notification (ponytail: v1 behavior).
-            warn!(group_id, match_id, "{}", log_str("ml.notify_text_fallback"));
+            warn!(match_id, "{}", log_str("ml.notify_text_fallback"));
             return false;
         };
 
@@ -450,14 +449,25 @@ impl MatchListenerPoller {
                 text, event_type, ..
             } => {
                 let msg = super::notify::format_lobby_text(event_type, text, users, match_name);
-                match crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &msg).await
-                {
+                let send_result = match listener.notification_type.as_str() {
+                    "private" => {
+                        let user_id = listener.user_id.unwrap_or(0);
+                        crate::onebot::send_private_msg(&write, &self.onebot_api, user_id, &msg)
+                            .await
+                    }
+                    _ => {
+                        let group_id = listener.group_id.unwrap_or(0);
+                        crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &msg)
+                            .await
+                    }
+                };
+                match send_result {
                     Ok(()) => {
-                        info!(group_id, match_id, "{}", log_fmt!("ml.notify_sent"));
+                        info!(match_id, "{}", log_fmt!("ml.notify_sent"));
                         true
                     }
                     Err(e) => {
-                        warn!(group_id, match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
+                        warn!(match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
                         false
                     }
                 }
@@ -479,6 +489,23 @@ impl MatchListenerPoller {
                         super::notify::format_game_fallback_text(game.as_ref(), users, match_name)
                     }
                 };
+
+                // Private chat does not support image sending; fall back to text directly.
+                if listener.notification_type.as_str() == "private" {
+                    let fallback = fallback_text();
+                    let user_id = listener.user_id.unwrap_or(0);
+                    return crate::onebot::send_private_msg(
+                        &write,
+                        &self.onebot_api,
+                        user_id,
+                        &fallback,
+                    )
+                    .await
+                    .is_ok();
+                }
+
+                let group_id = listener.group_id.unwrap_or(0);
+
                 // Try render; fall back to text on failure.
                 match super::notify::build_match_result_params(
                     match_id,
