@@ -21,7 +21,7 @@ pub(crate) type WriteSink = futures_util::stream::SplitSink<
 
 #[derive(Debug, Clone)]
 pub(crate) struct QQMessage {
-    pub group_id: i64,
+    pub group_id: Option<i64>,
     pub user_id: i64,
     pub message: String,
     pub mentioned_user_id: Option<i64>,
@@ -192,7 +192,7 @@ pub(crate) fn parse_onebot_message(json: &str) -> Option<QQMessage> {
     let (message_text, mentioned_user_id) = extract_message_and_mention(&msg.message?);
 
     Some(QQMessage {
-        group_id,
+        group_id: Some(group_id),
         user_id,
         message: message_text,
         mentioned_user_id,
