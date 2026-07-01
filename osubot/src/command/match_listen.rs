@@ -290,7 +290,7 @@ async fn execute_start(
         .storage
         .start_match_listener(MatchListenerStartParams {
             match_id: match_id as i64,
-            group_id,
+            group_id: Some(group_id_val),
             user_id: if group_id.is_none() {
                 Some(user_id)
             } else {
