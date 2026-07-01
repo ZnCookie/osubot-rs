@@ -177,7 +177,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let group_id = msg.group_id;
+            let group_id = msg.group_id.unwrap_or(0);
             let resp_tx_img = resp_tx.clone();
 
             tokio::spawn(async move {
@@ -325,7 +325,7 @@ pub(super) async fn render_and_send_score_list(
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let group_id = msg.group_id;
+            let group_id = msg.group_id.unwrap_or(0);
             let resp_tx_img = resp_tx.clone();
 
             tokio::spawn(async move {

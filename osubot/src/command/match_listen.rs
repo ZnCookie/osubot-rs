@@ -157,7 +157,7 @@ pub(super) async fn handle_match_listen_command(
     let Command::MatchListen(action) = cmd else {
         return;
     };
-    let group_id = msg.group_id;
+    let group_id = msg.group_id.unwrap_or(0);
     let user_id = msg.user_id;
 
     info!(

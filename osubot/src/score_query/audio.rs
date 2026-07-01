@@ -19,7 +19,7 @@ pub(super) async fn render_audio_by_beatmapset_id(
     beatmapset_id: i64,
 ) {
     let qq = msg.user_id;
-    let group_id = msg.group_id;
+    let group_id = msg.group_id.unwrap_or(0);
 
     if beatmapset_id <= 0 {
         send_error(resp_tx, qq, "error.data_fetch_failed").await;

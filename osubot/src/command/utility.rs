@@ -25,7 +25,7 @@ pub(super) async fn handle_utility_commands(
 async fn handle_help_command(_ctx: &BotContext, msg: &QQMessage, resp_tx: &mpsc::Sender<String>) {
     info!(
         user_id = msg.user_id,
-        group_id = msg.group_id,
+        group_id = ?msg.group_id,
         "{}",
         log_fmt!("main.help_command")
     );
@@ -40,16 +40,25 @@ async fn handle_highlight_command(
     resp_tx: &mpsc::Sender<String>,
     mode: GameMode,
 ) {
-    info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.highlight_command"));
+    info!(user_id = msg.user_id, group_id = ?msg.group_id, mode = ?mode, "{}", log_fmt!("main.highlight_command"));
 
-    let group_members = match get_group_member_list(&ctx.write, &ctx.onebot_api, msg.group_id).await
-    {
-        Ok(m) => m,
-        Err(e) => {
-            warn!(error = %e, "{}", log_fmt!("main.highlight_group_member_failed"));
+    let group_members = match msg.group_id {
+        Some(gid) => match get_group_member_list(&ctx.write, &ctx.onebot_api, gid).await {
+            Ok(m) => m,
+            Err(_) => {
+                let _ = resp_tx
+                    .send(
+                        user_str("error.get_group_members")
+                            .replace("{qq}", &msg.user_id.to_string()),
+                    )
+                    .await;
+                return;
+            }
+        },
+        None => {
             let _ = resp_tx
                 .send(
-                    user_str("error.get_group_member_failed")
+                    user_str("highlight.not_supported_in_private")
                         .replace("{qq}", &msg.user_id.to_string()),
                 )
                 .await;
@@ -280,7 +289,7 @@ async fn handle_profile_card(
             );
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let group_id = msg.group_id;
+            let group_id = msg.group_id.unwrap_or(0);
             let resp_tx = resp_tx.clone();
 
             tokio::spawn(async move {
