@@ -289,14 +289,21 @@ async fn handle_profile_card(
             );
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let group_id = msg.group_id.unwrap_or(0);
             let resp_tx = resp_tx.clone();
+            let msg_group_id = msg.group_id;
+            let msg_user_id = msg.user_id;
 
             tokio::spawn(async move {
-                if send_group_msg_with_image(&write, &onebot_api, group_id, &jpeg_bytes)
-                    .await
-                    .is_err()
-                {
+                let send_result = match msg_group_id {
+                    Some(gid) => {
+                        send_group_msg_with_image(&write, &onebot_api, gid, &jpeg_bytes).await
+                    }
+                    None => {
+                        send_private_msg_with_image(&write, &onebot_api, msg_user_id, &jpeg_bytes)
+                            .await
+                    }
+                };
+                if send_result.is_err() {
                     let _ = resp_tx
                         .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
                         .await;

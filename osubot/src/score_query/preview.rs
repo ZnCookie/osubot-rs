@@ -33,7 +33,6 @@ pub(super) async fn render_beatmap_preview_by_id(
     mode: GameMode,
 ) {
     let qq = msg.user_id;
-    let group_id = msg.group_id.unwrap_or(0);
     let resolved_bid = beatmap_id;
 
     let mods = mods.clone();
@@ -220,8 +219,13 @@ pub(super) async fn render_beatmap_preview_by_id(
     };
 
     let write = ctx.write.clone();
-    if let Err(e) = send_group_msg_with_image(&write, &ctx.onebot_api, group_id, &image_bytes).await
-    {
+    let send_result = match msg.group_id {
+        Some(gid) => send_group_msg_with_image(&write, &ctx.onebot_api, gid, &image_bytes).await,
+        None => {
+            send_private_msg_with_image(&write, &ctx.onebot_api, msg.user_id, &image_bytes).await
+        }
+    };
+    if let Err(e) = send_result {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
         let _ = resp_tx
             .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))

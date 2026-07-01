@@ -18,7 +18,9 @@ use osubot_render::{render_profile_card, PROFILE_VIEWPORT_WIDTH};
 
 use tracing::{debug, error, info, warn};
 
-use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage};
+use crate::onebot::{
+    get_group_member_list, send_group_msg_with_image, send_private_msg_with_image, QQMessage,
+};
 use crate::score_query::handle_score_query;
 use crate::{api_error_msg, profile_dedup, BotContext, UserRateLimit};
 

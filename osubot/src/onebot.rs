@@ -381,6 +381,68 @@ pub(crate) async fn send_private_msg(
     .map(|_| ())
 }
 
+/// Send a message with a base64-encoded image to a QQ user (private chat)
+/// via the OneBot WebSocket connection.
+pub(crate) async fn send_private_msg_with_image(
+    write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
+    user_id: i64,
+    image_data: &[u8],
+) -> Result<(), String> {
+    use base64::prelude::*;
+    let b64 = BASE64_STANDARD.encode(image_data);
+    let segments = serde_json::json!([
+        {
+            "type": "image",
+            "data": {
+                "file": format!("base64://{}", b64)
+            }
+        }
+    ]);
+    call_onebot_api(
+        write,
+        api,
+        "send_private_msg",
+        serde_json::json!({
+            "user_id": user_id,
+            "message": segments
+        }),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Send a message with a voice record (base64-encoded MP3 bytes) to a QQ user
+/// (private chat) via the OneBot WebSocket connection.
+pub(crate) async fn send_private_msg_with_record(
+    write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
+    user_id: i64,
+    mp3: &[u8],
+) -> Result<(), String> {
+    use base64::prelude::*;
+    let b64 = BASE64_STANDARD.encode(mp3);
+    let segments = serde_json::json!([
+        {
+            "type": "record",
+            "data": {
+                "file": format!("base64://{}", b64)
+            }
+        }
+    ]);
+    call_onebot_api(
+        write,
+        api,
+        "send_private_msg",
+        serde_json::json!({
+            "user_id": user_id,
+            "message": segments
+        }),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Send a message with a base64-encoded image to a QQ group via the OneBot WebSocket connection.
 pub(crate) async fn send_group_msg_with_image(
     write: &Arc<Mutex<WriteSink>>,

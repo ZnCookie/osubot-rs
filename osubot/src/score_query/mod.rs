@@ -36,7 +36,7 @@ use osubot_core::OauthTokenCache;
 use osubot_core::RateLimiter;
 
 use crate::api_error_msg;
-use crate::onebot::{send_group_msg_with_image, QQMessage};
+use crate::onebot::{send_group_msg_with_image, send_private_msg_with_image, QQMessage};
 use crate::{
     audio_score_dedup, beatmap_scores_dedup, beatmapset_dedup, best_scores_dedup,
     preview_score_dedup, score_by_id_dedup, score_by_id_err_msg, score_dedup,

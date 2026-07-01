@@ -484,48 +484,138 @@ impl MatchListenerPoller {
                     }
                 };
 
-                // Private chat does not support image sending; fall back to text directly.
+                // Private chat: render image and send via private message.
                 if listener.notification_type.as_str() == "private" {
-                    let fallback = fallback_text();
                     let user_id = listener.user_id.unwrap_or(0);
-                    return crate::onebot::send_private_msg(
-                        &write,
-                        &self.onebot_api,
-                        user_id,
-                        &fallback,
-                    )
-                    .await
-                    .is_ok();
-                }
-
-                let group_id = listener.group_id.unwrap_or(0);
-
-                // Try render; fall back to text on failure.
-                match super::notify::build_match_result_params(
-                    match_id,
-                    match_name,
-                    event_label,
-                    played_at,
-                    game.as_ref(),
-                    users,
-                ) {
-                    Some(mut output) => {
-                        enrich_match_result_metadata(&mut output, &self.rate_limiter, &self.oauth)
+                    match super::notify::build_match_result_params(
+                        match_id,
+                        match_name,
+                        event_label,
+                        played_at,
+                        game.as_ref(),
+                        users,
+                    ) {
+                        Some(mut output) => {
+                            enrich_match_result_metadata(
+                                &mut output,
+                                &self.rate_limiter,
+                                &self.oauth,
+                            )
                             .await;
-                        output.params.cover_image =
-                            fetch_match_cover_image(output.cover_url.as_deref()).await;
-                        fetch_match_avatar_images(&mut output.params.players).await;
-                        match osubot_render::render_match_result_card(output.params).await {
-                            Ok(jpeg_bytes) => {
-                                if let Err(e) = crate::onebot::send_group_msg_with_image(
-                                    &write,
-                                    &self.onebot_api,
-                                    group_id,
-                                    &jpeg_bytes,
-                                )
-                                .await
-                                {
-                                    warn!(group_id, match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
+                            output.params.cover_image =
+                                fetch_match_cover_image(output.cover_url.as_deref()).await;
+                            fetch_match_avatar_images(&mut output.params.players).await;
+                            match osubot_render::render_match_result_card(output.params).await {
+                                Ok(jpeg_bytes) => {
+                                    if let Err(e) = crate::onebot::send_private_msg_with_image(
+                                        &write,
+                                        &self.onebot_api,
+                                        user_id,
+                                        &jpeg_bytes,
+                                    )
+                                    .await
+                                    {
+                                        warn!(match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
+                                        let fallback = fallback_text();
+                                        crate::onebot::send_private_msg(
+                                            &write,
+                                            &self.onebot_api,
+                                            user_id,
+                                            &fallback,
+                                        )
+                                        .await
+                                        .is_ok()
+                                    } else {
+                                        info!(
+                                            match_id,
+                                            bytes = jpeg_bytes.len(),
+                                            "{}",
+                                            log_fmt!("ml.notify_image_sent")
+                                        );
+                                        true
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(match_id, error = %e, "{}", log_str("ml.poller_render_failed"));
+                                    let fallback = fallback_text();
+                                    crate::onebot::send_private_msg(
+                                        &write,
+                                        &self.onebot_api,
+                                        user_id,
+                                        &fallback,
+                                    )
+                                    .await
+                                    .is_ok()
+                                }
+                            }
+                        }
+                        None => {
+                            let fallback = fallback_text();
+                            crate::onebot::send_private_msg(
+                                &write,
+                                &self.onebot_api,
+                                user_id,
+                                &fallback,
+                            )
+                            .await
+                            .is_ok()
+                        }
+                    }
+                } else {
+                    let group_id = listener.group_id.unwrap_or(0);
+
+                    // Try render; fall back to text on failure.
+                    match super::notify::build_match_result_params(
+                        match_id,
+                        match_name,
+                        event_label,
+                        played_at,
+                        game.as_ref(),
+                        users,
+                    ) {
+                        Some(mut output) => {
+                            enrich_match_result_metadata(
+                                &mut output,
+                                &self.rate_limiter,
+                                &self.oauth,
+                            )
+                            .await;
+                            output.params.cover_image =
+                                fetch_match_cover_image(output.cover_url.as_deref()).await;
+                            fetch_match_avatar_images(&mut output.params.players).await;
+                            match osubot_render::render_match_result_card(output.params).await {
+                                Ok(jpeg_bytes) => {
+                                    if let Err(e) = crate::onebot::send_group_msg_with_image(
+                                        &write,
+                                        &self.onebot_api,
+                                        group_id,
+                                        &jpeg_bytes,
+                                    )
+                                    .await
+                                    {
+                                        warn!(group_id, match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
+                                        let fallback = fallback_text();
+                                        crate::onebot::send_group_msg(
+                                            &write,
+                                            &self.onebot_api,
+                                            group_id,
+                                            &fallback,
+                                        )
+                                        .await
+                                        .is_ok()
+                                    } else {
+                                        info!(
+                                            group_id,
+                                            match_id,
+                                            bytes = jpeg_bytes.len(),
+                                            "{}",
+                                            log_fmt!("ml.notify_image_sent")
+                                        );
+                                        true
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(group_id, match_id, error = %e, "{}", log_str("ml.poller_render_failed"));
                                     let fallback = fallback_text();
                                     crate::onebot::send_group_msg(
                                         &write,
@@ -535,36 +625,20 @@ impl MatchListenerPoller {
                                     )
                                     .await
                                     .is_ok()
-                                } else {
-                                    info!(
-                                        group_id,
-                                        match_id,
-                                        bytes = jpeg_bytes.len(),
-                                        "{}",
-                                        log_fmt!("ml.notify_image_sent")
-                                    );
-                                    true
                                 }
                             }
-                            Err(e) => {
-                                warn!(group_id, match_id, error = %e, "{}", log_str("ml.poller_render_failed"));
-                                let fallback = fallback_text();
-                                crate::onebot::send_group_msg(
-                                    &write,
-                                    &self.onebot_api,
-                                    group_id,
-                                    &fallback,
-                                )
-                                .await
-                                .is_ok()
-                            }
                         }
-                    }
-                    None => {
-                        let fallback = fallback_text();
-                        crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &fallback)
+                        None => {
+                            let fallback = fallback_text();
+                            crate::onebot::send_group_msg(
+                                &write,
+                                &self.onebot_api,
+                                group_id,
+                                &fallback,
+                            )
                             .await
                             .is_ok()
+                        }
                     }
                 }
             }

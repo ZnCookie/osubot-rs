@@ -59,10 +59,8 @@ pub struct Config {
     #[serde(default)]
     pub groups: GroupsConfig,
     #[serde(default)]
-    #[allow(dead_code)]
     pub private: Option<GroupConfig>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub private_filter: PrivateFilterConfig,
     #[serde(default)]
     pub upstream: UpstreamConfig,
@@ -280,7 +278,6 @@ impl GroupFilterConfig {
 
 /// 私聊黑白名单配置
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct PrivateFilterConfig {
     #[serde(default = "default_filter_mode")]
     pub mode: FilterMode,
@@ -298,7 +295,6 @@ impl Default for PrivateFilterConfig {
 }
 
 impl PrivateFilterConfig {
-    #[allow(dead_code)]
     pub fn is_user_allowed(&self, user_id: i64) -> bool {
         match self.mode {
             FilterMode::Whitelist => self.user_ids.contains(&user_id),
