@@ -361,6 +361,26 @@ pub(crate) async fn send_group_msg(
     .map(|_| ())
 }
 
+/// Send a text message to a QQ user (private chat) via the OneBot WebSocket connection.
+pub(crate) async fn send_private_msg(
+    write: &Arc<Mutex<WriteSink>>,
+    api: &OneBotApi,
+    user_id: i64,
+    message: &str,
+) -> Result<(), String> {
+    call_onebot_api(
+        write,
+        api,
+        "send_private_msg",
+        serde_json::json!({
+            "user_id": user_id,
+            "message": message
+        }),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Send a message with a base64-encoded image to a QQ group via the OneBot WebSocket connection.
 pub(crate) async fn send_group_msg_with_image(
     write: &Arc<Mutex<WriteSink>>,
