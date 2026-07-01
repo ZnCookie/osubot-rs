@@ -91,6 +91,7 @@ pub struct HostServices {
     pub oauth: Arc<osubot_core::OauthTokenCache>,
     pub storage: Arc<osubot_core::Storage>,
     pub send_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
+    pub send_private_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
     pub runtime_handle: tokio::runtime::Handle,
     pub instance_idx: usize,
     pub tick_registry: Arc<std::sync::Mutex<Vec<TickRegistration>>>,
@@ -132,6 +133,7 @@ impl Default for HostServices {
             )),
             storage: Arc::new(storage),
             send_msg_fn: Arc::new(|_group_id, _text| Ok(())),
+            send_private_msg_fn: Arc::new(|_user_id, _text| Ok(())),
             runtime_handle: runtime.handle().clone(),
             instance_idx: 0,
             tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -277,6 +279,15 @@ fn send_msg_sync(
     tokio::task::block_in_place(|| send_fn(group_id, message).map_err(BridgeError::SendMsg))
 }
 
+fn send_private_msg_sync(
+    services: &HostServices,
+    user_id: i64,
+    message: serde_json::Value,
+) -> Result<(), BridgeError> {
+    let send_fn = services.send_private_msg_fn.clone();
+    tokio::task::block_in_place(|| send_fn(user_id, message).map_err(BridgeError::SendMsg))
+}
+
 fn parse_fetch_user_mode(payload: &str) -> Result<(String, osubot_types::GameMode), BridgeError> {
     let v = parse_payload(payload)?;
     let username = get_field(&v, "username")?;
@@ -311,6 +322,20 @@ fn dispatch_host_call(
                 ));
             }
             send_msg_sync(services, group_id, message)?;
+            Ok("{}".to_string())
+        }
+        "send_private_msg" => {
+            let v = parse_payload(payload)?;
+            let user_id = v["user_id"]
+                .as_i64()
+                .ok_or_else(|| BridgeError::MissingField("user_id".into()))?;
+            let text = get_field(&v, "text")?;
+            if !acquire_rate_limiter(services) {
+                return Err(BridgeError::SendMsg(
+                    user_str("bridge.rate_limit_send_msg").into(),
+                ));
+            }
+            send_private_msg_sync(services, user_id, serde_json::Value::String(text))?;
             Ok("{}".to_string())
         }
         "send_image" => {

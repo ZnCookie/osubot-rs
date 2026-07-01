@@ -43,6 +43,8 @@ impl PluginRuntime {
 
         let new_pm = if plugin_cfg.instances.iter().any(|p| p.enabled) {
             let (plugin_tx, mut plugin_rx) = mpsc::channel::<(i64, serde_json::Value)>(256);
+            let (private_plugin_tx, mut private_plugin_rx) =
+                mpsc::channel::<(i64, serde_json::Value)>(256);
 
             let write_consumer = write.clone();
             tokio::spawn(async move {
@@ -70,9 +72,43 @@ impl PluginRuntime {
                 }
             });
 
+            let write_consumer_private = write.clone();
+            tokio::spawn(async move {
+                while let Some((user_id, message)) = private_plugin_rx.recv().await {
+                    let json = serde_json::json!({
+                        "action": "send_private_msg",
+                        "params": {
+                            "user_id": user_id,
+                            "message": message
+                        }
+                    });
+                    let mut sink = write_consumer_private.lock().await;
+                    if let Err(e) = sink
+                        .send(tokio_tungstenite::tungstenite::Message::Text(
+                            json.to_string().into(),
+                        ))
+                        .await
+                    {
+                        tracing::debug!(
+                            error = %e,
+                            "{}",
+                            osubot_core::log_fmt!("main.plugin_channel_closed")
+                        );
+                    }
+                }
+            });
+
             let msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
                 Arc::new(move |group_id, message| {
                     plugin_tx.try_send((group_id, message)).map_err(|e| {
+                        osubot_core::log_fmt!("main.plugin_msg_channel_busy", error = &e)
+                            .to_string()
+                    })
+                });
+
+            let private_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
+                Arc::new(move |user_id, message| {
+                    private_plugin_tx.try_send((user_id, message)).map_err(|e| {
                         osubot_core::log_fmt!("main.plugin_msg_channel_busy", error = &e)
                             .to_string()
                     })
@@ -86,6 +122,7 @@ impl PluginRuntime {
                 oauth: state.oauth.clone(),
                 storage: state.storage.clone(),
                 send_msg_fn: msg_fn,
+                send_private_msg_fn: private_msg_fn,
                 runtime_handle: tokio::runtime::Handle::current(),
                 instance_idx: 0,
                 tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),

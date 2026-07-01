@@ -82,6 +82,11 @@ impl PluginContext {
         host_call("send_group_msg", &payload.to_string()).map(|_| ())
     }
 
+    pub fn send_private_msg(&self, user_id: i64, text: &str) -> Result<(), String> {
+        let payload = serde_json::json!({"user_id": user_id, "text": text});
+        host_call("send_private_msg", &payload.to_string()).map(|_| ())
+    }
+
     pub fn send_group_msg_segments(
         &self,
         group_id: i64,
