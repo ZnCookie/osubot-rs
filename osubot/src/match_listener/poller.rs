@@ -365,13 +365,7 @@ impl MatchListenerPoller {
                 notification,
             );
             let delivered = self
-                .send_notification(
-                    &listener,
-                    match_id,
-                    match_name,
-                    users,
-                    notification,
-                )
+                .send_notification(&listener, match_id, match_name, users, notification)
                 .await;
             if delivered {
                 apply_acknowledged_notification(&mut acknowledged_cursor, notification);

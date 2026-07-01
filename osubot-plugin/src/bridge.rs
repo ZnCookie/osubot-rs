@@ -91,7 +91,8 @@ pub struct HostServices {
     pub oauth: Arc<osubot_core::OauthTokenCache>,
     pub storage: Arc<osubot_core::Storage>,
     pub send_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
-    pub send_private_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
+    pub send_private_msg_fn:
+        Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync>,
     pub runtime_handle: tokio::runtime::Handle,
     pub instance_idx: usize,
     pub tick_registry: Arc<std::sync::Mutex<Vec<TickRegistration>>>,

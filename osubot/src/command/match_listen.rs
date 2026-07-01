@@ -279,7 +279,11 @@ async fn execute_start(
     let now = chrono::Utc::now();
     let expires_at = (now + chrono::Duration::hours(MAX_LISTENER_LIFETIME_HOURS)).timestamp();
 
-    let notification_type = if group_id.is_some() { "group" } else { "private" };
+    let notification_type = if group_id.is_some() {
+        "group"
+    } else {
+        "private"
+    };
 
     // Persist listener
     if let Err(e) = ctx
@@ -287,7 +291,11 @@ async fn execute_start(
         .start_match_listener(MatchListenerStartParams {
             match_id: match_id as i64,
             group_id,
-            user_id: if group_id.is_none() { Some(user_id) } else { None },
+            user_id: if group_id.is_none() {
+                Some(user_id)
+            } else {
+                None
+            },
             notification_type: notification_type.to_string(),
             creator_qq: user_id,
             match_name: match_name.clone(),

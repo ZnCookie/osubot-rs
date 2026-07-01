@@ -106,13 +106,13 @@ impl PluginRuntime {
                     })
                 });
 
-            let private_msg_fn: Arc<dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync> =
-                Arc::new(move |user_id, message| {
-                    private_plugin_tx.try_send((user_id, message)).map_err(|e| {
-                        osubot_core::log_fmt!("main.plugin_msg_channel_busy", error = &e)
-                            .to_string()
-                    })
-                });
+            let private_msg_fn: Arc<
+                dyn Fn(i64, serde_json::Value) -> Result<(), String> + Send + Sync,
+            > = Arc::new(move |user_id, message| {
+                private_plugin_tx.try_send((user_id, message)).map_err(|e| {
+                    osubot_core::log_fmt!("main.plugin_msg_channel_busy", error = &e).to_string()
+                })
+            });
 
             // 构造 HostServices（提取自 main.rs:4107-4122）
             let services = HostServices {
