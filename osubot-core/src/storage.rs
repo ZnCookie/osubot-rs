@@ -2156,6 +2156,31 @@ mod match_listener {
     }
 
     #[tokio::test]
+    async fn test_start_match_listener_private() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let params = MatchListenerStartParams {
+            match_id: 100,
+            group_id: Some(0),
+            user_id: Some(12345),
+            notification_type: "private".to_string(),
+            creator_qq: 12345,
+            match_name: "Test Match".to_string(),
+            expires_at: Utc::now().timestamp() + 3600,
+            initial_last_event_id: None,
+            initial_last_notified_event_id: None,
+        };
+        storage.start_match_listener(params).await.unwrap();
+        let listeners = storage
+            .list_active_match_listeners_due_for_polling()
+            .await
+            .unwrap();
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0].group_id, Some(0));
+        assert_eq!(listeners[0].user_id, Some(12345));
+        assert_eq!(listeners[0].notification_type, "private");
+    }
+
+    #[tokio::test]
     async fn update_match_listener_progress_updates_all_cursor_fields_atomically() {
         let storage = Storage::connect_for_testing().await.unwrap();
         let expires_at = Utc::now().timestamp() + 3600;

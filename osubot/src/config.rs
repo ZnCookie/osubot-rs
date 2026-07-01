@@ -1036,4 +1036,30 @@ mod tests {
         assert!(cfg.is_user_allowed(222));
         assert!(!cfg.is_user_allowed(333));
     }
+
+    #[test]
+    fn test_config_with_private_section() {
+        let toml_str = r#"
+            [osu]
+            client_secret = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+            [private]
+            query = true
+            score = false
+            [private_filter]
+            mode = "whitelist"
+            user_ids = [111, 222]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.private.is_some());
+        let private = config.private.unwrap();
+        assert_eq!(private.query, Some(true));
+        assert_eq!(private.score, Some(false));
+        assert_eq!(config.private_filter.mode, FilterMode::Whitelist);
+        assert_eq!(config.private_filter.user_ids, vec![111, 222]);
+    }
 }
