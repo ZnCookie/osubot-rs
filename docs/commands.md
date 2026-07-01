@@ -131,10 +131,11 @@
 
 ### 条件过滤
 
-`key=value`（`miss` `combo` `pp` `score` `acc` `mod` `ar` `od` `cs` `hp` `star` `bpm`）
+`key=value`（`miss` `combo` `pp` `score` `acc` `mod` `ar` `od` `cs` `hp` `star` `bpm` `name`）
 - 操作符：`=` `==` `!=` `>` `<` `>=` `<=`（也支持全角：`＝` `！` `＞` `＜`）
 - `+MODS` 等价于 `mod=MODS`，可混用：`+HDHR,miss=1`
 - `==`/`!=` 容差因字段而异：
   - `pp`/`bpm`：0.5
   - `ar`/`od`/`cs`/`hp`/`acc`/`star`：0.01
 - `mod=` 子集包含，`mod==` 精确集合，`mod!=` 子集取反
+- `name=` 按谱面名称模糊匹配（大小写不敏感），匹配 `artist - title`；`!=` 反向匹配

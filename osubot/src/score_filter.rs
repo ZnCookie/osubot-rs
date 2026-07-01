@@ -239,7 +239,32 @@ pub(crate) fn apply_filter(
                 .parse::<f64>()
                 .is_ok_and(|v| cmp_f64(eff_bpm, v, op, 0.5))
         }
+        "name" => apply_name_filter(score, op, value),
         _ => true, // 未知 key 静默忽略（与现有行为一致）
+    }
+}
+
+/// Case-insensitive substring match for beatmap name filtering.
+///
+/// The target string is `"artist - title"` (standard osu! display format).
+/// - `=` / `==`: substring match (value must appear in the name)
+/// - `!=`: substring non-match (value must NOT appear in the name)
+/// - `<`, `<=`, `>`, `>=`: ordering operators have no string semantics → silently pass
+pub(crate) fn apply_name_filter(score: &Score, op: FilterOp, value: &str) -> bool {
+    if matches!(
+        op,
+        FilterOp::Gt | FilterOp::Lt | FilterOp::GtEq | FilterOp::LtEq
+    ) {
+        return true;
+    }
+    let name = format!("{} - {}", score.artist, score.title);
+    let name_lower = name.to_lowercase();
+    let value_lower = value.to_lowercase();
+    let contains = name_lower.contains(&value_lower);
+    match op {
+        FilterOp::Eq | FilterOp::EqEq => contains,
+        FilterOp::NotEq => !contains,
+        FilterOp::Gt | FilterOp::Lt | FilterOp::GtEq | FilterOp::LtEq => unreachable!(),
     }
 }
 
@@ -1698,6 +1723,96 @@ mod filter_tests {
         assert!(score_matches_filters(
             &s,
             &["bpm=250".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    // === Name filter tests ===
+
+    fn make_score_with_name(artist: &str, title: &str) -> Score {
+        let mut s = make_score(GameMods::new());
+        s.artist = artist.to_string();
+        s.title = title.to_string();
+        s
+    }
+
+    #[test]
+    fn name_eq_substring_match() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["name=railgun".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn name_eq_case_insensitive() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["name=FripSide".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn name_eq_full_match() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["name=fripSide - only my railgun".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn name_eq_no_match() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(!score_matches_filters(
+            &s,
+            &["name=laser".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn name_noteq() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["name!=laser".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["name!=railgun".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn name_eqeq_also_works() {
+        let s = make_score_with_name("YOASOBI", "アイドル");
+        assert!(score_matches_filters(
+            &s,
+            &["name==YOASOBI".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn name_ordering_operators_silently_pass() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        // >, <, >=, <= should all silently pass for name filter
+        assert!(score_matches_filters(
+            &s,
+            &["name>railgun".to_string()],
+            GameMode::Osu
+        ));
+        assert!(score_matches_filters(
+            &s,
+            &["name<railgun".to_string()],
             GameMode::Osu
         ));
     }
