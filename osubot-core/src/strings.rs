@@ -323,6 +323,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.plugin_msg_channel_busy" => "plugin message channel busy: {error}",
     "main.force_reconnect_url_changed" => "强制重连：onebot_url 已热重载变更",
     "main.group_filtered" => "群被过滤，跳过",
+    "main.private_filtered" => "私聊被过滤，跳过",
     "main.hot_reload_skip" => "热重载中，跳过消息",
     "main.command_timeout" => "命令处理超时（{secs}秒）",
     "main.ws_closed_reconnect" => "WebSocket 连接关闭，{secs}秒后重连",
