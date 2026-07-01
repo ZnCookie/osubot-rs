@@ -239,28 +239,31 @@ pub(crate) fn apply_filter(
                 .parse::<f64>()
                 .is_ok_and(|v| cmp_f64(eff_bpm, v, op, 0.5))
         }
-        "name" => apply_name_filter(score, op, value),
+        "title" => apply_string_filter(&score.title, op, value),
+        "artist" => apply_string_filter(&score.artist, op, value),
+        "name" => {
+            let combined = format!("{} - {}", score.artist, score.title);
+            apply_string_filter(&combined, op, value)
+        }
         _ => true, // 未知 key 静默忽略（与现有行为一致）
     }
 }
 
-/// Case-insensitive substring match for beatmap name filtering.
+/// Case-insensitive substring match against a string field.
 ///
-/// The target string is `"artist - title"` (standard osu! display format).
-/// - `=` / `==`: substring match (value must appear in the name)
-/// - `!=`: substring non-match (value must NOT appear in the name)
+/// - `=` / `==`: substring match (value must appear in the field)
+/// - `!=`: substring non-match (value must NOT appear in the field)
 /// - `<`, `<=`, `>`, `>=`: ordering operators have no string semantics → silently pass
-pub(crate) fn apply_name_filter(score: &Score, op: FilterOp, value: &str) -> bool {
+pub(crate) fn apply_string_filter(field: &str, op: FilterOp, value: &str) -> bool {
     if matches!(
         op,
         FilterOp::Gt | FilterOp::Lt | FilterOp::GtEq | FilterOp::LtEq
     ) {
         return true;
     }
-    let name = format!("{} - {}", score.artist, score.title);
-    let name_lower = name.to_lowercase();
+    let field_lower = field.to_lowercase();
     let value_lower = value.to_lowercase();
-    let contains = name_lower.contains(&value_lower);
+    let contains = field_lower.contains(&value_lower);
     match op {
         FilterOp::Eq | FilterOp::EqEq => contains,
         FilterOp::NotEq => !contains,
@@ -1813,6 +1816,46 @@ mod filter_tests {
         assert!(score_matches_filters(
             &s,
             &["name<railgun".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn title_substring_match() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["title=railgun".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["title=fripSide".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn artist_substring_match() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["artist=fripSide".to_string()],
+            GameMode::Osu
+        ));
+        assert!(!score_matches_filters(
+            &s,
+            &["artist=railgun".to_string()],
+            GameMode::Osu
+        ));
+    }
+
+    #[test]
+    fn artist_case_insensitive() {
+        let s = make_score_with_name("fripSide", "only my railgun");
+        assert!(score_matches_filters(
+            &s,
+            &["artist=fripside".to_string()],
             GameMode::Osu
         ));
     }
