@@ -365,7 +365,13 @@ impl MatchListenerPoller {
                 notification,
             );
             let delivered = self
-                .send_notification(group_id, match_id, match_name, users, notification)
+                .send_notification(
+                    group_id.unwrap_or(0),
+                    match_id,
+                    match_name,
+                    users,
+                    notification,
+                )
                 .await;
             if delivered {
                 apply_acknowledged_notification(&mut acknowledged_cursor, notification);
@@ -391,7 +397,7 @@ impl MatchListenerPoller {
             .storage
             .update_match_listener_progress(
                 match_id as i64,
-                group_id,
+                group_id.unwrap_or(0),
                 final_cursor.last_event_id.map(|v| v as i64),
                 final_cursor.last_notified_event_id.map(|v| v as i64),
                 final_cursor.pending_game_event_id.map(|v| v as i64),
@@ -403,7 +409,7 @@ impl MatchListenerPoller {
         if notifications_fully_handled && output.stop_reason == Some(StopReason::MatchDisbanded) {
             let _ = self
                 .storage
-                .stop_match_listener(match_id as i64, group_id)
+                .stop_match_listener(match_id as i64, group_id.unwrap_or(0))
                 .await;
             info!(
                 match_id,

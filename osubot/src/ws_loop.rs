@@ -376,11 +376,22 @@ async fn run_message_loop(
                         if let Some(response) = resp_rx.recv().await {
                             let send_result = match group_id {
                                 Some(gid) => {
-                                    crate::onebot::send_group_msg(&write_clone, &onebot_api, gid, &response).await
+                                    crate::onebot::send_group_msg(
+                                        &write_clone,
+                                        &onebot_api,
+                                        gid,
+                                        &response,
+                                    )
+                                    .await
                                 }
                                 None => {
-                                    crate::onebot::send_private_msg(&write_clone, &onebot_api, user_id, &response)
-                                        .await
+                                    crate::onebot::send_private_msg(
+                                        &write_clone,
+                                        &onebot_api,
+                                        user_id,
+                                        &response,
+                                    )
+                                    .await
                                 }
                             };
                             if let Err(e) = send_result {

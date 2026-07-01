@@ -281,7 +281,9 @@ async fn execute_start(
         .storage
         .start_match_listener(MatchListenerStartParams {
             match_id: match_id as i64,
-            group_id,
+            group_id: Some(group_id),
+            user_id: None,
+            notification_type: "group".to_string(),
             creator_qq: user_id,
             match_name: match_name.clone(),
             expires_at,
@@ -575,7 +577,9 @@ mod tests {
     fn listener_is_effectively_active_only_when_unexpired() {
         let active_unexpired = MatchListener {
             match_id: 1,
-            group_id: 2,
+            group_id: Some(2),
+            user_id: None,
+            notification_type: "group".to_string(),
             creator_qq: 3,
             match_name: "Test Match".to_string(),
             last_event_id: None,

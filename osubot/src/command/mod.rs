@@ -418,7 +418,10 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         let cfg = ctx.config.read().await;
         match msg.group_id {
             Some(gid) => cfg.groups.get_group_config(gid),
-            None => cfg.private.clone().unwrap_or_else(|| cfg.groups.default.clone()),
+            None => cfg
+                .private
+                .clone()
+                .unwrap_or_else(|| cfg.groups.default.clone()),
         }
     };
     if !group_cfg.is_enabled(cmd.group_name()) {
