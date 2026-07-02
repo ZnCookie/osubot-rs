@@ -59,6 +59,10 @@ pub struct Config {
     #[serde(default)]
     pub groups: GroupsConfig,
     #[serde(default)]
+    pub private: Option<GroupConfig>,
+    #[serde(default)]
+    pub private_filter: PrivateFilterConfig,
+    #[serde(default)]
     pub upstream: UpstreamConfig,
     #[serde(default)]
     pub plugin: PluginConfig,
@@ -272,6 +276,33 @@ impl GroupFilterConfig {
     }
 }
 
+/// 私聊黑白名单配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct PrivateFilterConfig {
+    #[serde(default = "default_filter_mode")]
+    pub mode: FilterMode,
+    #[serde(default)]
+    pub user_ids: Vec<i64>,
+}
+
+impl Default for PrivateFilterConfig {
+    fn default() -> Self {
+        Self {
+            mode: FilterMode::Blacklist,
+            user_ids: Vec::new(),
+        }
+    }
+}
+
+impl PrivateFilterConfig {
+    pub fn is_user_allowed(&self, user_id: i64) -> bool {
+        match self.mode {
+            FilterMode::Whitelist => self.user_ids.contains(&user_id),
+            FilterMode::Blacklist => !self.user_ids.contains(&user_id),
+        }
+    }
+}
+
 /// 单个群的命令开关配置
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct GroupConfig {
@@ -446,6 +477,10 @@ pub struct MutableConfig {
     #[serde(default)]
     pub groups: GroupsConfig,
     #[serde(default)]
+    pub private: Option<GroupConfig>,
+    #[serde(default)]
+    pub private_filter: PrivateFilterConfig,
+    #[serde(default)]
     pub upstream: UpstreamConfig,
     #[serde(default)]
     pub plugin: PluginConfig,
@@ -596,6 +631,8 @@ impl Default for Config {
             irc: IrcConfig::default(),
             group_filter: GroupFilterConfig::default(),
             groups: GroupsConfig::default(),
+            private: None,
+            private_filter: PrivateFilterConfig::default(),
             upstream: UpstreamConfig::default(),
             plugin: PluginConfig::default(),
             match_listen: MatchListenConfig::default(),
@@ -964,5 +1001,61 @@ mod tests {
             }],
         };
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_private_filter_default() {
+        let cfg = PrivateFilterConfig::default();
+        assert_eq!(cfg.mode, FilterMode::Blacklist);
+        assert!(cfg.user_ids.is_empty());
+        assert!(cfg.is_user_allowed(123456));
+    }
+
+    #[test]
+    fn test_config_private_filter_blacklist() {
+        let cfg = PrivateFilterConfig {
+            mode: FilterMode::Blacklist,
+            user_ids: vec![111, 222],
+        };
+        assert!(!cfg.is_user_allowed(111));
+        assert!(!cfg.is_user_allowed(222));
+        assert!(cfg.is_user_allowed(333));
+    }
+
+    #[test]
+    fn test_config_private_filter_whitelist() {
+        let cfg = PrivateFilterConfig {
+            mode: FilterMode::Whitelist,
+            user_ids: vec![111, 222],
+        };
+        assert!(cfg.is_user_allowed(111));
+        assert!(cfg.is_user_allowed(222));
+        assert!(!cfg.is_user_allowed(333));
+    }
+
+    #[test]
+    fn test_config_with_private_section() {
+        let toml_str = r#"
+            [osu]
+            client_secret = "test"
+            client_id = "test"
+            [bot]
+            onebot_url = "ws://localhost"
+            [database]
+            path = "test.db"
+            [private]
+            query = true
+            score = false
+            [private_filter]
+            mode = "whitelist"
+            user_ids = [111, 222]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.private.is_some());
+        let private = config.private.unwrap();
+        assert_eq!(private.query, Some(true));
+        assert_eq!(private.score, Some(false));
+        assert_eq!(config.private_filter.mode, FilterMode::Whitelist);
+        assert_eq!(config.private_filter.user_ids, vec![111, 222]);
     }
 }

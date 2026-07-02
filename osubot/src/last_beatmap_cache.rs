@@ -25,6 +25,7 @@ impl LastBeatmapCache {
         }
     }
 
+    /// 获取最近谱面。群聊传 group_id，私聊传 -user_id。
     pub fn get(&self, group_id: i64) -> Option<u32> {
         let mut map = self.inner.lock().ok()?;
         let (bid, time) = map.get(&group_id).copied()?;
@@ -36,6 +37,7 @@ impl LastBeatmapCache {
         }
     }
 
+    /// 设置最近谱面。群聊传 group_id，私聊传 -user_id（负数区分）。
     pub fn set(&self, group_id: i64, beatmap_id: u32) {
         if let Ok(mut map) = self.inner.lock() {
             map.insert(group_id, (beatmap_id, Instant::now()));

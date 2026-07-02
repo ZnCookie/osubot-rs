@@ -116,7 +116,7 @@ pub(super) async fn handle_settings_commands(
             }
         },
         Command::Bind { username } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, username = %username, "{}", log_fmt!("main.bind_command"));
+            info!(user_id = msg.user_id, group_id = ?msg.group_id, username = %username, "{}", log_fmt!("main.bind_command"));
             match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((_, existing_username))) => {
                     info!(user_id = msg.user_id, existing = %existing_username, "{}", log_fmt!("main.bind_already_bound"));
@@ -166,7 +166,7 @@ pub(super) async fn handle_settings_commands(
                         }
                         match ctx
                             .storage
-                            .add_pending_bind(msg.user_id, msg.group_id, username)
+                            .add_pending_bind(msg.user_id, msg.group_id.unwrap_or(0), username)
                             .await
                         {
                             Ok(code) => {
@@ -264,7 +264,7 @@ pub(super) async fn handle_settings_commands(
         Command::Unbind => {
             info!(
                 user_id = msg.user_id,
-                group_id = msg.group_id,
+                group_id = ?msg.group_id,
                 "{}",
                 log_fmt!("main.unbind_command")
             );

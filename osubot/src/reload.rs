@@ -281,6 +281,8 @@ impl ReloadCoordinator {
             scheduler: new_scheduler,
             group_filter: mutable.group_filter,
             groups: mutable.groups,
+            private: mutable.private,
+            private_filter: mutable.private_filter,
             upstream: mutable.upstream,
             plugin: mutable.plugin,
             match_listen: mutable

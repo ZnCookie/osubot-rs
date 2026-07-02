@@ -1,5 +1,6 @@
 use super::*;
 use crate::onebot::send_group_msg_with_record;
+use crate::onebot::send_private_msg_with_record;
 use crate::send_error;
 
 pub(super) async fn render_audio(
@@ -19,7 +20,6 @@ pub(super) async fn render_audio_by_beatmapset_id(
     beatmapset_id: i64,
 ) {
     let qq = msg.user_id;
-    let group_id = msg.group_id;
 
     if beatmapset_id <= 0 {
         send_error(resp_tx, qq, "error.data_fetch_failed").await;
@@ -35,7 +35,11 @@ pub(super) async fn render_audio_by_beatmapset_id(
     };
 
     let write = ctx.write.clone();
-    if let Err(e) = send_group_msg_with_record(&write, &ctx.onebot_api, group_id, &mp3).await {
+    let send_result = match msg.group_id {
+        Some(gid) => send_group_msg_with_record(&write, &ctx.onebot_api, gid, &mp3).await,
+        None => send_private_msg_with_record(&write, &ctx.onebot_api, msg.user_id, &mp3).await,
+    };
+    if let Err(e) = send_result {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_audio_send_failed", error = &e.to_string()));
         let _ = resp_tx
             .send(user_str("error.audio_send_failed").replace("{qq}", &qq.to_string()))

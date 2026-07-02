@@ -190,6 +190,35 @@ async fn enrich_match_result_metadata(
     }
 }
 
+/// Render a match result image card. Returns JPEG bytes on success, or `None`
+/// if essential data is missing or rendering fails.
+#[allow(clippy::too_many_arguments)]
+async fn render_match_result_image(
+    rate_limiter: &RateLimiter,
+    oauth: &OauthTokenCache,
+    match_id: u64,
+    match_name: &str,
+    event_label: &str,
+    played_at: &str,
+    game: &osubot_core::api::LegacyMatchGame,
+    users: &[LegacyMatchUser],
+) -> Option<Vec<u8>> {
+    let mut output = super::notify::build_match_result_params(
+        match_id,
+        match_name,
+        event_label,
+        played_at,
+        game,
+        users,
+    )?;
+    enrich_match_result_metadata(&mut output, rate_limiter, oauth).await;
+    output.params.cover_image = fetch_match_cover_image(output.cover_url.as_deref()).await;
+    fetch_match_avatar_images(&mut output.params.players).await;
+    osubot_render::render_match_result_card(output.params)
+        .await
+        .ok()
+}
+
 #[derive(Clone)]
 pub struct MatchListenerPoller {
     storage: Arc<Storage>,
@@ -365,7 +394,7 @@ impl MatchListenerPoller {
                 notification,
             );
             let delivered = self
-                .send_notification(group_id, match_id, match_name, users, notification)
+                .send_notification(&listener, match_id, match_name, users, notification)
                 .await;
             if delivered {
                 apply_acknowledged_notification(&mut acknowledged_cursor, notification);
@@ -391,7 +420,7 @@ impl MatchListenerPoller {
             .storage
             .update_match_listener_progress(
                 match_id as i64,
-                group_id,
+                group_id.unwrap_or(0),
                 final_cursor.last_event_id.map(|v| v as i64),
                 final_cursor.last_notified_event_id.map(|v| v as i64),
                 final_cursor.pending_game_event_id.map(|v| v as i64),
@@ -403,7 +432,7 @@ impl MatchListenerPoller {
         if notifications_fully_handled && output.stop_reason == Some(StopReason::MatchDisbanded) {
             let _ = self
                 .storage
-                .stop_match_listener(match_id as i64, group_id)
+                .stop_match_listener(match_id as i64, group_id.unwrap_or(0))
                 .await;
             info!(
                 match_id,
@@ -416,14 +445,40 @@ impl MatchListenerPoller {
         Ok(())
     }
 
-    /// Send a single notification to the group.
+    /// Send a text message to the appropriate target (group or private).
+    async fn send_text(
+        &self,
+        write: &WsWrite,
+        listener: &osubot_core::storage::MatchListener,
+        text: &str,
+    ) -> bool {
+        let send_result = match listener.notification_type.as_str() {
+            "private" => {
+                let user_id = listener.user_id.unwrap_or(0);
+                crate::onebot::send_private_msg(write, &self.onebot_api, user_id, text).await
+            }
+            _ => {
+                let group_id = listener.group_id.unwrap_or(0);
+                crate::onebot::send_group_msg(write, &self.onebot_api, group_id, text).await
+            }
+        };
+        match send_result {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(error = %e, "{}", log_str("ml.notify_text_fallback"));
+                false
+            }
+        }
+    }
+
+    /// Send a single notification to the appropriate target (group or private).
     ///
     /// Reads `current_write` fresh each call. If no sink is available or send
     /// fails, returns false so the caller can leave cursors unacknowledged and
     /// retry after reconnect.
     async fn send_notification(
         &self,
-        group_id: i64,
+        listener: &osubot_core::storage::MatchListener,
         match_id: u64,
         match_name: &str,
         users: &[osubot_core::api::LegacyMatchUser],
@@ -434,8 +489,7 @@ impl MatchListenerPoller {
         drop(cw_guard);
 
         let Some(write) = write_opt else {
-            // No active sink — drop notification (ponytail: v1 behavior).
-            warn!(group_id, match_id, "{}", log_str("ml.notify_text_fallback"));
+            warn!(match_id, "{}", log_str("ml.notify_text_fallback"));
             return false;
         };
 
@@ -444,14 +498,25 @@ impl MatchListenerPoller {
                 text, event_type, ..
             } => {
                 let msg = super::notify::format_lobby_text(event_type, text, users, match_name);
-                match crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &msg).await
-                {
+                let send_result = match listener.notification_type.as_str() {
+                    "private" => {
+                        let user_id = listener.user_id.unwrap_or(0);
+                        crate::onebot::send_private_msg(&write, &self.onebot_api, user_id, &msg)
+                            .await
+                    }
+                    _ => {
+                        let group_id = listener.group_id.unwrap_or(0);
+                        crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &msg)
+                            .await
+                    }
+                };
+                match send_result {
                     Ok(()) => {
-                        info!(group_id, match_id, "{}", log_fmt!("ml.notify_sent"));
+                        info!(match_id, "{}", log_fmt!("ml.notify_sent"));
                         true
                     }
                     Err(e) => {
-                        warn!(group_id, match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
+                        warn!(match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
                         false
                     }
                 }
@@ -473,71 +538,59 @@ impl MatchListenerPoller {
                         super::notify::format_game_fallback_text(game.as_ref(), users, match_name)
                     }
                 };
-                // Try render; fall back to text on failure.
-                match super::notify::build_match_result_params(
+
+                let jpeg_bytes = render_match_result_image(
+                    &self.rate_limiter,
+                    &self.oauth,
                     match_id,
                     match_name,
                     event_label,
                     played_at,
                     game.as_ref(),
                     users,
-                ) {
-                    Some(mut output) => {
-                        enrich_match_result_metadata(&mut output, &self.rate_limiter, &self.oauth)
-                            .await;
-                        output.params.cover_image =
-                            fetch_match_cover_image(output.cover_url.as_deref()).await;
-                        fetch_match_avatar_images(&mut output.params.players).await;
-                        match osubot_render::render_match_result_card(output.params).await {
-                            Ok(jpeg_bytes) => {
-                                if let Err(e) = crate::onebot::send_group_msg_with_image(
-                                    &write,
-                                    &self.onebot_api,
-                                    group_id,
-                                    &jpeg_bytes,
-                                )
-                                .await
-                                {
-                                    warn!(group_id, match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
-                                    let fallback = fallback_text();
-                                    crate::onebot::send_group_msg(
-                                        &write,
-                                        &self.onebot_api,
-                                        group_id,
-                                        &fallback,
-                                    )
-                                    .await
-                                    .is_ok()
-                                } else {
-                                    info!(
-                                        group_id,
-                                        match_id,
-                                        bytes = jpeg_bytes.len(),
-                                        "{}",
-                                        log_fmt!("ml.notify_image_sent")
-                                    );
-                                    true
-                                }
-                            }
-                            Err(e) => {
-                                warn!(group_id, match_id, error = %e, "{}", log_str("ml.poller_render_failed"));
-                                let fallback = fallback_text();
-                                crate::onebot::send_group_msg(
-                                    &write,
-                                    &self.onebot_api,
-                                    group_id,
-                                    &fallback,
-                                )
-                                .await
-                                .is_ok()
-                            }
-                        }
+                )
+                .await;
+
+                let Some(jpeg_bytes) = jpeg_bytes else {
+                    let fallback = fallback_text();
+                    return self.send_text(&write, listener, &fallback).await;
+                };
+
+                let is_private = listener.notification_type.as_str() == "private";
+                let send_result = if is_private {
+                    let user_id = listener.user_id.unwrap_or(0);
+                    crate::onebot::send_private_msg_with_image(
+                        &write,
+                        &self.onebot_api,
+                        user_id,
+                        &jpeg_bytes,
+                    )
+                    .await
+                } else {
+                    let group_id = listener.group_id.unwrap_or(0);
+                    crate::onebot::send_group_msg_with_image(
+                        &write,
+                        &self.onebot_api,
+                        group_id,
+                        &jpeg_bytes,
+                    )
+                    .await
+                };
+
+                match send_result {
+                    Ok(()) => {
+                        info!(
+                            match_id,
+                            bytes = jpeg_bytes.len(),
+                            "{}",
+                            log_fmt!("ml.notify_image_sent")
+                        );
+                        true
                     }
-                    None => {
+                    Err(e) => {
+                        warn!(match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
                         let fallback = fallback_text();
-                        crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &fallback)
-                            .await
-                            .is_ok()
+                        self.send_text(&write, listener, &fallback).await
                     }
                 }
             }

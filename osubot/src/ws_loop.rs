@@ -19,7 +19,7 @@ use crate::last_beatmap_cache::LastBeatmapCache;
 use crate::plugin_runtime::PluginRuntime;
 use crate::BotContext;
 use crate::InFlightGuard;
-use crate::{parse_onebot_message, send_group_msg, OneBotResponse, WriteSink};
+use crate::{parse_onebot_message, OneBotResponse, WriteSink};
 use osubot_core::log_fmt;
 use osubot_core::strings::user_str;
 
@@ -317,17 +317,32 @@ async fn run_message_loop(
                 }
 
                 if let Some(qq_msg) = parse_onebot_message(&text) {
-                    // 群黑白名单
+                    // 黑白名单过滤
                     {
                         let cfg = state.config.read().await;
-                        if !cfg.group_filter.is_group_allowed(qq_msg.group_id) {
-                            debug!(
-                                group_id = qq_msg.group_id,
-                                mode = ?cfg.group_filter.mode,
-                                "{}",
-                                log_fmt!("main.group_filtered")
-                            );
-                            continue;
+                        match qq_msg.group_id {
+                            Some(group_id) => {
+                                if !cfg.group_filter.is_group_allowed(group_id) {
+                                    debug!(
+                                        group_id,
+                                        mode = ?cfg.group_filter.mode,
+                                        "{}",
+                                        log_fmt!("main.group_filtered")
+                                    );
+                                    continue;
+                                }
+                            }
+                            None => {
+                                if !cfg.private_filter.is_user_allowed(qq_msg.user_id) {
+                                    debug!(
+                                        user_id = qq_msg.user_id,
+                                        mode = ?cfg.private_filter.mode,
+                                        "{}",
+                                        log_fmt!("main.private_filtered")
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     }
 
@@ -343,7 +358,8 @@ async fn run_message_loop(
                         });
                     if increment_result.is_err() {
                         info!(
-                            group_id = qq_msg.group_id,
+                            group_id = ?qq_msg.group_id,
+                            user_id = qq_msg.user_id,
                             "{}",
                             log_fmt!("main.hot_reload_skip")
                         );
@@ -353,14 +369,39 @@ async fn run_message_loop(
                     let write_clone = write.clone();
                     let onebot_api = state.onebot_api.clone();
                     let group_id = qq_msg.group_id;
+                    let user_id = qq_msg.user_id;
                     let in_flight1 = in_flight.clone();
                     tokio::spawn(async move {
                         let _guard = InFlightGuard(in_flight1);
                         if let Some(response) = resp_rx.recv().await {
-                            if let Err(e) =
-                                send_group_msg(&write_clone, &onebot_api, group_id, &response).await
-                            {
-                                tracing::warn!(group_id, error = %e, "{}", log_fmt!("main.send_command_response_failed"));
+                            let send_result = match group_id {
+                                Some(gid) => {
+                                    crate::onebot::send_group_msg(
+                                        &write_clone,
+                                        &onebot_api,
+                                        gid,
+                                        &response,
+                                    )
+                                    .await
+                                }
+                                None => {
+                                    crate::onebot::send_private_msg(
+                                        &write_clone,
+                                        &onebot_api,
+                                        user_id,
+                                        &response,
+                                    )
+                                    .await
+                                }
+                            };
+                            if let Err(e) = send_result {
+                                tracing::warn!(
+                                    group_id = ?group_id,
+                                    user_id,
+                                    error = %e,
+                                    "{}",
+                                    log_fmt!("main.send_command_response_failed")
+                                );
                             }
                         }
                     });
