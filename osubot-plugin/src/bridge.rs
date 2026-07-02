@@ -330,13 +330,21 @@ fn dispatch_host_call(
             let user_id = v["user_id"]
                 .as_i64()
                 .ok_or_else(|| BridgeError::MissingField("user_id".into()))?;
-            let text = get_field(&v, "text")?;
+            // 支持两种格式:
+            // 1. 纯文本: {"user_id": 123, "text": "hello"}
+            // 2. 富文本(segments): {"user_id": 123, "segments": [{"type": "text", "data": {"text": "hello"}}, ...]}
+            let message = if let Some(segments) = v.get("segments").and_then(|s| s.as_array()) {
+                serde_json::Value::Array(segments.clone())
+            } else {
+                let text = get_field(&v, "text")?;
+                serde_json::Value::String(text)
+            };
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::SendMsg(
                     user_str("bridge.rate_limit_send_msg").into(),
                 ));
             }
-            send_private_msg_sync(services, user_id, serde_json::Value::String(text))?;
+            send_private_msg_sync(services, user_id, message)?;
             Ok("{}".to_string())
         }
         "send_image" => {

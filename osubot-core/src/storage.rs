@@ -1374,6 +1374,26 @@ impl Storage {
         }
     }
 
+    pub async fn count_active_match_listeners_for_user(&self, user_id: i64) -> DbResult<u64> {
+        let now_ts = Utc::now().timestamp();
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*)
+                 FROM match_listeners
+                 WHERE user_id = ?1 AND notification_type = 'private' AND active = 1 AND expires_at >= ?2",
+                params![user_id, now_ts],
+            )
+            .await?;
+
+        if let Some(row) = rows.next().await? {
+            let count: i64 = row.get(0)?;
+            Ok(count as u64)
+        } else {
+            Ok(0)
+        }
+    }
+
     pub async fn is_match_listener_group_limit_reached(
         &self,
         group_id: i64,

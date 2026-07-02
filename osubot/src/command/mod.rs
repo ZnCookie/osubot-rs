@@ -231,6 +231,7 @@ pub(crate) fn build_cmd_payload(
     serde_json::json!({
         "command_type": cmd_name,
         "group_id": msg.group_id.unwrap_or(0),
+        "message_type": if msg.group_id.is_some() { "group" } else { "private" },
         "user_id": msg.user_id,
         "message": msg.message,
         "mentioned_user_id": msg.mentioned_user_id,
@@ -356,6 +357,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     {
         let msg_payload = serde_json::json!({
             "group_id": msg.group_id.unwrap_or(0),
+            "message_type": if msg.group_id.is_some() { "group" } else { "private" },
             "user_id": msg.user_id,
             "message": msg.message,
             "mentioned_user_id": msg.mentioned_user_id,

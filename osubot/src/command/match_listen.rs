@@ -235,12 +235,17 @@ async fn execute_start(
     let max_per_group = config.match_listen.max_per_group as u64;
     drop(config);
 
-    // Check group limit
-    match ctx
-        .storage
-        .count_active_match_listeners_in_group(group_id_val)
-        .await
-    {
+    // Check group/user limit
+    let count_result = if group_id.is_some() {
+        ctx.storage
+            .count_active_match_listeners_in_group(group_id_val)
+            .await
+    } else {
+        ctx.storage
+            .count_active_match_listeners_for_user(user_id)
+            .await
+    };
+    match count_result {
         Ok(count) => {
             if count >= max_per_group {
                 return MlActionResult::Error {
