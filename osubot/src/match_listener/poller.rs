@@ -214,9 +214,13 @@ async fn render_match_result_image(
     enrich_match_result_metadata(&mut output, rate_limiter, oauth).await;
     output.params.cover_image = fetch_match_cover_image(output.cover_url.as_deref()).await;
     fetch_match_avatar_images(&mut output.params.players).await;
-    osubot_render::render_match_result_card(output.params)
-        .await
-        .ok()
+    match osubot_render::render_match_result_card(output.params).await {
+        Ok(img) => Some(img),
+        Err(e) => {
+            warn!(match_id, error = %e, "{}", log_str("ml.notify_render_failed"));
+            None
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -465,7 +469,12 @@ impl MatchListenerPoller {
         match send_result {
             Ok(()) => true,
             Err(e) => {
-                warn!(error = %e, "{}", log_str("ml.notify_text_fallback"));
+                warn!(
+                    error = %e,
+                    notification_type = listener.notification_type.as_str(),
+                    "{}",
+                    log_str("ml.notify_text_fallback")
+                );
                 false
             }
         }
@@ -489,7 +498,7 @@ impl MatchListenerPoller {
         drop(cw_guard);
 
         let Some(write) = write_opt else {
-            warn!(match_id, "{}", log_str("ml.notify_text_fallback"));
+            warn!(match_id, "{}", log_str("ml.notify_no_sink"));
             return false;
         };
 
@@ -571,7 +580,13 @@ impl MatchListenerPoller {
                         true
                     }
                     Err(e) => {
-                        warn!(match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
+                        warn!(
+                            match_id,
+                            error = %e,
+                            notification_type = listener.notification_type.as_str(),
+                            "{}",
+                            log_str("ml.notify_text_fallback")
+                        );
                         let fallback = fallback_text();
                         self.send_text(&write, listener, &fallback).await
                     }

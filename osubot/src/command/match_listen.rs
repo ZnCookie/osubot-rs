@@ -10,6 +10,12 @@ use tracing::{error, info, warn};
 /// Maximum listener lifetime in hours (v1 guardrail).
 const MAX_LISTENER_LIFETIME_HOURS: i64 = 6;
 
+/// Derive a storage key for private chat: use `-user_id` (negative) to avoid
+/// collision with real group IDs (always positive).
+fn group_or_private_key(group_id: Option<i64>, user_id: i64) -> i64 {
+    group_id.unwrap_or(-user_id)
+}
+
 /// Format a Chinese confirmation/error response for the !ml command.
 ///
 /// Kept as a pure function so unit tests can assert Chinese wording without
@@ -213,7 +219,7 @@ async fn execute_start(
     user_id: i64,
 ) -> MlActionResult {
     let now = chrono::Utc::now().timestamp();
-    let group_id_val = group_id.unwrap_or(-user_id);
+    let group_id_val = group_or_private_key(group_id, user_id);
 
     // Idempotent retry semantics: if the same match is already active in this group,
     // treat repeated start as success so users can retry after a lost confirmation.
@@ -387,7 +393,7 @@ async fn execute_stop(
     group_id: Option<i64>,
     user_id: i64,
 ) -> MlActionResult {
-    let group_id_val = group_id.unwrap_or(-user_id);
+    let group_id_val = group_or_private_key(group_id, user_id);
     match ctx
         .storage
         .stop_match_listener(match_id as i64, group_id_val)
@@ -406,7 +412,7 @@ async fn execute_stop(
 }
 
 async fn execute_stop_all(ctx: &BotContext, group_id: Option<i64>, user_id: i64) -> MlActionResult {
-    let group_id_val = group_id.unwrap_or(-user_id);
+    let group_id_val = group_or_private_key(group_id, user_id);
     match ctx
         .storage
         .stop_all_match_listeners_in_group(group_id_val)
@@ -424,7 +430,7 @@ async fn execute_stop_all(ctx: &BotContext, group_id: Option<i64>, user_id: i64)
 }
 
 async fn execute_list(ctx: &BotContext, group_id: Option<i64>, user_id: i64) -> MlActionResult {
-    let group_id_val = group_id.unwrap_or(-user_id);
+    let group_id_val = group_or_private_key(group_id, user_id);
     match ctx
         .storage
         .list_active_match_listeners_by_group(group_id_val)
@@ -451,7 +457,7 @@ async fn execute_status(
     user_id: i64,
 ) -> MlActionResult {
     let now = chrono::Utc::now().timestamp();
-    let group_id_val = group_id.unwrap_or(-user_id);
+    let group_id_val = group_or_private_key(group_id, user_id);
 
     // Check if this group is listening
     match ctx

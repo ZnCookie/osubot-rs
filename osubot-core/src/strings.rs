@@ -672,7 +672,9 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "ml.poller_render_failed" => "轮询: 渲染比赛 {match_id} 结果卡片失败，回退到文本",
     "ml.notify_sent" => "已向群 {group_id} 发送比赛 {match_id} 的通知",
     "ml.notify_image_sent" => "已向群 {group_id} 发送比赛 {match_id} 的结果图片（{bytes} 字节）",
+    "ml.notify_render_failed" => "比赛结果图片渲染失败",
     "ml.notify_text_fallback" => "图片发送失败，回退到文本通知",
+    "ml.notify_no_sink" => "WebSocket 连接不可用，跳过通知",
 };
 
 pub fn log_str(key: &str) -> &'static str {

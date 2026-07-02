@@ -1232,6 +1232,11 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Deactivate all active listeners keyed by `group_id`.
+    ///
+    /// For private-chat listeners the caller passes `-user_id` as `group_id`,
+    /// so this function doubles as "stop all listeners for a user" without
+    /// needing a separate query path.
     pub async fn stop_all_match_listeners_in_group(&self, group_id: i64) -> DbResult<u64> {
         self.conn()
             .await

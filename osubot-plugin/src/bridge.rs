@@ -349,9 +349,6 @@ fn dispatch_host_call(
         }
         "send_image" => {
             let v = parse_payload(payload)?;
-            let group_id = v["group_id"]
-                .as_i64()
-                .ok_or_else(|| BridgeError::MissingField("group_id".into()))?;
             let jpeg_b64 = get_field(&v, "jpeg_base64")?;
             if !acquire_rate_limiter(services) {
                 return Err(BridgeError::SendMsg(
@@ -364,7 +361,14 @@ fn dispatch_host_call(
                     "file": format!("base64://{}", jpeg_b64)
                 }
             }]);
-            send_msg_sync(services, group_id, image_segment)?;
+            if let Some(user_id) = v["user_id"].as_i64() {
+                send_private_msg_sync(services, user_id, image_segment)?;
+            } else {
+                let group_id = v["group_id"]
+                    .as_i64()
+                    .ok_or_else(|| BridgeError::MissingField("group_id or user_id".into()))?;
+                send_msg_sync(services, group_id, image_segment)?;
+            }
             Ok("{}".to_string())
         }
         "http_request" => {

@@ -381,6 +381,19 @@ pub(crate) async fn send_private_msg(
     .map(|_| ())
 }
 
+fn make_base64_segment(media_type: &str, data: &[u8]) -> serde_json::Value {
+    use base64::prelude::*;
+    let b64 = BASE64_STANDARD.encode(data);
+    serde_json::json!([
+        {
+            "type": media_type,
+            "data": {
+                "file": format!("base64://{}", b64)
+            }
+        }
+    ])
+}
+
 /// Send a message with a base64-encoded image to a QQ user (private chat)
 /// via the OneBot WebSocket connection.
 pub(crate) async fn send_private_msg_with_image(
@@ -389,16 +402,7 @@ pub(crate) async fn send_private_msg_with_image(
     user_id: i64,
     image_data: &[u8],
 ) -> Result<(), String> {
-    use base64::prelude::*;
-    let b64 = BASE64_STANDARD.encode(image_data);
-    let segments = serde_json::json!([
-        {
-            "type": "image",
-            "data": {
-                "file": format!("base64://{}", b64)
-            }
-        }
-    ]);
+    let segments = make_base64_segment("image", image_data);
     call_onebot_api(
         write,
         api,
@@ -420,16 +424,7 @@ pub(crate) async fn send_private_msg_with_record(
     user_id: i64,
     mp3: &[u8],
 ) -> Result<(), String> {
-    use base64::prelude::*;
-    let b64 = BASE64_STANDARD.encode(mp3);
-    let segments = serde_json::json!([
-        {
-            "type": "record",
-            "data": {
-                "file": format!("base64://{}", b64)
-            }
-        }
-    ]);
+    let segments = make_base64_segment("record", mp3);
     call_onebot_api(
         write,
         api,
@@ -450,16 +445,7 @@ pub(crate) async fn send_group_msg_with_image(
     group_id: i64,
     image_data: &[u8],
 ) -> Result<(), String> {
-    use base64::prelude::*;
-    let b64 = BASE64_STANDARD.encode(image_data);
-    let segments = serde_json::json!([
-        {
-            "type": "image",
-            "data": {
-                "file": format!("base64://{}", b64)
-            }
-        }
-    ]);
+    let segments = make_base64_segment("image", image_data);
     call_onebot_api(
         write,
         api,
@@ -481,16 +467,7 @@ pub(crate) async fn send_group_msg_with_record(
     group_id: i64,
     mp3: &[u8],
 ) -> Result<(), String> {
-    use base64::prelude::*;
-    let b64 = BASE64_STANDARD.encode(mp3);
-    let segments = serde_json::json!([
-        {
-            "type": "record",
-            "data": {
-                "file": format!("base64://{}", b64)
-            }
-        }
-    ]);
+    let segments = make_base64_segment("record", mp3);
     call_onebot_api(
         write,
         api,
