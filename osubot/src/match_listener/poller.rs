@@ -498,28 +498,11 @@ impl MatchListenerPoller {
                 text, event_type, ..
             } => {
                 let msg = super::notify::format_lobby_text(event_type, text, users, match_name);
-                let send_result = match listener.notification_type.as_str() {
-                    "private" => {
-                        let user_id = listener.user_id.unwrap_or(0);
-                        crate::onebot::send_private_msg(&write, &self.onebot_api, user_id, &msg)
-                            .await
-                    }
-                    _ => {
-                        let group_id = listener.group_id.unwrap_or(0);
-                        crate::onebot::send_group_msg(&write, &self.onebot_api, group_id, &msg)
-                            .await
-                    }
-                };
-                match send_result {
-                    Ok(()) => {
-                        info!(match_id, "{}", log_fmt!("ml.notify_sent"));
-                        true
-                    }
-                    Err(e) => {
-                        warn!(match_id, error = %e, "{}", log_str("ml.notify_text_fallback"));
-                        false
-                    }
+                let sent = self.send_text(&write, listener, &msg).await;
+                if sent {
+                    info!(match_id, "{}", log_fmt!("ml.notify_sent"));
                 }
+                sent
             }
             NotificationAction::Image {
                 game,
