@@ -1,0 +1,8 @@
+[advisories]
+# quick-xml 0.39.4 — 通过 wayland-scanner（proc-macro，编译时）传递引入。
+# wayland-scanner 上游尚未发布使用 quick-xml >= 0.41 的版本。
+# 该 crate 仅在构建时生成 Wayland 协议绑定代码，运行时无 quick-xml 依赖。
+ignore = [
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
