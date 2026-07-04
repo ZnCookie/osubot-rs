@@ -207,7 +207,7 @@ impl Command {
             Command::ProfileCard { .. } => CommandGroup::Profile,
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
-            Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
+            Command::Bind { .. } | Command::Unbind { .. } => CommandGroup::Bind,
             Command::SetDefaultMode { .. } => CommandGroup::Mode,
             Command::Help => CommandGroup::Help,
             Command::MatchListen(..) => CommandGroup::MatchListen,
