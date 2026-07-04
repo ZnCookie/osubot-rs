@@ -5,13 +5,13 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use osubot_core::{
-    api,
+    api::{self, SbApi, sb_player_to_user_stats},
     highlight::{format_highlight, get_highlight, HighlightError},
     log_fmt, parse_command,
     response::format_stats_with_change,
     storage::Storage,
     strings::user_str,
-    types::{Command, GameMode},
+    types::{Command, GameMode, Server},
 };
 use osubot_plugin::{PluginActionResult, PluginManager};
 use osubot_render::{render_profile_card, PROFILE_VIEWPORT_WIDTH};
@@ -50,7 +50,7 @@ pub(crate) async fn resolve_cmd_target_qq(
 ) -> Option<i64> {
     match cmd {
         Command::QuerySelf { .. } => Some(msg.user_id),
-        Command::QueryUser { username, .. } => match storage.find_qq_by_username(username).await {
+        Command::QueryUser { username, server, .. } => match storage.find_qq_by_username(username, *server).await {
             Ok(qq) => qq,
             Err(e) => {
                 warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
@@ -68,38 +68,45 @@ pub(crate) async fn resolve_cmd_target_qq(
         Command::Pass {
             qq: None,
             username: Some(username),
+            server,
             ..
         }
         | Command::Recent {
             qq: None,
             username: Some(username),
+            server,
             ..
         }
         | Command::ScoreOnBeatmap {
             qq: None,
             username: Some(username),
+            server,
             ..
         }
         | Command::Best {
             qq: None,
             username: Some(username),
+            server,
             ..
         }
         | Command::TodayBest {
             qq: None,
             username: Some(username),
+            server,
             ..
         }
         | Command::BeatmapAudio {
             qq: None,
             username: Some(username),
+            server,
             ..
         }
         | Command::BeatmapPreview {
             qq: None,
             username: Some(username),
+            server,
             ..
-        } => match storage.find_qq_by_username(username).await {
+        } => match storage.find_qq_by_username(username, *server).await {
             Ok(qq) => qq,
             Err(e) => {
                 warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
@@ -167,7 +174,7 @@ pub(crate) fn mode_sensitive(cmd: &Command) -> bool {
 /// 从命令中提取显式指定的 mode（未指定返回 None）。
 pub(crate) fn extract_explicit_mode(cmd: &Command) -> Option<GameMode> {
     match cmd {
-        Command::QuerySelf { mode }
+        Command::QuerySelf { mode, .. }
         | Command::QueryUser { mode, .. }
         | Command::QueryMentionedUser { mode, .. }
         | Command::Pass { mode, .. }
@@ -191,11 +198,12 @@ pub(crate) async fn resolve_mode(
     storage: &Storage,
     target_qq: Option<i64>,
     explicit_mode: Option<GameMode>,
+    server: Server,
 ) -> GameMode {
     match explicit_mode {
         Some(mode) => mode,
         None => match target_qq {
-            Some(qq) => match storage.get_default_mode(qq).await {
+            Some(qq) => match storage.get_default_mode(qq, server).await {
                 Ok(Some(mode)) => mode,
                 Ok(None) => GameMode::Osu,
                 Err(e) => {
@@ -385,7 +393,8 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         Some(cmd) if mode_sensitive(cmd) => {
             let target_qq = resolve_cmd_target_qq(cmd, &msg, &ctx.storage).await;
             let explicit_mode = extract_explicit_mode(cmd);
-            Some(resolve_mode(&ctx.storage, target_qq, explicit_mode).await)
+            let server = cmd.server().unwrap_or_default();
+            Some(resolve_mode(&ctx.storage, target_qq, explicit_mode, server).await)
         }
         _ => None,
     };
@@ -439,6 +448,19 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         return;
     }
 
+    // ppy.sb 群配置检查
+    if let Some(server) = cmd.server() {
+        if server == Server::PpySb && !group_cfg.ppy_sb {
+            debug!(
+                group_id = ?msg.group_id,
+                user_id = msg.user_id,
+                command = ?cmd.command_name(),
+                "ppy.sb command not enabled for group"
+            );
+            return;
+        }
+    }
+
     // Handle command and send response
     record_command_invocation(&ctx, msg.user_id);
     let mode = resolved_mode.unwrap_or(GameMode::Osu);
@@ -455,7 +477,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         | Command::BeatmapPreview { .. } => {
             handle_query_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
-        Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind => {
+        Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind { .. } => {
             handle_settings_commands(&ctx, &msg, &resp_tx, &cmd).await;
         }
         Command::Help | Command::Highlight { .. } | Command::ProfileCard { .. } => {

@@ -19,7 +19,7 @@ use osubot_core::{
     api, log_fmt,
     response::{format_score, format_scores},
     strings::user_str,
-    types::{format_play_datetime, Command, GameMode, Score, UserStats},
+    types::{format_play_datetime, Command, GameMode, Score, Server, UserStats},
 };
 use osubot_render::cache as render_cache;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
@@ -197,6 +197,7 @@ struct PipelineParams<'a> {
     limit_end: Option<u32>,
     is_summary: bool,
     filters: Option<&'a [String]>,
+    server: Server,
 }
 
 /// 发送错误消息到响应通道。
@@ -206,6 +207,7 @@ async fn resolve_score_user(
     username: &Option<String>,
     qq: &Option<i64>,
     mode: GameMode,
+    server: Server,
     resp_tx: &mpsc::Sender<String>,
 ) -> Option<(i64, String, UserStats)> {
     tracing::trace!("{}", log_fmt!("main.resolve_score_user_start"));
@@ -234,7 +236,7 @@ async fn resolve_score_user(
         }
     } else {
         let (user_id, _stored_name, error_msg) = if let Some(mentioned_qq) = qq {
-            match ctx.resolve_binding(*mentioned_qq).await {
+            match ctx.resolve_binding(*mentioned_qq, server).await {
                 Some((user_id, name)) => (user_id, name, None),
                 None => (
                     0,
@@ -243,7 +245,7 @@ async fn resolve_score_user(
                 ),
             }
         } else {
-            match ctx.resolve_binding(msg.user_id).await {
+            match ctx.resolve_binding(msg.user_id, server).await {
                 Some((user_id, name)) => (user_id, name, None),
                 None => (
                     0,
@@ -410,6 +412,7 @@ pub(crate) async fn handle_score_query(
             beatmap_id,
             score_id,
             filters,
+            server,
             ..
         } => {
             if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.recent_pass").await
@@ -454,6 +457,7 @@ pub(crate) async fn handle_score_query(
                     limit_end: *limit_end,
                     is_summary: *is_summary,
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -466,6 +470,7 @@ pub(crate) async fn handle_score_query(
             beatmap_id,
             score_id,
             filters,
+            server,
             ..
         } => {
             if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.recent_play").await
@@ -510,6 +515,7 @@ pub(crate) async fn handle_score_query(
                     limit_end: *limit_end,
                     is_summary: *is_summary,
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -522,6 +528,7 @@ pub(crate) async fn handle_score_query(
             limit_end,
             is_summary,
             filters,
+            server,
             ..
         } => {
             if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.best_score").await
@@ -564,6 +571,7 @@ pub(crate) async fn handle_score_query(
                     limit_end: *limit_end,
                     is_summary: *is_summary,
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -576,6 +584,7 @@ pub(crate) async fn handle_score_query(
             limit_end,
             is_summary,
             filters,
+            server,
             ..
         } => {
             if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.today_best").await
@@ -625,6 +634,7 @@ pub(crate) async fn handle_score_query(
                     limit_end: *limit_end,
                     is_summary: *is_summary,
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -637,6 +647,7 @@ pub(crate) async fn handle_score_query(
             beatmap_id,
             explicit_position,
             mode: cmd_mode,
+            server,
             ..
         } => {
             // score_id 直达：获取成绩后播放其谱面音频，无需绑定。
@@ -725,6 +736,7 @@ pub(crate) async fn handle_score_query(
                     is_summary: false,
                     beatmap_id: None,
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -740,6 +752,7 @@ pub(crate) async fn handle_score_query(
             beatmap_id,
             explicit_position,
             mode: cmd_mode,
+            server,
             ..
         } => {
             // score_id 直达：获取成绩后渲染其谱面预览，无需绑定。
@@ -829,6 +842,7 @@ pub(crate) async fn handle_score_query(
                     is_summary: false,
                     beatmap_id: None,
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -841,6 +855,7 @@ pub(crate) async fn handle_score_query(
             limit,
             limit_end,
             is_all,
+            server,
             ..
         } => {
             if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.beatmap_score")
@@ -909,6 +924,7 @@ pub(crate) async fn handle_score_query(
                     is_summary: *is_all || limit_end.is_some(),
                     beatmap_id: Some(resolved_bid),
                     filters: filters.as_deref(),
+                    server: *server,
                 },
             )
         }
@@ -934,6 +950,7 @@ async fn run_score_query_pipeline(
         limit_end,
         is_summary,
         filters,
+        server,
     } = params;
 
     let is_self = username.is_none() && qq.is_none();
@@ -949,7 +966,7 @@ async fn run_score_query_pipeline(
     });
 
     let (_user_id, resolved_username, user_stats, score_result) = if is_self {
-        let (uid, name) = match ctx.resolve_binding(msg.user_id).await {
+        let (uid, name) = match ctx.resolve_binding(msg.user_id, server).await {
             Some(binding) => binding,
             None => {
                 let _ = resp_tx
@@ -987,6 +1004,7 @@ async fn run_score_query_pipeline(
             &username.map(|s| s.to_string()),
             &qq,
             mode,
+            server,
             resp_tx,
         )
         .await

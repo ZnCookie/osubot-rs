@@ -8,11 +8,12 @@ pub(super) async fn handle_settings_commands(
     cmd: &Command,
 ) {
     match cmd {
-        Command::SetDefaultMode { mode } => match mode {
+        Command::SetDefaultMode { mode, server, .. } => match mode {
             Some(mode) => {
                 info!(
                     user_id = msg.user_id,
                     ?mode,
+                    server = ?server,
                     "{}",
                     log_fmt!(
                         "main.set_default_mode",
@@ -20,7 +21,7 @@ pub(super) async fn handle_settings_commands(
                         mode = &format!("{:?}", mode)
                     )
                 );
-                match ctx.storage.set_default_mode(msg.user_id, *mode).await {
+                match ctx.storage.set_default_mode(msg.user_id, *mode, *server).await {
                     Ok(true) => {
                         let _ = resp_tx
                             .send(
@@ -50,13 +51,15 @@ pub(super) async fn handle_settings_commands(
                 }
             }
             None => {
+                let server = *server;
                 info!(
                     user_id = msg.user_id,
+                    server = ?server,
                     "{}",
                     log_fmt!("main.get_default_mode", user_id = &msg.user_id.to_string())
                 );
-                match ctx.storage.get_binding(msg.user_id).await {
-                    Ok(Some(_)) => match ctx.storage.get_default_mode(msg.user_id).await {
+                match ctx.storage.get_binding(msg.user_id, server).await {
+                    Ok(Some(_)) => match ctx.storage.get_default_mode(msg.user_id, server).await {
                         Ok(Some(mode)) => {
                             let _ = resp_tx
                                 .send(
@@ -115,9 +118,10 @@ pub(super) async fn handle_settings_commands(
                 }
             }
         },
-        Command::Bind { username } => {
-            info!(user_id = msg.user_id, group_id = ?msg.group_id, username = %username, "{}", log_fmt!("main.bind_command"));
-            match ctx.storage.get_binding(msg.user_id).await {
+        Command::Bind { username, server } => {
+            let server = *server;
+            info!(user_id = msg.user_id, group_id = ?msg.group_id, username = %username, server = ?server, "{}", log_fmt!("main.bind_command"));
+            match ctx.storage.get_binding(msg.user_id, server).await {
                 Ok(Some((_, existing_username))) => {
                     info!(user_id = msg.user_id, existing = %existing_username, "{}", log_fmt!("main.bind_already_bound"));
                     let _ = resp_tx
@@ -195,60 +199,139 @@ pub(super) async fn handle_settings_commands(
                             }
                         }
                     } else {
-                        match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, username).await {
-                            Ok(Some(user_info)) => {
-                                if let Err(e) =
-                                    ctx.storage.set_user_id(username, user_info.id).await
-                                {
-                                    warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
-                                }
-                                match ctx
-                                    .storage
-                                    .bind(msg.user_id, user_info.id, &user_info.username)
-                                    .await
-                                {
-                                    Ok(Ok(())) => {
-                                        info!(user_id = msg.user_id, username = %user_info.username, "{}", log_fmt!("main.bind_success"));
-                                        let _ = resp_tx
-                                            .send(
-                                                user_str("bind.success")
-                                                    .replace("{qq}", &msg.user_id.to_string())
-                                                    .replace("{name}", &user_info.username),
-                                            )
-                                            .await;
+                        match server {
+                            Server::Official => {
+                                match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, username).await {
+                                    Ok(Some(user_info)) => {
+                                        if let Err(e) =
+                                            ctx.storage.set_user_id(username, user_info.id).await
+                                        {
+                                            warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
+                                        }
+                                        match ctx
+                                            .storage
+                                            .bind(msg.user_id, user_info.id, &user_info.username, Server::Official)
+                                            .await
+                                        {
+                                            Ok(Ok(())) => {
+                                                info!(user_id = msg.user_id, username = %user_info.username, "{}", log_fmt!("main.bind_success"));
+                                                let _ = resp_tx
+                                                    .send(
+                                                        user_str("bind.success")
+                                                            .replace("{qq}", &msg.user_id.to_string())
+                                                            .replace("{name}", &user_info.username),
+                                                    )
+                                                    .await;
+                                            }
+                                            Ok(Err(bound_qq)) => {
+                                                info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
+                                                let _ = resp_tx
+                                                    .send(
+                                                        user_str("bind.already_bound_other")
+                                                            .replace("{qq}", &msg.user_id.to_string()),
+                                                    )
+                                                    .await;
+                                            }
+                                            Err(_) => {
+                                                error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
+                                                let _ = resp_tx
+                                                    .send(
+                                                        user_str("bind.failed_retry")
+                                                            .replace("{qq}", &msg.user_id.to_string()),
+                                                    )
+                                                    .await;
+                                            }
+                                        }
                                     }
-                                    Ok(Err(bound_qq)) => {
-                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
+                                    Ok(None) => {
+                                        info!(username = %username, "{}", log_fmt!("main.bind_user_not_found"));
                                         let _ = resp_tx
                                             .send(
-                                                user_str("bind.already_bound_other")
+                                                user_str("bind.user_not_found")
                                                     .replace("{qq}", &msg.user_id.to_string()),
                                             )
                                             .await;
                                     }
-                                    Err(_) => {
-                                        error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
-                                        let _ = resp_tx
-                                            .send(
-                                                user_str("bind.failed_retry")
-                                                    .replace("{qq}", &msg.user_id.to_string()),
-                                            )
-                                            .await;
+                                    Err(e) => {
+                                        warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
+                                        let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                                     }
                                 }
                             }
-                            Ok(None) => {
-                                info!(username = %username, "{}", log_fmt!("main.bind_user_not_found"));
-                                let _ = resp_tx
-                                    .send(
-                                        user_str("bind.user_not_found")
-                                            .replace("{qq}", &msg.user_id.to_string()),
-                                    )
-                                    .await;
-                            }
-                            Err(e) => {
-                                warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
-                                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                            Server::PpySb => {
+                                let config = ctx.config.read().await;
+                                let sb_api = SbApi::new(
+                                    config.ppy_sb.api_base_url.clone(),
+                                    ctx.sb_rate_limiter.clone(),
+                                );
+                                drop(config);
+                                match sb_api.search_player(username).await {
+                                    Ok(players) => {
+                                        let player = match players.first() {
+                                            Some(p) => p,
+                                            None => {
+                                                let _ = resp_tx
+                                                    .send(
+                                                        user_str("bind.user_not_found")
+                                                            .replace("{qq}", &msg.user_id.to_string()),
+                                                    )
+                                                    .await;
+                                                return;
+                                            }
+                                        };
+                                        match sb_api.get_player_info(player.id).await {
+                                            Ok(info) => {
+                                                if let Err(e) =
+                                                    ctx.storage.set_user_id(&info.name, info.id).await
+                                                {
+                                                    warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
+                                                }
+                                                match ctx
+                                                    .storage
+                                                    .bind(msg.user_id, info.id, &info.name, Server::PpySb)
+                                                    .await
+                                                {
+                                                    Ok(Ok(())) => {
+                                                        info!(user_id = msg.user_id, username = %info.name, "{}", log_fmt!("main.bind_success"));
+                                                        let _ = resp_tx
+                                                            .send(
+                                                                user_str("bind.success")
+                                                                    .replace("{qq}", &msg.user_id.to_string())
+                                                                    .replace("{name}", &info.name),
+                                                            )
+                                                            .await;
+                                                    }
+                                                    Ok(Err(bound_qq)) => {
+                                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
+                                                        let _ = resp_tx
+                                                            .send(
+                                                                user_str("bind.already_bound_other")
+                                                                    .replace("{qq}", &msg.user_id.to_string()),
+                                                            )
+                                                            .await;
+                                                    }
+                                                    Err(_) => {
+                                                        error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
+                                                        let _ = resp_tx
+                                                            .send(
+                                                                user_str("bind.failed_retry")
+                                                                    .replace("{qq}", &msg.user_id.to_string()),
+                                                            )
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
+                                                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
+                                        let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                                    }
+                                }
                             }
                         }
                     }
@@ -261,15 +344,17 @@ pub(super) async fn handle_settings_commands(
                 }
             }
         }
-        Command::Unbind => {
+        Command::Unbind { server } => {
+            let server = *server;
             info!(
                 user_id = msg.user_id,
                 group_id = ?msg.group_id,
+                server = ?server,
                 "{}",
                 log_fmt!("main.unbind_command")
             );
             match ctx.storage.get_pending_unbind(msg.user_id).await {
-                Ok(Some(_)) => match ctx.storage.unbind(msg.user_id).await {
+                Ok(Some(_)) => match ctx.storage.unbind(msg.user_id, server).await {
                     Ok(_) => {
                         if let Err(e) = ctx.storage.remove_pending_unbind(msg.user_id).await {
                             tracing::warn!(
@@ -297,7 +382,7 @@ pub(super) async fn handle_settings_commands(
                             .await;
                     }
                 },
-                Ok(None) => match ctx.storage.get_binding(msg.user_id).await {
+                Ok(None) => match ctx.storage.get_binding(msg.user_id, server).await {
                     Ok(Some((_, current_username))) => {
                         if let Err(e) = ctx.storage.set_pending_unbind(msg.user_id).await {
                             tracing::warn!(

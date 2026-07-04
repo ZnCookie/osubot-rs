@@ -9,28 +9,30 @@ pub(super) async fn handle_query_commands(
     mode: GameMode,
 ) {
     match cmd {
-        Command::QuerySelf { .. } => {
-            info!(user_id = msg.user_id, group_id = ?msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_self"));
-            match ctx.storage.get_binding(msg.user_id).await {
+        Command::QuerySelf { server, .. } => {
+            info!(user_id = msg.user_id, group_id = ?msg.group_id, mode = ?mode, server = ?server, "{}", log_fmt!("main.query_self"));
+            match ctx.storage.get_binding(msg.user_id, *server).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
                         msg.user_id,
                         user_id,
                         &username,
                         mode,
+                        *server,
                         resp_tx,
                         "QuerySelf",
                     )
                     .await;
                 }
                 Ok(None) => {
-                    if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id).await {
+                    if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id, *server).await {
                         info!(user_id = msg.user_id, osu_id = user_id, username = %username, "{}", log_fmt!("main.query_self_auto_bound"));
                         ctx.fetch_stats_and_reply(
                             msg.user_id,
                             user_id,
                             &username,
                             mode,
+                            *server,
                             resp_tx,
                             "QuerySelf (auto-bound)",
                         )
@@ -61,88 +63,167 @@ pub(super) async fn handle_query_commands(
                 }
             }
         }
-        Command::QueryUser { username, .. } => {
-            info!(group_id = ?msg.group_id, username = %username, mode = ?mode, "{}", log_fmt!("main.query_user"));
-            match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, username, mode)
-                .await
-            {
-                Ok(stats) => {
-                    if let Err(e) = ctx
-                        .storage
-                        .set_user_id(&stats.username, stats.user_id)
+        Command::QueryUser { username, server, .. } => {
+            info!(group_id = ?msg.group_id, username = %username, mode = ?mode, server = ?server, "{}", log_fmt!("main.query_user"));
+            match server {
+                Server::Official => {
+                    match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, username, mode)
                         .await
                     {
-                        tracing::warn!(
-                            username = %stats.username,
-                            user_id = stats.user_id,
-                            error = %e,
-                            "{}",
-                            log_fmt!("main.cache_user_id_failed")
-                        );
-                    }
-                    if stats.username != *username {
-                        if let Err(e) = ctx.storage.set_user_id(username, stats.user_id).await {
-                            tracing::warn!(
-                                username = %username,
-                                user_id = stats.user_id,
-                                error = %e,
-                                "{}",
-                                log_fmt!("main.cache_user_id_failed")
-                            );
+                        Ok(stats) => {
+                            if let Err(e) = ctx
+                                .storage
+                                .set_user_id(&stats.username, stats.user_id)
+                                .await
+                            {
+                                tracing::warn!(
+                                    username = %stats.username,
+                                    user_id = stats.user_id,
+                                    error = %e,
+                                    "{}",
+                                    log_fmt!("main.cache_user_id_failed")
+                                );
+                            }
+                            if stats.username != *username {
+                                if let Err(e) = ctx.storage.set_user_id(username, stats.user_id).await {
+                                    tracing::warn!(
+                                        username = %username,
+                                        user_id = stats.user_id,
+                                        error = %e,
+                                        "{}",
+                                        log_fmt!("main.cache_user_id_failed")
+                                    );
+                                }
+                            }
+                            ctx.scheduler.trigger_update(stats.user_id, mode).await;
+                            let change = ctx
+                                .storage
+                                .calculate_change(stats.user_id, mode, &stats, Server::Official)
+                                .await
+                                .inspect_err(|e| {
+                                    tracing::warn!(
+                                        user_id = stats.user_id,
+                                        mode = ?mode,
+                                        error = %e,
+                                        "{}",
+                                        log_fmt!("main.calculate_change_failed")
+                                    )
+                                })
+                                .ok()
+                                .flatten();
+                            let has_change = change.is_some();
+                            info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.query_user_success"));
+                            let response = format_stats_with_change(&stats, &change, mode);
+                            let _ = resp_tx.send(response).await;
+                            if !has_change {
+                                info!(username = %username, "{}", log_fmt!("main.query_user_no_change"));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(username = %username, mode = ?mode, error = ?e, "{}", log_fmt!("main.query_user_failed"));
+                            let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                         }
                     }
-                    ctx.scheduler.trigger_update(stats.user_id, mode).await;
-                    let change = ctx
-                        .storage
-                        .calculate_change(stats.user_id, mode, &stats)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!(
-                                user_id = stats.user_id,
-                                mode = ?mode,
-                                error = %e,
-                                "{}",
-                                log_fmt!("main.calculate_change_failed")
-                            )
-                        })
-                        .ok()
-                        .flatten();
-                    let has_change = change.is_some();
-                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.query_user_success"));
-                    let response = format_stats_with_change(&stats, &change, mode);
-                    let _ = resp_tx.send(response).await;
-                    if !has_change {
-                        info!(username = %username, "{}", log_fmt!("main.query_user_no_change"));
-                    }
                 }
-                Err(e) => {
-                    warn!(username = %username, mode = ?mode, error = ?e, "{}", log_fmt!("main.query_user_failed"));
-                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                Server::PpySb => {
+                    let config = ctx.config.read().await;
+                    let sb_api = SbApi::new(
+                        config.ppy_sb.api_base_url.clone(),
+                        ctx.sb_rate_limiter.clone(),
+                    );
+                    drop(config);
+                    match sb_api.search_player(username).await {
+                        Ok(players) => {
+                            let player = match players.first() {
+                                Some(p) => p,
+                                None => {
+                                    let _ = resp_tx
+                                        .send(
+                                            user_str("bind.user_not_found")
+                                                .replace("{qq}", &msg.user_id.to_string()),
+                                        )
+                                        .await;
+                                    return;
+                                }
+                            };
+                            match sb_api.get_player_info(player.id).await {
+                                Ok(info) => {
+                                    let stats = sb_player_to_user_stats(&info, mode);
+                                    if let Err(e) = ctx
+                                        .storage
+                                        .set_user_id(&stats.username, stats.user_id)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            username = %stats.username,
+                                            user_id = stats.user_id,
+                                            error = %e,
+                                            "{}",
+                                            log_fmt!("main.cache_user_id_failed")
+                                        );
+                                    }
+                                    ctx.scheduler.trigger_update(stats.user_id, mode).await;
+                                    let change = ctx
+                                        .storage
+                                        .calculate_change(stats.user_id, mode, &stats, Server::PpySb)
+                                        .await
+                                        .inspect_err(|e| {
+                                            tracing::warn!(
+                                                user_id = stats.user_id,
+                                                mode = ?mode,
+                                                error = %e,
+                                                "{}",
+                                                log_fmt!("main.calculate_change_failed")
+                                            )
+                                        })
+                                        .ok()
+                                        .flatten();
+                                    let has_change = change.is_some();
+                                    info!(username = %username, mode = ?mode, pp = stats.pp, rank = stats.rank, "{}", log_fmt!("main.query_user_success"));
+                                    let response = format_stats_with_change(&stats, &change, mode);
+                                    let _ = resp_tx.send(response).await;
+                                    if !has_change {
+                                        info!(username = %username, "{}", log_fmt!("main.query_user_no_change"));
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(username = %username, error = ?e, "{}", log_fmt!("main.query_user_failed"));
+                                    let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(username = %username, error = ?e, "{}", log_fmt!("main.query_user_failed"));
+                            let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                        }
+                    }
                 }
             }
         }
-        Command::QueryMentionedUser { qq, .. } => {
-            info!(qq = qq, group_id = ?msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_mentioned_user"));
-            match ctx.storage.get_binding(*qq).await {
+        Command::QueryMentionedUser { qq, server, .. } => {
+            info!(qq = qq, group_id = ?msg.group_id, mode = ?mode, server = ?server, "{}", log_fmt!("main.query_mentioned_user"));
+            match ctx.storage.get_binding(*qq, *server).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
                         *qq,
                         user_id,
                         &username,
                         mode,
+                        *server,
                         resp_tx,
                         "QueryMentionedUser",
                     )
                     .await;
                 }
                 Ok(None) => {
-                    if let Some((user_id, username)) = ctx.resolve_binding(*qq).await {
+                    if let Some((user_id, username)) = ctx.resolve_binding(*qq, *server).await {
                         info!(qq = qq, osu_id = user_id, username = %username, "{}", log_fmt!("main.query_mentioned_auto_bound"));
                         ctx.fetch_stats_and_reply(
                             *qq,
                             user_id,
                             &username,
                             mode,
+                            *server,
                             resp_tx,
                             "QueryMentionedUser (auto-bound)",
                         )
