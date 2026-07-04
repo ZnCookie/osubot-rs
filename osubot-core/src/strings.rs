@@ -48,6 +48,8 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "error.image_send_failed" => "[CQ:at,qq={qq}] 图片发送失败",
     "error.audio_send_failed" => "[CQ:at,qq={qq}] 音频发送失败",
     "error.get_group_member_failed" => "[CQ:at,qq={qq}] 无法获取群成员列表，请稍后重试",
+    "highlight.not_supported_in_private" => "此命令不支持私聊使用",
+    "error.get_group_members" => "获取群成员列表失败",
     "error.render_timeout" => "[CQ:at,qq={qq}] 渲染超时，请稍后重试",
     "error.render_failed" => "[CQ:at,qq={qq}] 渲染失败，请稍后重试",
     "error.beatmap_preview_convert_unsupported" => "[CQ:at,qq={qq}] 非 osu! 谱面不支持模式转换",
@@ -323,6 +325,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "main.plugin_msg_channel_busy" => "plugin message channel busy: {error}",
     "main.force_reconnect_url_changed" => "强制重连：onebot_url 已热重载变更",
     "main.group_filtered" => "群被过滤，跳过",
+    "main.private_filtered" => "私聊被过滤，跳过",
     "main.hot_reload_skip" => "热重载中，跳过消息",
     "main.command_timeout" => "命令处理超时（{secs}秒）",
     "main.ws_closed_reconnect" => "WebSocket 连接关闭，{secs}秒后重连",
@@ -669,7 +672,9 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "ml.poller_render_failed" => "轮询: 渲染比赛 {match_id} 结果卡片失败，回退到文本",
     "ml.notify_sent" => "已向群 {group_id} 发送比赛 {match_id} 的通知",
     "ml.notify_image_sent" => "已向群 {group_id} 发送比赛 {match_id} 的结果图片（{bytes} 字节）",
+    "ml.notify_render_failed" => "比赛结果图片渲染失败",
     "ml.notify_text_fallback" => "图片发送失败，回退到文本通知",
+    "ml.notify_no_sink" => "WebSocket 连接不可用，跳过通知",
 };
 
 pub fn log_str(key: &str) -> &'static str {

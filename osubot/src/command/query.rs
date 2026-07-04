@@ -10,7 +10,7 @@ pub(super) async fn handle_query_commands(
 ) {
     match cmd {
         Command::QuerySelf { .. } => {
-            info!(user_id = msg.user_id, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_self"));
+            info!(user_id = msg.user_id, group_id = ?msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_self"));
             match ctx.storage.get_binding(msg.user_id).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
@@ -62,7 +62,7 @@ pub(super) async fn handle_query_commands(
             }
         }
         Command::QueryUser { username, .. } => {
-            info!(group_id = msg.group_id, username = %username, mode = ?mode, "{}", log_fmt!("main.query_user"));
+            info!(group_id = ?msg.group_id, username = %username, mode = ?mode, "{}", log_fmt!("main.query_user"));
             match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, username, mode)
                 .await
             {
@@ -122,7 +122,7 @@ pub(super) async fn handle_query_commands(
             }
         }
         Command::QueryMentionedUser { qq, .. } => {
-            info!(qq = qq, group_id = msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_mentioned_user"));
+            info!(qq = qq, group_id = ?msg.group_id, mode = ?mode, "{}", log_fmt!("main.query_mentioned_user"));
             match ctx.storage.get_binding(*qq).await {
                 Ok(Some((user_id, username))) => {
                     ctx.fetch_stats_and_reply(
@@ -174,7 +174,7 @@ pub(super) async fn handle_query_commands(
         | Command::BeatmapPreview { .. } => {
             info!(
                 user_id = msg.user_id,
-                group_id = msg.group_id,
+                group_id = ?msg.group_id,
                 mode = ?mode,
                 "{}",
                 log_fmt!("main.score_query_command")

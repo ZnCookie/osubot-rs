@@ -7,7 +7,7 @@ edition = "2021"
 osubot-core = { path = "../osubot-core" }
 osubot-types = { path = "../osubot-types" }
 chrono = "0.4"
-blitz = "0.2"
+blitz = { version = "0.2", default-features = false, features = ["net"] }
 # 显式启用 blitz-dom 的 svg feature（blitz 0.2 自己用 default-features = false 引用 blitz-dom，导致 svg feature 永远没启用，blitz 拿到 inline SVG 时无法解析）
 blitz-dom = { version = "0.2", default-features = false, features = ["svg"] }
 # 显式启用 blitz-paint 的 svg feature，否则 draw_svg 路径是死代码。

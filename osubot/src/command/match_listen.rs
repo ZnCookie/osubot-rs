@@ -10,6 +10,12 @@ use tracing::{error, info, warn};
 /// Maximum listener lifetime in hours (v1 guardrail).
 const MAX_LISTENER_LIFETIME_HOURS: i64 = 6;
 
+/// Derive a storage key for private chat: use `-user_id` (negative) to avoid
+/// collision with real group IDs (always positive).
+fn group_or_private_key(group_id: Option<i64>, user_id: i64) -> i64 {
+    group_id.unwrap_or(-user_id)
+}
+
 /// Format a Chinese confirmation/error response for the !ml command.
 ///
 /// Kept as a pure function so unit tests can assert Chinese wording without
@@ -161,7 +167,9 @@ pub(super) async fn handle_match_listen_command(
     let user_id = msg.user_id;
 
     info!(
-        group_id, user_id, action = ?action,
+        group_id = ?group_id,
+        user_id,
+        action = ?action,
         "{}", log_str("ml.command_received")
     );
 
@@ -170,7 +178,7 @@ pub(super) async fn handle_match_listen_command(
 
     if let MlActionResult::Error { message, .. } = &result {
         warn!(
-            group_id,
+            group_id = ?group_id,
             user_id,
             message,
             "{}",
@@ -184,7 +192,7 @@ pub(super) async fn handle_match_listen_command(
 async fn execute_ml_action(
     ctx: &BotContext,
     action: &MatchListenAction,
-    group_id: i64,
+    group_id: Option<i64>,
     user_id: i64,
 ) -> MlActionResult {
     match action {
@@ -207,16 +215,17 @@ async fn execute_start(
     ctx: &BotContext,
     match_id: u64,
     skip_rounds: u32,
-    group_id: i64,
+    group_id: Option<i64>,
     user_id: i64,
 ) -> MlActionResult {
     let now = chrono::Utc::now().timestamp();
+    let group_id_val = group_or_private_key(group_id, user_id);
 
     // Idempotent retry semantics: if the same match is already active in this group,
     // treat repeated start as success so users can retry after a lost confirmation.
     match ctx
         .storage
-        .get_match_listener(match_id as i64, group_id)
+        .get_match_listener(match_id as i64, group_id_val)
         .await
     {
         Ok(Some(l)) if is_listener_effectively_active(&l, now) => {
@@ -232,12 +241,17 @@ async fn execute_start(
     let max_per_group = config.match_listen.max_per_group as u64;
     drop(config);
 
-    // Check group limit
-    match ctx
-        .storage
-        .count_active_match_listeners_in_group(group_id)
-        .await
-    {
+    // Check group/user limit
+    let count_result = if group_id.is_some() {
+        ctx.storage
+            .count_active_match_listeners_in_group(group_id_val)
+            .await
+    } else {
+        ctx.storage
+            .count_active_match_listeners_for_user(user_id)
+            .await
+    };
+    match count_result {
         Ok(count) => {
             if count >= max_per_group {
                 return MlActionResult::Error {
@@ -248,7 +262,7 @@ async fn execute_start(
             }
         }
         Err(e) => {
-            error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
+            error!(group_id = ?group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
             return MlActionResult::Error {
                 qq: user_id,
                 message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
@@ -276,12 +290,24 @@ async fn execute_start(
     let now = chrono::Utc::now();
     let expires_at = (now + chrono::Duration::hours(MAX_LISTENER_LIFETIME_HOURS)).timestamp();
 
+    let notification_type = if group_id.is_some() {
+        "group"
+    } else {
+        "private"
+    };
+
     // Persist listener
     if let Err(e) = ctx
         .storage
         .start_match_listener(MatchListenerStartParams {
             match_id: match_id as i64,
-            group_id,
+            group_id: Some(group_id_val),
+            user_id: if group_id.is_none() {
+                Some(user_id)
+            } else {
+                None
+            },
+            notification_type: notification_type.to_string(),
             creator_qq: user_id,
             match_name: match_name.clone(),
             expires_at,
@@ -290,7 +316,7 @@ async fn execute_start(
         })
         .await
     {
-        error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
+        error!(group_id = ?group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
         return MlActionResult::Error {
             qq: user_id,
             message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
@@ -364,18 +390,19 @@ fn initial_cursor_from_response(
 async fn execute_stop(
     ctx: &BotContext,
     match_id: u64,
-    group_id: i64,
+    group_id: Option<i64>,
     user_id: i64,
 ) -> MlActionResult {
+    let group_id_val = group_or_private_key(group_id, user_id);
     match ctx
         .storage
-        .stop_match_listener(match_id as i64, group_id)
+        .stop_match_listener(match_id as i64, group_id_val)
         .await
     {
         Ok(true) => MlActionResult::Stopped { qq: user_id },
         Ok(false) => MlActionResult::NotFound { qq: user_id },
         Err(e) => {
-            error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
+            error!(group_id = ?group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
             MlActionResult::Error {
                 qq: user_id,
                 message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
@@ -384,15 +411,16 @@ async fn execute_stop(
     }
 }
 
-async fn execute_stop_all(ctx: &BotContext, group_id: i64, user_id: i64) -> MlActionResult {
+async fn execute_stop_all(ctx: &BotContext, group_id: Option<i64>, user_id: i64) -> MlActionResult {
+    let group_id_val = group_or_private_key(group_id, user_id);
     match ctx
         .storage
-        .stop_all_match_listeners_in_group(group_id)
+        .stop_all_match_listeners_in_group(group_id_val)
         .await
     {
         Ok(count) => MlActionResult::StoppedAll { qq: user_id, count },
         Err(e) => {
-            error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
+            error!(group_id = ?group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
             MlActionResult::Error {
                 qq: user_id,
                 message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
@@ -401,10 +429,11 @@ async fn execute_stop_all(ctx: &BotContext, group_id: i64, user_id: i64) -> MlAc
     }
 }
 
-async fn execute_list(ctx: &BotContext, group_id: i64, user_id: i64) -> MlActionResult {
+async fn execute_list(ctx: &BotContext, group_id: Option<i64>, user_id: i64) -> MlActionResult {
+    let group_id_val = group_or_private_key(group_id, user_id);
     match ctx
         .storage
-        .list_active_match_listeners_by_group(group_id)
+        .list_active_match_listeners_by_group(group_id_val)
         .await
     {
         Ok(listeners) => MlActionResult::List {
@@ -412,7 +441,7 @@ async fn execute_list(ctx: &BotContext, group_id: i64, user_id: i64) -> MlAction
             listeners,
         },
         Err(e) => {
-            error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
+            error!(group_id = ?group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
             MlActionResult::Error {
                 qq: user_id,
                 message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
@@ -424,21 +453,22 @@ async fn execute_list(ctx: &BotContext, group_id: i64, user_id: i64) -> MlAction
 async fn execute_status(
     ctx: &BotContext,
     match_id: u64,
-    group_id: i64,
+    group_id: Option<i64>,
     user_id: i64,
 ) -> MlActionResult {
     let now = chrono::Utc::now().timestamp();
+    let group_id_val = group_or_private_key(group_id, user_id);
 
     // Check if this group is listening
     match ctx
         .storage
-        .get_match_listener(match_id as i64, group_id)
+        .get_match_listener(match_id as i64, group_id_val)
         .await
     {
         Ok(Some(l)) if is_listener_effectively_active(&l, now) => {}
         Ok(_) => return MlActionResult::NotFound { qq: user_id },
         Err(e) => {
-            error!(group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
+            error!(group_id = ?group_id, error = %e, "{}", log_str("ml.fetch_match_failed_log"));
             return MlActionResult::Error {
                 qq: user_id,
                 message: user_str("ml.fetch_failed").replace("{qq}", &user_id.to_string()),
@@ -575,7 +605,9 @@ mod tests {
     fn listener_is_effectively_active_only_when_unexpired() {
         let active_unexpired = MatchListener {
             match_id: 1,
-            group_id: 2,
+            group_id: Some(2),
+            user_id: None,
+            notification_type: "group".to_string(),
             creator_qq: 3,
             match_name: "Test Match".to_string(),
             last_event_id: None,

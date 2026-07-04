@@ -18,7 +18,9 @@ use osubot_render::{render_profile_card, PROFILE_VIEWPORT_WIDTH};
 
 use tracing::{debug, error, info, warn};
 
-use crate::onebot::{get_group_member_list, send_group_msg_with_image, QQMessage};
+use crate::onebot::{
+    get_group_member_list, send_group_msg_with_image, send_private_msg_with_image, QQMessage,
+};
 use crate::score_query::handle_score_query;
 use crate::{api_error_msg, profile_dedup, BotContext, UserRateLimit};
 
@@ -228,7 +230,8 @@ pub(crate) fn build_cmd_payload(
     };
     serde_json::json!({
         "command_type": cmd_name,
-        "group_id": msg.group_id,
+        "group_id": msg.group_id.unwrap_or(0),
+        "message_type": if msg.group_id.is_some() { "group" } else { "private" },
         "user_id": msg.user_id,
         "message": msg.message,
         "mentioned_user_id": msg.mentioned_user_id,
@@ -353,7 +356,8 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     // ==== Plugin on_message dispatch ====
     {
         let msg_payload = serde_json::json!({
-            "group_id": msg.group_id,
+            "group_id": msg.group_id.unwrap_or(0),
+            "message_type": if msg.group_id.is_some() { "group" } else { "private" },
             "user_id": msg.user_id,
             "message": msg.message,
             "mentioned_user_id": msg.mentioned_user_id,
@@ -416,10 +420,22 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
     // 命令开关检查
     let group_cfg = {
         let cfg = ctx.config.read().await;
-        cfg.groups.get_group_config(msg.group_id)
+        match msg.group_id {
+            Some(gid) => cfg.groups.get_group_config(gid),
+            None => cfg
+                .private
+                .clone()
+                .unwrap_or_else(|| cfg.groups.default.clone()),
+        }
     };
     if !group_cfg.is_enabled(cmd.group_name()) {
-        debug!(group_id = msg.group_id, command = ?cmd.group_name(), "{}", log_fmt!("main.command_disabled"));
+        debug!(
+            group_id = ?msg.group_id,
+            user_id = msg.user_id,
+            command = ?cmd.group_name(),
+            "{}",
+            log_fmt!("main.command_disabled")
+        );
         return;
     }
 

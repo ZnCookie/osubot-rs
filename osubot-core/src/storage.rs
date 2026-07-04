@@ -138,9 +138,26 @@ fn row_to_snapshot(row: &Row, col_offset: usize) -> DbResult<UserStatsSnapshot> 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationChannel {
+    Group,
+    Private,
+}
+
+impl NotificationChannel {
+    pub fn try_from_str(s: &str) -> Self {
+        match s {
+            "private" => Self::Private,
+            _ => Self::Group,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchListener {
     pub match_id: i64,
-    pub group_id: i64,
+    pub group_id: Option<i64>,
+    pub user_id: Option<i64>,
+    pub notification_type: String,
     pub creator_qq: i64,
     pub match_name: String,
     pub last_event_id: Option<i64>,
@@ -152,10 +169,18 @@ pub struct MatchListener {
     pub last_notified_at: Option<DateTime<Utc>>,
 }
 
+impl MatchListener {
+    pub fn notification_channel(&self) -> NotificationChannel {
+        NotificationChannel::try_from_str(&self.notification_type)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MatchListenerStartParams {
     pub match_id: i64,
-    pub group_id: i64,
+    pub group_id: Option<i64>,
+    pub user_id: Option<i64>,
+    pub notification_type: String,
     pub creator_qq: i64,
     pub match_name: String,
     pub expires_at: i64,
@@ -176,10 +201,15 @@ fn row_to_match_listener(row: &Row) -> DbResult<MatchListener> {
     let created_at: String = row.get(7)?;
     let last_notified_at: Option<String> = row.get(10)?;
     let active: i64 = row.get(9)?;
+    let group_id: Option<i64> = row.get(1)?;
+    let user_id: Option<i64> = row.get(11)?;
+    let notification_type: String = row.get(12)?;
 
     Ok(MatchListener {
         match_id: row.get(0)?,
-        group_id: row.get(1)?,
+        group_id,
+        user_id,
+        notification_type,
         creator_qq: row.get(2)?,
         match_name: row.get(3)?,
         last_event_id: row.get(4)?,
@@ -307,6 +337,23 @@ impl Storage {
                 .await
                 .execute(
                     "ALTER TABLE match_listeners ADD COLUMN match_name TEXT NOT NULL DEFAULT ''",
+                    (),
+                )
+                .await?;
+        }
+        if !has_column(&pool, "match_listeners", "user_id").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute("ALTER TABLE match_listeners ADD COLUMN user_id INTEGER", ())
+                .await?;
+        }
+        if !has_column(&pool, "match_listeners", "notification_type").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE match_listeners ADD COLUMN notification_type TEXT NOT NULL DEFAULT 'group'",
                     (),
                 )
                 .await?;
@@ -1131,6 +1178,8 @@ impl Storage {
         let MatchListenerStartParams {
             match_id,
             group_id,
+            user_id,
+            notification_type,
             creator_qq,
             match_name,
             expires_at,
@@ -1153,8 +1202,10 @@ impl Storage {
                     created_at,
                     expires_at,
                     active,
-                    last_notified_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, 1, NULL)
+                    last_notified_at,
+                    user_id,
+                    notification_type
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, 1, NULL, ?10, ?11)
                 ON CONFLICT(match_id, group_id) DO UPDATE SET
                     creator_qq = excluded.creator_qq,
                     match_name = excluded.match_name,
@@ -1179,8 +1230,10 @@ impl Storage {
                     last_notified_at = CASE
                         WHEN match_listeners.active = 1 AND match_listeners.expires_at >= ?9 THEN match_listeners.last_notified_at
                         ELSE NULL
-                    END",
-                params![match_id, group_id, creator_qq, match_name, initial_last_event_id, initial_last_notified_event_id, created_at, expires_at, now],
+                    END,
+                    user_id = excluded.user_id,
+                    notification_type = excluded.notification_type",
+                params![match_id, group_id, creator_qq, match_name, initial_last_event_id, initial_last_notified_event_id, created_at, expires_at, now, user_id, notification_type],
             )
             .await?;
         Ok(())
@@ -1200,6 +1253,11 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Deactivate all active listeners keyed by `group_id`.
+    ///
+    /// For private-chat listeners the caller passes `-user_id` as `group_id`,
+    /// so this function doubles as "stop all listeners for a user" without
+    /// needing a separate query path.
     pub async fn stop_all_match_listeners_in_group(&self, group_id: i64) -> DbResult<u64> {
         self.conn()
             .await
@@ -1221,7 +1279,8 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
-                        pending_game_event_id, created_at, expires_at, active, last_notified_at
+                        pending_game_event_id, created_at, expires_at, active, last_notified_at,
+                        user_id, notification_type
                  FROM match_listeners
                  WHERE match_id = ?1 AND group_id = ?2",
                 params![match_id, group_id],
@@ -1244,7 +1303,8 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
-                        pending_game_event_id, created_at, expires_at, active, last_notified_at
+                        pending_game_event_id, created_at, expires_at, active, last_notified_at,
+                        user_id, notification_type
                  FROM match_listeners
                  WHERE group_id = ?1 AND active = 1 AND expires_at >= ?2
                  ORDER BY created_at ASC, match_id ASC",
@@ -1267,7 +1327,8 @@ impl Storage {
         let mut rows = conn
             .query(
                 "SELECT match_id, group_id, creator_qq, match_name, last_event_id, last_notified_event_id,
-                        pending_game_event_id, created_at, expires_at, active, last_notified_at
+                        pending_game_event_id, created_at, expires_at, active, last_notified_at,
+                        user_id, notification_type
                  FROM match_listeners
                  WHERE active = 1 AND expires_at >= ?1
                  ORDER BY COALESCE(last_notified_at, created_at) ASC, group_id ASC, match_id ASC",
@@ -1328,6 +1389,26 @@ impl Storage {
                  FROM match_listeners
                  WHERE group_id = ?1 AND active = 1 AND expires_at >= ?2",
                 params![group_id, now_ts],
+            )
+            .await?;
+
+        if let Some(row) = rows.next().await? {
+            let count: i64 = row.get(0)?;
+            Ok(count as u64)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub async fn count_active_match_listeners_for_user(&self, user_id: i64) -> DbResult<u64> {
+        let now_ts = Utc::now().timestamp();
+        let conn = self.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*)
+                 FROM match_listeners
+                 WHERE user_id = ?1 AND notification_type = 'private' AND active = 1 AND expires_at >= ?2",
+                params![user_id, now_ts],
             )
             .await?;
 
@@ -1806,7 +1887,9 @@ mod match_listener {
         storage
             .start_match_listener(MatchListenerStartParams {
                 match_id,
-                group_id,
+                group_id: Some(group_id),
+                user_id: None,
+                notification_type: "group".to_string(),
                 creator_qq,
                 match_name: format!("MP #{match_id}"),
                 expires_at,
@@ -1845,7 +1928,7 @@ mod match_listener {
 
         assert_eq!(listeners.len(), 1);
         assert_eq!(listeners[0].match_id, MATCH_ID);
-        assert_eq!(listeners[0].group_id, GROUP_ID);
+        assert_eq!(listeners[0].group_id, Some(GROUP_ID));
         assert_eq!(listeners[0].match_name, format!("MP #{MATCH_ID}"));
 
         std::fs::remove_file(&db_path).expect("cleanup reopened db path");
@@ -2116,6 +2199,31 @@ mod match_listener {
         assert_eq!(listener.last_notified_event_id, None);
         assert_eq!(listener.pending_game_event_id, None);
         assert_eq!(listener.last_notified_at, None);
+    }
+
+    #[tokio::test]
+    async fn test_start_match_listener_private() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+        let params = MatchListenerStartParams {
+            match_id: 100,
+            group_id: Some(0),
+            user_id: Some(12345),
+            notification_type: "private".to_string(),
+            creator_qq: 12345,
+            match_name: "Test Match".to_string(),
+            expires_at: Utc::now().timestamp() + 3600,
+            initial_last_event_id: None,
+            initial_last_notified_event_id: None,
+        };
+        storage.start_match_listener(params).await.unwrap();
+        let listeners = storage
+            .list_active_match_listeners_due_for_polling()
+            .await
+            .unwrap();
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0].group_id, Some(0));
+        assert_eq!(listeners[0].user_id, Some(12345));
+        assert_eq!(listeners[0].notification_type, "private");
     }
 
     #[tokio::test]

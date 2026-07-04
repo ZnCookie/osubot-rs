@@ -128,6 +128,7 @@ mod tests {
                     .expect("failed to create in-memory storage"),
             ),
             send_msg_fn: Arc::new(|_group_id, _text| Ok(())),
+            send_private_msg_fn: Arc::new(|_user_id, _text| Ok(())),
             runtime_handle: rt.handle().clone(),
             instance_idx: 0,
             tick_registry: Arc::new(std::sync::Mutex::new(Vec::new())),

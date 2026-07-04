@@ -36,7 +36,7 @@ use osubot_core::OauthTokenCache;
 use osubot_core::RateLimiter;
 
 use crate::api_error_msg;
-use crate::onebot::{send_group_msg_with_image, QQMessage};
+use crate::onebot::{send_group_msg_with_image, send_private_msg_with_image, QQMessage};
 use crate::{
     audio_score_dedup, beatmap_scores_dedup, beatmapset_dedup, best_scores_dedup,
     preview_score_dedup, score_by_id_dedup, score_by_id_err_msg, score_dedup,
@@ -321,7 +321,10 @@ async fn handle_score_id_render(
     mode: GameMode,
     label: &'static str,
 ) {
-    ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+    ctx.last_beatmap.set(
+        msg.group_id.unwrap_or(-msg.user_id),
+        score.beatmap_id as u32,
+    );
     let user_id = score.user.user_id.unwrap_or(0);
     if user_id == 0 {
         let _ = resp_tx
@@ -642,7 +645,10 @@ pub(crate) async fn handle_score_query(
                     Some(s) => s,
                     None => return,
                 };
-                ctx.last_beatmap.set(msg.group_id, score.beatmap_id as u32);
+                ctx.last_beatmap.set(
+                    msg.group_id.unwrap_or(-msg.user_id),
+                    score.beatmap_id as u32,
+                );
                 audio::render_audio(ctx, msg, resp_tx, &score, mode).await;
                 return;
             }
@@ -656,7 +662,8 @@ pub(crate) async fn handle_score_query(
                         return;
                     }
                 };
-                ctx.last_beatmap.set(msg.group_id, *bid);
+                ctx.last_beatmap
+                    .set(msg.group_id.unwrap_or(-msg.user_id), *bid);
                 audio::render_audio_by_beatmapset_id(ctx, msg, resp_tx, beatmapset_id).await;
                 return;
             }
@@ -668,7 +675,7 @@ pub(crate) async fn handle_score_query(
                 || *explicit_position
                 || cmd_mode.is_some();
             if !has_target {
-                if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
+                if let Some(bid) = ctx.last_beatmap.get(msg.group_id.unwrap_or(-msg.user_id)) {
                     let beatmapset_id = match fetch_beatmapset_id_dedup(ctx, bid as i64).await {
                         Ok(id) => id,
                         Err(e) => {
@@ -742,7 +749,8 @@ pub(crate) async fn handle_score_query(
                     None => return,
                 };
                 let resolved_bid = score.beatmap_id as u32;
-                ctx.last_beatmap.set(msg.group_id, resolved_bid);
+                ctx.last_beatmap
+                    .set(msg.group_id.unwrap_or(-msg.user_id), resolved_bid);
                 preview::render_beatmap_preview_by_id(
                     ctx,
                     msg,
@@ -759,7 +767,8 @@ pub(crate) async fn handle_score_query(
 
             // beatmap_id 直达
             if let Some(bid) = beatmap_id {
-                ctx.last_beatmap.set(msg.group_id, *bid);
+                ctx.last_beatmap
+                    .set(msg.group_id.unwrap_or(-msg.user_id), *bid);
                 preview::render_beatmap_preview_by_id(
                     ctx, msg, resp_tx, mods, *gif, times, *bid, mode,
                 )
@@ -774,7 +783,7 @@ pub(crate) async fn handle_score_query(
                 || *explicit_position
                 || cmd_mode.is_some();
             if !has_target {
-                if let Some(bid) = ctx.last_beatmap.get(msg.group_id) {
+                if let Some(bid) = ctx.last_beatmap.get(msg.group_id.unwrap_or(-msg.user_id)) {
                     preview::render_beatmap_preview_by_id(
                         ctx, msg, resp_tx, mods, *gif, times, bid, mode,
                     )
@@ -842,7 +851,7 @@ pub(crate) async fn handle_score_query(
 
             let resolved_bid = match beatmap_id {
                 Some(bid) => *bid as i64,
-                None => match ctx.last_beatmap.get(msg.group_id) {
+                None => match ctx.last_beatmap.get(msg.group_id.unwrap_or(-msg.user_id)) {
                     Some(bid) => bid as i64,
                     None => {
                         let _ = resp_tx
@@ -855,7 +864,8 @@ pub(crate) async fn handle_score_query(
                     }
                 },
             };
-            ctx.last_beatmap.set(msg.group_id, resolved_bid as u32);
+            ctx.last_beatmap
+                .set(msg.group_id.unwrap_or(-msg.user_id), resolved_bid as u32);
             (
                 ScoreQuerySpec {
                     fetch: make_fetch(move |rl, oa, uid, m, l| async move {
@@ -1014,8 +1024,10 @@ async fn run_score_query_pipeline(
         return;
     }
 
-    ctx.last_beatmap
-        .set(msg.group_id, scores[0].beatmap_id as u32);
+    ctx.last_beatmap.set(
+        msg.group_id.unwrap_or(-msg.user_id),
+        scores[0].beatmap_id as u32,
+    );
 
     let mut indexed: Vec<(usize, Score)> = scores.drain(..).enumerate().collect();
 
