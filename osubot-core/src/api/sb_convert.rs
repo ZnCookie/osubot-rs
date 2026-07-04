@@ -2,6 +2,7 @@ use crate::api::sb_api::{SbPlayerInfoFull, SbPlayerStats, SbScore, SbScoreBeatma
 use crate::types::{GameMode, UserStats};
 use osubot_types::Score;
 
+#[allow(dead_code)]
 pub fn sb_legacy_mods_to_game_mods(mods: i64, mode: GameMode) -> rosu_mods::GameMods {
     let bits = mods as u32;
     let intermode = rosu_mods::GameModsIntermode::from_bits(bits);
@@ -48,6 +49,7 @@ pub fn sb_player_to_user_stats(info: &SbPlayerInfoFull, mode: GameMode) -> UserS
     }
 }
 
+#[allow(dead_code)]
 pub fn sb_score_to_score(sb: &SbScore, beatmap: Option<&SbScoreBeatmap>, mode: GameMode) -> Score {
     let mods = sb_legacy_mods_to_game_mods(sb.mods, mode);
 

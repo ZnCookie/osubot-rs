@@ -7,6 +7,7 @@ use wasmtime::{Caller, Linker, StoreLimits};
 
 use crate::types::TickRegistration;
 use osubot_core::strings::user_str;
+use osubot_core::types::Server;
 
 // 信任模型：所有宿主函数默认信任 WASM 插件的调用意图。
 // 插件可以发送消息到任意群、发起任意 HTTP 请求、查询任意绑定——
@@ -440,7 +441,7 @@ fn dispatch_host_call(
                 services.runtime_handle.block_on(async {
                     tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        services.storage.get_binding(qq),
+                        services.storage.get_binding(qq, Server::Official),
                     )
                     .await
                 })

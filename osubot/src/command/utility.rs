@@ -9,8 +9,8 @@ pub(super) async fn handle_utility_commands(
     mode: GameMode,
 ) {
     match cmd {
-        Command::Help => {
-            handle_help_command(ctx, msg, resp_tx).await;
+        Command::Help { server } => {
+            handle_help_command(ctx, msg, resp_tx, *server).await;
         }
         Command::Highlight { server, .. } => {
             handle_highlight_command(ctx, msg, resp_tx, mode, *server).await;
@@ -22,15 +22,24 @@ pub(super) async fn handle_utility_commands(
     }
 }
 
-async fn handle_help_command(_ctx: &BotContext, msg: &QQMessage, resp_tx: &mpsc::Sender<String>) {
+async fn handle_help_command(
+    _ctx: &BotContext,
+    msg: &QQMessage,
+    resp_tx: &mpsc::Sender<String>,
+    server: Server,
+) {
     info!(
         user_id = msg.user_id,
         group_id = ?msg.group_id,
         "{}",
         log_fmt!("main.help_command")
     );
+    let help_text = match server {
+        Server::Official => user_str("sys.help"),
+        Server::PpySb => user_str("sys.help_ppy_sb"),
+    };
     let _ = resp_tx
-        .send(user_str("sys.help").replace("{qq}", &msg.user_id.to_string()))
+        .send(help_text.replace("{qq}", &msg.user_id.to_string()))
         .await;
 }
 
@@ -163,13 +172,19 @@ async fn handle_profile_card(
             }
         }
         None => match qq {
-            Some(mentioned_qq) => match ctx.storage.get_binding(*mentioned_qq, Server::Official).await {
+            Some(mentioned_qq) => match ctx
+                .storage
+                .get_binding(*mentioned_qq, Server::Official)
+                .await
+            {
                 Ok(Some((user_id, current_username))) => {
                     info!(qq = mentioned_qq, osu_id = user_id, username = %current_username, "{}", log_fmt!("main.profile_card_mention"));
                     user_id
                 }
                 Ok(None) => {
-                    if let Some((uid, uname)) = ctx.resolve_binding(*mentioned_qq, Server::Official).await {
+                    if let Some((uid, uname)) =
+                        ctx.resolve_binding(*mentioned_qq, Server::Official).await
+                    {
                         info!(qq = mentioned_qq, osu_id = uid, username = %uname, "{}", log_fmt!("main.profile_card_mention_bound"));
                         uid
                     } else {
@@ -205,7 +220,9 @@ async fn handle_profile_card(
                     user_id
                 }
                 Ok(None) => {
-                    if let Some((uid, uname)) = ctx.resolve_binding(msg.user_id, Server::Official).await {
+                    if let Some((uid, uname)) =
+                        ctx.resolve_binding(msg.user_id, Server::Official).await
+                    {
                         info!(user_id = msg.user_id, osu_id = uid, username = %uname, "{}", log_fmt!("main.profile_card_self_bound"));
                         uid
                     } else {

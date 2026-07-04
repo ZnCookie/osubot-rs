@@ -15,7 +15,8 @@ pub mod ur;
 
 pub use api::{
     apply_mod_adjustment_to_stats, calculate_pp_breakdown, calculate_pp_if_acc,
-    download_beatmap_osu, enrich_score_with_pp, fetch_user_profile, OauthTokenCache, UserProfile,
+    download_beatmap_osu, enrich_score_with_pp, fetch_user_profile, sb_player_to_user_stats,
+    OauthTokenCache, SbApi, UserProfile,
 };
 pub use commands::parse_command;
 pub use highlight::{

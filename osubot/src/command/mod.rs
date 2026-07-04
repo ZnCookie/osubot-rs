@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use osubot_core::{
-    api::{self, SbApi, sb_player_to_user_stats},
+    api::{self, sb_player_to_user_stats, SbApi},
     highlight::{format_highlight, get_highlight, HighlightError},
     log_fmt, parse_command,
     response::format_stats_with_change,
@@ -50,7 +50,9 @@ pub(crate) async fn resolve_cmd_target_qq(
 ) -> Option<i64> {
     match cmd {
         Command::QuerySelf { .. } => Some(msg.user_id),
-        Command::QueryUser { username, server, .. } => match storage.find_qq_by_username(username, *server).await {
+        Command::QueryUser {
+            username, server, ..
+        } => match storage.find_qq_by_username(username, *server).await {
             Ok(qq) => qq,
             Err(e) => {
                 warn!(username = %username, error = %e, "{}", log_fmt!("main.find_qq_by_username_error", username = username, error = &e.to_string()));
@@ -480,7 +482,7 @@ pub(crate) async fn handle_command(ctx: BotContext, msg: QQMessage, resp_tx: mps
         Command::SetDefaultMode { .. } | Command::Bind { .. } | Command::Unbind { .. } => {
             handle_settings_commands(&ctx, &msg, &resp_tx, &cmd).await;
         }
-        Command::Help | Command::Highlight { .. } | Command::ProfileCard { .. } => {
+        Command::Help { .. } | Command::Highlight { .. } | Command::ProfileCard { .. } => {
             handle_utility_commands(&ctx, &msg, &resp_tx, &cmd, mode).await;
         }
         Command::MatchListen(..) => {

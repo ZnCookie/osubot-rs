@@ -27,7 +27,7 @@ use osubot_core::{
     response::format_stats_with_change,
     storage::Storage,
     strings::user_str,
-    types::{GameMode, Score},
+    types::{GameMode, Score, Server},
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
@@ -64,6 +64,7 @@ pub(crate) struct BotContext {
     scheduler: Scheduler,
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
+    sb_rate_limiter: Arc<RateLimiter>,
     command_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>>,
     config: Arc<tokio::sync::RwLock<Config>>,
     write: Arc<Mutex<WriteSink>>,
@@ -86,6 +87,7 @@ impl BotContext {
             scheduler: state.scheduler.clone(),
             oauth: state.oauth.clone(),
             rate_limiter: state.rate_limiter.clone(),
+            sb_rate_limiter: state.sb_rate_limiter.clone(),
             command_rate_limits: state.user_rate_limits.clone(),
             config: state.config.clone(),
             write,
@@ -172,15 +174,15 @@ pub(crate) async fn send_error(resp_tx: &mpsc::Sender<String>, qq: i64, key: &st
 }
 
 impl BotContext {
-    async fn resolve_binding(&self, qq: i64) -> Option<(i64, String)> {
-        match self.storage.get_binding(qq).await {
+    async fn resolve_binding(&self, qq: i64, server: Server) -> Option<(i64, String)> {
+        match self.storage.get_binding(qq, server).await {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
                 let binding = self.upstream_chain.read().await.try_query(qq).await?;
                 if let Err(e) = self.storage.set_user_id(&binding.1, binding.0).await {
                     warn!("{}", log_fmt!("main.persist_user_id_failed", error = &e));
                 }
-                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1).await {
+                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1, server).await {
                     warn!("{}", log_fmt!("main.persist_binding_failed", error = &e));
                 }
                 Some(binding)
@@ -189,12 +191,14 @@ impl BotContext {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_stats_and_reply(
         &self,
         qq: i64,
         user_id: i64,
         username: &str,
         mode: GameMode,
+        server: Server,
         resp_tx: &mpsc::Sender<String>,
         log_label: &str,
     ) {
@@ -228,7 +232,7 @@ impl BotContext {
                 }
                 let change = self
                     .storage
-                    .calculate_change(user_id, mode, &stats)
+                    .calculate_change(user_id, mode, &stats, server)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!(
@@ -367,7 +371,12 @@ pub(crate) async fn handle_irc_message(
                 warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
             }
             match storage
-                .bind(pending.qq_user_id, info.id, &info.username)
+                .bind(
+                    pending.qq_user_id,
+                    info.id,
+                    &info.username,
+                    Server::Official,
+                )
                 .await
             {
                 Ok(Ok(())) => {

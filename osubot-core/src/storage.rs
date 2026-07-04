@@ -432,7 +432,7 @@ impl Storage {
             .lock()
             .await
             .execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_stats_history_user_mode_server ON user_stats_history(user_id, mode, server)",
+                "CREATE INDEX IF NOT EXISTS idx_user_stats_history_user_mode_server ON user_stats_history(user_id, mode, server)",
                 (),
             )
             .await?;

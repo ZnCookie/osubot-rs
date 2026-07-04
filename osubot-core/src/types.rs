@@ -16,6 +16,7 @@ impl Server {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "ppy_sb" => Server::PpySb,
@@ -89,7 +90,9 @@ pub enum Command {
         username: String,
         server: Server,
     },
-    Unbind { server: Server },
+    Unbind {
+        server: Server,
+    },
     Highlight {
         mode: Option<GameMode>,
         server: Server,
@@ -187,11 +190,35 @@ pub enum Command {
         explicit_position: bool,
         server: Server,
     },
-    Help,
+    Help {
+        server: Server,
+    },
     MatchListen(MatchListenAction),
 }
 
 impl Command {
+    /// Returns the [`Server`] associated with this command, if any.
+    pub fn server(&self) -> Option<Server> {
+        match self {
+            Command::QuerySelf { server, .. }
+            | Command::QueryUser { server, .. }
+            | Command::QueryMentionedUser { server, .. }
+            | Command::Bind { server, .. }
+            | Command::Unbind { server }
+            | Command::Highlight { server, .. }
+            | Command::ScoreOnBeatmap { server, .. }
+            | Command::Pass { server, .. }
+            | Command::Recent { server, .. }
+            | Command::Best { server, .. }
+            | Command::TodayBest { server, .. }
+            | Command::SetDefaultMode { server, .. }
+            | Command::BeatmapPreview { server, .. }
+            | Command::BeatmapAudio { server, .. } => Some(*server),
+            Command::Help { server, .. } => Some(*server),
+            Command::ProfileCard { .. } | Command::MatchListen(..) => None,
+        }
+    }
+
     /// Returns the [`CommandGroup`] this command belongs to.
     pub fn group_name(&self) -> CommandGroup {
         match self {
@@ -209,7 +236,7 @@ impl Command {
             Command::Highlight { .. } => CommandGroup::Highlight,
             Command::Bind { .. } | Command::Unbind { .. } => CommandGroup::Bind,
             Command::SetDefaultMode { .. } => CommandGroup::Mode,
-            Command::Help => CommandGroup::Help,
+            Command::Help { .. } => CommandGroup::Help,
             Command::MatchListen(..) => CommandGroup::MatchListen,
         }
     }
@@ -274,7 +301,10 @@ impl Command {
                 Server::Official => "!a",
                 Server::PpySb => "?a",
             },
-            Command::Help => "!help",
+            Command::Help { server, .. } => match server {
+                Server::Official => "!help",
+                Server::PpySb => "?help",
+            },
             Command::MatchListen(..) => "!ml",
         }
     }

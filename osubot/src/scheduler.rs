@@ -258,12 +258,20 @@ impl Scheduler {
             };
 
         // Save snapshot only when stats changed (rank or playcount differ)
-        match self.storage.get_latest_snapshot(user_id, mode, Server::Official).await {
+        match self
+            .storage
+            .get_latest_snapshot(user_id, mode, Server::Official)
+            .await
+        {
             Ok(Some(prev)) => {
                 if prev.rank.unwrap_or(0) != current.rank
                     || prev.playcount.unwrap_or(0) != current.playcount
                 {
-                    if let Err(e) = self.storage.save_stats(user_id, mode, &current, Server::Official).await {
+                    if let Err(e) = self
+                        .storage
+                        .save_stats(user_id, mode, &current, Server::Official)
+                        .await
+                    {
                         warn!(
                             "{}",
                             log_fmt!(
@@ -277,7 +285,11 @@ impl Scheduler {
                 }
             }
             Ok(None) => {
-                if let Err(e) = self.storage.save_stats(user_id, mode, &current, Server::Official).await {
+                if let Err(e) = self
+                    .storage
+                    .save_stats(user_id, mode, &current, Server::Official)
+                    .await
+                {
                     warn!(
                         "{}",
                         log_fmt!(
@@ -299,7 +311,11 @@ impl Scheduler {
                         error = &e
                     )
                 );
-                if let Err(e) = self.storage.save_stats(user_id, mode, &current, Server::Official).await {
+                if let Err(e) = self
+                    .storage
+                    .save_stats(user_id, mode, &current, Server::Official)
+                    .await
+                {
                     warn!(
                         "{}",
                         log_fmt!(
@@ -369,7 +385,12 @@ impl Scheduler {
         // Activity determination based on play records (no more API calls needed)
         let has_recent = self
             .storage
-            .has_play_since(user_id, mode, (now - Duration::hours(4)).timestamp(), Server::Official)
+            .has_play_since(
+                user_id,
+                mode,
+                (now - Duration::hours(4)).timestamp(),
+                Server::Official,
+            )
             .await
             .unwrap_or(false);
 

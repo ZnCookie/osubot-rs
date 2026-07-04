@@ -79,7 +79,10 @@ fn parse_sb_command(rest: &str, mentioned_user_id: Option<i64>) -> Option<Option
     // ?查 → QueryMentionedUser
     if let Some(mode_str) = rest.strip_prefix('查') {
         if let Some(qq) = mentioned_user_id {
-            let mode_str = mode_str.trim_start_matches(',').trim().trim_start_matches(',');
+            let mode_str = mode_str
+                .trim_start_matches(',')
+                .trim()
+                .trim_start_matches(',');
             let mode = if mode_str.is_empty() {
                 None
             } else {
@@ -134,7 +137,9 @@ fn parse_sb_command(rest: &str, mentioned_user_id: Option<i64>) -> Option<Option
 
     // ?help → Help
     if rest == "help" {
-        return Some(Some(Command::Help));
+        return Some(Some(Command::Help {
+            server: Server::PpySb,
+        }));
     }
 
     // ?mode
@@ -285,7 +290,9 @@ pub fn parse_command(msg: &str, mentioned_user_id: Option<i64>) -> Option<Comman
     }
 
     if msg == "!help" {
-        return Some(Command::Help);
+        return Some(Command::Help {
+            server: Server::Official,
+        });
     }
 
     if let Some(rest) = msg.strip_prefix("!mode") {

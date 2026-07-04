@@ -21,7 +21,11 @@ pub(super) async fn handle_settings_commands(
                         mode = &format!("{:?}", mode)
                     )
                 );
-                match ctx.storage.set_default_mode(msg.user_id, *mode, *server).await {
+                match ctx
+                    .storage
+                    .set_default_mode(msg.user_id, *mode, *server)
+                    .await
+                {
                     Ok(true) => {
                         let _ = resp_tx
                             .send(
@@ -201,7 +205,9 @@ pub(super) async fn handle_settings_commands(
                     } else {
                         match server {
                             Server::Official => {
-                                match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, username).await {
+                                match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, username)
+                                    .await
+                                {
                                     Ok(Some(user_info)) => {
                                         if let Err(e) =
                                             ctx.storage.set_user_id(username, user_info.id).await
@@ -210,7 +216,12 @@ pub(super) async fn handle_settings_commands(
                                         }
                                         match ctx
                                             .storage
-                                            .bind(msg.user_id, user_info.id, &user_info.username, Server::Official)
+                                            .bind(
+                                                msg.user_id,
+                                                user_info.id,
+                                                &user_info.username,
+                                                Server::Official,
+                                            )
                                             .await
                                         {
                                             Ok(Ok(())) => {
@@ -218,7 +229,10 @@ pub(super) async fn handle_settings_commands(
                                                 let _ = resp_tx
                                                     .send(
                                                         user_str("bind.success")
-                                                            .replace("{qq}", &msg.user_id.to_string())
+                                                            .replace(
+                                                                "{qq}",
+                                                                &msg.user_id.to_string(),
+                                                            )
                                                             .replace("{name}", &user_info.username),
                                                     )
                                                     .await;
@@ -228,7 +242,10 @@ pub(super) async fn handle_settings_commands(
                                                 let _ = resp_tx
                                                     .send(
                                                         user_str("bind.already_bound_other")
-                                                            .replace("{qq}", &msg.user_id.to_string()),
+                                                            .replace(
+                                                                "{qq}",
+                                                                &msg.user_id.to_string(),
+                                                            ),
                                                     )
                                                     .await;
                                             }
@@ -236,8 +253,10 @@ pub(super) async fn handle_settings_commands(
                                                 error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
                                                 let _ = resp_tx
                                                     .send(
-                                                        user_str("bind.failed_retry")
-                                                            .replace("{qq}", &msg.user_id.to_string()),
+                                                        user_str("bind.failed_retry").replace(
+                                                            "{qq}",
+                                                            &msg.user_id.to_string(),
+                                                        ),
                                                     )
                                                     .await;
                                             }
@@ -272,8 +291,10 @@ pub(super) async fn handle_settings_commands(
                                             None => {
                                                 let _ = resp_tx
                                                     .send(
-                                                        user_str("bind.user_not_found")
-                                                            .replace("{qq}", &msg.user_id.to_string()),
+                                                        user_str("bind.user_not_found").replace(
+                                                            "{qq}",
+                                                            &msg.user_id.to_string(),
+                                                        ),
                                                     )
                                                     .await;
                                                 return;
@@ -281,14 +302,21 @@ pub(super) async fn handle_settings_commands(
                                         };
                                         match sb_api.get_player_info(player.id).await {
                                             Ok(info) => {
-                                                if let Err(e) =
-                                                    ctx.storage.set_user_id(&info.name, info.id).await
+                                                if let Err(e) = ctx
+                                                    .storage
+                                                    .set_user_id(&info.name, info.id)
+                                                    .await
                                                 {
                                                     warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
                                                 }
                                                 match ctx
                                                     .storage
-                                                    .bind(msg.user_id, info.id, &info.name, Server::PpySb)
+                                                    .bind(
+                                                        msg.user_id,
+                                                        info.id,
+                                                        &info.name,
+                                                        Server::PpySb,
+                                                    )
                                                     .await
                                                 {
                                                     Ok(Ok(())) => {
@@ -296,7 +324,10 @@ pub(super) async fn handle_settings_commands(
                                                         let _ = resp_tx
                                                             .send(
                                                                 user_str("bind.success")
-                                                                    .replace("{qq}", &msg.user_id.to_string())
+                                                                    .replace(
+                                                                        "{qq}",
+                                                                        &msg.user_id.to_string(),
+                                                                    )
                                                                     .replace("{name}", &info.name),
                                                             )
                                                             .await;
@@ -305,8 +336,13 @@ pub(super) async fn handle_settings_commands(
                                                         info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
                                                         let _ = resp_tx
                                                             .send(
-                                                                user_str("bind.already_bound_other")
-                                                                    .replace("{qq}", &msg.user_id.to_string()),
+                                                                user_str(
+                                                                    "bind.already_bound_other",
+                                                                )
+                                                                .replace(
+                                                                    "{qq}",
+                                                                    &msg.user_id.to_string(),
+                                                                ),
                                                             )
                                                             .await;
                                                     }
@@ -315,7 +351,10 @@ pub(super) async fn handle_settings_commands(
                                                         let _ = resp_tx
                                                             .send(
                                                                 user_str("bind.failed_retry")
-                                                                    .replace("{qq}", &msg.user_id.to_string()),
+                                                                    .replace(
+                                                                        "{qq}",
+                                                                        &msg.user_id.to_string(),
+                                                                    ),
                                                             )
                                                             .await;
                                                     }
@@ -323,7 +362,9 @@ pub(super) async fn handle_settings_commands(
                                             }
                                             Err(e) => {
                                                 warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
-                                                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                                                let _ = resp_tx
+                                                    .send(api_error_msg(msg.user_id, &e))
+                                                    .await;
                                             }
                                         }
                                     }

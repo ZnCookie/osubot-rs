@@ -25,7 +25,9 @@ pub(super) async fn handle_query_commands(
                     .await;
                 }
                 Ok(None) => {
-                    if let Some((user_id, username)) = ctx.resolve_binding(msg.user_id, *server).await {
+                    if let Some((user_id, username)) =
+                        ctx.resolve_binding(msg.user_id, *server).await
+                    {
                         info!(user_id = msg.user_id, osu_id = user_id, username = %username, "{}", log_fmt!("main.query_self_auto_bound"));
                         ctx.fetch_stats_and_reply(
                             msg.user_id,
@@ -63,12 +65,19 @@ pub(super) async fn handle_query_commands(
                 }
             }
         }
-        Command::QueryUser { username, server, .. } => {
+        Command::QueryUser {
+            username, server, ..
+        } => {
             info!(group_id = ?msg.group_id, username = %username, mode = ?mode, server = ?server, "{}", log_fmt!("main.query_user"));
             match server {
                 Server::Official => {
-                    match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, username, mode)
-                        .await
+                    match api::fetch_user_stats_by_username(
+                        &ctx.rate_limiter,
+                        &ctx.oauth,
+                        username,
+                        mode,
+                    )
+                    .await
                     {
                         Ok(stats) => {
                             if let Err(e) = ctx
@@ -85,7 +94,9 @@ pub(super) async fn handle_query_commands(
                                 );
                             }
                             if stats.username != *username {
-                                if let Err(e) = ctx.storage.set_user_id(username, stats.user_id).await {
+                                if let Err(e) =
+                                    ctx.storage.set_user_id(username, stats.user_id).await
+                                {
                                     tracing::warn!(
                                         username = %username,
                                         user_id = stats.user_id,
@@ -165,7 +176,12 @@ pub(super) async fn handle_query_commands(
                                     ctx.scheduler.trigger_update(stats.user_id, mode).await;
                                     let change = ctx
                                         .storage
-                                        .calculate_change(stats.user_id, mode, &stats, Server::PpySb)
+                                        .calculate_change(
+                                            stats.user_id,
+                                            mode,
+                                            &stats,
+                                            Server::PpySb,
+                                        )
                                         .await
                                         .inspect_err(|e| {
                                             tracing::warn!(
