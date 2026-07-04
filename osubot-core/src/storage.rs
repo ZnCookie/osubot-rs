@@ -138,6 +138,21 @@ fn row_to_snapshot(row: &Row, col_offset: usize) -> DbResult<UserStatsSnapshot> 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationChannel {
+    Group,
+    Private,
+}
+
+impl NotificationChannel {
+    pub fn try_from_str(s: &str) -> Self {
+        match s {
+            "private" => Self::Private,
+            _ => Self::Group,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchListener {
     pub match_id: i64,
     pub group_id: Option<i64>,
@@ -152,6 +167,12 @@ pub struct MatchListener {
     pub expires_at: i64,
     pub active: bool,
     pub last_notified_at: Option<DateTime<Utc>>,
+}
+
+impl MatchListener {
+    pub fn notification_channel(&self) -> NotificationChannel {
+        NotificationChannel::try_from_str(&self.notification_type)
+    }
 }
 
 #[derive(Debug, Clone)]

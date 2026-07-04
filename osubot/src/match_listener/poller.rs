@@ -346,7 +346,7 @@ impl MatchListenerPoller {
         {
             Ok(r) => r,
             Err(e) => {
-                error!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", match_id = match_id.to_string(), error = &e.to_string()));
+                error!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", match_id = match_id, error = e));
                 return Ok(()); // Non-fatal: try next cycle
             }
         };
@@ -369,7 +369,7 @@ impl MatchListenerPoller {
                     }
                 }
                 Err(e) => {
-                    warn!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", match_id = match_id.to_string(), error = &e.to_string()));
+                    warn!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", match_id = match_id, error = e));
                     None
                 }
             }
@@ -442,7 +442,7 @@ impl MatchListenerPoller {
                 match_id,
                 group_id,
                 "{}",
-                log_fmt!("ml.poller_match_completed", match_id = match_id.to_string())
+                log_fmt!("ml.poller_match_completed", match_id = match_id)
             );
         }
 
@@ -456,12 +456,12 @@ impl MatchListenerPoller {
         listener: &osubot_core::storage::MatchListener,
         text: &str,
     ) -> bool {
-        let send_result = match listener.notification_type.as_str() {
-            "private" => {
+        let send_result = match listener.notification_channel() {
+            osubot_core::storage::NotificationChannel::Private => {
                 let user_id = listener.user_id.unwrap_or(0);
                 crate::onebot::send_private_msg(write, &self.onebot_api, user_id, text).await
             }
-            _ => {
+            osubot_core::storage::NotificationChannel::Group => {
                 let group_id = listener.group_id.unwrap_or(0);
                 crate::onebot::send_group_msg(write, &self.onebot_api, group_id, text).await
             }
@@ -516,7 +516,7 @@ impl MatchListenerPoller {
                         log_fmt!(
                             "ml.notify_sent",
                             group_id = listener.group_id.map(|v| v.to_string()).unwrap_or_default(),
-                            match_id = match_id.to_string()
+                            match_id = match_id
                         )
                     );
                 }
@@ -557,7 +557,8 @@ impl MatchListenerPoller {
                     return self.send_text(&write, listener, &fallback).await;
                 };
 
-                let is_private = listener.notification_type.as_str() == "private";
+                let is_private = listener.notification_channel()
+                    == osubot_core::storage::NotificationChannel::Private;
                 let send_result = if is_private {
                     let user_id = listener.user_id.unwrap_or(0);
                     crate::onebot::send_private_msg_with_image(
@@ -589,8 +590,8 @@ impl MatchListenerPoller {
                                 "ml.notify_image_sent",
                                 group_id =
                                     listener.group_id.map(|v| v.to_string()).unwrap_or_default(),
-                                match_id = match_id.to_string(),
-                                bytes = jpeg_bytes.len().to_string()
+                                match_id = match_id,
+                                bytes = jpeg_bytes.len()
                             )
                         );
                         true
