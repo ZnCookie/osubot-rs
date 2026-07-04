@@ -67,7 +67,12 @@ async fn has_column(
     table: &str,
     column: &str,
 ) -> DbResult<bool> {
-    const ALLOWED_TABLES: &[&str] = &["user_bindings", "match_listeners"];
+    const ALLOWED_TABLES: &[&str] = &[
+        "user_bindings",
+        "match_listeners",
+        "user_stats_history",
+        "user_play_records",
+    ];
     if !ALLOWED_TABLES.contains(&table) {
         return Err(turso::Error::Error(format!(
             "has_column: table '{table}' is not in the allowlist"
@@ -367,6 +372,81 @@ impl Storage {
             .await
             .execute(
                 "CREATE INDEX IF NOT EXISTS idx_bindings_username ON user_bindings(LOWER(current_username))",
+                (),
+            )
+            .await?;
+
+        // ppy.sb 迁移：添加 server 列
+        if !has_column(&pool, "user_bindings", "server").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE user_bindings ADD COLUMN server TEXT NOT NULL DEFAULT 'official'",
+                    (),
+                )
+                .await?;
+        }
+        if !has_column(&pool, "user_stats_history", "server").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE user_stats_history ADD COLUMN server TEXT NOT NULL DEFAULT 'official'",
+                    (),
+                )
+                .await?;
+        }
+        if !has_column(&pool, "user_play_records", "server").await? {
+            pool[0]
+                .lock()
+                .await
+                .execute(
+                    "ALTER TABLE user_play_records ADD COLUMN server TEXT NOT NULL DEFAULT 'official'",
+                    (),
+                )
+                .await?;
+        }
+
+        // 重建索引（忽略旧索引不存在的错误）
+        let _ = pool[0]
+            .lock()
+            .await
+            .execute("DROP INDEX idx_user_bindings_qq", ())
+            .await;
+        pool[0]
+            .lock()
+            .await
+            .execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_bindings_qq_server ON user_bindings(qq, server)",
+                (),
+            )
+            .await?;
+
+        let _ = pool[0]
+            .lock()
+            .await
+            .execute("DROP INDEX idx_user_stats_history", ())
+            .await;
+        pool[0]
+            .lock()
+            .await
+            .execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_stats_history_user_mode_server ON user_stats_history(user_id, mode, server)",
+                (),
+            )
+            .await?;
+
+        let _ = pool[0]
+            .lock()
+            .await
+            .execute("DROP INDEX idx_user_play_records", ())
+            .await;
+        pool[0]
+            .lock()
+            .await
+            .execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_play_records_user_mode_server ON user_play_records(user_id, mode, server, played_at)",
                 (),
             )
             .await?;
