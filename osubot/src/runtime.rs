@@ -93,6 +93,14 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
 
     let rate_limiter = Arc::new(RateLimiter::new());
 
+    let sb_rate_limiter = {
+        let cfg = config.read().await;
+        Arc::new(RateLimiter::with_config(
+            cfg.ppy_sb.rate_burst,
+            cfg.ppy_sb.rate_per_minute,
+        ))
+    };
+
     // Trigger lazy initialization of the shared reqwest HTTP client early, so any
     // build failure (e.g. missing TLS backend) is surfaced at startup rather than
     // crashing the process mid-flight on the first API call.
@@ -165,6 +173,7 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
         storage: storage.clone(),
         oauth: oauth.clone(),
         rate_limiter: rate_limiter.clone(),
+        sb_rate_limiter: sb_rate_limiter.clone(),
         upstream_chain: upstream_chain.clone(),
         onebot_api: onebot_api.clone(),
         scheduler: scheduler.clone(),

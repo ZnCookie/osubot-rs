@@ -61,6 +61,7 @@ path = "osubot.db"
 # mode = true               # !mode（设置/查询默认模式）
 # help = true               # !help
 # match_listen = true       # !ml（比赛监听）
+# ppy_sb = false            # ppy.sb 私服查询（默认关闭）
 
 # [groups.123456789]
 # 特定群的覆盖配置（可选，节名 = 群号）
@@ -95,6 +96,12 @@ path = "osubot.db"
 # poll_interval_secs = 8     # 后台轮询间隔（秒），启动后会立即执行首轮检查
 # notify_on_new_game = true  # 新场次开始时是否推送通知
 # notify_on_complete = true  # 比赛结束时是否推送最终结果
+
+[ppy_sb]
+# ppy.sb 私服 API 配置（可选，不配置则使用默认值）
+# api_base_url = "https://api.ppy.sb"  # API 基础 URL
+# rate_burst = 120                     # 限流突发容量
+# rate_per_minute = 120                # 每分钟请求上限
 
 [plugin]
 # .wasm 插件文件存放目录
