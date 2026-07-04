@@ -346,7 +346,7 @@ impl MatchListenerPoller {
         {
             Ok(r) => r,
             Err(e) => {
-                error!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", error = &e.to_string()));
+                error!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", match_id = match_id.to_string(), error = &e.to_string()));
                 return Ok(()); // Non-fatal: try next cycle
             }
         };
@@ -369,7 +369,7 @@ impl MatchListenerPoller {
                     }
                 }
                 Err(e) => {
-                    warn!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", error = &e.to_string()));
+                    warn!(match_id, group_id, error = %e, "{}", log_fmt!("ml.poller_match_fetch_failed", match_id = match_id.to_string(), error = &e.to_string()));
                     None
                 }
             }
@@ -442,7 +442,7 @@ impl MatchListenerPoller {
                 match_id,
                 group_id,
                 "{}",
-                log_fmt!("ml.poller_match_completed")
+                log_fmt!("ml.poller_match_completed", match_id = match_id.to_string())
             );
         }
 
@@ -509,7 +509,16 @@ impl MatchListenerPoller {
                 let msg = super::notify::format_lobby_text(event_type, text, users, match_name);
                 let sent = self.send_text(&write, listener, &msg).await;
                 if sent {
-                    info!(match_id, "{}", log_fmt!("ml.notify_sent"));
+                    info!(
+                        match_id,
+                        group_id = listener.group_id,
+                        "{}",
+                        log_fmt!(
+                            "ml.notify_sent",
+                            group_id = listener.group_id.map(|v| v.to_string()).unwrap_or_default(),
+                            match_id = match_id.to_string()
+                        )
+                    );
                 }
                 sent
             }
@@ -573,9 +582,16 @@ impl MatchListenerPoller {
                     Ok(()) => {
                         info!(
                             match_id,
+                            group_id = listener.group_id,
                             bytes = jpeg_bytes.len(),
                             "{}",
-                            log_fmt!("ml.notify_image_sent")
+                            log_fmt!(
+                                "ml.notify_image_sent",
+                                group_id =
+                                    listener.group_id.map(|v| v.to_string()).unwrap_or_default(),
+                                match_id = match_id.to_string(),
+                                bytes = jpeg_bytes.len().to_string()
+                            )
                         );
                         true
                     }
