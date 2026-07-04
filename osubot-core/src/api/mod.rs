@@ -6,6 +6,7 @@ mod oauth;
 mod osu_api;
 mod pp;
 mod sb_api;
+mod sb_convert;
 mod score_convert;
 mod stable_grade;
 
