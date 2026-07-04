@@ -123,7 +123,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
 
     let change = ctx
         .storage
-        .calculate_change(user_stats.user_id, mode, user_stats)
+        .calculate_change(user_stats.user_id, mode, user_stats, Server::Official)
         .await
         .ok()
         .flatten();
@@ -282,7 +282,7 @@ pub(super) async fn render_and_send_score_list(
 
     let change = ctx
         .storage
-        .calculate_change(user_stats.user_id, mode, user_stats)
+        .calculate_change(user_stats.user_id, mode, user_stats, Server::Official)
         .await
         .inspect_err(|e| {
             tracing::warn!(
