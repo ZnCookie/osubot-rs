@@ -178,6 +178,9 @@ impl BotContext {
         match self.storage.get_binding(qq, server).await {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
+                if server != Server::Official {
+                    return None;
+                }
                 let binding = self.upstream_chain.read().await.try_query(qq).await?;
                 if let Err(e) = self.storage.set_user_id(&binding.1, binding.0).await {
                     warn!("{}", log_fmt!("main.persist_user_id_failed", error = &e));
