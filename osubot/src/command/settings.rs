@@ -137,6 +137,51 @@ pub(super) async fn handle_settings_commands(
                         .await;
                 }
                 Ok(None) => {
+                    // ppy.sb never uses IRC verification — bind directly via SB API.
+                    if server == Server::PpySb {
+                        let config = ctx.config.read().await;
+                        let sb_api = SbApi::new(
+                            config.ppy_sb.api_base_url.clone(),
+                            ctx.sb_rate_limiter.clone(),
+                        );
+                        drop(config);
+                        match sb_api.search_player(&username).await {
+                            Ok(players) => {
+                                let player = match players.first() {
+                                    Some(p) => p,
+                                    None => {
+                                        info!(username = %username, "{}", log_fmt!("main.bind_user_not_found"));
+                                        let _ = resp_tx.send(user_str("bind.user_not_found").replace("{qq}", &msg.user_id.to_string())).await;
+                                        return;
+                                    }
+                                };
+                                if let Err(e) = ctx.storage.set_user_id(&player.name, player.id).await {
+                                    warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
+                                }
+                                match ctx.storage.bind(msg.user_id, player.id, &player.name, Server::PpySb).await {
+                                    Ok(Ok(())) => {
+                                        info!(user_id = msg.user_id, username = %player.name, "{}", log_fmt!("main.bind_success"));
+                                        let _ = resp_tx.send(user_str("bind.success").replace("{qq}", &msg.user_id.to_string()).replace("{name}", &player.name)).await;
+                                    }
+                                    Ok(Err(bound_qq)) => {
+                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
+                                        let _ = resp_tx.send(user_str("bind.already_bound_other").replace("{qq}", &msg.user_id.to_string())).await;
+                                    }
+                                    Err(_) => {
+                                        error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
+                                        let _ = resp_tx.send(user_str("bind.failed_retry").replace("{qq}", &msg.user_id.to_string())).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
+                                let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
+                            }
+                        }
+                        return;
+                    }
+
+                    // Official server: IRC verification when enabled, direct bind otherwise.
                     let irc_nickname = {
                         let cfg = ctx.config.read().await;
                         if cfg.irc.enabled {
@@ -203,9 +248,8 @@ pub(super) async fn handle_settings_commands(
                             }
                         }
                     } else {
-                        match server {
-                            Server::Official => {
-                                match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, username)
+                        // IRC disabled — bind directly via official osu! API.
+                        match api::get_user_info(&ctx.rate_limiter, &ctx.oauth, username)
                                     .await
                                 {
                                     Ok(Some(user_info)) => {
@@ -276,105 +320,6 @@ pub(super) async fn handle_settings_commands(
                                         let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
                                     }
                                 }
-                            }
-                            Server::PpySb => {
-                                let config = ctx.config.read().await;
-                                let sb_api = SbApi::new(
-                                    config.ppy_sb.api_base_url.clone(),
-                                    ctx.sb_rate_limiter.clone(),
-                                );
-                                drop(config);
-                                match sb_api.search_player(username).await {
-                                    Ok(players) => {
-                                        let player = match players.first() {
-                                            Some(p) => p,
-                                            None => {
-                                                let _ = resp_tx
-                                                    .send(
-                                                        user_str("bind.user_not_found").replace(
-                                                            "{qq}",
-                                                            &msg.user_id.to_string(),
-                                                        ),
-                                                    )
-                                                    .await;
-                                                return;
-                                            }
-                                        };
-                                        match sb_api.get_player_info(player.id).await {
-                                            Ok(info) => {
-                                                if let Err(e) = ctx
-                                                    .storage
-                                                    .set_user_id(&info.name, info.id)
-                                                    .await
-                                                {
-                                                    warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
-                                                }
-                                                match ctx
-                                                    .storage
-                                                    .bind(
-                                                        msg.user_id,
-                                                        info.id,
-                                                        &info.name,
-                                                        Server::PpySb,
-                                                    )
-                                                    .await
-                                                {
-                                                    Ok(Ok(())) => {
-                                                        info!(user_id = msg.user_id, username = %info.name, "{}", log_fmt!("main.bind_success"));
-                                                        let _ = resp_tx
-                                                            .send(
-                                                                user_str("bind.success")
-                                                                    .replace(
-                                                                        "{qq}",
-                                                                        &msg.user_id.to_string(),
-                                                                    )
-                                                                    .replace("{name}", &info.name),
-                                                            )
-                                                            .await;
-                                                    }
-                                                    Ok(Err(bound_qq)) => {
-                                                        info!(user_id = msg.user_id, username = %username, bound_qq = bound_qq, "{}", log_fmt!("main.bind_failed_already_bound"));
-                                                        let _ = resp_tx
-                                                            .send(
-                                                                user_str(
-                                                                    "bind.already_bound_other",
-                                                                )
-                                                                .replace(
-                                                                    "{qq}",
-                                                                    &msg.user_id.to_string(),
-                                                                ),
-                                                            )
-                                                            .await;
-                                                    }
-                                                    Err(_) => {
-                                                        error!(user_id = msg.user_id, username = %username, "{}", log_fmt!("main.bind_failed"));
-                                                        let _ = resp_tx
-                                                            .send(
-                                                                user_str("bind.failed_retry")
-                                                                    .replace(
-                                                                        "{qq}",
-                                                                        &msg.user_id.to_string(),
-                                                                    ),
-                                                            )
-                                                            .await;
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
-                                                let _ = resp_tx
-                                                    .send(api_error_msg(msg.user_id, &e))
-                                                    .await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!(username = %username, error = ?e, "{}", log_fmt!("main.bind_user_info_failed"));
-                                        let _ = resp_tx.send(api_error_msg(msg.user_id, &e)).await;
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
                 Err(_) => {
