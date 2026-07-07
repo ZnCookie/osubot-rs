@@ -209,8 +209,10 @@ pub(super) async fn handle_settings_commands(
                                     .await
                                 {
                                     Ok(Some(user_info)) => {
-                                        if let Err(e) =
-                                            ctx.storage.set_user_id(username, user_info.id).await
+                                        if let Err(e) = ctx
+                                            .storage
+                                            .set_user_id(username, user_info.id, server)
+                                            .await
                                         {
                                             warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
                                         }
@@ -304,7 +306,7 @@ pub(super) async fn handle_settings_commands(
                                             Ok(info) => {
                                                 if let Err(e) = ctx
                                                     .storage
-                                                    .set_user_id(&info.name, info.id)
+                                                    .set_user_id(&info.name, info.id, server)
                                                     .await
                                                 {
                                                     warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));

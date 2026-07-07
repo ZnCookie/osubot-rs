@@ -124,10 +124,10 @@ impl FetcherContext {
 }
 
 /// 缓存 user_id 到 storage，失败时 warn 日志。
-async fn cache_user_id(ctx: &BotContext, stats: &UserStats) {
+async fn cache_user_id(ctx: &BotContext, stats: &UserStats, server: Server) {
     if let Err(e) = ctx
         .storage
-        .set_user_id(&stats.username, stats.user_id)
+        .set_user_id(&stats.username, stats.user_id, server)
         .await
     {
         tracing::warn!(
@@ -265,7 +265,7 @@ async fn resolve_score_user(
         };
         match stats_result {
             Ok(stats) => {
-                cache_user_id(ctx, &stats).await;
+                cache_user_id(ctx, &stats, server).await;
                 Some((stats.user_id, stats.username.clone(), stats))
             }
             Err((e, is_official)) => {
@@ -328,7 +328,7 @@ async fn resolve_score_user(
         };
         match stats_result {
             Ok(stats) => {
-                cache_user_id(ctx, &stats).await;
+                cache_user_id(ctx, &stats, server).await;
                 Some((user_id, stats.username.clone(), stats))
             }
             Err(e) => {
@@ -407,7 +407,7 @@ async fn handle_score_id_render(
     .await
     {
         Ok(stats) => {
-            cache_user_id(ctx, &stats).await;
+            cache_user_id(ctx, &stats, Server::Official).await;
             ctx.scheduler
                 .trigger_update(user_id, mode, Server::Official)
                 .await;
@@ -1216,7 +1216,7 @@ async fn run_score_query_pipeline(
 
         let user_stats = match stats_result {
             Ok(stats) => {
-                cache_user_id(ctx, &stats).await;
+                cache_user_id(ctx, &stats, server).await;
                 stats
             }
             Err(e) => {

@@ -160,34 +160,62 @@ async fn migrate_tables_add_server(pool: &[tokio::sync::Mutex<Connection>]) -> D
             "INSERT INTO user_next_update (user_id, mode, next_update, server)
              SELECT user_id, mode, next_update, 'official' FROM user_next_update_old",
         ),
+        (
+            "osu_user_ids",
+            "CREATE TABLE osu_user_ids (
+                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY (username, server)
+            )",
+            "INSERT INTO osu_user_ids (username, user_id, server)
+             SELECT username, user_id, 'official' FROM osu_user_ids_old",
+        ),
     ];
 
-    for (table, create, insert) in SPECS {
-        let conn = pool[0].lock().await;
-        let needs_rebuild: bool = {
-            let mut rows = conn
-                .query(
-                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                    params![table],
-                )
-                .await?;
-            match rows.next().await? {
-                Some(row) => {
-                    let sql: Option<String> = row.get(0)?;
-                    sql.map(|s| !s.contains("server")).unwrap_or(true)
+    let conn = pool[0].lock().await;
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
+    let result: DbResult<()> = async {
+        for (table, create, insert) in SPECS {
+            let needs_rebuild: bool = {
+                let mut rows = conn
+                    .query(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        params![table],
+                    )
+                    .await?;
+                match rows.next().await? {
+                    Some(row) => {
+                        let sql: Option<String> = row.get(0)?;
+                        sql.map(|s| !s.contains("server")).unwrap_or(true)
+                    }
+                    None => false,
                 }
-                None => false,
+            };
+            if needs_rebuild {
+                // 幂等：若上次迁移中途崩溃残留 _old 表，先删除再重建
+                conn.execute(&format!("DROP TABLE IF EXISTS {table}_old"), ())
+                    .await?;
+                conn.execute(&format!("ALTER TABLE {table} RENAME TO {table}_old"), ())
+                    .await?;
+                conn.execute(create, ()).await?;
+                conn.execute(insert, ()).await?;
+                conn.execute(&format!("DROP TABLE {table}_old"), ()).await?;
             }
-        };
-        if needs_rebuild {
-            conn.execute(&format!("ALTER TABLE {table} RENAME TO {table}_old"), ())
-                .await?;
-            conn.execute(create, ()).await?;
-            conn.execute(insert, ()).await?;
-            conn.execute(&format!("DROP TABLE {table}_old"), ()).await?;
+        }
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            conn.execute("COMMIT", ()).await?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            Err(e)
         }
     }
-    Ok(())
 }
 
 /// 快照查询返回的 stats 子集（无 identity 列）。`UserStats` 的 identity 字段
@@ -417,8 +445,10 @@ impl Storage {
                 PRIMARY KEY (match_id, group_id)
             );
             CREATE TABLE IF NOT EXISTS osu_user_ids (
-                username TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL
+                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY (username, server)
             );
             CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode);
             CREATE INDEX IF NOT EXISTS idx_history_recorded ON user_stats_history(recorded_at);
@@ -605,24 +635,24 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn set_user_id(&self, username: &str, user_id: i64) -> DbResult<()> {
+    pub async fn set_user_id(&self, username: &str, user_id: i64, server: Server) -> DbResult<()> {
         self.conn()
             .await
             .execute(
-                "INSERT OR REPLACE INTO osu_user_ids (username, user_id) VALUES (LOWER(?1), ?2)",
-                params![username, user_id],
+                "INSERT OR REPLACE INTO osu_user_ids (username, user_id, server) VALUES (LOWER(?1), ?2, ?3)",
+                params![username, user_id, server.as_str()],
             )
             .await?;
         Ok(())
     }
 
-    /// Get cached osu! user ID (case-insensitive username lookup)
-    pub async fn get_user_id(&self, username: &str) -> DbResult<Option<i64>> {
+    /// Get cached osu! user ID (case-insensitive username lookup), scoped by server.
+    pub async fn get_user_id(&self, username: &str, server: Server) -> DbResult<Option<i64>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)",
-                params![username],
+                "SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1) AND server = ?2",
+                params![username, server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -726,12 +756,17 @@ impl Storage {
         }
     }
 
-    pub async fn update_binding_username(&self, qq: i64, new_username: &str) -> DbResult<()> {
+    pub async fn update_binding_username(
+        &self,
+        qq: i64,
+        server: Server,
+        new_username: &str,
+    ) -> DbResult<()> {
         self.conn()
             .await
             .execute(
-                "UPDATE user_bindings SET current_username = ?1 WHERE qq = ?2",
-                params![new_username, qq],
+                "UPDATE user_bindings SET current_username = ?1 WHERE qq = ?2 AND server = ?3",
+                params![new_username, qq, server.as_str()],
             )
             .await?;
         Ok(())
@@ -2044,6 +2079,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        storage
+            .bind(10001, 67890, "OtherName", Server::PpySb)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             storage
@@ -2054,7 +2094,7 @@ mod tests {
         );
 
         storage
-            .update_binding_username(10001, "NewName")
+            .update_binding_username(10001, Server::Official, "NewName")
             .await
             .unwrap();
 
@@ -2068,6 +2108,14 @@ mod tests {
         assert_eq!(
             storage
                 .find_qq_by_username("NewName", Server::Official)
+                .await
+                .unwrap(),
+            Some(10001)
+        );
+        // 另一服务器的绑定不受影响
+        assert_eq!(
+            storage
+                .find_qq_by_username("OtherName", Server::PpySb)
                 .await
                 .unwrap(),
             Some(10001)
@@ -2530,5 +2578,110 @@ mod match_listener {
             .expect("ppy.sb snapshot");
         assert_eq!(official.pp, Some(100.0));
         assert_eq!(ppy.pp, Some(200.0));
+    }
+
+    #[tokio::test]
+    async fn user_id_cache_isolated_per_server() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+
+        // 同一用户名在两服对应不同 user_id（ppy.sb 的 id 空间与官方不同）
+        storage
+            .set_user_id("mrekk", 1, Server::Official)
+            .await
+            .unwrap();
+        storage
+            .set_user_id("mrekk", 999, Server::PpySb)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .get_user_id("mrekk", Server::Official)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            storage.get_user_id("mrekk", Server::PpySb).await.unwrap(),
+            Some(999)
+        );
+
+        // 官方路径不会因 ppy.sb 的缓存而拿到错误 id
+        assert_ne!(
+            storage
+                .get_user_id("mrekk", Server::Official)
+                .await
+                .unwrap(),
+            storage.get_user_id("mrekk", Server::PpySb).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_adds_server_column_preserving_data() {
+        use turso::Builder;
+
+        static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "osubot-migrate-test-{}-{}.db",
+            std::process::id(),
+            counter
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        // 用旧 schema（无 server 列）写入数据，模拟升级前的数据库
+        {
+            let db = Builder::new_local(path.to_str().unwrap()).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE user_bindings (qq INTEGER NOT NULL, user_id INTEGER NOT NULL, current_username TEXT NOT NULL, default_mode INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(qq));
+                 CREATE TABLE user_stats_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, mode INTEGER NOT NULL, recorded_at TEXT DEFAULT CURRENT_TIMESTAMP, pp REAL, rank INTEGER, country_rank INTEGER, ranked_score INTEGER, accuracy REAL, playcount INTEGER, hits INTEGER, playtime INTEGER, UNIQUE(user_id, mode, recorded_at));
+                 CREATE TABLE user_play_records (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, mode INTEGER NOT NULL, played_at INTEGER NOT NULL, UNIQUE(user_id, mode, played_at));
+                 CREATE TABLE user_next_update (user_id INTEGER NOT NULL, mode INTEGER NOT NULL, next_update INTEGER NOT NULL, PRIMARY KEY(user_id, mode));
+                 CREATE TABLE osu_user_ids (username TEXT PRIMARY KEY, user_id INTEGER NOT NULL);",
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO user_bindings (qq, user_id, current_username) VALUES (123, 111, 'official_user')",
+                (),
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO osu_user_ids (username, user_id) VALUES ('mrekk', 1)",
+                (),
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO user_next_update (user_id, mode, next_update) VALUES (111, 0, 123456)",
+                (),
+            )
+            .await
+            .unwrap();
+            drop(conn);
+            drop(db);
+        }
+
+        // 触发迁移（重建为带 server 列的 schema）
+        let storage = Storage::new(path.to_str().unwrap()).await.unwrap();
+
+        // 存量数据应保留
+        assert_eq!(
+            storage.get_binding(123, Server::Official).await.unwrap(),
+            Some((111, "official_user".to_string()))
+        );
+        assert_eq!(
+            storage.get_user_id("mrekk", Server::Official).await.unwrap(),
+            Some(1)
+        );
+        // server 列生效：另一服查不到该缓存（不会被官方查询误用）
+        assert_eq!(
+            storage.get_user_id("mrekk", Server::PpySb).await.unwrap(),
+            None
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -233,7 +233,7 @@ impl Scheduler {
                     }
                     // Refresh username→user_id cache
                     self.storage
-                        .set_user_id(&stats.username, user_id)
+                        .set_user_id(&stats.username, user_id, server)
                         .await
                         .ok();
                     stats
@@ -494,7 +494,10 @@ impl Scheduler {
                         );
                     }
                 }
-                self.storage.set_user_id(&info.name, user_id).await.ok();
+                self.storage
+                    .set_user_id(&info.name, user_id, Server::PpySb)
+                    .await
+                    .ok();
                 sb_player_to_user_stats(&info, mode)
             }
             Err(ApiError::NotFound) => {

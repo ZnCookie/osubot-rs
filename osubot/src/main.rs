@@ -182,7 +182,11 @@ impl BotContext {
                     return None;
                 }
                 let binding = self.upstream_chain.read().await.try_query(qq).await?;
-                if let Err(e) = self.storage.set_user_id(&binding.1, binding.0).await {
+                if let Err(e) = self
+                    .storage
+                    .set_user_id(&binding.1, binding.0, server)
+                    .await
+                {
                     warn!("{}", log_fmt!("main.persist_user_id_failed", error = &e));
                 }
                 if let Err(e) = self.storage.bind(qq, binding.0, &binding.1, server).await {
@@ -220,7 +224,7 @@ impl BotContext {
                         if stats.username != username {
                             if let Err(e) = self
                                 .storage
-                                .update_binding_username(qq, &stats.username)
+                                .update_binding_username(qq, Server::Official, &stats.username)
                                 .await
                             {
                                 tracing::warn!(
@@ -232,7 +236,11 @@ impl BotContext {
                                 );
                             }
                         }
-                        if let Err(e) = self.storage.set_user_id(&stats.username, user_id).await {
+                        if let Err(e) = self
+                            .storage
+                            .set_user_id(&stats.username, user_id, Server::Official)
+                            .await
+                        {
                             tracing::warn!(
                                 username = %stats.username,
                                 user_id = user_id,
@@ -276,7 +284,11 @@ impl BotContext {
                 match sb_api.get_player_info(user_id).await {
                     Ok(info) => {
                         let stats = api::sb_player_to_user_stats(&info, mode);
-                        if let Err(e) = self.storage.set_user_id(&stats.username, user_id).await {
+                        if let Err(e) = self
+                            .storage
+                            .set_user_id(&stats.username, user_id, Server::PpySb)
+                            .await
+                        {
                             tracing::warn!(
                                 username = %stats.username,
                                 user_id = user_id,
@@ -424,7 +436,10 @@ pub(crate) async fn handle_irc_message(
 
     match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
         Ok(Some(info)) => {
-            if let Err(e) = storage.set_user_id(&pending.target_username, info.id).await {
+            if let Err(e) = storage
+                .set_user_id(&pending.target_username, info.id, Server::Official)
+                .await
+            {
                 warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
             }
             match storage

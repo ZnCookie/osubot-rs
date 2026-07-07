@@ -134,7 +134,7 @@ async fn handle_profile_card(
 ) {
     let target_user_id = match username {
         Some(ref name) => {
-            if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name).await {
+            if let Ok(Some(cached_id)) = ctx.storage.get_user_id(name, Server::Official).await {
                 info!(username = %name, user_id = cached_id, "{}", log_fmt!("main.profile_card_cached"));
                 cached_id
             } else {
@@ -150,7 +150,7 @@ async fn handle_profile_card(
                         info!(username = %name, user_id = stats.user_id, "{}", log_fmt!("main.profile_card_by_username"));
                         if let Err(e) = ctx
                             .storage
-                            .set_user_id(&stats.username, stats.user_id)
+                            .set_user_id(&stats.username, stats.user_id, Server::Official)
                             .await
                         {
                             tracing::warn!(

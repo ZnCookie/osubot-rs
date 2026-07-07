@@ -82,7 +82,7 @@ pub(super) async fn handle_query_commands(
                         Ok(stats) => {
                             if let Err(e) = ctx
                                 .storage
-                                .set_user_id(&stats.username, stats.user_id)
+                                .set_user_id(&stats.username, stats.user_id, *server)
                                 .await
                             {
                                 tracing::warn!(
@@ -94,8 +94,10 @@ pub(super) async fn handle_query_commands(
                                 );
                             }
                             if stats.username != *username {
-                                if let Err(e) =
-                                    ctx.storage.set_user_id(username, stats.user_id).await
+                                if let Err(e) = ctx
+                                    .storage
+                                    .set_user_id(username, stats.user_id, *server)
+                                    .await
                                 {
                                     tracing::warn!(
                                         username = %username,
@@ -164,7 +166,7 @@ pub(super) async fn handle_query_commands(
                                     let stats = sb_player_to_user_stats(&info, mode);
                                     if let Err(e) = ctx
                                         .storage
-                                        .set_user_id(&stats.username, stats.user_id)
+                                        .set_user_id(&stats.username, stats.user_id, *server)
                                         .await
                                     {
                                         tracing::warn!(
