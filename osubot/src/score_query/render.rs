@@ -13,6 +13,7 @@ pub(super) struct SingleScoreRenderParams<'a> {
     /// `None` 时仅渲染 `<label>`，适用于"该玩家在此谱面上的最佳成绩"等无明确排名的场景。
     pub(super) position: Option<usize>,
     pub(super) label: &'static str,
+    pub(super) server: Server,
 }
 
 pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams<'_>) {
@@ -25,6 +26,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
         user_stats,
         position,
         label,
+        server,
     } = params;
     let mut score = score.clone();
     if score.pp_breakdown.is_none() {
@@ -123,7 +125,7 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
 
     let change = ctx
         .storage
-        .calculate_change(user_stats.user_id, mode, user_stats, Server::Official)
+        .calculate_change(user_stats.user_id, mode, user_stats, server)
         .await
         .ok()
         .flatten();
@@ -223,6 +225,7 @@ pub(super) async fn render_and_send_score_list(
     mode: GameMode,
     label_key: &'static str,
     original_indices: &[usize],
+    server: Server,
 ) {
     let cover_images: Vec<Option<image::DynamicImage>> = join_all(scores.iter().map(|s| {
         let url = s.cover_url.clone();
@@ -282,7 +285,7 @@ pub(super) async fn render_and_send_score_list(
 
     let change = ctx
         .storage
-        .calculate_change(user_stats.user_id, mode, user_stats, Server::Official)
+        .calculate_change(user_stats.user_id, mode, user_stats, server)
         .await
         .inspect_err(|e| {
             tracing::warn!(

@@ -16,10 +16,13 @@ const ENRICH_CONCURRENCY: usize = 3;
 use osubot_core::apply_mod_adjustment_to_stats;
 use osubot_core::enrich_score_with_pp;
 use osubot_core::{
-    api, log_fmt,
+    api,
+    api::{sb_player_to_user_stats, SbApi},
+    log_fmt,
     response::{format_score, format_scores},
     strings::user_str,
     types::{format_play_datetime, Command, GameMode, Score, Server, UserStats},
+    OauthTokenCache, RateLimiter,
 };
 use osubot_render::cache as render_cache;
 use osubot_render::SCORE_LIST_RENDER_TIMEOUT_SECS;
@@ -31,9 +34,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
-
-use osubot_core::OauthTokenCache;
-use osubot_core::RateLimiter;
 
 use crate::api_error_msg;
 use crate::onebot::{send_group_msg_with_image, send_private_msg_with_image, QQMessage};
@@ -60,12 +60,12 @@ pub(crate) enum RenderOutput {
 pub(crate) trait FetchFn: Send + Sync {
     fn call(
         &self,
-        rate_limiter: &Arc<RateLimiter>,
-        oauth: &Arc<OauthTokenCache>,
+        ctx: &BotContext,
+        server: Server,
         user_id: i64,
         mode: GameMode,
         limit: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send>>;
 }
 
 /// 生成 score fetch 闭包中的错误处理函数。
@@ -93,6 +93,33 @@ fn summary_or_single(is_summary: bool) -> RenderOutput {
         RenderOutput::ScoreListCard
     } else {
         RenderOutput::SingleScoreCard
+    }
+}
+
+/// 根据当前配置构造一个 SbApi 客户端。
+fn sb_api_from_ctx(ctx: &BotContext) -> SbApi {
+    let config = ctx.config.blocking_read();
+    SbApi::new(
+        config.ppy_sb.api_base_url.clone(),
+        ctx.sb_rate_limiter.clone(),
+    )
+}
+
+/// score fetch 闭包所需的 API 客户端集合。
+/// 在 `make_fetch` 的同步部分从 `&BotContext` 提取，避免 async 块捕获 ctx 引用。
+struct FetcherContext {
+    rl: Arc<RateLimiter>,
+    oa: Arc<OauthTokenCache>,
+    sb_api: SbApi,
+}
+
+impl FetcherContext {
+    fn from_ctx(ctx: &BotContext) -> Self {
+        Self {
+            rl: ctx.rate_limiter.clone(),
+            oa: ctx.oauth.clone(),
+            sb_api: sb_api_from_ctx(ctx),
+        }
     }
 }
 
@@ -145,30 +172,24 @@ async fn send_index_out_of_range(
 
 fn make_fetch<F, Fut>(f: F) -> Box<dyn FetchFn>
 where
-    F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, GameMode, u32) -> Fut
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(&BotContext, Server, i64, GameMode, u32) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Vec<Score>, String>> + Send + 'static,
 {
     struct Impl<F>(F);
     impl<F, Fut> FetchFn for Impl<F>
     where
-        F: Fn(Arc<RateLimiter>, Arc<OauthTokenCache>, i64, GameMode, u32) -> Fut
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&BotContext, Server, i64, GameMode, u32) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Score>, String>> + Send + 'static,
     {
         fn call(
             &self,
-            rl: &Arc<RateLimiter>,
-            oa: &Arc<OauthTokenCache>,
+            ctx: &BotContext,
+            server: Server,
             uid: i64,
             mode: GameMode,
             limit: u32,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send + '_>> {
-            Box::pin((self.0)(rl.clone(), oa.clone(), uid, mode, limit))
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Score>, String>> + Send>> {
+            Box::pin((self.0)(ctx, server, uid, mode, limit))
         }
     }
     Box::new(Impl(f))
@@ -217,18 +238,44 @@ async fn resolve_score_user(
             "{}",
             log_fmt!("main.resolve_score_user_lookup", username = name)
         );
-        match api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode).await {
+        let stats_result = match server {
+            Server::Official => {
+                api::fetch_user_stats_by_username(&ctx.rate_limiter, &ctx.oauth, name, mode)
+                    .await
+                    .map_err(|e| (e, true))
+            }
+            Server::PpySb => {
+                let config = ctx.config.read().await;
+                let sb_api = SbApi::new(
+                    config.ppy_sb.api_base_url.clone(),
+                    ctx.sb_rate_limiter.clone(),
+                );
+                drop(config);
+                match sb_api.search_player(name).await {
+                    Ok(players) => match players.first() {
+                        Some(player) => match sb_api.get_player_info(player.id).await {
+                            Ok(info) => Ok(sb_player_to_user_stats(&info, mode)),
+                            Err(e) => Err((e, false)),
+                        },
+                        None => Err((api::ApiError::NotFound, false)),
+                    },
+                    Err(e) => Err((e, false)),
+                }
+            }
+        };
+        match stats_result {
             Ok(stats) => {
                 cache_user_id(ctx, &stats).await;
                 Some((stats.user_id, stats.username.clone(), stats))
             }
-            Err(e) => {
+            Err((e, is_official)) => {
                 tracing::error!(error = ?e, username = %name, "{}", log_fmt!("main.resolve_score_user_api_failed"));
-                let err_msg = match e {
-                    api::ApiError::NotFound => user_str("error.not_found_named")
+                let err_msg = if is_official && matches!(e, api::ApiError::NotFound) {
+                    user_str("error.not_found_named")
                         .replace("{qq}", &msg.user_id.to_string())
-                        .replace("{name}", name),
-                    other => api_error_msg(msg.user_id, &other),
+                        .replace("{name}", name)
+                } else {
+                    api_error_msg(msg.user_id, &e)
                 };
                 let _ = resp_tx.send(err_msg).await;
                 None
@@ -262,7 +309,24 @@ async fn resolve_score_user(
             "{}",
             log_fmt!("main.resolve_score_user_fetch_stats", user_id = user_id)
         );
-        match api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await {
+        let stats_result = match server {
+            Server::Official => {
+                api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, user_id, mode).await
+            }
+            Server::PpySb => {
+                let config = ctx.config.read().await;
+                let sb_api = SbApi::new(
+                    config.ppy_sb.api_base_url.clone(),
+                    ctx.sb_rate_limiter.clone(),
+                );
+                drop(config);
+                match sb_api.get_player_info(user_id).await {
+                    Ok(info) => Ok(sb_player_to_user_stats(&info, mode)),
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        match stats_result {
             Ok(stats) => {
                 cache_user_id(ctx, &stats).await;
                 Some((user_id, stats.username.clone(), stats))
@@ -370,6 +434,7 @@ async fn handle_score_id_render(
         // TODO: 对于 !b <score_id> 等场景，可考虑额外 API 调用获取排名
         position: None,
         label: user_str(label),
+        server: Server::Official,
     })
     .await;
 }
@@ -383,10 +448,15 @@ async fn try_score_id_early_return(
     score_id: &Option<u64>,
     mode: GameMode,
     label: &'static str,
+    server: Server,
 ) -> bool {
     let Some(sid) = score_id else {
         return false;
     };
+    if server == Server::PpySb {
+        // ppy.sb 暂不支持 score_id 直达。
+        return false;
+    }
     let Some(score) = fetch_score_by_id(ctx, *sid, msg.user_id, resp_tx).await else {
         return true; // fetch 失败，已发送错误消息
     };
@@ -415,27 +485,50 @@ pub(crate) async fn handle_score_query(
             server,
             ..
         } => {
-            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.recent_pass").await
+            if try_score_id_early_return(
+                ctx,
+                msg,
+                resp_tx,
+                score_id,
+                mode,
+                "fmt.recent_pass",
+                *server,
+            )
+            .await
             {
                 return;
             }
 
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        score_dedup()
-                            .run_or_wait((uid, true, l, m), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_recent(&rl, &oa, uid, m, false, l, false)
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => score_dedup()
+                                    .run_or_wait((uid, true, l, m), move || async move {
+                                        api::get_user_recent(
+                                            &fctx.rl, &fctx.oa, uid, m, false, l, false,
+                                        )
                                         .await
                                         .map_err(score_fetch_error_handler(qq_for_err))
                                         .map(Arc::new)
-                                }
-                            })
-                            .await
-                            .map(|arc| (*arc).clone())
+                                    })
+                                    .await
+                                    .map(|arc| (*arc).clone()),
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Recent, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: None,
                     render: summary_or_single(*is_summary),
@@ -473,27 +566,50 @@ pub(crate) async fn handle_score_query(
             server,
             ..
         } => {
-            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.recent_play").await
+            if try_score_id_early_return(
+                ctx,
+                msg,
+                resp_tx,
+                score_id,
+                mode,
+                "fmt.recent_play",
+                *server,
+            )
+            .await
             {
                 return;
             }
 
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        score_dedup()
-                            .run_or_wait((uid, false, l, m), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_recent(&rl, &oa, uid, m, true, l, false)
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => score_dedup()
+                                    .run_or_wait((uid, false, l, m), move || async move {
+                                        api::get_user_recent(
+                                            &fctx.rl, &fctx.oa, uid, m, true, l, false,
+                                        )
                                         .await
                                         .map_err(score_fetch_error_handler(qq_for_err))
                                         .map(Arc::new)
-                                }
-                            })
-                            .await
-                            .map(|arc| (*arc).clone())
+                                    })
+                                    .await
+                                    .map(|arc| (*arc).clone()),
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Recent, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: None,
                     render: summary_or_single(*is_summary),
@@ -531,25 +647,48 @@ pub(crate) async fn handle_score_query(
             server,
             ..
         } => {
-            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.best_score").await
+            if try_score_id_early_return(
+                ctx,
+                msg,
+                resp_tx,
+                score_id,
+                mode,
+                "fmt.best_score",
+                *server,
+            )
+            .await
             {
                 return;
             }
 
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        best_scores_dedup()
-                            .run_or_wait((uid, m, l), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_best(&rl, &oa, uid, m, l)
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => {
+                                    best_scores_dedup()
+                                        .run_or_wait((uid, m, l), move || async move {
+                                            api::get_user_best(&fctx.rl, &fctx.oa, uid, m, l)
+                                                .await
+                                                .map_err(score_fetch_error_handler(qq_for_err))
+                                        })
                                         .await
-                                        .map_err(score_fetch_error_handler(qq_for_err))
                                 }
-                            })
-                            .await
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Best, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: None,
                     render: summary_or_single(*is_summary),
@@ -587,25 +726,48 @@ pub(crate) async fn handle_score_query(
             server,
             ..
         } => {
-            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.today_best").await
+            if try_score_id_early_return(
+                ctx,
+                msg,
+                resp_tx,
+                score_id,
+                mode,
+                "fmt.today_best",
+                *server,
+            )
+            .await
             {
                 return;
             }
 
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        today_best_scores_dedup()
-                            .run_or_wait((uid, m, l), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_best(&rl, &oa, uid, m, l)
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => {
+                                    today_best_scores_dedup()
+                                        .run_or_wait((uid, m, l), move || async move {
+                                            api::get_user_best(&fctx.rl, &fctx.oa, uid, m, l)
+                                                .await
+                                                .map_err(score_fetch_error_handler(qq_for_err))
+                                        })
                                         .await
-                                        .map_err(score_fetch_error_handler(qq_for_err))
                                 }
-                            })
-                            .await
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Best, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: Some(|scores| {
                         let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
@@ -701,20 +863,34 @@ pub(crate) async fn handle_score_query(
 
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        audio_score_dedup()
-                            .run_or_wait((uid, true, l, m), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_recent(&rl, &oa, uid, m, true, l, false)
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => audio_score_dedup()
+                                    .run_or_wait((uid, true, l, m), move || async move {
+                                        api::get_user_recent(
+                                            &fctx.rl, &fctx.oa, uid, m, true, l, false,
+                                        )
                                         .await
                                         .map_err(score_fetch_error_handler(qq_for_err))
                                         .map(Arc::new)
-                                }
-                            })
-                            .await
-                            .map(|arc| (*arc).clone())
+                                    })
+                                    .await
+                                    .map(|arc| (*arc).clone()),
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Recent, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: None,
                     render: RenderOutput::Audio,
@@ -807,20 +983,34 @@ pub(crate) async fn handle_score_query(
 
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        preview_score_dedup()
-                            .run_or_wait((uid, true, l, m), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_recent(&rl, &oa, uid, m, true, l, false)
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => preview_score_dedup()
+                                    .run_or_wait((uid, true, l, m), move || async move {
+                                        api::get_user_recent(
+                                            &fctx.rl, &fctx.oa, uid, m, true, l, false,
+                                        )
                                         .await
                                         .map_err(score_fetch_error_handler(qq_for_err))
                                         .map(Arc::new)
-                                }
-                            })
-                            .await
-                            .map(|arc| (*arc).clone())
+                                    })
+                                    .await
+                                    .map(|arc| (*arc).clone()),
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Recent, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: None,
                     render: RenderOutput::BeatmapPreview,
@@ -858,8 +1048,16 @@ pub(crate) async fn handle_score_query(
             server,
             ..
         } => {
-            if try_score_id_early_return(ctx, msg, resp_tx, score_id, mode, "fmt.beatmap_score")
-                .await
+            if try_score_id_early_return(
+                ctx,
+                msg,
+                resp_tx,
+                score_id,
+                mode,
+                "fmt.beatmap_score",
+                *server,
+            )
+            .await
             {
                 return;
             }
@@ -883,12 +1081,12 @@ pub(crate) async fn handle_score_query(
                 .set(msg.group_id.unwrap_or(-msg.user_id), resolved_bid as u32);
             (
                 ScoreQuerySpec {
-                    fetch: make_fetch(move |rl, oa, uid, m, l| async move {
-                        beatmap_scores_dedup().run_or_wait((uid, resolved_bid, m, Some(l)), move || {
-                                let rl = rl.clone();
-                                let oa = oa.clone();
-                                async move {
-                                    api::get_user_beatmap_scores_all(&rl, &oa, resolved_bid, uid, m, Some(l), true).await.map_err(|e| {
+                    fetch: make_fetch(move |ctx, server, uid, m, l| {
+                        let fctx = FetcherContext::from_ctx(ctx);
+                        async move {
+                            match server {
+                                Server::Official => beatmap_scores_dedup().run_or_wait((uid, resolved_bid, m, Some(l)), move || async move {
+                                    api::get_user_beatmap_scores_all(&fctx.rl, &fctx.oa, resolved_bid, uid, m, Some(l), true).await.map_err(|e| {
                                         if !matches!(e, api::ApiError::NotFound) {
                                             tracing::error!(user_id = uid, error = ?e, "{}", log_fmt!("main.get_user_beatmap_scores_failed"));
                                         }
@@ -897,8 +1095,25 @@ pub(crate) async fn handle_score_query(
                                             other => api_error_msg(qq_for_err, &other),
                                         }
                                     })
-                                }
-                            }).await
+                                }).await,
+                                Server::PpySb => match fctx
+                                    .sb_api
+                                    .get_player_scores(uid, api::SbScope::Best, Some(m), Some(l))
+                                    .await
+                                {
+                                    Ok(scores) => Ok(scores
+                                        .iter()
+                                        .filter(|s| {
+                                            s.beatmap
+                                                .as_ref()
+                                                .is_some_and(|b| b.id == resolved_bid)
+                                        })
+                                        .map(|s| api::sb_score_to_score(s, s.beatmap.as_ref(), m))
+                                        .collect()),
+                                    Err(e) => Err(score_fetch_error_handler(qq_for_err)(e)),
+                                },
+                            }
+                        }
                     }),
                     post_process: None,
                     render: if *is_all || limit_end.is_some() {
@@ -978,10 +1193,23 @@ async fn run_score_query_pipeline(
 
         ctx.scheduler.trigger_update(uid, mode).await;
 
+        let stats_future = async {
+            match server {
+                Server::Official => {
+                    api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode).await
+                }
+                Server::PpySb => {
+                    let sb_api = sb_api_from_ctx(ctx);
+                    match sb_api.get_player_info(uid).await {
+                        Ok(info) => Ok(sb_player_to_user_stats(&info, mode)),
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+        };
         let (stats_result, scores) = tokio::join!(
-            api::fetch_user_stats_by_user_id(&ctx.rate_limiter, &ctx.oauth, uid, mode),
-            spec.fetch
-                .call(&ctx.rate_limiter, &ctx.oauth, uid, mode, api_limit),
+            stats_future,
+            spec.fetch.call(ctx, server, uid, mode, api_limit),
         );
 
         let user_stats = match stats_result {
@@ -1015,10 +1243,7 @@ async fn run_score_query_pipeline(
 
         ctx.scheduler.trigger_update(uid, mode).await;
 
-        let scores = spec
-            .fetch
-            .call(&ctx.rate_limiter, &ctx.oauth, uid, mode, api_limit)
-            .await;
+        let scores = spec.fetch.call(ctx, server, uid, mode, api_limit).await;
 
         (uid, name, user_stats, scores)
     };
@@ -1175,6 +1400,7 @@ async fn run_score_query_pipeline(
             mode,
             spec.label_key,
             &original_indices,
+            server,
         )
         .await;
     } else {
@@ -1207,6 +1433,7 @@ async fn run_score_query_pipeline(
                     user_stats: &user_stats,
                     position: Some(index),
                     label: user_str(spec.label_key),
+                    server,
                 })
                 .await;
             }
