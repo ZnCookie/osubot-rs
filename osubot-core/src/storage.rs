@@ -91,6 +91,105 @@ async fn has_column(
     Ok(false)
 }
 
+/// 将若干核心表重建为包含 `server` 列，并纳入主键 / 唯一约束。
+///
+/// 判断依据：检查 `sqlite_master` 中该表的 CREATE SQL 是否已包含 "server"。
+/// - 全新数据库：建表语句已含 `server`，跳过重建。
+/// - 旧数据库（曾通过 ALTER 加过列）：其 `sqlite_master.sql` 不含 "server"，触发重建。
+///
+/// 重建过程对存量数据统一补 `'official'`（历史数据均为官方服）。
+async fn migrate_tables_add_server(pool: &[tokio::sync::Mutex<Connection>]) -> DbResult<()> {
+    const SPECS: &[(&str, &str, &str)] = &[
+        (
+            "user_bindings",
+            "CREATE TABLE user_bindings (
+                qq INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                current_username TEXT NOT NULL,
+                default_mode INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(qq, server)
+            )",
+            "INSERT INTO user_bindings (qq, user_id, current_username, default_mode, created_at, server)
+             SELECT qq, user_id, current_username, default_mode, created_at, 'official' FROM user_bindings_old",
+        ),
+        (
+            "user_stats_history",
+            "CREATE TABLE user_stats_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                pp REAL,
+                rank INTEGER,
+                country_rank INTEGER,
+                ranked_score INTEGER,
+                accuracy REAL,
+                playcount INTEGER,
+                hits INTEGER,
+                playtime INTEGER,
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, recorded_at)
+            )",
+            "INSERT INTO user_stats_history (id, user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime, server)
+             SELECT id, user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime, 'official' FROM user_stats_history_old",
+        ),
+        (
+            "user_play_records",
+            "CREATE TABLE user_play_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                played_at INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, played_at)
+            )",
+            "INSERT INTO user_play_records (id, user_id, mode, played_at, server)
+             SELECT id, user_id, mode, played_at, 'official' FROM user_play_records_old",
+        ),
+        (
+            "user_next_update",
+            "CREATE TABLE user_next_update (
+                user_id INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                next_update INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(user_id, mode, server)
+            )",
+            "INSERT INTO user_next_update (user_id, mode, next_update, server)
+             SELECT user_id, mode, next_update, 'official' FROM user_next_update_old",
+        ),
+    ];
+
+    for (table, create, insert) in SPECS {
+        let conn = pool[0].lock().await;
+        let needs_rebuild: bool = {
+            let mut rows = conn
+                .query(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                )
+                .await?;
+            match rows.next().await? {
+                Some(row) => {
+                    let sql: Option<String> = row.get(0)?;
+                    sql.map(|s| !s.contains("server")).unwrap_or(true)
+                }
+                None => false,
+            }
+        };
+        if needs_rebuild {
+            conn.execute(&format!("ALTER TABLE {table} RENAME TO {table}_old"), ())
+                .await?;
+            conn.execute(create, ()).await?;
+            conn.execute(insert, ()).await?;
+            conn.execute(&format!("DROP TABLE {table}_old"), ()).await?;
+        }
+    }
+    Ok(())
+}
+
 /// 快照查询返回的 stats 子集（无 identity 列）。`UserStats` 的 identity 字段
 /// 在快照场景下无意义，由调用方从查询上下文（user_id 形参）补齐。
 #[derive(Debug, Clone)]
@@ -246,11 +345,13 @@ impl Storage {
             .await
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS user_bindings (
-                qq INTEGER PRIMARY KEY,
+                qq INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 current_username TEXT NOT NULL,
                 default_mode INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(qq, server)
             );
             CREATE TABLE IF NOT EXISTS user_stats_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,20 +366,23 @@ impl Storage {
                 playcount INTEGER,
                 hits INTEGER,
                 playtime INTEGER,
-                UNIQUE(user_id, mode, recorded_at)
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, recorded_at)
             );
             CREATE TABLE IF NOT EXISTS user_play_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 played_at INTEGER NOT NULL,
-                UNIQUE(user_id, mode, played_at)
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, played_at)
             );
             CREATE TABLE IF NOT EXISTS user_next_update (
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 next_update INTEGER NOT NULL,
-                PRIMARY KEY(user_id, mode)
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(user_id, mode, server)
             );
             CREATE TABLE IF NOT EXISTS user_last_update (
                 user_id INTEGER NOT NULL,
@@ -377,79 +481,9 @@ impl Storage {
             .await?;
 
         // ppy.sb 迁移：添加 server 列
-        if !has_column(&pool, "user_bindings", "server").await? {
-            pool[0]
-                .lock()
-                .await
-                .execute(
-                    "ALTER TABLE user_bindings ADD COLUMN server TEXT NOT NULL DEFAULT 'official'",
-                    (),
-                )
-                .await?;
-        }
-        if !has_column(&pool, "user_stats_history", "server").await? {
-            pool[0]
-                .lock()
-                .await
-                .execute(
-                    "ALTER TABLE user_stats_history ADD COLUMN server TEXT NOT NULL DEFAULT 'official'",
-                    (),
-                )
-                .await?;
-        }
-        if !has_column(&pool, "user_play_records", "server").await? {
-            pool[0]
-                .lock()
-                .await
-                .execute(
-                    "ALTER TABLE user_play_records ADD COLUMN server TEXT NOT NULL DEFAULT 'official'",
-                    (),
-                )
-                .await?;
-        }
-
-        // 重建索引（忽略旧索引不存在的错误）
-        let _ = pool[0]
-            .lock()
-            .await
-            .execute("DROP INDEX idx_user_bindings_qq", ())
-            .await;
-        pool[0]
-            .lock()
-            .await
-            .execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_bindings_qq_server ON user_bindings(qq, server)",
-                (),
-            )
-            .await?;
-
-        let _ = pool[0]
-            .lock()
-            .await
-            .execute("DROP INDEX idx_user_stats_history", ())
-            .await;
-        pool[0]
-            .lock()
-            .await
-            .execute(
-                "CREATE INDEX IF NOT EXISTS idx_user_stats_history_user_mode_server ON user_stats_history(user_id, mode, server)",
-                (),
-            )
-            .await?;
-
-        let _ = pool[0]
-            .lock()
-            .await
-            .execute("DROP INDEX idx_user_play_records", ())
-            .await;
-        pool[0]
-            .lock()
-            .await
-            .execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_play_records_user_mode_server ON user_play_records(user_id, mode, server, played_at)",
-                (),
-            )
-            .await?;
+        // ppy.sb 迁移：将相关表重建为包含 server 列，并纳入主键/唯一约束，
+        // 以支持同一 qq / 用户在不同服务器（official / ppy.sb）下的数据隔离。
+        migrate_tables_add_server(&pool).await?;
 
         Ok(Self {
             db,
@@ -1090,12 +1124,13 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
     ) -> DbResult<Option<DateTime<Utc>>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2",
-                params![user_id, i32::from(mode)],
+                "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2 AND server = ?3",
+                params![user_id, i32::from(mode), server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -1114,12 +1149,18 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
         time: DateTime<Utc>,
     ) -> DbResult<()> {
         self.conn().await
             .execute(
-                "INSERT OR REPLACE INTO user_next_update (user_id, mode, next_update) VALUES (?1, ?2, ?3)",
-                params![user_id, i32::from(mode), time.timestamp()],
+                "INSERT OR REPLACE INTO user_next_update (user_id, mode, server, next_update) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    user_id,
+                    i32::from(mode),
+                    server.as_str(),
+                    time.timestamp()
+                ],
             )
             .await?;
         Ok(())
@@ -1156,15 +1197,15 @@ impl Storage {
 
     // ==================== Due Users Query ====================
 
-    pub async fn get_due_users(&self) -> DbResult<Vec<(i64, GameMode)>> {
+    pub async fn get_due_users(&self) -> DbResult<Vec<(i64, GameMode, Server)>> {
         let now_ts = Utc::now().timestamp();
 
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT user_id, mode FROM user_next_update WHERE next_update <= ?1
+                "SELECT user_id, mode, server FROM user_next_update WHERE next_update <= ?1
                 UNION ALL
-                SELECT b.user_id AS user_id, m.mode
+                SELECT b.user_id AS user_id, m.mode, b.server
                 FROM user_bindings b
                 CROSS JOIN (
                 SELECT 0 AS mode
@@ -1174,7 +1215,7 @@ impl Storage {
                 ) AS m
                 WHERE NOT EXISTS (
                     SELECT 1 FROM user_next_update n
-                    WHERE n.user_id = b.user_id AND n.mode = m.mode
+                    WHERE n.user_id = b.user_id AND n.mode = m.mode AND n.server = b.server
                 )",
                 params![now_ts],
             )
@@ -1185,7 +1226,9 @@ impl Storage {
             let user_id: i64 = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
             let mode = GameMode::try_from(mode_int).unwrap_or(GameMode::Osu);
-            results.push((user_id, mode));
+            let server_str: String = row.get(2)?;
+            let server = Server::from_str(&server_str);
+            results.push((user_id, mode, server));
         }
         Ok(results)
     }
@@ -2419,5 +2462,73 @@ mod match_listener {
         assert_eq!(listener.last_notified_event_id, Some(99));
         assert_eq!(listener.pending_game_event_id, Some(101));
         assert!(listener.last_notified_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn server_bindings_are_isolated_per_server() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+
+        fn local_stats(pp: f64) -> crate::types::UserStats {
+            crate::types::UserStats {
+                user_id: 0,
+                username: String::new(),
+                pp,
+                rank: 0,
+                country_rank: 0,
+                country_code: "XX".to_string(),
+                ranked_score: 0,
+                accuracy: 0.0,
+                playcount: 0,
+                hits: 0,
+                playtime: 0,
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+            }
+        }
+
+        // 同一 qq 分别绑定官方服与 ppy.sb 服，应互不覆盖
+        storage
+            .bind(123, 111, "official_user", Server::Official)
+            .await
+            .expect("bind official")
+            .expect("official bind ok");
+        storage
+            .bind(123, 222, "ppy_user", Server::PpySb)
+            .await
+            .expect("bind ppy.sb")
+            .expect("ppy.sb bind ok");
+
+        assert_eq!(
+            storage.get_binding(123, Server::Official).await.unwrap(),
+            Some((111, "official_user".to_string()))
+        );
+        assert_eq!(
+            storage.get_binding(123, Server::PpySb).await.unwrap(),
+            Some((222, "ppy_user".to_string()))
+        );
+
+        // 两服各自的统计快照互不串扰
+        storage
+            .save_stats(111, GameMode::Osu, &local_stats(100.0), Server::Official)
+            .await
+            .unwrap();
+        storage
+            .save_stats(222, GameMode::Osu, &local_stats(200.0), Server::PpySb)
+            .await
+            .unwrap();
+
+        let official = storage
+            .get_latest_snapshot(111, GameMode::Osu, Server::Official)
+            .await
+            .unwrap()
+            .expect("official snapshot");
+        let ppy = storage
+            .get_latest_snapshot(222, GameMode::Osu, Server::PpySb)
+            .await
+            .unwrap()
+            .expect("ppy.sb snapshot");
+        assert_eq!(official.pp, Some(100.0));
+        assert_eq!(ppy.pp, Some(200.0));
     }
 }

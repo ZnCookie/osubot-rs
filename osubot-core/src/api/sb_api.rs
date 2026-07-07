@@ -253,7 +253,12 @@ impl SbApi {
     }
 
     pub async fn search_player(&self, query: &str) -> Result<Vec<SbPlayerBrief>, ApiError> {
-        let resp: SbSearchResponse = self.get(&format!("/v1/search_players?q={}", query)).await?;
+        let resp: SbSearchResponse = self
+            .get(&format!(
+                "/v1/search_players?q={}",
+                urlencoding::encode(query)
+            ))
+            .await?;
         if resp.status != "success" {
             return Err(ApiError::InvalidResponse);
         }

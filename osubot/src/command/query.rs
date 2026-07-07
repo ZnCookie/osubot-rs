@@ -106,7 +106,9 @@ pub(super) async fn handle_query_commands(
                                     );
                                 }
                             }
-                            ctx.scheduler.trigger_update(stats.user_id, mode).await;
+                            ctx.scheduler
+                                .trigger_update(stats.user_id, mode, *server)
+                                .await;
                             let change = ctx
                                 .storage
                                 .calculate_change(stats.user_id, mode, &stats, Server::Official)
@@ -173,7 +175,9 @@ pub(super) async fn handle_query_commands(
                                             log_fmt!("main.cache_user_id_failed")
                                         );
                                     }
-                                    ctx.scheduler.trigger_update(stats.user_id, mode).await;
+                                    ctx.scheduler
+                                        .trigger_update(stats.user_id, mode, *server)
+                                        .await;
                                     let change = ctx
                                         .storage
                                         .calculate_change(

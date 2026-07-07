@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 use osubot_core::api::ApiError;
 use osubot_core::log_fmt;
 use osubot_core::{
-    api,
+    api::{self, sb_player_to_user_stats, SbApi, SbScope},
     storage::today_0am_utc,
     types::{GameMode, Server, UserActivity},
     OauthTokenCache, RateLimiter, Storage,
@@ -23,6 +23,7 @@ pub struct Scheduler {
     storage: Arc<Storage>,
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
+    sb_rate_limiter: Arc<RateLimiter>,
     config: Arc<RwLock<Config>>,
     last_cleanup: Arc<TokioMutex<Option<DateTime<Utc>>>>,
     shutdown: Arc<AtomicBool>,
@@ -33,12 +34,14 @@ impl Scheduler {
         storage: Arc<Storage>,
         oauth: Arc<OauthTokenCache>,
         rate_limiter: Arc<RateLimiter>,
+        sb_rate_limiter: Arc<RateLimiter>,
         config: Arc<RwLock<Config>>,
     ) -> Self {
         Self {
             storage,
             oauth,
             rate_limiter,
+            sb_rate_limiter,
             config,
             last_cleanup: Arc::new(TokioMutex::new(None)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -154,21 +157,22 @@ impl Scheduler {
 
         use futures_util::StreamExt;
         let results: Vec<_> = futures_util::stream::iter(due)
-            .map(|(user_id, mode)| async move {
-                let result = self.eval_activity(user_id, mode).await;
-                (user_id, mode, result)
+            .map(|(user_id, mode, server)| async move {
+                let result = self.eval_activity(user_id, mode, server).await;
+                (user_id, mode, server, result)
             })
             .buffer_unordered(5)
             .collect()
             .await;
 
-        for (user_id, mode, result) in results {
+        for (user_id, mode, server, result) in results {
             if result.success {
-                self.update_next_time(user_id, mode, result.activity).await;
+                self.update_next_time(user_id, mode, server, result.activity)
+                    .await;
             } else {
                 if let Err(e) = self
                     .storage
-                    .set_next_update(user_id, mode, Utc::now())
+                    .set_next_update(user_id, mode, server, Utc::now())
                     .await
                 {
                     warn!(
@@ -190,7 +194,11 @@ impl Scheduler {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
     ) -> osubot_core::types::UpdateResult {
+        if let Server::PpySb = server {
+            return self.eval_activity_ppy_sb(user_id, mode).await;
+        }
         let now = Utc::now();
 
         // Check rate limit before API calls
@@ -447,6 +455,152 @@ impl Scheduler {
         }
     }
 
+    /// ppy.sb 用户的周期取数与活跃度评估（与官方行为对齐）。
+    async fn eval_activity_ppy_sb(
+        &self,
+        user_id: i64,
+        mode: GameMode,
+    ) -> osubot_core::types::UpdateResult {
+        // ppy.sb 专属限流
+        if !self.sb_rate_limiter.try_acquire().await {
+            return osubot_core::types::UpdateResult {
+                activity: UserActivity::NoRecent,
+                success: false,
+            };
+        }
+
+        let config = self.config.read().await;
+        let sb_api = SbApi::new(
+            config.ppy_sb.api_base_url.clone(),
+            self.sb_rate_limiter.clone(),
+        );
+        drop(config);
+
+        let stats = match sb_api.get_player_info(user_id).await {
+            Ok(info) => {
+                // 用户名变更检测（更新该 user_id 下所有服的绑定）
+                if let Ok(updated) = self
+                    .storage
+                    .update_binding_username_by_user_id(user_id, &info.name)
+                    .await
+                {
+                    if updated > 0 {
+                        info!(
+                            user_id = user_id,
+                            new_username = %info.name,
+                            updated_bindings = updated,
+                            "{}",
+                            log_fmt!("scheduler.username_change_detected")
+                        );
+                    }
+                }
+                self.storage.set_user_id(&info.name, user_id).await.ok();
+                sb_player_to_user_stats(&info, mode)
+            }
+            Err(ApiError::NotFound) => {
+                return osubot_core::types::UpdateResult {
+                    activity: UserActivity::UserNotExists,
+                    success: true,
+                };
+            }
+            Err(_) => {
+                return osubot_core::types::UpdateResult {
+                    activity: UserActivity::NoRecent,
+                    success: false,
+                };
+            }
+        };
+
+        // 保存 ppy.sb 快照（供 pp 变更计算）
+        if let Err(e) = self
+            .storage
+            .save_stats(user_id, mode, &stats, Server::PpySb)
+            .await
+        {
+            warn!(
+                "{}",
+                log_fmt!(
+                    "scheduler.save_stats_error",
+                    user_id = user_id,
+                    mode = format!("{:?}", mode),
+                    error = &e
+                )
+            );
+        }
+
+        // 取近期成绩并保存，用于活跃度判断
+        let recent_plays = match sb_api
+            .get_player_scores(user_id, SbScope::Recent, Some(mode), Some(100))
+            .await
+        {
+            Ok(plays) => plays,
+            Err(e) => {
+                error!(
+                    "{}",
+                    log_fmt!(
+                        "scheduler.fetch_recent_failed",
+                        user_id = user_id,
+                        error = format!("{:?}", e)
+                    )
+                );
+                Vec::new()
+            }
+        };
+        let records: Vec<i64> = recent_plays
+            .iter()
+            .filter_map(|p| {
+                let ts = DateTime::parse_from_rfc3339(&format!("{}Z", p.play_time.trim()))
+                    .ok()?
+                    .timestamp();
+                Some(ts)
+            })
+            .collect();
+        if let Err(e) = self
+            .storage
+            .save_play_records(user_id, mode, &records, Server::PpySb)
+            .await
+        {
+            error!(
+                "{}",
+                log_fmt!(
+                    "scheduler.save_records_failed",
+                    user_id = user_id,
+                    mode = format!("{:?}", mode),
+                    error = &e
+                )
+            );
+        }
+
+        let now = Utc::now();
+        let has_recent = self
+            .storage
+            .has_play_since(
+                user_id,
+                mode,
+                (now - Duration::hours(4)).timestamp(),
+                Server::PpySb,
+            )
+            .await
+            .unwrap_or(false);
+        let has_today = self
+            .storage
+            .has_play_since(user_id, mode, today_0am_utc(), Server::PpySb)
+            .await
+            .unwrap_or(false);
+        let activity = if has_recent {
+            UserActivity::SemiActive
+        } else if has_today {
+            UserActivity::Normal
+        } else {
+            UserActivity::NoRecent
+        };
+
+        osubot_core::types::UpdateResult {
+            activity,
+            success: true,
+        }
+    }
+
     /// Return next update interval based on activity
     async fn get_update_interval(&self, activity: UserActivity) -> Duration {
         let cfg = self.config.read().await.scheduler.clone();
@@ -460,10 +614,20 @@ impl Scheduler {
     }
 
     /// Update user's next update time (called after eval)
-    async fn update_next_time(&self, user_id: i64, mode: GameMode, activity: UserActivity) {
+    async fn update_next_time(
+        &self,
+        user_id: i64,
+        mode: GameMode,
+        server: Server,
+        activity: UserActivity,
+    ) {
         let interval = self.get_update_interval(activity).await;
         let next = Utc::now() + interval;
-        if let Err(e) = self.storage.set_next_update(user_id, mode, next).await {
+        if let Err(e) = self
+            .storage
+            .set_next_update(user_id, mode, server, next)
+            .await
+        {
             warn!(
                 "{}",
                 log_fmt!(
@@ -477,11 +641,11 @@ impl Scheduler {
     }
 
     /// Trigger update for user (single mode only)
-    pub async fn trigger_update(&self, user_id: i64, mode: GameMode) {
+    pub async fn trigger_update(&self, user_id: i64, mode: GameMode, server: Server) {
         if !self.is_in_cooldown(user_id, mode).await {
             if let Err(e) = self
                 .storage
-                .set_next_update(user_id, mode, Utc::now())
+                .set_next_update(user_id, mode, server, Utc::now())
                 .await
             {
                 warn!(

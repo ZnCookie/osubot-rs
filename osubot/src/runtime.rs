@@ -126,6 +126,7 @@ pub(super) async fn build_runtime_handles() -> RuntimeHandles {
         storage.clone(),
         oauth.clone(),
         rate_limiter.clone(),
+        sb_rate_limiter.clone(),
         config.clone(),
     );
 

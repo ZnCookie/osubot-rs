@@ -2,7 +2,6 @@ use crate::api::sb_api::{SbPlayerInfoFull, SbPlayerStats, SbScore, SbScoreBeatma
 use crate::types::{GameMode, UserStats};
 use osubot_types::Score;
 
-#[allow(dead_code)]
 pub fn sb_legacy_mods_to_game_mods(mods: i64, mode: GameMode) -> rosu_mods::GameMods {
     let bits = mods as u32;
     let intermode = rosu_mods::GameModsIntermode::from_bits(bits);
@@ -49,7 +48,6 @@ pub fn sb_player_to_user_stats(info: &SbPlayerInfoFull, mode: GameMode) -> UserS
     }
 }
 
-#[allow(dead_code)]
 pub fn sb_score_to_score(sb: &SbScore, beatmap: Option<&SbScoreBeatmap>, mode: GameMode) -> Score {
     let mods = sb_legacy_mods_to_game_mods(sb.mods, mode);
 
@@ -69,7 +67,7 @@ pub fn sb_score_to_score(sb: &SbScore, beatmap: Option<&SbScoreBeatmap>, mode: G
         hp: beatmap.map(|b| b.hp).unwrap_or(0.0),
         length_seconds: beatmap.map(|b| b.total_length).unwrap_or(0),
         score_value: sb.score,
-        accuracy: sb.accuracy,
+        accuracy: sb.accuracy / 100.0,
         max_combo: sb.max_combo,
         beatmap_max_combo: beatmap.map(|b| b.max_combo).unwrap_or(0),
         pp: Some(sb.pp),
@@ -77,10 +75,10 @@ pub fn sb_score_to_score(sb: &SbScore, beatmap: Option<&SbScoreBeatmap>, mode: G
         pp_if_acc: None,
         perfect_pp: None,
         rank: sb.grade.clone(),
-        passed: sb.status == 0,
+        passed: sb.grade.trim() != "F",
         mods,
         is_perfect: sb.perfect,
-        created_at: sb.play_time.clone(),
+        created_at: format!("{}Z", sb.play_time.trim()),
         is_lazer: false,
         has_replay: false,
         legacy_score_id: None,
@@ -112,5 +110,105 @@ pub fn sb_score_to_score(sb: &SbScore, beatmap: Option<&SbScoreBeatmap>, mode: G
         fav_count: None,
         play_count: None,
         status: String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::sb_api::{SbPlayerStats, SbScore};
+    use crate::types::GameMode;
+    use std::collections::HashMap;
+
+    fn test_score() -> SbScore {
+        SbScore {
+            id: Some(1),
+            map_md5: String::new(),
+            score: 1000,
+            pp: 123.456,
+            accuracy: 96.413,
+            max_combo: 100,
+            mods: 0,
+            n300: 100,
+            n100: 0,
+            n50: 0,
+            nmiss: 0,
+            ngeki: 0,
+            nkatu: 0,
+            grade: "A".to_string(),
+            status: 2,
+            mode: 0,
+            play_time: " 2020-09-25T00:03:43 ".to_string(),
+            time_elapsed: 0,
+            perfect: false,
+            beatmap: None,
+        }
+    }
+
+    #[test]
+    fn accuracy_is_fraction_not_percentage() {
+        let s = sb_score_to_score(&test_score(), None, GameMode::Osu);
+        assert!((s.accuracy - 0.96413).abs() < 1e-6, "got {}", s.accuracy);
+    }
+
+    #[test]
+    fn passed_depends_on_grade_not_status() {
+        let mut failed = test_score();
+        failed.grade = "F".to_string();
+        failed.status = 0;
+        assert!(
+            !sb_score_to_score(&failed, None, GameMode::Osu).passed,
+            "F 成绩应判为未通过"
+        );
+
+        let mut passed = test_score();
+        passed.grade = "A".to_string();
+        passed.status = 2;
+        assert!(
+            sb_score_to_score(&passed, None, GameMode::Osu).passed,
+            "A 成绩应判为通过"
+        );
+    }
+
+    #[test]
+    fn play_time_gets_utc_z_suffix() {
+        let s = sb_score_to_score(&test_score(), None, GameMode::Osu);
+        assert_eq!(s.created_at, "2020-09-25T00:03:43Z");
+    }
+
+    #[test]
+    fn player_accuracy_is_fraction() {
+        let mut stats = HashMap::new();
+        stats.insert(
+            0,
+            SbPlayerStats {
+                mode: 0,
+                pp: 500.0,
+                accuracy: 98.5,
+                total_score: 0,
+                ranked_score: 0,
+                play_count: 0,
+                play_time: 0,
+                global_rank: 1,
+                country_rank: 1,
+                max_combo: 0,
+                total_hits: 0,
+                count_ssh: 0,
+                count_ss: 0,
+                count_sh: 0,
+                count_s: 0,
+                count_a: 0,
+            },
+        );
+        let info = crate::api::sb_api::SbPlayerInfoFull {
+            id: 9,
+            name: "p".to_string(),
+            country: "XX".to_string(),
+            preferred_mode: 0,
+            creation_time: 0,
+            stats,
+        };
+        let u = sb_player_to_user_stats(&info, GameMode::Osu);
+        assert!((u.accuracy - 98.5).abs() < 1e-6, "got {}", u.accuracy);
     }
 }

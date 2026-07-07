@@ -408,7 +408,9 @@ async fn handle_score_id_render(
     {
         Ok(stats) => {
             cache_user_id(ctx, &stats).await;
-            ctx.scheduler.trigger_update(user_id, mode).await;
+            ctx.scheduler
+                .trigger_update(user_id, mode, Server::Official)
+                .await;
             stats
         }
         Err(e) => {
@@ -1191,7 +1193,7 @@ async fn run_score_query_pipeline(
             }
         };
 
-        ctx.scheduler.trigger_update(uid, mode).await;
+        ctx.scheduler.trigger_update(uid, mode, server).await;
 
         let stats_future = async {
             match server {
@@ -1241,7 +1243,7 @@ async fn run_score_query_pipeline(
             None => return,
         };
 
-        ctx.scheduler.trigger_update(uid, mode).await;
+        ctx.scheduler.trigger_update(uid, mode, server).await;
 
         let scores = spec.fetch.call(ctx, server, uid, mode, api_limit).await;
 
