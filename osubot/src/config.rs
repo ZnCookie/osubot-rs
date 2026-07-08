@@ -112,7 +112,7 @@ fn default_render_timeout_secs() -> u64 {
     120
 }
 fn default_onebot_api_timeout_secs() -> u64 {
-    10
+    30
 }
 fn default_ur_timeout_secs() -> u64 {
     15
@@ -621,7 +621,7 @@ impl Default for Config {
                     .unwrap_or_else(|_| "ws://127.0.0.1:8080".to_string()),
                 command_timeout_secs: 180,
                 render_timeout_secs: 120,
-                onebot_api_timeout_secs: 10,
+                onebot_api_timeout_secs: 30,
                 ur_timeout_secs: 15,
             },
             database: DatabaseConfig {
