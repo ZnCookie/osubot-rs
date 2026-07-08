@@ -288,6 +288,7 @@ impl ReloadCoordinator {
             match_listen: mutable
                 .match_listen
                 .unwrap_or(old_config.match_listen.clone()),
+            ppy_sb: mutable.ppy_sb.unwrap_or(old_config.ppy_sb.clone()),
         };
 
         new_config.validate()?;

@@ -2,7 +2,7 @@ use crate::api::{self, ApiError};
 use crate::log_fmt;
 use crate::storage::Storage;
 use crate::strings::user_str;
-use crate::types::GameMode;
+use crate::types::{GameMode, Server};
 use crate::OauthTokenCache;
 use crate::RateLimiter;
 use std::collections::HashMap;
@@ -58,13 +58,14 @@ pub async fn get_highlight(
     oauth: &Arc<OauthTokenCache>,
     user_data: &[(i64, i64, String)], // (qq, user_id, current_username)
     mode: GameMode,
+    server: Server,
 ) -> Result<HighlightResult, HighlightError> {
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
 
     let user_ids: Vec<i64> = user_data.iter().map(|(_, user_id, _)| *user_id).collect();
     let baselines = match storage
-        .get_baseline_snapshots_for_users(&user_ids, mode, 24, 36)
+        .get_baseline_snapshots_for_users(&user_ids, mode, 24, 36, server)
         .await
     {
         Ok(map) => map,
@@ -78,7 +79,7 @@ pub async fn get_highlight(
             );
             let mut map = HashMap::new();
             for (_, user_id, _) in user_data {
-                if let Ok(Some(s)) = storage.get_baseline_snapshot(*user_id, mode).await {
+                if let Ok(Some(s)) = storage.get_baseline_snapshot(*user_id, mode, server).await {
                     map.insert(*user_id, s);
                 }
             }

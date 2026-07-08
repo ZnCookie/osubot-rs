@@ -45,6 +45,28 @@ impl From<toml::de::Error> for ConfigError {
     }
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PpySbConfig {
+    #[serde(default = "default_sb_api_base_url")]
+    pub api_base_url: String,
+    #[serde(default = "default_sb_rate_burst")]
+    pub rate_burst: u32,
+    #[serde(default = "default_sb_rate_per_minute")]
+    pub rate_per_minute: u32,
+}
+
+fn default_sb_api_base_url() -> String {
+    "https://api.ppy.sb".to_string()
+}
+
+fn default_sb_rate_burst() -> u32 {
+    120
+}
+
+fn default_sb_rate_per_minute() -> u32 {
+    120
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub osu: OsuConfig,
@@ -68,6 +90,8 @@ pub struct Config {
     pub plugin: PluginConfig,
     #[serde(default)]
     pub match_listen: MatchListenConfig,
+    #[serde(default)]
+    pub ppy_sb: PpySbConfig,
 }
 
 #[derive(Deserialize, Clone)]
@@ -316,6 +340,8 @@ pub struct GroupConfig {
     pub mode: Option<bool>,
     pub help: Option<bool>,
     pub match_listen: Option<bool>,
+    #[serde(default)]
+    pub ppy_sb: bool,
 }
 
 impl GroupConfig {
@@ -362,6 +388,7 @@ impl GroupsConfig {
                 mode: override_cfg.mode.or(self.default.mode),
                 help: override_cfg.help.or(self.default.help),
                 match_listen: override_cfg.match_listen.or(self.default.match_listen),
+                ppy_sb: override_cfg.ppy_sb || self.default.ppy_sb,
             }
         } else {
             self.default.clone()
@@ -490,6 +517,8 @@ pub struct MutableConfig {
     pub irc: Option<IrcConfig>,
     #[serde(default)]
     pub match_listen: Option<MatchListenConfig>,
+    #[serde(default)]
+    pub ppy_sb: Option<PpySbConfig>,
 }
 
 impl Config {
@@ -636,6 +665,7 @@ impl Default for Config {
             upstream: UpstreamConfig::default(),
             plugin: PluginConfig::default(),
             match_listen: MatchListenConfig::default(),
+            ppy_sb: PpySbConfig::default(),
         }
     }
 }
@@ -702,6 +732,7 @@ mod tests {
             mode: None,
             help: None,
             match_listen: Some(false),
+            ppy_sb: false,
         };
         assert!(cfg.is_enabled(CommandGroup::Query));
         assert!(!cfg.is_enabled(CommandGroup::Score));

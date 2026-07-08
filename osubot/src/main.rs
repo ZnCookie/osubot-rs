@@ -27,7 +27,7 @@ use osubot_core::{
     response::format_stats_with_change,
     storage::Storage,
     strings::user_str,
-    types::{GameMode, Score},
+    types::{GameMode, Score, Server},
     upstream::UpstreamChain,
     OauthTokenCache, RateLimiter,
 };
@@ -64,6 +64,7 @@ pub(crate) struct BotContext {
     scheduler: Scheduler,
     oauth: Arc<OauthTokenCache>,
     rate_limiter: Arc<RateLimiter>,
+    sb_rate_limiter: Arc<RateLimiter>,
     command_rate_limits: Arc<dashmap::DashMap<i64, UserRateLimit>>,
     config: Arc<tokio::sync::RwLock<Config>>,
     write: Arc<Mutex<WriteSink>>,
@@ -86,6 +87,7 @@ impl BotContext {
             scheduler: state.scheduler.clone(),
             oauth: state.oauth.clone(),
             rate_limiter: state.rate_limiter.clone(),
+            sb_rate_limiter: state.sb_rate_limiter.clone(),
             command_rate_limits: state.user_rate_limits.clone(),
             config: state.config.clone(),
             write,
@@ -172,15 +174,22 @@ pub(crate) async fn send_error(resp_tx: &mpsc::Sender<String>, qq: i64, key: &st
 }
 
 impl BotContext {
-    async fn resolve_binding(&self, qq: i64) -> Option<(i64, String)> {
-        match self.storage.get_binding(qq).await {
+    async fn resolve_binding(&self, qq: i64, server: Server) -> Option<(i64, String)> {
+        match self.storage.get_binding(qq, server).await {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {
+                if server != Server::Official {
+                    return None;
+                }
                 let binding = self.upstream_chain.read().await.try_query(qq).await?;
-                if let Err(e) = self.storage.set_user_id(&binding.1, binding.0).await {
+                if let Err(e) = self
+                    .storage
+                    .set_user_id(&binding.1, binding.0, server)
+                    .await
+                {
                     warn!("{}", log_fmt!("main.persist_user_id_failed", error = &e));
                 }
-                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1).await {
+                if let Err(e) = self.storage.bind(qq, binding.0, &binding.1, server).await {
                     warn!("{}", log_fmt!("main.persist_binding_failed", error = &e));
                 }
                 Some(binding)
@@ -189,65 +198,129 @@ impl BotContext {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_stats_and_reply(
         &self,
         qq: i64,
         user_id: i64,
         username: &str,
         mode: GameMode,
+        server: Server,
         resp_tx: &mpsc::Sender<String>,
         log_label: &str,
     ) {
-        self.scheduler.trigger_update(user_id, mode).await;
-        match api::fetch_user_stats_by_user_id(&self.rate_limiter, &self.oauth, user_id, mode).await
-        {
-            Ok(stats) => {
-                if stats.username != username {
-                    if let Err(e) = self
-                        .storage
-                        .update_binding_username(qq, &stats.username)
-                        .await
-                    {
-                        tracing::warn!(
-                            qq = qq,
-                            username = %stats.username,
-                            error = %e,
-                            "{}",
-                            log_fmt!("main.update_binding_failed")
-                        );
+        self.scheduler.trigger_update(user_id, mode, server).await;
+        match server {
+            Server::Official => {
+                match api::fetch_user_stats_by_user_id(
+                    &self.rate_limiter,
+                    &self.oauth,
+                    user_id,
+                    mode,
+                )
+                .await
+                {
+                    Ok(stats) => {
+                        if stats.username != username {
+                            if let Err(e) = self
+                                .storage
+                                .update_binding_username(qq, Server::Official, &stats.username)
+                                .await
+                            {
+                                tracing::warn!(
+                                    qq = qq,
+                                    username = %stats.username,
+                                    error = %e,
+                                    "{}",
+                                    log_fmt!("main.update_binding_failed")
+                                );
+                            }
+                        }
+                        if let Err(e) = self
+                            .storage
+                            .set_user_id(&stats.username, user_id, Server::Official)
+                            .await
+                        {
+                            tracing::warn!(
+                                username = %stats.username,
+                                user_id = user_id,
+                                error = %e,
+                                "{}",
+                                log_fmt!("main.cache_user_id_failed")
+                            );
+                        }
+                        let change = self
+                            .storage
+                            .calculate_change(user_id, mode, &stats, server)
+                            .await
+                            .inspect_err(|e| {
+                                tracing::warn!(
+                                    user_id = user_id,
+                                    mode = ?mode,
+                                    error = %e,
+                                    "{}",
+                                    log_fmt!("main.calculate_change_failed")
+                                )
+                            })
+                            .ok()
+                            .flatten();
+                        info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.log_label_success", label = log_label));
+                        let response = format_stats_with_change(&stats, &change, mode);
+                        let _ = resp_tx.send(response).await;
+                    }
+                    Err(e) => {
+                        warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{}", log_fmt!("main.log_label_failed", label = log_label));
+                        let _ = resp_tx.send(api_error_msg(qq, &e)).await;
                     }
                 }
-                if let Err(e) = self.storage.set_user_id(&stats.username, user_id).await {
-                    tracing::warn!(
-                        username = %stats.username,
-                        user_id = user_id,
-                        error = %e,
-                        "{}",
-                        log_fmt!("main.cache_user_id_failed")
-                    );
-                }
-                let change = self
-                    .storage
-                    .calculate_change(user_id, mode, &stats)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            user_id = user_id,
-                            mode = ?mode,
-                            error = %e,
-                            "{}",
-                            log_fmt!("main.calculate_change_failed")
-                        )
-                    })
-                    .ok()
-                    .flatten();
-                info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.log_label_success", label = log_label));
-                let response = format_stats_with_change(&stats, &change, mode);
-                let _ = resp_tx.send(response).await;
             }
-            Err(e) => {
-                warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{}", log_fmt!("main.log_label_failed", label = log_label));
-                let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+            Server::PpySb => {
+                let config = self.config.read().await;
+                let sb_api = api::SbApi::new(
+                    config.ppy_sb.api_base_url.clone(),
+                    self.sb_rate_limiter.clone(),
+                );
+                drop(config);
+                match sb_api.get_player_info(user_id).await {
+                    Ok(info) => {
+                        let stats = api::sb_player_to_user_stats(&info, mode);
+                        if let Err(e) = self
+                            .storage
+                            .set_user_id(&stats.username, user_id, Server::PpySb)
+                            .await
+                        {
+                            tracing::warn!(
+                                username = %stats.username,
+                                user_id = user_id,
+                                error = %e,
+                                "{}",
+                                log_fmt!("main.cache_user_id_failed")
+                            );
+                        }
+                        let change = self
+                            .storage
+                            .calculate_change(user_id, mode, &stats, Server::PpySb)
+                            .await
+                            .inspect_err(|e| {
+                                tracing::warn!(
+                                    user_id = user_id,
+                                    mode = ?mode,
+                                    error = %e,
+                                    "{}",
+                                    log_fmt!("main.calculate_change_failed")
+                                )
+                            })
+                            .ok()
+                            .flatten();
+                        info!(qq = qq, osu_id = user_id, username = %stats.username, mode = ?mode, pp = stats.pp, rank = stats.rank, change = ?change, "{}", log_fmt!("main.log_label_success", label = log_label));
+                        let response = format_stats_with_change(&stats, &change, mode);
+                        let _ = resp_tx.send(response).await;
+                    }
+                    Err(e) => {
+                        warn!(qq = qq, osu_id = user_id, mode = ?mode, error = ?e, "{}", log_fmt!("main.log_label_failed", label = log_label));
+                        let _ = resp_tx.send(api_error_msg(qq, &e)).await;
+                    }
+                }
             }
         }
     }
@@ -363,11 +436,19 @@ pub(crate) async fn handle_irc_message(
 
     match api::get_user_info(&rate_limiter, &oauth, &pending.target_username).await {
         Ok(Some(info)) => {
-            if let Err(e) = storage.set_user_id(&pending.target_username, info.id).await {
+            if let Err(e) = storage
+                .set_user_id(&pending.target_username, info.id, Server::Official)
+                .await
+            {
                 warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
             }
             match storage
-                .bind(pending.qq_user_id, info.id, &info.username)
+                .bind(
+                    pending.qq_user_id,
+                    info.id,
+                    &info.username,
+                    Server::Official,
+                )
                 .await
             {
                 Ok(Ok(())) => {

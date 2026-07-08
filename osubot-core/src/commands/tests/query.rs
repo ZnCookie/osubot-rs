@@ -1,5 +1,5 @@
 use crate::commands::parse_command;
-use crate::types::{Command, GameMode};
+use crate::types::{Command, GameMode, Server};
 
 #[test]
 fn test_where_qq_basic() {
@@ -9,6 +9,7 @@ fn test_where_qq_basic() {
         Command::QueryMentionedUser {
             qq: 1234567,
             mode: None,
+            server: Server::Official,
         }
     );
 }
@@ -21,6 +22,7 @@ fn test_where_qq_with_mode() {
         Command::QueryMentionedUser {
             qq: 1234567,
             mode: Some(GameMode::Taiko),
+            server: Server::Official,
         }
     );
 }
@@ -48,6 +50,7 @@ fn test_where_qq_in_text() {
         Command::QueryMentionedUser {
             qq: 1234567,
             mode: None,
+            server: Server::Official,
         }
     );
 }
@@ -60,6 +63,7 @@ fn test_where_qq_in_text_with_mode() {
         Command::QueryMentionedUser {
             qq: 1234567,
             mode: Some(GameMode::Taiko),
+            server: Server::Official,
         }
     );
 }

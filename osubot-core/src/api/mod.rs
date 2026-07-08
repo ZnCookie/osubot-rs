@@ -5,7 +5,12 @@ mod match_api;
 mod oauth;
 mod osu_api;
 mod pp;
+mod sb_api;
+mod sb_convert;
 mod score_convert;
+
+pub use sb_api::{SbApi, SbScope};
+pub use sb_convert::{sb_player_to_user_stats, sb_score_to_score};
 mod stable_grade;
 
 pub use beatmap::get_star_rating;

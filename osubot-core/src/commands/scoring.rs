@@ -1,4 +1,4 @@
-use crate::types::{Command, GameMode};
+use crate::types::{Command, GameMode, Server};
 
 use super::common::{extract_common_args, parse_time_token, try_parse_range};
 
@@ -20,6 +20,21 @@ pub(crate) enum ScoringCmd {
 pub(crate) fn parse_scoring_command(
     msg: &str,
     mentioned_user_id: Option<i64>,
+) -> Option<Option<Command>> {
+    parse_scoring_command_with_server(msg, mentioned_user_id, Server::Official)
+}
+
+pub(crate) fn parse_scoring_command_sb(
+    msg: &str,
+    mentioned_user_id: Option<i64>,
+) -> Option<Option<Command>> {
+    parse_scoring_command_with_server(msg, mentioned_user_id, Server::PpySb)
+}
+
+fn parse_scoring_command_with_server(
+    msg: &str,
+    mentioned_user_id: Option<i64>,
+    server: Server,
 ) -> Option<Option<Command>> {
     const PREFIXES: &[(&str, ScoringCmd)] = &[
         ("!ps", ScoringCmd::PassSummary),
@@ -45,7 +60,7 @@ pub(crate) fn parse_scoring_command(
         }
         let rest = rest.trim();
 
-        return Some(parse_one_scoring_cmd(rest, cmd, mentioned_user_id));
+        return Some(parse_one_scoring_cmd(rest, cmd, mentioned_user_id, server));
     }
     None
 }
@@ -54,14 +69,16 @@ fn parse_one_scoring_cmd(
     rest: &str,
     cmd: ScoringCmd,
     mentioned_user_id: Option<i64>,
+    server: Server,
 ) -> Option<Command> {
-    parse_standard_score(rest, cmd, mentioned_user_id)
+    parse_standard_score(rest, cmd, mentioned_user_id, server)
 }
 
 fn parse_standard_score(
     rest: &str,
     cmd: ScoringCmd,
     mentioned_user_id: Option<i64>,
+    server: Server,
 ) -> Option<Command> {
     let default_limit = match cmd {
         ScoringCmd::PassSummary | ScoringCmd::RecentSummary | ScoringCmd::ScoreAll => 20u32,
@@ -89,6 +106,7 @@ fn parse_standard_score(
                 limit: default_limit,
                 filters: None,
                 explicit_position: false,
+                server,
             })
         } else {
             make_score_cmd(ScoreCmdParams {
@@ -103,6 +121,7 @@ fn parse_standard_score(
                 limit_end: None,
                 filters: None,
                 explicit_position: false,
+                server,
             })
         };
     }
@@ -160,6 +179,7 @@ fn parse_standard_score(
             limit: rt.implicit_limit.unwrap_or(args.limit),
             filters,
             explicit_position,
+            server,
         });
     }
 
@@ -200,6 +220,7 @@ fn parse_standard_score(
         limit_end: final_limit_end,
         filters,
         explicit_position,
+        server,
     })
 }
 
@@ -215,6 +236,7 @@ struct ScoreCmdParams {
     limit_end: Option<u32>,
     filters: Option<Vec<String>>,
     explicit_position: bool,
+    server: Server,
 }
 
 fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
@@ -230,6 +252,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: true,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::RecentSummary => Command::Recent {
             mode: params.mode,
@@ -241,6 +264,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: true,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::ScoreAll => Command::ScoreOnBeatmap {
             mode: params.mode,
@@ -252,6 +276,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             limit_end: params.limit_end,
             is_all: true,
+            server: params.server,
         },
         ScoringCmd::PassSingle => Command::Pass {
             mode: params.mode,
@@ -263,6 +288,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: false,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::RecentSingle => Command::Recent {
             mode: params.mode,
@@ -274,6 +300,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: false,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::ScoreSingle => Command::ScoreOnBeatmap {
             mode: params.mode,
@@ -285,6 +312,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             limit_end: params.limit_end,
             is_all: false,
+            server: params.server,
         },
         ScoringCmd::BestSingle => Command::Best {
             mode: params.mode,
@@ -296,6 +324,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: false,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::BestList => Command::Best {
             mode: params.mode,
@@ -307,6 +336,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: true,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::TodayBest => Command::TodayBest {
             mode: params.mode,
@@ -318,6 +348,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit_end: params.limit_end,
             is_summary: params.limit_end.is_some() || !params.explicit_position,
             filters: params.filters,
+            server: params.server,
         },
         ScoringCmd::BeatmapAudio => Command::BeatmapAudio {
             mode: params.mode,
@@ -328,6 +359,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             filters: params.filters,
             explicit_position: params.explicit_position,
+            server: params.server,
         },
         ScoringCmd::BeatmapPreview => Command::BeatmapPreview {
             mode: params.mode,
@@ -341,6 +373,7 @@ fn make_score_cmd(params: ScoreCmdParams) -> Option<Command> {
             limit: params.limit,
             filters: params.filters,
             explicit_position: params.explicit_position,
+            server: params.server,
         },
     })
 }

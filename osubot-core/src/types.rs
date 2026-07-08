@@ -1,6 +1,30 @@
 pub use osubot_game_mode::GameMode;
 pub use osubot_types::{format_length, format_play_datetime, Score, ScoreStatistics, ScoreUser};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Server {
+    #[default]
+    Official,
+    PpySb,
+}
+
+impl Server {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Server::Official => "official",
+            Server::PpySb => "ppy_sb",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "ppy_sb" => Server::PpySb,
+            _ => Server::Official,
+        }
+    }
+}
+
 /// Actions for the `!ml` (Match Listen) command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatchListenAction {
@@ -50,21 +74,28 @@ pub enum CommandGroup {
 pub enum Command {
     QuerySelf {
         mode: Option<GameMode>,
+        server: Server,
     },
     QueryUser {
         username: String,
         mode: Option<GameMode>,
+        server: Server,
     },
     QueryMentionedUser {
         qq: i64,
         mode: Option<GameMode>,
+        server: Server,
     },
     Bind {
         username: String,
+        server: Server,
     },
-    Unbind,
+    Unbind {
+        server: Server,
+    },
     Highlight {
         mode: Option<GameMode>,
+        server: Server,
     },
     ProfileCard {
         username: Option<String>,
@@ -80,6 +111,7 @@ pub enum Command {
         limit: u32,
         limit_end: Option<u32>,
         is_all: bool,
+        server: Server,
     },
     Pass {
         mode: Option<GameMode>,
@@ -91,6 +123,7 @@ pub enum Command {
         limit_end: Option<u32>,
         is_summary: bool,
         filters: Option<Vec<String>>,
+        server: Server,
     },
     Recent {
         mode: Option<GameMode>,
@@ -102,6 +135,7 @@ pub enum Command {
         limit_end: Option<u32>,
         is_summary: bool,
         filters: Option<Vec<String>>,
+        server: Server,
     },
     Best {
         mode: Option<GameMode>,
@@ -113,6 +147,7 @@ pub enum Command {
         limit_end: Option<u32>,
         is_summary: bool,
         filters: Option<Vec<String>>,
+        server: Server,
     },
     TodayBest {
         mode: Option<GameMode>,
@@ -124,9 +159,11 @@ pub enum Command {
         limit_end: Option<u32>,
         is_summary: bool,
         filters: Option<Vec<String>>,
+        server: Server,
     },
     SetDefaultMode {
         mode: Option<GameMode>,
+        server: Server,
     },
     BeatmapPreview {
         score_id: Option<u64>,
@@ -140,6 +177,7 @@ pub enum Command {
         limit: u32,
         filters: Option<Vec<String>>,
         explicit_position: bool,
+        server: Server,
     },
     BeatmapAudio {
         mode: Option<GameMode>,
@@ -150,12 +188,37 @@ pub enum Command {
         limit: u32,
         filters: Option<Vec<String>>,
         explicit_position: bool,
+        server: Server,
     },
-    Help,
+    Help {
+        server: Server,
+    },
     MatchListen(MatchListenAction),
 }
 
 impl Command {
+    /// Returns the [`Server`] associated with this command, if any.
+    pub fn server(&self) -> Option<Server> {
+        match self {
+            Command::QuerySelf { server, .. }
+            | Command::QueryUser { server, .. }
+            | Command::QueryMentionedUser { server, .. }
+            | Command::Bind { server, .. }
+            | Command::Unbind { server }
+            | Command::Highlight { server, .. }
+            | Command::ScoreOnBeatmap { server, .. }
+            | Command::Pass { server, .. }
+            | Command::Recent { server, .. }
+            | Command::Best { server, .. }
+            | Command::TodayBest { server, .. }
+            | Command::SetDefaultMode { server, .. }
+            | Command::BeatmapPreview { server, .. }
+            | Command::BeatmapAudio { server, .. } => Some(*server),
+            Command::Help { server, .. } => Some(*server),
+            Command::ProfileCard { .. } | Command::MatchListen(..) => None,
+        }
+    }
+
     /// Returns the [`CommandGroup`] this command belongs to.
     pub fn group_name(&self) -> CommandGroup {
         match self {
@@ -171,9 +234,9 @@ impl Command {
             Command::ProfileCard { .. } => CommandGroup::Profile,
             Command::ScoreOnBeatmap { .. } => CommandGroup::Score,
             Command::Highlight { .. } => CommandGroup::Highlight,
-            Command::Bind { .. } | Command::Unbind => CommandGroup::Bind,
+            Command::Bind { .. } | Command::Unbind { .. } => CommandGroup::Bind,
             Command::SetDefaultMode { .. } => CommandGroup::Mode,
-            Command::Help => CommandGroup::Help,
+            Command::Help { .. } => CommandGroup::Help,
             Command::MatchListen(..) => CommandGroup::MatchListen,
         }
     }
@@ -181,22 +244,67 @@ impl Command {
     /// Returns the canonical command trigger string (e.g. `"~"`, `"where"`, `"绑定"`).
     pub fn command_name(&self) -> &'static str {
         match self {
-            Command::QuerySelf { .. } => "~",
-            Command::QueryUser { .. } => "where",
-            Command::QueryMentionedUser { .. } => "where",
-            Command::Bind { .. } => "绑定",
-            Command::Unbind => "解绑",
-            Command::Highlight { .. } => "今日高光",
+            Command::QuerySelf { server, .. } => match server {
+                Server::Official => "~",
+                Server::PpySb => "?~",
+            },
+            Command::QueryUser { server, .. } => match server {
+                Server::Official => "where",
+                Server::PpySb => "?where",
+            },
+            Command::QueryMentionedUser { server, .. } => match server {
+                Server::Official => "where",
+                Server::PpySb => "?where",
+            },
+            Command::Bind { server, .. } => match server {
+                Server::Official => "绑定",
+                Server::PpySb => "?绑定",
+            },
+            Command::Unbind { server } => match server {
+                Server::Official => "解绑",
+                Server::PpySb => "?解绑",
+            },
+            Command::Highlight { server, .. } => match server {
+                Server::Official => "今日高光",
+                Server::PpySb => "?今日高光",
+            },
             Command::ProfileCard { .. } => "!profile",
-            Command::Pass { .. } => "!p",
-            Command::Recent { .. } => "!r",
-            Command::Best { .. } => "!b",
-            Command::TodayBest { .. } => "!t",
-            Command::ScoreOnBeatmap { .. } => "!s",
-            Command::SetDefaultMode { .. } => "!mode",
-            Command::BeatmapPreview { .. } => "!rv",
-            Command::BeatmapAudio { .. } => "!a",
-            Command::Help => "!help",
+            Command::Pass { server, .. } => match server {
+                Server::Official => "!p",
+                Server::PpySb => "?p",
+            },
+            Command::Recent { server, .. } => match server {
+                Server::Official => "!r",
+                Server::PpySb => "?r",
+            },
+            Command::Best { server, .. } => match server {
+                Server::Official => "!b",
+                Server::PpySb => "?b",
+            },
+            Command::TodayBest { server, .. } => match server {
+                Server::Official => "!t",
+                Server::PpySb => "?t",
+            },
+            Command::ScoreOnBeatmap { server, .. } => match server {
+                Server::Official => "!s",
+                Server::PpySb => "?s",
+            },
+            Command::SetDefaultMode { server, .. } => match server {
+                Server::Official => "!mode",
+                Server::PpySb => "?mode",
+            },
+            Command::BeatmapPreview { server, .. } => match server {
+                Server::Official => "!rv",
+                Server::PpySb => "?rv",
+            },
+            Command::BeatmapAudio { server, .. } => match server {
+                Server::Official => "!a",
+                Server::PpySb => "?a",
+            },
+            Command::Help { server, .. } => match server {
+                Server::Official => "!help",
+                Server::PpySb => "?help",
+            },
             Command::MatchListen(..) => "!ml",
         }
     }

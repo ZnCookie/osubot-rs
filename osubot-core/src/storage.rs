@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use turso::{params, Connection, Database, Result as DbResult, Row};
 
-use crate::types::{GameMode, UserChange, UserStats};
+use crate::types::{GameMode, Server, UserChange, UserStats};
 
 /// Returns UTC timestamp of today's 0:00 AM in local timezone
 pub fn today_0am_utc() -> i64 {
@@ -67,7 +67,12 @@ async fn has_column(
     table: &str,
     column: &str,
 ) -> DbResult<bool> {
-    const ALLOWED_TABLES: &[&str] = &["user_bindings", "match_listeners"];
+    const ALLOWED_TABLES: &[&str] = &[
+        "user_bindings",
+        "match_listeners",
+        "user_stats_history",
+        "user_play_records",
+    ];
     if !ALLOWED_TABLES.contains(&table) {
         return Err(turso::Error::Error(format!(
             "has_column: table '{table}' is not in the allowlist"
@@ -84,6 +89,133 @@ async fn has_column(
         }
     }
     Ok(false)
+}
+
+/// 将若干核心表重建为包含 `server` 列，并纳入主键 / 唯一约束。
+///
+/// 判断依据：检查 `sqlite_master` 中该表的 CREATE SQL 是否已包含 "server"。
+/// - 全新数据库：建表语句已含 `server`，跳过重建。
+/// - 旧数据库（曾通过 ALTER 加过列）：其 `sqlite_master.sql` 不含 "server"，触发重建。
+///
+/// 重建过程对存量数据统一补 `'official'`（历史数据均为官方服）。
+async fn migrate_tables_add_server(pool: &[tokio::sync::Mutex<Connection>]) -> DbResult<()> {
+    const SPECS: &[(&str, &str, &str)] = &[
+        (
+            "user_bindings",
+            "CREATE TABLE user_bindings (
+                qq INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                current_username TEXT NOT NULL,
+                default_mode INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(qq, server)
+            )",
+            "INSERT INTO user_bindings (qq, user_id, current_username, default_mode, created_at, server)
+             SELECT qq, user_id, current_username, default_mode, created_at, 'official' FROM user_bindings_old",
+        ),
+        (
+            "user_stats_history",
+            "CREATE TABLE user_stats_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                pp REAL,
+                rank INTEGER,
+                country_rank INTEGER,
+                ranked_score INTEGER,
+                accuracy REAL,
+                playcount INTEGER,
+                hits INTEGER,
+                playtime INTEGER,
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, recorded_at)
+            )",
+            "INSERT INTO user_stats_history (id, user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime, server)
+             SELECT id, user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime, 'official' FROM user_stats_history_old",
+        ),
+        (
+            "user_play_records",
+            "CREATE TABLE user_play_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                played_at INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, played_at)
+            )",
+            "INSERT INTO user_play_records (id, user_id, mode, played_at, server)
+             SELECT id, user_id, mode, played_at, 'official' FROM user_play_records_old",
+        ),
+        (
+            "user_next_update",
+            "CREATE TABLE user_next_update (
+                user_id INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                next_update INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(user_id, mode, server)
+            )",
+            "INSERT INTO user_next_update (user_id, mode, next_update, server)
+             SELECT user_id, mode, next_update, 'official' FROM user_next_update_old",
+        ),
+        (
+            "osu_user_ids",
+            "CREATE TABLE osu_user_ids (
+                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY (username, server)
+            )",
+            "INSERT INTO osu_user_ids (username, user_id, server)
+             SELECT username, user_id, 'official' FROM osu_user_ids_old",
+        ),
+    ];
+
+    let conn = pool[0].lock().await;
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
+    let result: DbResult<()> = async {
+        for (table, create, insert) in SPECS {
+            let needs_rebuild: bool = {
+                let mut rows = conn
+                    .query(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        params![table],
+                    )
+                    .await?;
+                match rows.next().await? {
+                    Some(row) => {
+                        let sql: Option<String> = row.get(0)?;
+                        sql.map(|s| !s.contains("server")).unwrap_or(true)
+                    }
+                    None => false,
+                }
+            };
+            if needs_rebuild {
+                // 幂等：若上次迁移中途崩溃残留 _old 表，先删除再重建
+                conn.execute(&format!("DROP TABLE IF EXISTS {table}_old"), ())
+                    .await?;
+                conn.execute(&format!("ALTER TABLE {table} RENAME TO {table}_old"), ())
+                    .await?;
+                conn.execute(create, ()).await?;
+                conn.execute(insert, ()).await?;
+                conn.execute(&format!("DROP TABLE {table}_old"), ()).await?;
+            }
+        }
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            conn.execute("COMMIT", ()).await?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
 }
 
 /// 快照查询返回的 stats 子集（无 identity 列）。`UserStats` 的 identity 字段
@@ -241,11 +373,13 @@ impl Storage {
             .await
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS user_bindings (
-                qq INTEGER PRIMARY KEY,
+                qq INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 current_username TEXT NOT NULL,
                 default_mode INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(qq, server)
             );
             CREATE TABLE IF NOT EXISTS user_stats_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -260,20 +394,23 @@ impl Storage {
                 playcount INTEGER,
                 hits INTEGER,
                 playtime INTEGER,
-                UNIQUE(user_id, mode, recorded_at)
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, recorded_at)
             );
             CREATE TABLE IF NOT EXISTS user_play_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 played_at INTEGER NOT NULL,
-                UNIQUE(user_id, mode, played_at)
+                server TEXT NOT NULL DEFAULT 'official',
+                UNIQUE(user_id, mode, server, played_at)
             );
             CREATE TABLE IF NOT EXISTS user_next_update (
                 user_id INTEGER NOT NULL,
                 mode INTEGER NOT NULL,
                 next_update INTEGER NOT NULL,
-                PRIMARY KEY(user_id, mode)
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY(user_id, mode, server)
             );
             CREATE TABLE IF NOT EXISTS user_last_update (
                 user_id INTEGER NOT NULL,
@@ -308,8 +445,10 @@ impl Storage {
                 PRIMARY KEY (match_id, group_id)
             );
             CREATE TABLE IF NOT EXISTS osu_user_ids (
-                username TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL
+                username TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                server TEXT NOT NULL DEFAULT 'official',
+                PRIMARY KEY (username, server)
             );
             CREATE INDEX IF NOT EXISTS idx_history_user ON user_stats_history(user_id, mode);
             CREATE INDEX IF NOT EXISTS idx_history_recorded ON user_stats_history(recorded_at);
@@ -371,6 +510,11 @@ impl Storage {
             )
             .await?;
 
+        // ppy.sb 迁移：添加 server 列
+        // ppy.sb 迁移：将相关表重建为包含 server 列，并纳入主键/唯一约束，
+        // 以支持同一 qq / 用户在不同服务器（official / ppy.sb）下的数据隔离。
+        migrate_tables_add_server(&pool).await?;
+
         Ok(Self {
             db,
             pool,
@@ -411,6 +555,7 @@ impl Storage {
         qq: i64,
         user_id: i64,
         current_username: &str,
+        server: Server,
     ) -> DbResult<std::result::Result<(), i64>> {
         let conn = self.conn().await;
         conn.execute("BEGIN IMMEDIATE", ()).await?;
@@ -418,8 +563,8 @@ impl Storage {
             async {
                 let mut rows = conn
                     .query(
-                        "SELECT qq FROM user_bindings WHERE user_id = ?1",
-                        params![user_id],
+                        "SELECT qq FROM user_bindings WHERE user_id = ?1 AND server = ?2",
+                        params![user_id, server.as_str()],
                     )
                     .await?;
                 if let Some(row) = rows.next().await? {
@@ -430,8 +575,8 @@ impl Storage {
                 }
                 drop(rows);
                 conn.execute(
-                    "INSERT OR REPLACE INTO user_bindings (qq, user_id, current_username) VALUES (?1, ?2, ?3)",
-                    params![qq, user_id, current_username],
+                    "INSERT OR REPLACE INTO user_bindings (qq, user_id, current_username, server) VALUES (?1, ?2, ?3, ?4)",
+                    params![qq, user_id, current_username, server.as_str()],
                 )
                 .await?;
                 Ok(Ok(()))
@@ -448,19 +593,22 @@ impl Storage {
         result
     }
 
-    pub async fn unbind(&self, qq: i64) -> DbResult<()> {
+    pub async fn unbind(&self, qq: i64, server: Server) -> DbResult<()> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT user_id FROM user_bindings WHERE qq = ?1",
-                params![qq],
+                "SELECT user_id FROM user_bindings WHERE qq = ?1 AND server = ?2",
+                params![qq, server.as_str()],
             )
             .await?;
         let user_id: Option<i64> = rows.next().await?.map(|row| row.get(0)).transpose()?;
         drop(rows);
 
-        conn.execute("DELETE FROM user_bindings WHERE qq = ?1", params![qq])
-            .await?;
+        conn.execute(
+            "DELETE FROM user_bindings WHERE qq = ?1 AND server = ?2",
+            params![qq, server.as_str()],
+        )
+        .await?;
 
         if let Some(uid) = user_id {
             let mut rows = conn
@@ -487,24 +635,24 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn set_user_id(&self, username: &str, user_id: i64) -> DbResult<()> {
+    pub async fn set_user_id(&self, username: &str, user_id: i64, server: Server) -> DbResult<()> {
         self.conn()
             .await
             .execute(
-                "INSERT OR REPLACE INTO osu_user_ids (username, user_id) VALUES (LOWER(?1), ?2)",
-                params![username, user_id],
+                "INSERT OR REPLACE INTO osu_user_ids (username, user_id, server) VALUES (LOWER(?1), ?2, ?3)",
+                params![username, user_id, server.as_str()],
             )
             .await?;
         Ok(())
     }
 
-    /// Get cached osu! user ID (case-insensitive username lookup)
-    pub async fn get_user_id(&self, username: &str) -> DbResult<Option<i64>> {
+    /// Get cached osu! user ID (case-insensitive username lookup), scoped by server.
+    pub async fn get_user_id(&self, username: &str, server: Server) -> DbResult<Option<i64>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1)",
-                params![username],
+                "SELECT user_id FROM osu_user_ids WHERE LOWER(username) = LOWER(?1) AND server = ?2",
+                params![username, server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -533,12 +681,12 @@ impl Storage {
         Ok(result)
     }
 
-    pub async fn get_binding(&self, qq: i64) -> DbResult<Option<(i64, String)>> {
+    pub async fn get_binding(&self, qq: i64, server: Server) -> DbResult<Option<(i64, String)>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT user_id, current_username FROM user_bindings WHERE qq = ?1",
-                params![qq],
+                "SELECT user_id, current_username FROM user_bindings WHERE qq = ?1 AND server = ?2",
+                params![qq, server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -548,12 +696,12 @@ impl Storage {
         }
     }
 
-    pub async fn get_default_mode(&self, qq: i64) -> DbResult<Option<GameMode>> {
+    pub async fn get_default_mode(&self, qq: i64, server: Server) -> DbResult<Option<GameMode>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT default_mode FROM user_bindings WHERE qq = ?1",
-                params![qq],
+                "SELECT default_mode FROM user_bindings WHERE qq = ?1 AND server = ?2",
+                params![qq, server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -572,24 +720,33 @@ impl Storage {
         }
     }
 
-    pub async fn set_default_mode(&self, qq: i64, mode: GameMode) -> DbResult<bool> {
+    pub async fn set_default_mode(
+        &self,
+        qq: i64,
+        mode: GameMode,
+        server: Server,
+    ) -> DbResult<bool> {
         let rows = self
             .conn()
             .await
             .execute(
-                "UPDATE user_bindings SET default_mode = ?1 WHERE qq = ?2",
-                params![i32::from(mode), qq],
+                "UPDATE user_bindings SET default_mode = ?1 WHERE qq = ?2 AND server = ?3",
+                params![i32::from(mode), qq, server.as_str()],
             )
             .await?;
         Ok(rows > 0)
     }
 
-    pub async fn find_qq_by_username(&self, username: &str) -> DbResult<Option<i64>> {
+    pub async fn find_qq_by_username(
+        &self,
+        username: &str,
+        server: Server,
+    ) -> DbResult<Option<i64>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT qq FROM user_bindings WHERE LOWER(current_username) = LOWER(?1)",
-                params![username],
+                "SELECT qq FROM user_bindings WHERE LOWER(current_username) = LOWER(?1) AND server = ?2",
+                params![username, server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -599,12 +756,17 @@ impl Storage {
         }
     }
 
-    pub async fn update_binding_username(&self, qq: i64, new_username: &str) -> DbResult<()> {
+    pub async fn update_binding_username(
+        &self,
+        qq: i64,
+        server: Server,
+        new_username: &str,
+    ) -> DbResult<()> {
         self.conn()
             .await
             .execute(
-                "UPDATE user_bindings SET current_username = ?1 WHERE qq = ?2",
-                params![new_username, qq],
+                "UPDATE user_bindings SET current_username = ?1 WHERE qq = ?2 AND server = ?3",
+                params![new_username, qq, server.as_str()],
             )
             .await?;
         Ok(())
@@ -645,14 +807,16 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         stats: &UserStats,
+        server: Server,
     ) -> DbResult<()> {
         self.conn().await
             .execute(
-                "INSERT OR IGNORE INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT OR IGNORE INTO user_stats_history (user_id, mode, server, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     user_id,
                     i32::from(mode),
+                    server.as_str(),
                     Utc::now().to_rfc3339(),
                     stats.pp,
                     stats.rank,
@@ -672,16 +836,17 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
     ) -> DbResult<Option<UserStatsSnapshot>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
                 "SELECT pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
                  FROM user_stats_history
-                 WHERE user_id = ?1 AND mode = ?2
+                 WHERE user_id = ?1 AND mode = ?2 AND server = ?3
                  ORDER BY recorded_at DESC
                  LIMIT 1",
-                params![user_id, i32::from(mode)],
+                params![user_id, i32::from(mode), server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -696,6 +861,7 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         hours: i64,
+        server: Server,
     ) -> DbResult<Vec<(DateTime<Utc>, UserStatsSnapshot)>> {
         let cutoff = Utc::now() - chrono::TimeDelta::hours(hours);
         let cutoff_str = cutoff.to_rfc3339();
@@ -705,9 +871,9 @@ impl Storage {
             .query(
                 "SELECT recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
                  FROM user_stats_history
-                 WHERE user_id = ?1 AND mode = ?2 AND recorded_at >= ?3
+                 WHERE user_id = ?1 AND mode = ?2 AND server = ?3 AND recorded_at >= ?4
                  ORDER BY recorded_at ASC",
-                params![user_id, i32::from(mode), cutoff_str],
+                params![user_id, i32::from(mode), server.as_str(), cutoff_str],
             )
             .await?;
 
@@ -727,6 +893,7 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
+        server: Server,
     ) -> DbResult<HashMap<i64, UserStatsSnapshot>> {
         let unique_user_ids: Vec<i64> = user_ids
             .iter()
@@ -748,12 +915,13 @@ impl Storage {
         let sql = format!(
             "SELECT user_id, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime
              FROM user_stats_history
-             WHERE mode = ? AND recorded_at >= ? AND user_id IN ({placeholders})
+             WHERE mode = ? AND server = ? AND recorded_at >= ? AND user_id IN ({placeholders})
              ORDER BY user_id, recorded_at ASC"
         );
 
-        let mut args: Vec<turso::Value> = Vec::with_capacity(unique_user_ids.len() + 2);
+        let mut args: Vec<turso::Value> = Vec::with_capacity(unique_user_ids.len() + 3);
         args.push(i32::from(mode).into());
+        args.push(server.as_str().into());
         args.push(cutoff_str.into());
         for user_id in unique_user_ids {
             args.push(user_id.into());
@@ -791,8 +959,11 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
     ) -> DbResult<Option<UserStatsSnapshot>> {
-        let all = self.get_snapshots_within_hours(user_id, mode, 36).await?;
+        let all = self
+            .get_snapshots_within_hours(user_id, mode, 36, server)
+            .await?;
         if all.is_empty() {
             return Ok(None);
         }
@@ -810,13 +981,14 @@ impl Storage {
         mode: GameMode,
         target_hours_ago: i64,
         max_lookback: i64,
+        server: Server,
     ) -> DbResult<Option<(DateTime<Utc>, UserStatsSnapshot)>> {
         let now = Utc::now();
         let target_time = now - chrono::TimeDelta::hours(target_hours_ago);
         let earliest = now - chrono::TimeDelta::hours(max_lookback);
 
         let all = self
-            .get_snapshots_within_hours(user_id, mode, max_lookback)
+            .get_snapshots_within_hours(user_id, mode, max_lookback, server)
             .await?;
 
         let candidates: Vec<_> = all.into_iter().filter(|(dt, _)| *dt >= earliest).collect();
@@ -841,22 +1013,24 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         timestamps: &[i64],
+        server: Server,
     ) -> DbResult<i64> {
         if timestamps.is_empty() {
             return Ok(0);
         }
 
-        let placeholders = std::iter::repeat_n("(?, ?, ?)", timestamps.len())
+        let placeholders = std::iter::repeat_n("(?, ?, ?, ?)", timestamps.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "INSERT OR IGNORE INTO user_play_records (user_id, mode, played_at) VALUES {placeholders}"
+            "INSERT OR IGNORE INTO user_play_records (user_id, mode, server, played_at) VALUES {placeholders}"
         );
 
-        let mut args: Vec<turso::Value> = Vec::with_capacity(timestamps.len() * 3);
+        let mut args: Vec<turso::Value> = Vec::with_capacity(timestamps.len() * 4);
         for &timestamp in timestamps {
             args.push(user_id.into());
             args.push(i32::from(mode).into());
+            args.push(server.as_str().into());
             args.push(timestamp.into());
         }
 
@@ -871,12 +1045,13 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         since_ts: i64,
+        server: Server,
     ) -> DbResult<bool> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT 1 FROM user_play_records WHERE user_id = ?1 AND mode = ?2 AND played_at >= ?3 LIMIT 1",
-                params![user_id, i32::from(mode), since_ts],
+                "SELECT 1 FROM user_play_records WHERE user_id = ?1 AND mode = ?2 AND played_at >= ?3 AND server = ?4 LIMIT 1",
+                params![user_id, i32::from(mode), since_ts, server.as_str()],
             )
             .await?;
         Ok(rows.next().await?.is_some())
@@ -889,9 +1064,10 @@ impl Storage {
         user_id: i64,
         mode: GameMode,
         current: &UserStats,
+        server: Server,
     ) -> DbResult<Option<UserChange>> {
         let snapshot = self
-            .get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36)
+            .get_closest_snapshot_to_hours_ago(user_id, mode, 24, 36, server)
             .await?;
 
         match snapshot {
@@ -983,12 +1159,13 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
     ) -> DbResult<Option<DateTime<Utc>>> {
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2",
-                params![user_id, i32::from(mode)],
+                "SELECT next_update FROM user_next_update WHERE user_id = ?1 AND mode = ?2 AND server = ?3",
+                params![user_id, i32::from(mode), server.as_str()],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -1007,12 +1184,18 @@ impl Storage {
         &self,
         user_id: i64,
         mode: GameMode,
+        server: Server,
         time: DateTime<Utc>,
     ) -> DbResult<()> {
         self.conn().await
             .execute(
-                "INSERT OR REPLACE INTO user_next_update (user_id, mode, next_update) VALUES (?1, ?2, ?3)",
-                params![user_id, i32::from(mode), time.timestamp()],
+                "INSERT OR REPLACE INTO user_next_update (user_id, mode, server, next_update) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    user_id,
+                    i32::from(mode),
+                    server.as_str(),
+                    time.timestamp()
+                ],
             )
             .await?;
         Ok(())
@@ -1049,15 +1232,15 @@ impl Storage {
 
     // ==================== Due Users Query ====================
 
-    pub async fn get_due_users(&self) -> DbResult<Vec<(i64, GameMode)>> {
+    pub async fn get_due_users(&self) -> DbResult<Vec<(i64, GameMode, Server)>> {
         let now_ts = Utc::now().timestamp();
 
         let conn = self.conn().await;
         let mut rows = conn
             .query(
-                "SELECT user_id, mode FROM user_next_update WHERE next_update <= ?1
+                "SELECT user_id, mode, server FROM user_next_update WHERE next_update <= ?1
                 UNION ALL
-                SELECT b.user_id AS user_id, m.mode
+                SELECT b.user_id AS user_id, m.mode, b.server
                 FROM user_bindings b
                 CROSS JOIN (
                 SELECT 0 AS mode
@@ -1067,7 +1250,7 @@ impl Storage {
                 ) AS m
                 WHERE NOT EXISTS (
                     SELECT 1 FROM user_next_update n
-                    WHERE n.user_id = b.user_id AND n.mode = m.mode
+                    WHERE n.user_id = b.user_id AND n.mode = m.mode AND n.server = b.server
                 )",
                 params![now_ts],
             )
@@ -1078,7 +1261,9 @@ impl Storage {
             let user_id: i64 = row.get(0)?;
             let mode_int: i32 = row.get(1)?;
             let mode = GameMode::try_from(mode_int).unwrap_or(GameMode::Osu);
-            results.push((user_id, mode));
+            let server_str: String = row.get(2)?;
+            let server = Server::from_str(&server_str);
+            results.push((user_id, mode, server));
         }
         Ok(results)
     }
@@ -1604,11 +1789,12 @@ mod tests {
             .conn()
             .await
             .execute(
-                "INSERT INTO user_stats_history (user_id, mode, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO user_stats_history (user_id, mode, server, recorded_at, pp, rank, country_rank, ranked_score, accuracy, playcount, hits, playtime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     user_id,
                     i32::from(mode),
+                    Server::Official.as_str(),
                     recorded_at.to_rfc3339(),
                     stats.pp,
                     stats.rank,
@@ -1672,7 +1858,7 @@ mod tests {
         .await;
 
         let baselines = storage
-            .get_baseline_snapshots_for_users(&[101, 202, 303], mode, 24, 36)
+            .get_baseline_snapshots_for_users(&[101, 202, 303], mode, 24, 36, Server::Official)
             .await
             .expect("batch baseline query succeeds");
 
@@ -1695,7 +1881,7 @@ mod tests {
         let mode = GameMode::Osu;
 
         let empty = storage
-            .get_baseline_snapshots_for_users(&[], mode, 24, 36)
+            .get_baseline_snapshots_for_users(&[], mode, 24, 36, Server::Official)
             .await
             .expect("empty batch query succeeds");
         assert!(empty.is_empty());
@@ -1710,7 +1896,7 @@ mod tests {
         .await;
 
         let baselines = storage
-            .get_baseline_snapshots_for_users(&[404, 404, 404], mode, 24, 36)
+            .get_baseline_snapshots_for_users(&[404, 404, 404], mode, 24, 36, Server::Official)
             .await
             .expect("duplicate user IDs batch query succeeds");
 
@@ -1725,32 +1911,41 @@ mod tests {
     async fn test_set_and_get_default_mode() {
         let storage = Storage::connect_for_testing().await.unwrap();
         storage
-            .bind(10001, 12345, "test_user")
+            .bind(10001, 12345, "test_user", Server::Official)
             .await
             .unwrap()
             .unwrap();
 
         // 初始为 Osu (DEFAULT 0)
         assert_eq!(
-            storage.get_default_mode(10001).await.unwrap(),
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
             Some(GameMode::Osu)
         );
 
         assert!(storage
-            .set_default_mode(10001, GameMode::Taiko)
+            .set_default_mode(10001, GameMode::Taiko, Server::Official)
             .await
             .unwrap());
         assert_eq!(
-            storage.get_default_mode(10001).await.unwrap(),
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
             Some(GameMode::Taiko)
         );
 
         assert!(storage
-            .set_default_mode(10001, GameMode::Mania)
+            .set_default_mode(10001, GameMode::Mania, Server::Official)
             .await
             .unwrap());
         assert_eq!(
-            storage.get_default_mode(10001).await.unwrap(),
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
             Some(GameMode::Mania)
         );
     }
@@ -1759,42 +1954,60 @@ mod tests {
     async fn test_find_qq_by_username_case_insensitive() {
         let storage = Storage::connect_for_testing().await.unwrap();
         storage
-            .bind(10001, 12345, "TestUser")
+            .bind(10001, 12345, "TestUser", Server::Official)
             .await
             .unwrap()
             .unwrap();
 
         assert_eq!(
-            storage.find_qq_by_username("testuser").await.unwrap(),
+            storage
+                .find_qq_by_username("testuser", Server::Official)
+                .await
+                .unwrap(),
             Some(10001)
         );
         assert_eq!(
-            storage.find_qq_by_username("TESTUSER").await.unwrap(),
+            storage
+                .find_qq_by_username("TESTUSER", Server::Official)
+                .await
+                .unwrap(),
             Some(10001)
         );
         assert_eq!(
-            storage.find_qq_by_username("TestUser").await.unwrap(),
+            storage
+                .find_qq_by_username("TestUser", Server::Official)
+                .await
+                .unwrap(),
             Some(10001)
         );
 
-        assert_eq!(storage.find_qq_by_username("nobody").await.unwrap(), None);
+        assert_eq!(
+            storage
+                .find_qq_by_username("nobody", Server::Official)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
     async fn test_set_default_mode_catch() {
         let storage = Storage::connect_for_testing().await.unwrap();
         storage
-            .bind(10001, 12345, "test_user")
+            .bind(10001, 12345, "test_user", Server::Official)
             .await
             .unwrap()
             .unwrap();
 
         assert!(storage
-            .set_default_mode(10001, GameMode::Catch)
+            .set_default_mode(10001, GameMode::Catch, Server::Official)
             .await
             .unwrap());
         assert_eq!(
-            storage.get_default_mode(10001).await.unwrap(),
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
             Some(GameMode::Catch)
         );
     }
@@ -1802,9 +2015,15 @@ mod tests {
     #[tokio::test]
     async fn test_default_mode_unbound_qq() {
         let storage = Storage::connect_for_testing().await.unwrap();
-        assert_eq!(storage.get_default_mode(99999).await.unwrap(), None);
+        assert_eq!(
+            storage
+                .get_default_mode(99999, Server::Official)
+                .await
+                .unwrap(),
+            None
+        );
         assert!(!storage
-            .set_default_mode(99999, GameMode::Mania)
+            .set_default_mode(99999, GameMode::Mania, Server::Official)
             .await
             .unwrap());
     }
@@ -1813,29 +2032,41 @@ mod tests {
     async fn test_default_mode_after_unbind_rebind() {
         let storage = Storage::connect_for_testing().await.unwrap();
         storage
-            .bind(10001, 12345, "test_user")
+            .bind(10001, 12345, "test_user", Server::Official)
             .await
             .unwrap()
             .unwrap();
         storage
-            .set_default_mode(10001, GameMode::Taiko)
+            .set_default_mode(10001, GameMode::Taiko, Server::Official)
             .await
             .unwrap();
         assert_eq!(
-            storage.get_default_mode(10001).await.unwrap(),
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
             Some(GameMode::Taiko)
         );
 
-        storage.unbind(10001).await.unwrap();
-        assert_eq!(storage.get_default_mode(10001).await.unwrap(), None);
+        storage.unbind(10001, Server::Official).await.unwrap();
+        assert_eq!(
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
+            None
+        );
 
         storage
-            .bind(10001, 12345, "test_user")
+            .bind(10001, 12345, "test_user", Server::Official)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            storage.get_default_mode(10001).await.unwrap(),
+            storage
+                .get_default_mode(10001, Server::Official)
+                .await
+                .unwrap(),
             Some(GameMode::Osu)
         );
     }
@@ -1844,24 +2075,49 @@ mod tests {
     async fn test_find_qq_after_username_update() {
         let storage = Storage::connect_for_testing().await.unwrap();
         storage
-            .bind(10001, 12345, "OldName")
+            .bind(10001, 12345, "OldName", Server::Official)
+            .await
+            .unwrap()
+            .unwrap();
+        storage
+            .bind(10001, 67890, "OtherName", Server::PpySb)
             .await
             .unwrap()
             .unwrap();
 
         assert_eq!(
-            storage.find_qq_by_username("OldName").await.unwrap(),
+            storage
+                .find_qq_by_username("OldName", Server::Official)
+                .await
+                .unwrap(),
             Some(10001)
         );
 
         storage
-            .update_binding_username(10001, "NewName")
+            .update_binding_username(10001, Server::Official, "NewName")
             .await
             .unwrap();
 
-        assert_eq!(storage.find_qq_by_username("OldName").await.unwrap(), None);
         assert_eq!(
-            storage.find_qq_by_username("NewName").await.unwrap(),
+            storage
+                .find_qq_by_username("OldName", Server::Official)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .find_qq_by_username("NewName", Server::Official)
+                .await
+                .unwrap(),
+            Some(10001)
+        );
+        // 另一服务器的绑定不受影响
+        assert_eq!(
+            storage
+                .find_qq_by_username("OtherName", Server::PpySb)
+                .await
+                .unwrap(),
             Some(10001)
         );
     }
@@ -2254,5 +2510,178 @@ mod match_listener {
         assert_eq!(listener.last_notified_event_id, Some(99));
         assert_eq!(listener.pending_game_event_id, Some(101));
         assert!(listener.last_notified_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn server_bindings_are_isolated_per_server() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+
+        fn local_stats(pp: f64) -> crate::types::UserStats {
+            crate::types::UserStats {
+                user_id: 0,
+                username: String::new(),
+                pp,
+                rank: 0,
+                country_rank: 0,
+                country_code: "XX".to_string(),
+                ranked_score: 0,
+                accuracy: 0.0,
+                playcount: 0,
+                hits: 0,
+                playtime: 0,
+                rank_change: None,
+                country_rank_change: None,
+                cover_url: None,
+            }
+        }
+
+        // 同一 qq 分别绑定官方服与 ppy.sb 服，应互不覆盖
+        storage
+            .bind(123, 111, "official_user", Server::Official)
+            .await
+            .expect("bind official")
+            .expect("official bind ok");
+        storage
+            .bind(123, 222, "ppy_user", Server::PpySb)
+            .await
+            .expect("bind ppy.sb")
+            .expect("ppy.sb bind ok");
+
+        assert_eq!(
+            storage.get_binding(123, Server::Official).await.unwrap(),
+            Some((111, "official_user".to_string()))
+        );
+        assert_eq!(
+            storage.get_binding(123, Server::PpySb).await.unwrap(),
+            Some((222, "ppy_user".to_string()))
+        );
+
+        // 两服各自的统计快照互不串扰
+        storage
+            .save_stats(111, GameMode::Osu, &local_stats(100.0), Server::Official)
+            .await
+            .unwrap();
+        storage
+            .save_stats(222, GameMode::Osu, &local_stats(200.0), Server::PpySb)
+            .await
+            .unwrap();
+
+        let official = storage
+            .get_latest_snapshot(111, GameMode::Osu, Server::Official)
+            .await
+            .unwrap()
+            .expect("official snapshot");
+        let ppy = storage
+            .get_latest_snapshot(222, GameMode::Osu, Server::PpySb)
+            .await
+            .unwrap()
+            .expect("ppy.sb snapshot");
+        assert_eq!(official.pp, Some(100.0));
+        assert_eq!(ppy.pp, Some(200.0));
+    }
+
+    #[tokio::test]
+    async fn user_id_cache_isolated_per_server() {
+        let storage = Storage::connect_for_testing().await.unwrap();
+
+        // 同一用户名在两服对应不同 user_id（ppy.sb 的 id 空间与官方不同）
+        storage
+            .set_user_id("mrekk", 1, Server::Official)
+            .await
+            .unwrap();
+        storage
+            .set_user_id("mrekk", 999, Server::PpySb)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .get_user_id("mrekk", Server::Official)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            storage.get_user_id("mrekk", Server::PpySb).await.unwrap(),
+            Some(999)
+        );
+
+        // 官方路径不会因 ppy.sb 的缓存而拿到错误 id
+        assert_ne!(
+            storage
+                .get_user_id("mrekk", Server::Official)
+                .await
+                .unwrap(),
+            storage.get_user_id("mrekk", Server::PpySb).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_adds_server_column_preserving_data() {
+        use turso::Builder;
+
+        static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "osubot-migrate-test-{}-{}.db",
+            std::process::id(),
+            counter
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        // 用旧 schema（无 server 列）写入数据，模拟升级前的数据库
+        {
+            let db = Builder::new_local(path.to_str().unwrap()).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE user_bindings (qq INTEGER NOT NULL, user_id INTEGER NOT NULL, current_username TEXT NOT NULL, default_mode INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(qq));
+                 CREATE TABLE user_stats_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, mode INTEGER NOT NULL, recorded_at TEXT DEFAULT CURRENT_TIMESTAMP, pp REAL, rank INTEGER, country_rank INTEGER, ranked_score INTEGER, accuracy REAL, playcount INTEGER, hits INTEGER, playtime INTEGER, UNIQUE(user_id, mode, recorded_at));
+                 CREATE TABLE user_play_records (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, mode INTEGER NOT NULL, played_at INTEGER NOT NULL, UNIQUE(user_id, mode, played_at));
+                 CREATE TABLE user_next_update (user_id INTEGER NOT NULL, mode INTEGER NOT NULL, next_update INTEGER NOT NULL, PRIMARY KEY(user_id, mode));
+                 CREATE TABLE osu_user_ids (username TEXT PRIMARY KEY, user_id INTEGER NOT NULL);",
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO user_bindings (qq, user_id, current_username) VALUES (123, 111, 'official_user')",
+                (),
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO osu_user_ids (username, user_id) VALUES ('mrekk', 1)",
+                (),
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO user_next_update (user_id, mode, next_update) VALUES (111, 0, 123456)",
+                (),
+            )
+            .await
+            .unwrap();
+            drop(conn);
+            drop(db);
+        }
+
+        // 触发迁移（重建为带 server 列的 schema）
+        let storage = Storage::new(path.to_str().unwrap()).await.unwrap();
+
+        // 存量数据应保留
+        assert_eq!(
+            storage.get_binding(123, Server::Official).await.unwrap(),
+            Some((111, "official_user".to_string()))
+        );
+        assert_eq!(
+            storage.get_user_id("mrekk", Server::Official).await.unwrap(),
+            Some(1)
+        );
+        // server 列生效：另一服查不到该缓存（不会被官方查询误用）
+        assert_eq!(
+            storage.get_user_id("mrekk", Server::PpySb).await.unwrap(),
+            None
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

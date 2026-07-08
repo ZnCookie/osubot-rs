@@ -175,6 +175,7 @@ pub static USER_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
 
     // ── 系统 ──
     "sys.help" => "绑定/解绑/~/where/查@/今日高光/!p/!r/!s/!b/!ps/!rs/!ss/!bs/!t/!a/!profile/!mode/!rv/!ml/!help\n\n更多细节请移步 github.com/ZnCookie/osubot-rs/blob/master/docs/commands.md 查阅",
+    "sys.help_ppy_sb" => "ppy.sb 命令列表：\n?~ <mode> / ?where <用户名> - 查询\n?查 / ?绑定 / ?解绑 - 账号管理\n?p / ?r / ?b / ?t - 成绩查询\n?s <谱面ID> - 谱面成绩\n?a / ?rv - 谱面预览\n?mode <数字> - 默认模式\n?今日高光 - 今日高光\n?help - 本帮助",
 
     // ── BridgeError 用户可见 ──
     "bridge.rate_limit_send_msg" => "消息发送过于频繁，请稍后再试",

@@ -1,10 +1,15 @@
 use crate::commands::parse_command;
-use crate::types::{Command, CommandGroup, GameMode};
+use crate::types::{Command, CommandGroup, GameMode, Server};
 
 #[test]
 fn test_help_command() {
     let cmd = parse_command("!help", None).unwrap();
-    assert_eq!(cmd, Command::Help);
+    assert_eq!(
+        cmd,
+        Command::Help {
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
@@ -22,6 +27,7 @@ fn test_pass_self() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -41,6 +47,7 @@ fn test_pass_mode() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -60,6 +67,7 @@ fn test_pass_username() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -79,6 +87,7 @@ fn test_pass_username_mode() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -98,6 +107,7 @@ fn test_recent_self() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -117,6 +127,7 @@ fn test_recent_multiple() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -136,6 +147,7 @@ fn test_pass_mention() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -155,6 +167,7 @@ fn test_pass_qq_in_text() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -179,6 +192,7 @@ fn test_pass_qq_equals() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -202,6 +216,7 @@ fn test_beatmap_audio_qq_equals() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -233,6 +248,7 @@ fn test_pass_mode_no_space() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -252,6 +268,7 @@ fn test_pass_with_hash() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -271,6 +288,7 @@ fn test_pass_multiple_with_hash() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -290,6 +308,7 @@ fn test_pass_multiple_username_hash() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -309,6 +328,7 @@ fn test_pass_multiple_username_mode_hash() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -328,6 +348,7 @@ fn test_hash_clamp_max() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -347,6 +368,7 @@ fn test_hash_zero_ignored() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -366,6 +388,7 @@ fn test_hash_garbage_ignored_with_username() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -385,6 +408,7 @@ fn test_hash_garbage_ignored_self() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -404,6 +428,7 @@ fn test_recent_with_hash() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -423,6 +448,7 @@ fn test_recent_multiple_with_hash() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -442,6 +468,7 @@ fn test_ps_invalid_mode_returns_none() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -479,6 +506,7 @@ fn parse_ps_empty_mode_returns_none() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         })
     );
 }
@@ -486,37 +514,58 @@ fn parse_ps_empty_mode_returns_none() {
 #[test]
 fn test_command_group_name() {
     assert_eq!(
-        Command::QuerySelf { mode: None }.group_name(),
+        Command::QuerySelf {
+            mode: None,
+            server: Server::Official
+        }
+        .group_name(),
         CommandGroup::Query
     );
     assert_eq!(
         Command::QueryUser {
             username: "x".into(),
-            mode: None
+            mode: None,
+            server: Server::Official,
         }
         .group_name(),
         CommandGroup::Query
     );
     assert_eq!(
-        Command::QueryMentionedUser { qq: 1, mode: None }.group_name(),
+        Command::QueryMentionedUser {
+            qq: 1,
+            mode: None,
+            server: Server::Official
+        }
+        .group_name(),
         CommandGroup::Query
     );
     assert_eq!(
         Command::Bind {
-            username: "x".into()
+            username: "x".into(),
+            server: Server::Official,
         }
         .group_name(),
         CommandGroup::Bind
     );
-    assert_eq!(Command::Unbind.group_name(), CommandGroup::Bind);
     assert_eq!(
-        Command::Highlight { mode: None }.group_name(),
+        Command::Unbind {
+            server: Server::Official
+        }
+        .group_name(),
+        CommandGroup::Bind
+    );
+    assert_eq!(
+        Command::Highlight {
+            mode: None,
+            server: Server::Official
+        }
+        .group_name(),
         CommandGroup::Highlight
     );
     assert_eq!(
         Command::ProfileCard {
             username: None,
-            qq: None
+            qq: None,
         }
         .group_name(),
         CommandGroup::Profile
@@ -532,6 +581,7 @@ fn test_command_group_name() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
         .group_name(),
         CommandGroup::Score
@@ -547,12 +597,17 @@ fn test_command_group_name() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
         .group_name(),
         CommandGroup::Score
     );
     assert_eq!(
-        Command::SetDefaultMode { mode: None }.group_name(),
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+        .group_name(),
         CommandGroup::Mode
     );
 }
@@ -598,6 +653,7 @@ fn test_ps_not_affected() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -617,6 +673,7 @@ fn test_score_on_beatmap_basic() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -636,6 +693,7 @@ fn test_score_on_beatmap_with_mods() {
             limit: 1,
             is_all: false,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -655,6 +713,7 @@ fn test_score_on_beatmap_with_mode_and_username() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -674,6 +733,7 @@ fn test_score_on_beatmap_score_id() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -693,6 +753,7 @@ fn test_score_on_beatmap_all() {
             is_all: true,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -718,6 +779,7 @@ fn test_score_on_beatmap_with_limit() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -737,6 +799,7 @@ fn test_score_on_beatmap_qq_in_text() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -767,6 +830,7 @@ fn test_score_on_beatmap_multi_word_username() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -786,6 +850,7 @@ fn test_score_on_beatmap_multi_word_username_with_mode() {
             limit: 3,
             is_all: false,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -805,6 +870,7 @@ fn test_score_on_beatmap_single_word_username_still_works() {
             is_all: false,
             filters: None,
             limit_end: None,
+            server: Server::Official,
         }
     );
 }
@@ -826,6 +892,7 @@ fn test_pass_new_format_mode_user() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -845,6 +912,7 @@ fn test_pass_new_format_mode_user_hash() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -864,6 +932,7 @@ fn test_pass_new_format_filters() {
             limit_end: None,
             is_summary: true,
             filters: Some(vec!["miss=1".to_string(), "combo=500".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -883,6 +952,7 @@ fn test_pass_new_format_hash_without_hash() {
             limit_end: None,
             is_summary: false,
             filters: Some(vec!["miss=1".to_string(), "combo=500".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -911,6 +981,7 @@ fn test_pass_new_format_invalid_mode_returns_none() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -930,6 +1001,7 @@ fn test_pass_new_format_range_ps() {
             limit_end: Some(10),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -949,6 +1021,7 @@ fn test_pass_new_format_multi_word_username() {
             limit_end: None,
             is_summary: true,
             filters: Some(vec!["miss=1".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -968,6 +1041,7 @@ fn test_pass_new_format_qq_user() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -987,6 +1061,7 @@ fn test_pass_new_format_mods_and_filters() {
             limit_end: None,
             is_summary: false,
             filters: Some(vec!["miss=1".to_string(), "mod=HDHR".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -1006,6 +1081,7 @@ fn test_pass_new_format_mods_only() {
             limit_end: None,
             is_summary: false,
             filters: Some(vec!["mod=HDHR".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -1025,6 +1101,7 @@ fn test_pass_new_format_bare_command() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1044,6 +1121,7 @@ fn test_pass_new_format_mode_user_limit() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1063,6 +1141,7 @@ fn test_pass_new_format_mention_fallback() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1084,6 +1163,7 @@ fn test_s_new_format_basic() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1103,6 +1183,7 @@ fn test_s_new_format_mode_beatmap_user() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1122,6 +1203,7 @@ fn test_s_new_format_mods_filters() {
             limit: 5,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1141,6 +1223,7 @@ fn test_s_new_format_score_id() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1160,6 +1243,7 @@ fn test_ss_new_format_range() {
             limit: 2,
             limit_end: Some(10),
             is_all: true,
+            server: Server::Official,
         }
     );
 }
@@ -1179,6 +1263,7 @@ fn test_s_new_format_multi_word_username() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1198,6 +1283,7 @@ fn test_s_new_format_qq_user() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1217,6 +1303,7 @@ fn test_s_new_format_inline_filters_no_plus() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1236,6 +1323,7 @@ fn test_s_new_format_bare_command() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1264,6 +1352,7 @@ fn test_s_new_format_invalid_mode_returns_none() {
             limit: 1,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1283,6 +1372,7 @@ fn test_s_new_format_implicit_hash() {
             limit: 5,
             limit_end: None,
             is_all: false,
+            server: Server::Official,
         }
     );
 }
@@ -1308,6 +1398,7 @@ fn test_ss_new_format_bare_command() {
             limit: 20,
             limit_end: None,
             is_all: true,
+            server: Server::Official,
         }
     );
 }
@@ -1317,7 +1408,13 @@ fn test_ss_new_format_bare_command() {
 #[test]
 fn test_get_default_mode() {
     let cmd = parse_command("!mode", None).unwrap();
-    assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    assert_eq!(
+        cmd,
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
@@ -1326,7 +1423,8 @@ fn test_set_default_mode_osu() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Osu)
+            mode: Some(GameMode::Osu),
+            server: Server::Official,
         }
     );
 }
@@ -1337,7 +1435,8 @@ fn test_set_default_mode_mania() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Mania)
+            mode: Some(GameMode::Mania),
+            server: Server::Official,
         }
     );
 }
@@ -1345,13 +1444,25 @@ fn test_set_default_mode_mania() {
 #[test]
 fn test_set_default_mode_invalid_is_query() {
     let cmd = parse_command("!mode 5", None).unwrap();
-    assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    assert_eq!(
+        cmd,
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
 fn test_set_default_mode_trailing_space() {
     let cmd = parse_command("!mode ", None).unwrap();
-    assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    assert_eq!(
+        cmd,
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
@@ -1360,7 +1471,8 @@ fn test_set_default_mode_multi_spaces() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Osu)
+            mode: Some(GameMode::Osu),
+            server: Server::Official,
         }
     );
 }
@@ -1371,7 +1483,8 @@ fn test_set_default_mode_fullwidth_exclamation() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Osu)
+            mode: Some(GameMode::Osu),
+            server: Server::Official,
         }
     );
 }
@@ -1379,7 +1492,13 @@ fn test_set_default_mode_fullwidth_exclamation() {
 #[test]
 fn test_set_default_mode_string_name_gives_query() {
     let cmd = parse_command("!mode osu", None).unwrap();
-    assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    assert_eq!(
+        cmd,
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
@@ -1388,7 +1507,8 @@ fn test_set_default_mode_taiko() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Taiko)
+            mode: Some(GameMode::Taiko),
+            server: Server::Official,
         }
     );
 }
@@ -1399,7 +1519,8 @@ fn test_set_default_mode_catch() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Catch)
+            mode: Some(GameMode::Catch),
+            server: Server::Official,
         }
     );
 }
@@ -1407,13 +1528,25 @@ fn test_set_default_mode_catch() {
 #[test]
 fn test_set_default_mode_extra_args_gives_query() {
     let cmd = parse_command("!mode 0 extra", None).unwrap();
-    assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    assert_eq!(
+        cmd,
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
 fn test_mode_newline_only() {
     let cmd = parse_command("!mode\n", None).unwrap();
-    assert_eq!(cmd, Command::SetDefaultMode { mode: None });
+    assert_eq!(
+        cmd,
+        Command::SetDefaultMode {
+            mode: None,
+            server: Server::Official
+        }
+    );
 }
 
 #[test]
@@ -1422,7 +1555,8 @@ fn test_mode_tab_separator() {
     assert_eq!(
         cmd,
         Command::SetDefaultMode {
-            mode: Some(GameMode::Osu)
+            mode: Some(GameMode::Osu),
+            server: Server::Official,
         }
     );
 }
@@ -1449,6 +1583,7 @@ fn test_r_with_beatmap_id() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1483,6 +1618,7 @@ fn test_best_self() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1502,6 +1638,7 @@ fn test_best_list_self() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1521,6 +1658,7 @@ fn test_best_mode() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1540,6 +1678,7 @@ fn test_best_username() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1559,6 +1698,7 @@ fn test_best_mention() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1578,6 +1718,7 @@ fn test_best_qq_in_text() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1597,6 +1738,7 @@ fn test_best_with_hash() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1616,6 +1758,7 @@ fn test_best_list_with_hash() {
             is_summary: true,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1635,6 +1778,7 @@ fn test_best_list_range() {
             limit_end: Some(10),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1654,6 +1798,7 @@ fn test_best_with_mods() {
             is_summary: false,
             limit_end: None,
             filters: Some(vec!["mod=HDHR".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -1673,6 +1818,7 @@ fn test_best_with_filters() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["pp>=200".to_string(), "miss=0".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -1692,6 +1838,7 @@ fn test_best_full_args() {
             limit_end: Some(10),
             is_summary: true,
             filters: Some(vec!["mod=DT".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -1729,6 +1876,7 @@ fn test_best_mode_no_space() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1746,6 +1894,7 @@ fn test_best_group_name() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
         .group_name(),
         CommandGroup::Score
@@ -1765,6 +1914,7 @@ fn test_best_command_name() {
             is_summary: false,
             limit_end: None,
             filters: None,
+            server: Server::Official,
         }
         .command_name(),
         "!b"
@@ -1788,6 +1938,7 @@ fn test_best_with_beatmap_id() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1807,6 +1958,7 @@ fn test_best_list_with_beatmap_id() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1826,6 +1978,7 @@ fn test_best_with_score_id() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1845,6 +1998,7 @@ fn test_best_with_mode_and_beatmap_id() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1864,6 +2018,7 @@ fn test_best_list_with_mode_and_beatmap_id() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1883,6 +2038,7 @@ fn test_best_with_beatmap_id_and_user() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1902,6 +2058,7 @@ fn test_best_with_beatmap_id_and_mods() {
             limit_end: None,
             is_summary: false,
             filters: Some(vec!["mod=HD".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -1921,6 +2078,7 @@ fn test_best_with_beatmap_id_and_qq() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1940,6 +2098,7 @@ fn test_best_with_beatmap_id_and_hash() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1959,6 +2118,7 @@ fn test_today_best_self() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1978,6 +2138,7 @@ fn test_today_best_mode() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -1997,6 +2158,7 @@ fn test_today_best_username() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2016,6 +2178,7 @@ fn test_today_best_with_hash() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2035,6 +2198,7 @@ fn test_today_best_single_card() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2054,6 +2218,7 @@ fn test_today_best_range() {
             limit_end: Some(5),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2073,6 +2238,7 @@ fn test_today_best_with_mods() {
             limit_end: None,
             is_summary: true,
             filters: Some(vec!["mod=HD".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2092,6 +2258,7 @@ fn test_today_best_with_mods_and_filters() {
             limit_end: None,
             is_summary: true,
             filters: Some(vec!["miss=0".to_string(), "mod=HD".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2111,6 +2278,7 @@ fn test_today_best_qq_equals() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2130,6 +2298,7 @@ fn test_today_best_mention() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2149,6 +2318,7 @@ fn test_today_best_bare_number() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2168,6 +2338,7 @@ fn test_today_best_bare_range() {
             limit_end: Some(10),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2187,6 +2358,7 @@ fn test_today_best_full_args() {
             limit_end: Some(3),
             is_summary: true,
             filters: Some(vec!["mod=HDDT".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2209,6 +2381,7 @@ fn test_today_best_group_name() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
         .group_name(),
         CommandGroup::Score
@@ -2228,6 +2401,7 @@ fn test_today_best_command_name() {
             limit_end: None,
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
         .command_name(),
         "!t"
@@ -2248,6 +2422,7 @@ fn test_beatmap_audio_self() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -2266,6 +2441,7 @@ fn test_beatmap_audio_username_mode() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -2284,6 +2460,7 @@ fn test_beatmap_audio_beatmap_id() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -2308,6 +2485,7 @@ fn test_beatmap_audio_with_filters() {
             limit: 1,
             filters: Some(vec!["mod=HD".to_string()]),
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -2327,6 +2505,7 @@ fn test_pass_bare_number_limit() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2346,6 +2525,7 @@ fn test_pass_bare_number_with_space() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2365,6 +2545,7 @@ fn test_best_bare_number_limit() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2384,6 +2565,7 @@ fn test_best_list_bare_range() {
             limit_end: Some(10),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2403,6 +2585,7 @@ fn test_best_list_bare_range_with_space() {
             limit_end: Some(10),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2422,6 +2605,7 @@ fn test_pass_large_number_still_beatmap_id() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2441,6 +2625,7 @@ fn test_score_large_number_still_beatmap_id() {
             limit_end: None,
             is_all: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2484,6 +2669,7 @@ fn test_summary_range_start_exceeds_max_rejected() {
             limit_end: Some(200),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2510,6 +2696,7 @@ fn test_recent_bare_number_limit() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2529,6 +2716,7 @@ fn test_recent_list_bare_range() {
             limit_end: Some(8),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2548,6 +2736,7 @@ fn test_pass_bare_number_clamp_max() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2567,6 +2756,7 @@ fn test_pass_summary_bare_range_clamp() {
             limit_end: Some(200),
             is_summary: true,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2586,6 +2776,7 @@ fn test_pass_bare_zero_clamps_to_one() {
             limit_end: None,
             is_summary: false,
             filters: None,
+            server: Server::Official,
         }
     );
 }
@@ -2604,6 +2795,7 @@ fn test_beatmap_audio_bare_number_position() {
             limit: 5,
             filters: None,
             explicit_position: true,
+            server: Server::Official,
         }
     );
 }
@@ -2622,6 +2814,7 @@ fn test_beatmap_audio_hash_index() {
             limit: 5,
             filters: None,
             explicit_position: true,
+            server: Server::Official,
         }
     );
 }
@@ -2650,6 +2843,7 @@ fn test_beatmap_audio_score_id() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -2668,6 +2862,7 @@ fn test_beatmap_audio_hash_one_explicit_position() {
             limit: 1,
             filters: None,
             explicit_position: true,
+            server: Server::Official,
         }
     );
 }
@@ -2686,6 +2881,7 @@ fn test_beatmap_audio_bare_one_explicit_position() {
             limit: 1,
             filters: None,
             explicit_position: true,
+            server: Server::Official,
         }
     );
 }
@@ -2704,6 +2900,7 @@ fn test_beatmap_audio_mode_only_skips_cache() {
             limit: 1,
             filters: None,
             explicit_position: false,
+            server: Server::Official,
         }
     );
 }
@@ -2725,6 +2922,7 @@ fn test_best_gt_filter() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["ar>9".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2744,6 +2942,7 @@ fn test_best_lt_filter() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["ar<10".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2763,6 +2962,7 @@ fn test_recent_gt_filter() {
             is_summary: false,
             limit_end: None,
             filters: Some(vec!["ar>9".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2782,6 +2982,7 @@ fn test_pass_gt_filter() {
             is_summary: false,
             limit_end: None,
             filters: Some(vec!["ar>9".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2801,6 +3002,7 @@ fn test_best_gteq_filter() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["ar>=9".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2820,6 +3022,7 @@ fn test_best_noteq_filter() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["ar!=9".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2839,6 +3042,7 @@ fn test_best_username_and_gt_filter() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["ar>9".to_string()]),
+            server: Server::Official,
         }
     );
 }
@@ -2858,6 +3062,234 @@ fn test_best_limit_and_gt_filter() {
             is_summary: true,
             limit_end: None,
             filters: Some(vec!["ar>9".to_string()]),
+            server: Server::Official,
+        }
+    );
+}
+
+// === ? prefix (SB server) tests ===
+
+#[test]
+fn test_sb_prefix_pass_self() {
+    let cmd = parse_command("?p", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_recent_self() {
+    let cmd = parse_command("?r", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Recent {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_best_self() {
+    let cmd = parse_command("?b", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_with_mode() {
+    let cmd = parse_command("?p :1", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: Some(GameMode::Taiko),
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_with_username() {
+    let cmd = parse_command("?p ZnCookie", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_with_beatmap() {
+    let cmd = parse_command("?s 123456", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::ScoreOnBeatmap {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: Some(123456),
+            score_id: None,
+            limit: 1,
+            limit_end: None,
+            is_all: false,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_empty_returns_none() {
+    assert!(parse_command("?", None).is_none());
+}
+
+#[test]
+fn test_sb_prefix_with_hash() {
+    let cmd = parse_command("?p #3", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 3,
+            is_summary: false,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_summary() {
+    let cmd = parse_command("?ps", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Pass {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            is_summary: true,
+            limit_end: None,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_today_best() {
+    let cmd = parse_command("?t", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::TodayBest {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 20,
+            limit_end: None,
+            is_summary: true,
+            filters: None,
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_with_mods() {
+    let cmd = parse_command("?b +HDHR", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: None,
+            username: None,
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 1,
+            is_summary: false,
+            limit_end: None,
+            filters: Some(vec!["mod=HDHR".to_string()]),
+            server: Server::PpySb,
+        }
+    );
+}
+
+#[test]
+fn test_sb_prefix_full_args() {
+    let cmd = parse_command("?bs :2 ZnCookie +DT #5", None).unwrap();
+    assert_eq!(
+        cmd,
+        Command::Best {
+            mode: Some(GameMode::Catch),
+            username: Some("ZnCookie".to_string()),
+            qq: None,
+            beatmap_id: None,
+            score_id: None,
+            limit: 5,
+            limit_end: None,
+            is_summary: true,
+            filters: Some(vec!["mod=DT".to_string()]),
+            server: Server::PpySb,
         }
     );
 }

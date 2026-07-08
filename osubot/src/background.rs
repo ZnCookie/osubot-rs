@@ -17,6 +17,7 @@ use crate::shutdown::SHUTDOWN_NOTIFY;
 use osubot_core::api;
 use osubot_core::irc::{IrcClient, IrcConfig as CoreIrcConfig};
 use osubot_core::log_fmt;
+use osubot_core::types::Server;
 
 /// 启动时一次性执行的用户 ID backfill（提取自 main.rs:3822-3858）。
 pub(super) async fn backfill_user_ids(handles: &RuntimeHandles) {
@@ -35,7 +36,7 @@ pub(super) async fn backfill_user_ids(handles: &RuntimeHandles) {
                         if let Err(e) = handles
                             .app_state
                             .storage
-                            .set_user_id(username, info.id)
+                            .set_user_id(username, info.id, Server::Official)
                             .await
                         {
                             warn!(error = %e, "{}", log_fmt!("main.cache_user_id_failed"));
