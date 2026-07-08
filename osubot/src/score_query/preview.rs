@@ -227,9 +227,6 @@ pub(super) async fn render_beatmap_preview_by_id(
     };
     if let Err(e) = send_result {
         warn!(error = %e, "{}", log_fmt!("main.beatmap_preview_send_failed", error = &e.to_string()));
-        let _ = resp_tx
-            .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
-            .await;
     }
 }
 
