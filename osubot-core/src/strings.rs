@@ -353,6 +353,7 @@ pub static LOG_STRINGS: phf::Map<&'static str, &'static str> = phf_map! {
     "reload.irc_skipped" => "IRC 已启用但 nickname/password 为空，跳过重连",
     "reload.irc_client_error" => "IRC 客户端错误",
     "reload.irc_restarted" => "IRC 连接已重启",
+    "reload.scheduler_config_changed" => "调度器配置已变更，正在重新调度所有用户",
     "reload.unknown_upstream" => "未知的上游 provider 类型: {provider}",
     "reload.err_read_failed" => "读取配置文件失败: {error}",
     "reload.err_toml_parse" => "TOML 解析失败: {error}",

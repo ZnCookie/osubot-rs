@@ -123,7 +123,7 @@ pub struct DatabaseConfig {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct SchedulerConfig {
     #[serde(default = "default_interval_minutes")]
     pub interval_minutes: u64,

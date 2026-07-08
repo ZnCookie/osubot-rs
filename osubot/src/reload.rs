@@ -379,7 +379,11 @@ impl ReloadCoordinator {
                 .store(true, Ordering::SeqCst);
         }
 
-        self.handle.scheduler.reschedule_all().await;
+        // Only reschedule when scheduler config actually changed
+        if old_config.scheduler != new_config.scheduler {
+            info!("{}", log_fmt!("reload.scheduler_config_changed"));
+            self.handle.scheduler.reschedule_all().await;
+        }
 
         let new_chain = build_upstream_chain(
             upstream_config,
