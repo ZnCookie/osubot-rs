@@ -289,7 +289,6 @@ async fn handle_profile_card(
             );
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let resp_tx = resp_tx.clone();
             let msg_group_id = msg.group_id;
             let msg_user_id = msg.user_id;
 
@@ -303,10 +302,8 @@ async fn handle_profile_card(
                             .await
                     }
                 };
-                if send_result.is_err() {
-                    let _ = resp_tx
-                        .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
-                        .await;
+                if let Err(e) = send_result {
+                    warn!(error = %e, group_id = msg_group_id, "{}", log_fmt!("main.send_profile_image_failed"));
                 }
             });
         }

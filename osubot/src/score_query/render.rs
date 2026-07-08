@@ -171,13 +171,12 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
     )
     .await;
 
-    let qq = msg.user_id;
+    let _qq = msg.user_id;
 
     match render_result {
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let resp_tx_img = resp_tx.clone();
             let msg_group_id = msg.group_id;
             let msg_user_id = msg.user_id;
 
@@ -191,10 +190,8 @@ pub(super) async fn render_and_send_single_score(params: SingleScoreRenderParams
                             .await
                     }
                 };
-                if send_result.is_err() {
-                    let _ = resp_tx_img
-                        .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
-                        .await;
+                if let Err(e) = send_result {
+                    warn!(error = %e, group_id = msg_group_id, "{}", log_fmt!("main.send_image_failed"));
                 }
             });
         }
@@ -326,13 +323,12 @@ pub(super) async fn render_and_send_score_list(
     )
     .await;
 
-    let qq = msg.user_id;
+    let _qq = msg.user_id;
 
     match render_result {
         Ok(Ok(jpeg_bytes)) => {
             let write = ctx.write.clone();
             let onebot_api = ctx.onebot_api.clone();
-            let resp_tx_img = resp_tx.clone();
             let msg_group_id = msg.group_id;
             let msg_user_id = msg.user_id;
 
@@ -346,10 +342,8 @@ pub(super) async fn render_and_send_score_list(
                             .await
                     }
                 };
-                if send_result.is_err() {
-                    let _ = resp_tx_img
-                        .send(user_str("error.image_send_failed").replace("{qq}", &qq.to_string()))
-                        .await;
+                if let Err(e) = send_result {
+                    warn!(error = %e, group_id = msg_group_id, "{}", log_fmt!("main.send_image_failed"));
                 }
             });
         }
